@@ -10,6 +10,13 @@ discipline does not scale to the next one.
 Nothing here builds a release, an image or a deployment. That is deliberate:
 CI validates, it does not ship.
 
+Both triggers have been observed green: the `push` run
+[34610549209](https://github.com/550W-HOST/loom/actions/runs/34610549209) and the
+`pull_request` run
+[34610555122](https://github.com/550W-HOST/loom/actions/runs/34610555122), each
+with all four jobs succeeding in under two minutes. The durations below are those
+runs.
+
 ## What runs
 
 | Job | Check name | What it proves |
@@ -105,8 +112,23 @@ compilation almost entirely.
 
 ## Measured duration
 
-Cold, with no cache, on a 24-core workstation constrained to four parallel jobs
-(`-j4`) to approximate GitHub's `ubuntu-24.04` runner:
+Real runs on `ubuntu-24.04` (4 vCPU), PR run
+[34610555122](https://github.com/550W-HOST/loom/actions/runs/34610555122) and
+push run [34610549209](https://github.com/550W-HOST/loom/actions/runs/34610549209):
+
+| Job | Push | PR |
+| --- | --- | --- |
+| `fmt + clippy + test` | 1 m 02 s | 57 s |
+| `MSRV` | 43 s | 27 s |
+| `bb contract is reproducible` | 31 s | 31 s |
+| `real pi provider` (skipped) | 17 s | 30 s |
+
+All four jobs run concurrently, so a whole run is about as long as its slowest
+job: **under 2 minutes** end to end including queueing, on a cold cache. Both
+runs finished `success`.
+
+For reference, the individual steps measured cold on a 24-core workstation
+constrained to `-j4` to approximate a runner:
 
 | Step | Cold |
 | --- | --- |
@@ -116,9 +138,10 @@ Cold, with no cache, on a 24-core workstation constrained to four parallel jobs
 | `cargo +1.80 check --workspace --all-targets --locked -j4` | 16.0 s |
 | contract re-export (bb fetch + `bun install` + export) | 14.9 s |
 
-The `checks` job is roughly 43 s of real work. Wall-clock on a runner adds
-checkout, toolchain download and cache restore, so budget a couple of minutes
-cold and far less warm. Every job has a 20-minute `timeout-minutes`.
+The `checks` job is roughly 43 s of real work; the rest of its wall-clock is
+checkout, toolchain download and cache restore. Every job has a 20-minute
+`timeout-minutes`, which is generous enough that a timeout means something
+hangs rather than something is slow.
 
 ## The Redis tests
 
