@@ -21,7 +21,12 @@ futures-util = { version = "0.3", default-features = false, features = ["sink", 
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tokio = { version = "1.40", features = ["macros", "net", "rt-multi-thread", "sync", "time"] }
-tokio-tungstenite = "0.30"
+# Pinned to the line axum's `ws` feature already uses. A second, newer
+# tungstenite pulls `sha1 0.11 -> digest 0.11 -> block-buffer 0.12`, whose
+# manifest needs the `edition2024` cargo feature and so cannot be parsed by the
+# 1.80 toolchain this workspace declares in `rust-version`. Keeping one
+# tungstenite keeps the MSRV honest and drops duplicate sha1/rand versions.
+tokio-tungstenite = "0.29"
 
 [profile.release]
 lto = "thin"

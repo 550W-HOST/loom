@@ -32,6 +32,7 @@ on it and it can be validated on its own.
   (`loom-daemon` is the reference implementation and exercises the whole contract today)
 - [x] Redis Streams relay backend for restart-transparent upgrades (`LOOM_REDIS_URL`)
 - [x] bb's HTTP/WebSocket/daemon contract exported to JSON Schema, with a Rust conformance harness (`docs/contract.md`)
+- [x] CI on every push and PR: format, lint, the full test suite, the declared MSRV and contract reproducibility (`docs/ci.md`)
 
 ## Layout
 
@@ -50,6 +51,7 @@ ui/             the reference UI client: buildless, served by loom-server
 deploy/         systemd units, environment templates, install/uninstall scripts
 docs/
   architecture.md
+  ci.md
   contract.md
   process-model.md
   provider-protocol.md
@@ -71,6 +73,10 @@ cargo test --workspace
 cargo clippy --workspace --all-targets
 cargo fmt --all
 ```
+
+CI runs the check forms of these on every push and PR, plus the declared MSRV
+and the contract-reproducibility check; [`docs/ci.md`](docs/ci.md) lists the
+jobs, the required checks and the measured duration.
 
 No external services are required: the default backend is in-process. A
 `LOOM_DATA_DIR` keeps the replay window on local disk; `LOOM_REDIS_URL` moves
