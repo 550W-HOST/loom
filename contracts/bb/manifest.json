@@ -5,7 +5,8 @@
     "httpRoutes": 167,
     "httpRoutesWithOpaqueResponse": 0,
     "httpRoutesWithRequestSchema": 116,
-    "namedSchemas": 695
+    "namedSchemas": 695,
+    "threadEventTypes": 48
   },
   "failures": {
     "opaqueResponseTypes": [],
@@ -27,6 +28,10 @@
     "server-api.json": {
       "bytes": 627802,
       "sha256": "13177238a8a6c27d55eb962ed89d144f3419c2fad1d683f62d358c241f1c2077"
+    },
+    "thread-event.json": {
+      "bytes": 893785,
+      "sha256": "85c7e388cbb205900ce47f1dbc2925afe1d3c69ba3acec58c8ec5d7d8b4d8c97"
     }
   },
   "format": "loom.bb-contract/v1",

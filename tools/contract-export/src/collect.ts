@@ -1,4 +1,9 @@
-import { schemaFrom, zodToJsonSchema, type JsonSchema } from "./zod-schema.js";
+import {
+  schemaFrom,
+  zodToJsonSchema,
+  type JsonSchema,
+  type JsonValue,
+} from "./zod-schema.js";
 import type { ResponseSchemaResult } from "./ts-schema.js";
 import { buildResponseSchemas, type ResponseAlias } from "./ts-schema.js";
 
@@ -115,6 +120,95 @@ export interface ProtocolModel {
   subprotocol?: string;
   clientToServer: { name: string; schema: JsonSchema }[];
   serverToClient: { name: string; schema: JsonSchema }[];
+}
+
+export interface ThreadEventModel {
+  schema: JsonSchema;
+  eventTypes: string[];
+  schemasByType: Record<string, JsonSchema>;
+}
+
+function isJsonObject(value: JsonValue | undefined): value is JsonSchema {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function unionBranches(schema: JsonSchema): JsonSchema[] {
+  for (const key of ["anyOf", "oneOf"] as const) {
+    const value = schema[key];
+    if (!Array.isArray(value)) continue;
+    return value.filter(isJsonObject);
+  }
+  return [];
+}
+
+function discriminantValue(schema: JsonSchema): string | undefined {
+  const properties = isJsonObject(schema.properties)
+    ? schema.properties
+    : undefined;
+  const type = properties && isJsonObject(properties.type)
+    ? properties.type
+    : undefined;
+  return typeof type?.const === "string" ? type.const : undefined;
+}
+
+/**
+ * Extract the top-level discriminated-union branches without walking into
+ * nested item unions. The generated ThreadEvent schema has one provider and
+ * one system union, each containing the event branches.
+ */
+function discriminatedBranches(schema: JsonSchema): JsonSchema[] {
+  const type = discriminantValue(schema);
+  if (type) return [schema];
+  return unionBranches(schema).flatMap(discriminatedBranches);
+}
+
+/**
+ * Build the event index from the converted runtime schema and bb's exported
+ * type inventory. Both are checked so a newly added event cannot disappear
+ * silently from the artifact.
+ */
+export function collectThreadEvents(
+  schema: JsonSchema,
+  rawEventTypes: unknown,
+): ThreadEventModel {
+  if (
+    !Array.isArray(rawEventTypes) ||
+    !rawEventTypes.every((value): value is string => typeof value === "string")
+  ) {
+    throw new Error("bb domain does not export a valid thread event type list");
+  }
+
+  const eventTypes = [...rawEventTypes];
+  if (new Set(eventTypes).size !== eventTypes.length) {
+    throw new Error("bb thread event type list contains duplicates");
+  }
+
+  const schemasByType: Record<string, JsonSchema> = {};
+  for (const branch of discriminatedBranches(schema)) {
+    const type = discriminantValue(branch);
+    if (!type) {
+      throw new Error("ThreadEvent contains a union branch without a type literal");
+    }
+    if (!eventTypes.includes(type)) {
+      throw new Error(`ThreadEvent schema contains unlisted event type \`${type}\``);
+    }
+    if (schemasByType[type]) {
+      throw new Error(`ThreadEvent schema contains duplicate event type \`${type}\``);
+    }
+    schemasByType[type] = branch;
+  }
+
+  const missing = eventTypes.filter((type) => !schemasByType[type]);
+  if (missing.length > 0) {
+    throw new Error(
+      `ThreadEvent type list contains schema conversion gaps: ${missing.join(", ")}`,
+    );
+  }
+  if (Object.keys(schemasByType).length !== eventTypes.length) {
+    throw new Error("ThreadEvent schema branch count does not match its type list");
+  }
+
+  return { schema, eventTypes, schemasByType };
 }
 
 /** The three WebSocket surfaces bb exposes, each with its message schemas. */

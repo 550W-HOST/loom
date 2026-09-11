@@ -78,6 +78,7 @@ by hand. `manifest.json` records the bb revision and the hash of every file.
 | `client-ws.json` | `bb-client-ws` | `client` and `terminal` protocols, subscription targets, change kinds |
 | `host-daemon.json` | `bb-host-daemon` | daemon commands, results by type, WebSocket messages, enrollment/session/event/tool/interaction shapes, protocol version |
 | `error-codes.json` | `bb-error-codes` | error code -> status inventory scanned from `apps/server/src` throw sites |
+| `thread-event.json` | `bb-thread-event` | the complete `ThreadEvent` union and a schema for every `type` discriminator |
 
 Shared definitions live in each file's `$defs`; every `$ref` is a local
 `#/$defs/<name>` pointer, so a file is self-contained.
@@ -97,6 +98,8 @@ assert!(violations.is_empty(), "{violations:?}");
 The same API covers client messages (`validate_client_message`), server
 messages (`validate_server_message`) and daemon frames
 (`validate_daemon_message`, `validate_server_to_daemon_message`).
+Thread projection code can query `thread_event_schema("item/started")` or
+validate a complete event with `validate_thread_event`.
 
 `crates/contract/tests/conformance.rs` guards the artifacts themselves: refs
 resolve, every JSON route has a response schema, and the validator accepts

@@ -19,6 +19,7 @@ const SERVER_API: &str = include_str!("../../../contracts/bb/server-api.json");
 const CLIENT_WS: &str = include_str!("../../../contracts/bb/client-ws.json");
 const HOST_DAEMON: &str = include_str!("../../../contracts/bb/host-daemon.json");
 const ERROR_CODES: &str = include_str!("../../../contracts/bb/error-codes.json");
+const THREAD_EVENT: &str = include_str!("../../../contracts/bb/thread-event.json");
 const MANIFEST: &str = include_str!("../../../contracts/bb/manifest.json");
 
 /// The HTTP request half of a route: where the input comes from and its shape.
@@ -75,6 +76,7 @@ pub struct Contract {
     client_ws: Value,
     host_daemon: Value,
     error_codes: Value,
+    thread_event: Value,
     /// Routes parsed out of `server_api` for typed access.
     routes: Vec<HttpRoute>,
 }
@@ -97,6 +99,7 @@ impl Contract {
             client_ws: serde_json::from_str(CLIENT_WS).expect("client-ws.json"),
             host_daemon: serde_json::from_str(HOST_DAEMON).expect("host-daemon.json"),
             error_codes: serde_json::from_str(ERROR_CODES).expect("error-codes.json"),
+            thread_event: serde_json::from_str(THREAD_EVENT).expect("thread-event.json"),
             routes,
         }
     }
@@ -122,6 +125,50 @@ impl Contract {
     /// The bb source revision the artifacts were generated from.
     pub fn source_commit(&self) -> Option<&str> {
         self.manifest.pointer("/source/commit")?.as_str()
+    }
+
+    /// Raw access to the exported ThreadEvent artifact.
+    pub fn thread_event(&self) -> &Value {
+        &self.thread_event
+    }
+
+    /// Every ThreadEvent discriminator value in bb's declared order.
+    pub fn thread_event_types(&self) -> Vec<&str> {
+        self.thread_event
+            .get("eventTypes")
+            .and_then(Value::as_array)
+            .map(|types| types.iter().filter_map(Value::as_str).collect())
+            .unwrap_or_default()
+    }
+
+    /// The schema for one ThreadEvent discriminator value.
+    pub fn thread_event_schema(&self, event_type: &str) -> Option<&Value> {
+        self.thread_event
+            .get("schemasByType")
+            .and_then(Value::as_object)
+            .and_then(|schemas| schemas.get(event_type))
+    }
+
+    /// Validate a complete ThreadEvent against the union schema.
+    pub fn validate_thread_event(&self, instance: &Value) -> Vec<Violation> {
+        match self.thread_event.get("schema") {
+            Some(schema) => validate(&self.thread_event, schema, instance),
+            None => vec![Violation {
+                path: "$".to_string(),
+                message: "thread-event artifact has no union schema".to_string(),
+            }],
+        }
+    }
+
+    /// Validate a ThreadEvent against the schema selected by its `type`.
+    pub fn validate_thread_event_type(&self, event_type: &str, instance: &Value) -> Vec<Violation> {
+        match self.thread_event_schema(event_type) {
+            Some(schema) => validate(&self.thread_event, schema, instance),
+            None => vec![Violation {
+                path: "$.type".to_string(),
+                message: format!("unknown ThreadEvent type `{event_type}`"),
+            }],
+        }
     }
 
     /// Validate a parsed request body or query object for a route.
