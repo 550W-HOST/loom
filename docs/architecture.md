@@ -90,9 +90,17 @@ subscriber, a room or a socket.
 
 ### Why the split matters
 
-- **Backends are swappable.** In-process memory is the default and needs no
-  external service. Redis or NATS is added only when a server restart must be
-  transparent to connected daemons. Nothing above `RelayBackend` changes.
+- **Backends are swappable.** Three are defined, and the trait is the only
+  thing the relay sees:
+  - [`backend::memory::MemoryBackend`] — in-process, zero configuration, lost
+    on restart. The server's default.
+  - [`backend::disk::DiskBackend`] — one crash-safe append-only file per
+    shard under a data directory. Still in-process and dependency-free, but
+    the replay window survives a restart.
+  - Redis/NATS — for a shared relay across nodes. Added only when a restart
+    must be transparent to daemons *and* more than one node serves the log.
+
+  Nothing above `RelayBackend` changes between them.
 - **The relay is testable without sockets,** and the hub is testable without a
   broker.
 - **The dependency direction is enforced.** `loom-relay` does not know
@@ -193,8 +201,12 @@ so they work behind NAT.
 
 ### C. Shared relay, restart-transparent
 
-When a server upgrade must not disconnect running daemons, the relay backend
-moves to Redis Streams or NATS. Only the `RelayBackend` implementation changes.
+For a single server that must not lose its replay window on restart, the
+`DiskBackend` already covers it with no new process: the log lives in a data
+directory (`LOOM_DATA_DIR`), one append-only file per shard. When a server
+upgrade must additionally not disconnect running daemons *and* a second node
+must attach to the same log, the backend moves to Redis Streams or NATS. Only
+the `RelayBackend` implementation changes.
 
 ## UI as a URL client
 

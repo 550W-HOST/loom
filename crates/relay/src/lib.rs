@@ -20,9 +20,10 @@
 //!
 //! The storage behind this is pluggable via [`RelayBackend`]. The default is an
 //! in-process [`backend::memory::MemoryBackend`], which needs no external
-//! service and is enough for a single self-hosted server. Redis/NATS backends
-//! exist to make a server restart transparent to connected daemons; they do not
-//! change anything above this line.
+//! service and is enough for a single self-hosted server. [`backend::disk::DiskBackend`]
+//! adds a dependency-free local log so a restart replays the grace window
+//! instead of losing it. Redis/NATS backends exist for a log shared across
+//! nodes; none of them change anything above this line.
 
 #![forbid(unsafe_code)]
 

@@ -6,6 +6,7 @@
 //! publish an event but cannot decide who receives it, which is the property
 //! that keeps routing changes out of handlers.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -22,6 +23,13 @@ pub struct AppConfig {
     pub node_id: String,
     /// Approximate records retained per shard.
     pub backend_max_len: usize,
+    /// Where the relay log lives on disk.
+    ///
+    /// `None` keeps the in-process, zero-dependency memory backend, which
+    /// is the default so the server starts with no configuration at all.
+    /// `Some(path)` uses the durable backend, so the grace window replays
+    /// across a restart.
+    pub backend_path: Option<PathBuf>,
     /// Retention windows for the log.
     pub retention: Retention,
     /// Bound on the hub actor's command queue.
@@ -35,6 +43,7 @@ impl Default for AppConfig {
         Self {
             node_id: "loom-node".into(),
             backend_max_len: 2_000,
+            backend_path: None,
             retention: Retention::default(),
             hub_queue_capacity: 1_024,
             pump: PumpConfig::default(),
@@ -80,9 +89,17 @@ pub struct AppState {
 impl AppState {
     /// Wires the relay, hub actor and readers together.
     pub fn build(config: AppConfig) -> Result<Self, BuildStateError> {
-        let backend = Arc::new(loom_relay::backend::memory::MemoryBackend::new(
-            config.backend_max_len,
-        ));
+        let backend: loom_relay::SharedBackend = match &config.backend_path {
+            // Durable backend: replay survives a restart.
+            Some(path) => Arc::new(loom_relay::backend::disk::DiskBackend::open(
+                path,
+                config.backend_max_len,
+            )?),
+            // Default: in-process, zero external service.
+            None => Arc::new(loom_relay::backend::memory::MemoryBackend::new(
+                config.backend_max_len,
+            )),
+        };
         let relay = Relay::new(backend, config.retention, config.node_id.clone())?;
         let (hub, _actor) = HubHandle::spawn(config.hub_queue_capacity);
         let pump = Arc::new(Pump::spawn(relay.clone(), hub.clone(), config.pump));
@@ -149,6 +166,7 @@ impl std::fmt::Debug for AppState {
 mod tests {
     use super::*;
     use loom_relay::Scope;
+    use tempfile::TempDir;
 
     #[tokio::test]
     async fn publish_reaches_a_subscriber_end_to_end() {
@@ -187,6 +205,31 @@ mod tests {
         let state = AppState::build(AppConfig::default()).unwrap();
         let scope = Scope::Thread("thr_1".into());
         let envelope = state.publish(scope.clone(), "{\"n\":1}").unwrap();
+
+        let replayed = state.relay.replay_scope(&scope, 10).unwrap();
+        assert_eq!(replayed.len(), 1);
+        assert_eq!(replayed[0].event_id, envelope.event_id);
+
+        state.shutdown();
+    }
+
+    #[tokio::test]
+    async fn a_configured_data_directory_switches_to_the_durable_backend() {
+        let dir = TempDir::new().unwrap();
+        let config = AppConfig {
+            backend_path: Some(dir.path().to_path_buf()),
+            ..AppConfig::default()
+        };
+        let state = AppState::build(config).unwrap();
+        let scope = Scope::Thread("thr_1".into());
+        let envelope = state.publish(scope.clone(), "{\"n\":1}").unwrap();
+
+        // The default backend stays in-process; with a data directory the log
+        // is materialised on disk as well.
+        assert!(dir
+            .path()
+            .join(format!("shard-{}.log", scope.shard()))
+            .exists());
 
         let replayed = state.relay.replay_scope(&scope, 10).unwrap();
         assert_eq!(replayed.len(), 1);

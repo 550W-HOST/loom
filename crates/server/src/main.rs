@@ -10,9 +10,13 @@ use loom_server::state::{AppConfig, AppState};
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let bind = std::env::var("LOOM_BIND").unwrap_or_else(|_| "127.0.0.1:38886".into());
     let node_id = std::env::var("LOOM_NODE_ID").unwrap_or_else(|_| "loom-node".into());
+    // Without LOOM_DATA_DIR the relay log is in-process and the server needs
+    // no configuration at all. Setting it turns on the durable backend.
+    let backend_path = std::env::var_os("LOOM_DATA_DIR").map(std::path::PathBuf::from);
 
     let config = AppConfig {
         node_id: node_id.clone(),
+        backend_path,
         ..AppConfig::default()
     };
     let state = AppState::build(config)?;

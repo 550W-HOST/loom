@@ -3,9 +3,14 @@
 //! A backend stores append-ordered records per shard and can replay and trim
 //! them. Everything above this trait — control plane, connection layer, the
 //! frames themselves — is independent of which backend is in use. That is what
-//! makes "single-process in-memory" and "shared Redis/NATS" a deployment
-//! choice rather than a rewrite.
+//! makes "single-process in-memory", "durable on local disk" and "shared
+//! Redis/NATS" a deployment choice rather than a rewrite.
+//!
+//! Two backends ship here: [`memory::MemoryBackend`] (the zero-configuration
+//! default) and [`disk::DiskBackend`], which keeps the replay window across a
+//! process restart in one crash-safe append-only file per shard.
 
+pub mod disk;
 pub mod memory;
 
 use std::sync::Arc;

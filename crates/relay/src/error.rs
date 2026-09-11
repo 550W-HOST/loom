@@ -25,6 +25,12 @@ impl fmt::Display for RelayError {
 
 impl std::error::Error for RelayError {}
 
+impl From<std::io::Error> for RelayError {
+    fn from(error: std::io::Error) -> Self {
+        RelayError::Backend(error.to_string())
+    }
+}
+
 impl RelayError {
     /// Convenience constructor for a configuration error.
     pub fn config(message: impl Into<String>) -> Self {
