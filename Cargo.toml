@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/daemon", "crates/domain", "crates/provider-protocol", "crates/relay", "crates/relay-hub", "crates/server"]
+members = ["crates/contract", "crates/daemon", "crates/domain", "crates/provider-protocol", "crates/relay", "crates/relay-hub", "crates/server"]
 
 [workspace.package]
 version = "0.1.0"
@@ -10,6 +10,7 @@ license = "MIT"
 
 [workspace.dependencies]
 loom-domain = { path = "crates/domain" }
+loom-contract = { path = "crates/contract" }
 loom-provider-protocol = { path = "crates/provider-protocol" }
 loom-relay = { path = "crates/relay" }
 loom-relay-hub = { path = "crates/relay-hub" }

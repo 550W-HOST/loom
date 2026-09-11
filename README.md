@@ -31,6 +31,7 @@ on it and it can be validated on its own.
 - [ ] Check in the Node execution plane (`apps/host-daemon`) against the daemon contract
   (`loom-daemon` is the reference implementation and exercises the whole contract today)
 - [x] Redis Streams relay backend for restart-transparent upgrades (`LOOM_REDIS_URL`)
+- [x] bb's HTTP/WebSocket/daemon contract exported to JSON Schema, with a Rust conformance harness (`docs/contract.md`)
 
 ## Layout
 
@@ -42,10 +43,14 @@ crates/
   server/       loom-server     HTTP, WebSocket, protocol, dispatch, fixed readers, UI hosting
   provider-protocol/  loom-provider-protocol  the server↔daemon provider contract
   daemon/       loom-daemon     the execution plane: enrollment, dispatch, Pi bridge
+  contract/     loom-contract   bb's exported contract as a conformance target
+contracts/bb/                   generated JSON Schema from bb's contract packages
+tools/contract-export/          the exporter that produces contracts/bb
 ui/             the reference UI client: buildless, served by loom-server
 deploy/         systemd units, environment templates, install/uninstall scripts
 docs/
   architecture.md
+  contract.md
   process-model.md
   provider-protocol.md
   redis-backend.md

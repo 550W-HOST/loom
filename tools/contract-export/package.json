@@ -1,0 +1,20 @@
+{
+  "name": "@loom/contract-export",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Read-only exporter that turns bb's TypeScript/zod contract packages into language-neutral JSON Schema artifacts.",
+  "scripts": {
+    "export": "bun run src/index.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "cross-spawn": "7.0.6",
+    "hono": "4.13.7",
+    "typescript": "5.7.3",
+    "zod": "4.6.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0"
+  }
+}

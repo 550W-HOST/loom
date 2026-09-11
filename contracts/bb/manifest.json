@@ -1,0 +1,47 @@
+{
+  "counts": {
+    "clientProtocols": 3,
+    "errorCodes": 101,
+    "httpRoutes": 167,
+    "httpRoutesWithOpaqueResponse": 0,
+    "httpRoutesWithRequestSchema": 116,
+    "namedSchemas": 695
+  },
+  "failures": {
+    "opaqueResponseTypes": [],
+    "schemaConversions": []
+  },
+  "files": {
+    "client-ws.json": {
+      "bytes": 29197,
+      "sha256": "3c2a9aac4e7bc1c7e8d4571c47cf94ec74090a56be8f60d6bcac8398740116f3"
+    },
+    "error-codes.json": {
+      "bytes": 9699,
+      "sha256": "7b06a64be067c816e0fcf461bf73ad72fe8c53a6586125d9983d0848601f5eb2"
+    },
+    "host-daemon.json": {
+      "bytes": 493649,
+      "sha256": "742713c6c33f85e3634c836a63ffe404f95ddf8c33929a9b08cd0039d5fca76c"
+    },
+    "server-api.json": {
+      "bytes": 627802,
+      "sha256": "13177238a8a6c27d55eb962ed89d144f3419c2fad1d683f62d358c241f1c2077"
+    }
+  },
+  "format": "loom.bb-contract/v1",
+  "generator": "tools/contract-export",
+  "jsonSchemaDialect": "https://json-schema.org/draft/2020-12/schema",
+  "source": {
+    "commit": "fa1f44ebe9e5676004b669e48c99b3c7606466b6",
+    "packages": [
+      "domain",
+      "hono-typed-routes",
+      "host-daemon-contract",
+      "process-utils",
+      "provider-bridge-protocol",
+      "server-contract"
+    ],
+    "repository": "https://github.com/get-bb/bb"
+  }
+}

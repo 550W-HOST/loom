@@ -1,0 +1,276 @@
+//! Conformance tests for the exported bb contract.
+//!
+//! These tests guard the *artifacts*: they must load, their `$ref`s must
+//! resolve, and the validator must accept contract-shaped values while
+//! rejecting malformed ones. That is the foundation a route-level conformance
+//! test builds on.
+//!
+//! ## Wiring a newly implemented route
+//!
+//! When `loom-server` implements one of the contract routes, add a test here:
+//!
+//! ```ignore
+//! #[test]
+//! fn system_version_matches_bb() {
+//!     let contract = loom_contract::Contract::load();
+//!     let route = contract.http_route("GET", "/api/v1/system/version").unwrap();
+//!     // `body` is what the handler actually returned, e.g. captured from a
+//!     // `tower::ServiceExt::oneshot` call in loom-server's test harness.
+//!     let body = serde_json::json!({ /* ... */ });
+//!     let violations = contract.validate_response(route, 200, &body);
+//!     assert!(violations.is_empty(), "{violations:?}");
+//! }
+//! ```
+//!
+//! `validate_response` reports every mismatch with a JSON path, so a failure
+//! names the exact field the Rust shape got wrong.
+
+use loom_contract::Contract;
+use serde_json::{json, Value};
+
+fn all_refs(value: &Value, out: &mut Vec<String>) {
+    match value {
+        Value::Object(map) => {
+            if let Some(Value::String(reference)) = map.get("$ref") {
+                out.push(reference.clone());
+            }
+            for child in map.values() {
+                all_refs(child, out);
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                all_refs(item, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn unresolved_refs(document: &Value) -> Vec<String> {
+    let mut refs = Vec::new();
+    all_refs(document, &mut refs);
+    refs.into_iter()
+        .filter(|reference| {
+            let pointer = reference.strip_prefix('#').unwrap_or(reference);
+            document.pointer(pointer).is_none()
+        })
+        .collect()
+}
+
+#[test]
+fn artifacts_load_and_are_stamped() {
+    let contract = Contract::load();
+    assert!(
+        contract.routes().len() > 100,
+        "expected the full bb route surface, found {}",
+        contract.routes().len()
+    );
+    assert!(
+        contract.source_commit().is_some(),
+        "manifest must record the bb revision it was generated from"
+    );
+}
+
+#[test]
+fn every_declared_schema_resolves() {
+    let contract = Contract::load();
+    for (label, document) in [
+        ("client", contract.client_ws()),
+        ("host-daemon", contract.host_daemon()),
+    ] {
+        let dangling = unresolved_refs(document);
+        assert!(
+            dangling.is_empty(),
+            "{label} has dangling refs: {dangling:?}"
+        );
+    }
+    assert!(contract.error_codes().get("codes").is_some());
+}
+
+#[test]
+fn every_json_route_has_a_response_schema() {
+    let contract = Contract::load();
+    let missing: Vec<&str> = contract
+        .routes()
+        .iter()
+        .filter(|route| {
+            route
+                .responses
+                .iter()
+                .any(|response| response.format == "json" && response.schema.is_none())
+        })
+        .map(|route| route.id.as_str())
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "JSON routes without a response schema: {missing:?}"
+    );
+}
+
+#[test]
+fn http_route_lookup_by_mounted_and_relative_path() {
+    let contract = Contract::load();
+    let mounted = contract.http_route("GET", "/api/v1/system/version");
+    let relative = contract.http_route("get", "/system/version");
+    assert_eq!(
+        mounted.map(|route| route.id.as_str()),
+        Some("system.version")
+    );
+    assert_eq!(
+        relative.map(|route| route.id.as_str()),
+        Some("system.version")
+    );
+}
+
+/// The skeleton in action: a real implementation asserts its response against
+/// the contract, and the assertion actually bites when a field is wrong.
+#[test]
+fn response_validation_accepts_and_rejects() {
+    let contract = Contract::load();
+    let route = contract
+        .route_by_id("system.version")
+        .expect("system.version is part of the contract");
+
+    let good = json!({
+        "currentVersion": "1.2.3",
+        "latestVersion": null,
+        "source": "npm",
+        "updateAvailable": false,
+        "isDevelopment": false,
+        "upgradeCommand": "npm i -g bb",
+    });
+    assert!(
+        contract.validate_response(route, 200, &good).is_empty(),
+        "the sample response should conform"
+    );
+
+    let missing_field = json!({
+        "latestVersion": null,
+        "source": "npm",
+        "updateAvailable": false,
+        "isDevelopment": false,
+        "upgradeCommand": "npm i -g bb",
+    });
+    let violations = contract.validate_response(route, 200, &missing_field);
+    assert!(
+        violations
+            .iter()
+            .any(|v| v.message.contains("currentVersion")),
+        "a missing required field must be reported: {violations:?}"
+    );
+
+    let wrong_type = json!({
+        "currentVersion": 7,
+        "latestVersion": null,
+        "source": "npm",
+        "updateAvailable": false,
+        "isDevelopment": false,
+        "upgradeCommand": "npm i -g bb",
+    });
+    assert!(
+        !contract
+            .validate_response(route, 200, &wrong_type)
+            .is_empty(),
+        "a wrong field type must be reported"
+    );
+}
+
+#[test]
+fn error_body_shape_is_uniform() {
+    let contract = Contract::load();
+    let good = json!({ "code": "thread_not_found", "message": "no such thread" });
+    assert!(contract.validate_error_body(&good).is_empty());
+
+    let bad = json!({ "code": "thread_not_found" });
+    assert!(
+        !contract.validate_error_body(&bad).is_empty(),
+        "an error body without a message must be rejected"
+    );
+
+    assert!(contract.error_statuses("thread_not_found").contains(&404));
+}
+
+#[test]
+fn client_websocket_messages_conform() {
+    let contract = Contract::load();
+    let subscribe = json!({
+        "type": "subscribe",
+        "target": { "kind": "thread-detail", "threadId": "t1" },
+    });
+    assert!(contract
+        .validate_client_message("client", &subscribe)
+        .is_empty());
+
+    let unknown_kind = json!({
+        "type": "subscribe",
+        "target": { "kind": "not-a-target" },
+    });
+    assert!(!contract
+        .validate_client_message("client", &unknown_kind)
+        .is_empty());
+
+    let changed = json!({
+        "type": "changed",
+        "entity": "thread",
+        "id": "t1",
+        "changes": ["events-appended"],
+    });
+    assert!(contract
+        .validate_server_message("client", &changed)
+        .is_empty());
+
+    let ping = json!({ "type": "ping" });
+    assert!(contract.validate_client_message("client", &ping).is_empty());
+    let pong = json!({ "type": "pong" });
+    assert!(contract.validate_server_message("client", &pong).is_empty());
+}
+
+#[test]
+fn daemon_contract_is_typed() {
+    let contract = Contract::load();
+    assert_eq!(
+        contract
+            .host_daemon()
+            .pointer("/protocolVersion")
+            .and_then(Value::as_u64),
+        Some(199)
+    );
+    let settled = contract
+        .host_daemon()
+        .pointer("/commands/settledTypes")
+        .and_then(Value::as_array)
+        .expect("settled command types");
+    assert!(settled.iter().any(|value| value == "thread.start"));
+
+    let heartbeat = json!({ "type": "heartbeat" });
+    assert!(
+        contract.validate_daemon_message(&heartbeat).is_empty(),
+        "heartbeat must be a valid daemon -> server frame"
+    );
+    assert!(!contract
+        .validate_daemon_message(&json!({ "type": "not-a-message" }))
+        .is_empty());
+}
+
+#[test]
+fn validator_rejects_unknown_properties() {
+    let contract = Contract::load();
+    let route = contract
+        .route_by_id("realtimeSubscriptionTarget")
+        .or_else(|| contract.route_by_id("system.version"))
+        .unwrap();
+    let body = json!({
+        "currentVersion": "1",
+        "latestVersion": null,
+        "source": "npm",
+        "updateAvailable": false,
+        "isDevelopment": false,
+        "upgradeCommand": "x",
+        "unexpected": true,
+    });
+    assert!(
+        !contract.validate_response(route, 200, &body).is_empty(),
+        "additionalProperties: false must be enforced"
+    );
+}

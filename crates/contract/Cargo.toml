@@ -1,0 +1,11 @@
+[package]
+name = "loom-contract"
+description = "bb's HTTP/WebSocket/daemon contract as machine-checkable JSON Schema, for loom conformance tests"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
