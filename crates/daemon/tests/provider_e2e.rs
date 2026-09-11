@@ -1,0 +1,499 @@
+//! Provider execution end to end, over real sockets and real processes.
+//!
+//! Each test starts a real server, enrolls a real daemon, and runs a real
+//! provider process — a small stub that speaks the same JSON-RPC line protocol
+//! Pi does. The Pi *bridge* is exercised directly in the crate's unit tests;
+//! here the point is the path around it: dispatch through the relay, provider
+//! output reported back, and the thread leaving `working` with exactly one
+//! terminal event, including when the provider crashes, hangs or the daemon
+//! disappears.
+
+use std::path::Path;
+use std::time::Duration;
+
+use loom_daemon::{Daemon, DaemonConfig};
+use loom_domain::{HostId, HostStatus, MessageRole, ThreadId, ThreadStatus};
+use loom_provider_protocol::ProviderSpec;
+use loom_server::http::router;
+use loom_server::state::{AppConfig, AppState};
+use loom_server::PROTOCOL_VERSION;
+use serde_json::Value;
+
+/// Starts a server-only control plane on an ephemeral port.
+async fn spawn_server(config: AppConfig) -> (String, AppState) {
+    let state = AppState::build(config).unwrap();
+    let app = router(state.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+    (format!("http://{}:{}", addr.ip(), addr.port()), state)
+}
+
+/// Writes an executable `#!/bin/sh` provider stub and returns its spec.
+fn write_stub(dir: &Path, name: &str, body: &str) -> ProviderSpec {
+    let path = dir.join(name);
+    std::fs::write(&path, format!("#!/bin/sh\n{body}")).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut permissions = std::fs::metadata(&path).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&path, permissions).unwrap();
+    }
+    ProviderSpec::custom(path.to_string_lossy().into_owned(), Vec::new())
+}
+
+/// Connects and enrolls a daemon, then drives it on a background task.
+async fn enroll_daemon(
+    url: &str,
+    host_id: Option<HostId>,
+    provider: Option<ProviderSpec>,
+    run_timeout: Duration,
+) -> (HostId, tokio::task::JoinHandle<()>) {
+    let mut config = DaemonConfig::new(url, "test-daemon");
+    config.host_id = host_id;
+    config.provider = provider;
+    config.run_timeout = run_timeout;
+    config.heartbeat_interval = Duration::from_millis(50);
+    let mut daemon = Daemon::connect(config).await.unwrap();
+    let host_id = daemon.enroll().await.unwrap();
+    let handle = tokio::spawn(async move {
+        let _ = daemon.run().await;
+    });
+    (host_id, handle)
+}
+
+/// Creates a thread, appends a user message, and dispatches the resulting run.
+fn start_turn(state: &AppState, content: &str) -> ThreadId {
+    let (thread, created) = state
+        .registry
+        .create_thread(None, Some("turn".into()), loom_relay::now_ms())
+        .unwrap();
+    state.publish_domain_event(&created).unwrap();
+    let events = state
+        .registry
+        .post_message(
+            &thread.id,
+            MessageRole::User,
+            content.to_owned(),
+            loom_relay::now_ms(),
+        )
+        .unwrap();
+    for event in &events {
+        state.publish_domain_event(event).unwrap();
+    }
+    let thread = state.registry.thread(&thread.id).unwrap();
+    assert_eq!(thread.status, ThreadStatus::Working);
+    state.dispatch_thread(&thread, content);
+    thread.id
+}
+
+/// Polls until `predicate` holds, with a wall-clock bound.
+async fn eventually(mut predicate: impl FnMut() -> bool) -> bool {
+    for _ in 0..800 {
+        if predicate() {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    predicate()
+}
+
+async fn wait_for_terminal(state: &AppState, thread_id: &ThreadId) -> ThreadStatus {
+    wait_for_terminal_for(state, thread_id, Duration::from_secs(10)).await
+}
+
+/// The same, with an explicit budget for tests that drive a slower process.
+async fn wait_for_terminal_for(
+    state: &AppState,
+    thread_id: &ThreadId,
+    budget: Duration,
+) -> ThreadStatus {
+    let deadline = tokio::time::Instant::now() + budget;
+    loop {
+        let status = state.registry.thread(thread_id).unwrap().status;
+        if matches!(
+            status,
+            ThreadStatus::Idle | ThreadStatus::Error | ThreadStatus::Archived
+        ) {
+            return status;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the thread never left `working` within {budget:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+}
+
+/// Every domain event stored in a thread's scope, in order.
+fn thread_events(state: &AppState, thread_id: &ThreadId) -> Vec<Value> {
+    let scope = loom_relay::Scope::Thread(thread_id.to_string());
+    state
+        .relay
+        .replay_scope(&scope, 500)
+        .unwrap()
+        .into_iter()
+        .filter_map(|envelope| {
+            let frame: Value = serde_json::from_slice(&envelope.payload).ok()?;
+            let payload = frame["payload"].as_str()?;
+            serde_json::from_str(payload).ok()
+        })
+        .collect()
+}
+
+fn run_events(events: &[Value]) -> Vec<&Value> {
+    events
+        .iter()
+        .filter(|event| event["type"] == "thread_run_event")
+        .collect()
+}
+
+fn output_texts(events: &[Value]) -> Vec<String> {
+    run_events(events)
+        .into_iter()
+        .filter(|event| event["event"]["type"] == "output")
+        .filter_map(|event| event["event"]["text"].as_str().map(str::to_owned))
+        .collect()
+}
+
+fn terminal_outcome(events: &[Value]) -> Option<String> {
+    run_events(events)
+        .into_iter()
+        .filter(|event| event["event"]["type"] == "finished")
+        .filter_map(|event| event["event"]["outcome"].as_str().map(str::to_owned))
+        .next_back()
+}
+
+#[tokio::test]
+async fn a_provider_turn_runs_end_to_end_and_is_replayable() {
+    let dir = tempfile::tempdir().unwrap();
+    // The stub deliberately pollutes stdout: an OSC 777 notification (bb
+    // #1180) and a bare log line. Neither may wedge the turn.
+    let provider = write_stub(
+        dir.path(),
+        "provider.sh",
+        r#"read -r _prompt
+printf '%s\n' '{"type":"agent_start"}'
+printf '%s\n' '{"type":"turn_start"}'
+printf '%s\n' '{"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"hello "}}'
+printf '\033]777;notify;pi;working\007\n'
+printf '%s\n' 'this line is not JSON at all'
+printf '%s\n' '{"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"world"}}'
+printf '%s\n' '{"type":"tool_execution_start","toolCallId":"c1","toolName":"bash","args":{"command":"ls"}}'
+printf '%s\n' '{"type":"tool_execution_end","toolCallId":"c1","toolName":"bash","result":{"content":[{"type":"text","text":"ok"}]},"isError":false}'
+printf '%s\n' '{"type":"turn_end"}'
+printf '%s\n' '{"type":"agent_settled"}'
+sleep 1
+"#,
+    );
+
+    let (url, state) = spawn_server(AppConfig {
+        provider_spec: provider.clone(),
+        ..AppConfig::default()
+    })
+    .await;
+    let (host_id, daemon) =
+        enroll_daemon(&url, None, Some(provider), Duration::from_secs(10)).await;
+    assert!(
+        eventually(|| state
+            .registry
+            .host(&host_id)
+            .map(|host| host.status == HostStatus::Connected)
+            .unwrap_or(false))
+        .await
+    );
+
+    let thread_id = start_turn(&state, "say hello");
+    assert_eq!(
+        wait_for_terminal(&state, &thread_id).await,
+        ThreadStatus::Idle
+    );
+
+    // Replay, exactly as a reconnecting client would read it.
+    let events = thread_events(&state, &thread_id);
+    assert_eq!(terminal_outcome(&events), Some("completed".into()));
+    assert_eq!(output_texts(&events), vec!["hello ", "world"]);
+
+    let tool_calls = run_events(&events)
+        .into_iter()
+        .filter(|event| event["event"]["type"] == "tool_call")
+        .count();
+    let tool_results = run_events(&events)
+        .into_iter()
+        .filter(|event| event["event"]["type"] == "tool_result")
+        .count();
+    assert_eq!(tool_calls, 1);
+    assert_eq!(tool_results, 1);
+
+    // The output streamed as run events in the thread scope; that is what a
+    // replaying client reconstructs the turn from.
+    assert!(events
+        .iter()
+        .any(|event| event["type"] == "thread_message_added"));
+    assert!(events
+        .iter()
+        .filter(|event| event["type"] == "thread_status_changed")
+        .any(|event| event["to"] == "idle"));
+
+    // No run is left in flight.
+    assert!(state.runs.is_empty());
+
+    daemon.abort();
+    state.shutdown();
+}
+
+#[tokio::test]
+async fn a_crashing_provider_leaves_the_thread_in_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let provider = write_stub(
+        dir.path(),
+        "crash.sh",
+        r#"read -r _prompt
+printf '%s\n' '{"type":"agent_start"}'
+printf '%s\n' '{"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"partial"}}'
+exit 7
+"#,
+    );
+
+    let (url, state) = spawn_server(AppConfig {
+        provider_spec: provider.clone(),
+        ..AppConfig::default()
+    })
+    .await;
+    let (host_id, daemon) =
+        enroll_daemon(&url, None, Some(provider), Duration::from_secs(10)).await;
+    assert!(
+        eventually(|| state
+            .registry
+            .host(&host_id)
+            .map(|host| host.status == HostStatus::Connected)
+            .unwrap_or(false))
+        .await
+    );
+
+    let thread_id = start_turn(&state, "crash please");
+    assert_eq!(
+        wait_for_terminal(&state, &thread_id).await,
+        ThreadStatus::Error
+    );
+
+    let events = thread_events(&state, &thread_id);
+    assert_eq!(terminal_outcome(&events), Some("failed".into()));
+    let finished = run_events(&events)
+        .into_iter()
+        .find(|event| event["event"]["type"] == "finished")
+        .cloned()
+        .unwrap();
+    assert!(
+        finished["event"]["error"]
+            .as_str()
+            .is_some_and(|error| error.contains("exit")),
+        "the failure reason should name the exit: {finished}"
+    );
+    assert!(state.runs.is_empty());
+
+    daemon.abort();
+    state.shutdown();
+}
+
+#[tokio::test]
+async fn a_hanging_provider_is_killed_and_reported_as_timed_out() {
+    let dir = tempfile::tempdir().unwrap();
+    let provider = write_stub(
+        dir.path(),
+        "hang.sh",
+        r#"read -r _prompt
+printf '%s\n' '{"type":"agent_start"}'
+sleep 30
+"#,
+    );
+
+    let (url, state) = spawn_server(AppConfig {
+        provider_spec: provider.clone(),
+        // A long server deadline, so the daemon's own timeout is what fires.
+        run_timeout: Duration::from_secs(60),
+        ..AppConfig::default()
+    })
+    .await;
+    let (host_id, daemon) =
+        enroll_daemon(&url, None, Some(provider), Duration::from_millis(200)).await;
+    assert!(
+        eventually(|| state
+            .registry
+            .host(&host_id)
+            .map(|host| host.status == HostStatus::Connected)
+            .unwrap_or(false))
+        .await
+    );
+
+    let thread_id = start_turn(&state, "hang forever");
+    assert_eq!(
+        wait_for_terminal(&state, &thread_id).await,
+        ThreadStatus::Error
+    );
+
+    let events = thread_events(&state, &thread_id);
+    assert_eq!(terminal_outcome(&events), Some("timed_out".into()));
+    assert!(state.runs.is_empty());
+
+    daemon.abort();
+    state.shutdown();
+}
+
+#[tokio::test]
+async fn a_dispatch_missed_while_disconnected_is_replayed_on_reconnect() {
+    let dir = tempfile::tempdir().unwrap();
+    let provider = write_stub(
+        dir.path(),
+        "late.sh",
+        r#"read -r _prompt
+printf '%s\n' '{"type":"agent_start"}'
+printf '%s\n' '{"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"caught up"}}'
+printf '%s\n' '{"type":"agent_settled"}'
+sleep 1
+"#,
+    );
+
+    let (url, state) = spawn_server(AppConfig {
+        provider_spec: provider.clone(),
+        ..AppConfig::default()
+    })
+    .await;
+
+    // First daemon enrolls, so the dispatcher has a connected host, but it is
+    // never driven: the dispatch below is written to its scope and not read.
+    let mut first_config = DaemonConfig::new(&url, "test-daemon");
+    first_config.provider = Some(provider.clone());
+    let mut first = Daemon::connect(first_config).await.unwrap();
+    let host_id = first.enroll().await.unwrap();
+
+    let thread_id = start_turn(&state, "will you catch up?");
+    // The dispatch is now in the host room and retained in the relay.
+
+    first.disconnect().await.unwrap();
+    assert!(
+        eventually(|| state
+            .registry
+            .host(&host_id)
+            .map(|host| host.status == HostStatus::Disconnected)
+            .unwrap_or(false))
+        .await,
+        "the first daemon should be detached before the reconnect"
+    );
+
+    // A restarted daemon presents the same identity and replays its room. The
+    // dispatch it missed is delivered late and executed.
+    let (reconnected, daemon) = enroll_daemon(
+        &url,
+        Some(host_id.clone()),
+        Some(provider),
+        Duration::from_secs(10),
+    )
+    .await;
+    assert_eq!(reconnected, host_id);
+
+    assert_eq!(
+        wait_for_terminal(&state, &thread_id).await,
+        ThreadStatus::Idle
+    );
+    let events = thread_events(&state, &thread_id);
+    assert_eq!(terminal_outcome(&events), Some("completed".into()));
+    assert_eq!(output_texts(&events), vec!["caught up"]);
+    assert!(state.runs.is_empty());
+
+    daemon.abort();
+    state.shutdown();
+}
+
+#[tokio::test]
+async fn a_run_on_a_silent_daemon_is_reaped_by_the_stale_heartbeat_sweep() {
+    let dir = tempfile::tempdir().unwrap();
+    let provider = write_stub(dir.path(), "never.sh", "sleep 30\n");
+
+    let (url, state) = spawn_server(AppConfig {
+        provider_spec: provider.clone(),
+        run_timeout: Duration::from_secs(60),
+        host_stale_after: Duration::from_millis(300),
+        reconcile_interval: Duration::from_millis(25),
+        ..AppConfig::default()
+    })
+    .await;
+
+    // Enroll, but never start `run`: the socket stays open while no heartbeat
+    // is ever sent. The host is "connected" and then goes silent.
+    let mut config = DaemonConfig::new(&url, "silent");
+    config.provider = Some(provider);
+    let mut daemon = Daemon::connect(config).await.unwrap();
+    let host_id = daemon.enroll().await.unwrap();
+
+    let thread_id = start_turn(&state, "nobody is listening");
+    assert_eq!(
+        wait_for_terminal(&state, &thread_id).await,
+        ThreadStatus::Error
+    );
+
+    let events = thread_events(&state, &thread_id);
+    assert_eq!(terminal_outcome(&events), Some("host_stale".into()));
+    assert_eq!(
+        state.registry.host(&host_id).unwrap().status,
+        HostStatus::Disconnected
+    );
+    assert!(state.runs.is_empty());
+
+    // Keep the socket (and so the daemon) alive until the assertions are done.
+    let _ = daemon.host_id();
+    state.shutdown();
+}
+
+#[test]
+fn the_protocol_version_is_pinned() {
+    // A wire-format change has to be deliberate; this fails loudly otherwise.
+    assert_eq!(PROTOCOL_VERSION, 1);
+}
+
+/// The real provider, not a stub.
+///
+/// Ignored by default because it runs the actual `pi` CLI. It asserts the
+/// terminal guarantee and that real Pi frames reached the bridge; it does not
+/// require a model to answer, so it passes on a machine with no credentials
+/// (the run simply ends `timed_out`). Run it explicitly with
+/// `cargo test -p loom-daemon --test provider_e2e -- --ignored`.
+#[tokio::test]
+#[ignore = "runs the real `pi` CLI"]
+async fn the_real_pi_process_streams_through_the_bridge() {
+    let (url, state) = spawn_server(AppConfig::default()).await;
+    // 20s is long enough to see Pi's startup frames and short enough that a
+    // model-less environment still ends the turn.
+    let (host_id, daemon) = enroll_daemon(&url, None, None, Duration::from_secs(20)).await;
+    assert!(
+        eventually(|| state
+            .registry
+            .host(&host_id)
+            .map(|host| host.status == HostStatus::Connected)
+            .unwrap_or(false))
+        .await
+    );
+
+    let thread_id = start_turn(&state, "Reply with exactly the word: pong");
+    let status = wait_for_terminal_for(&state, &thread_id, Duration::from_secs(60)).await;
+    assert!(
+        matches!(status, ThreadStatus::Idle | ThreadStatus::Error),
+        "a run must end in idle or error, got {status}"
+    );
+
+    let events = thread_events(&state, &thread_id);
+    let started = run_events(&events)
+        .into_iter()
+        .any(|event| event["event"]["type"] == "started");
+    assert!(started, "the real Pi process should report `started`");
+    assert!(
+        terminal_outcome(&events).is_some(),
+        "every run must end with exactly one terminal event"
+    );
+
+    daemon.abort();
+    state.shutdown();
+}

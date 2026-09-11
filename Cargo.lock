@@ -403,10 +403,12 @@ dependencies = [
  "axum",
  "futures-util",
  "loom-domain",
+ "loom-provider-protocol",
  "loom-relay",
  "loom-server",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
  "tokio-tungstenite 0.30.0",
 ]
@@ -415,6 +417,15 @@ dependencies = [
 name = "loom-domain"
 version = "0.1.0"
 dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "loom-provider-protocol"
+version = "0.1.0"
+dependencies = [
+ "loom-domain",
  "serde",
  "serde_json",
 ]
@@ -446,6 +457,7 @@ dependencies = [
  "futures-util",
  "http-body-util",
  "loom-domain",
+ "loom-provider-protocol",
  "loom-relay",
  "loom-relay-hub",
  "serde",

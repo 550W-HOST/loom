@@ -34,8 +34,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::environment::{Environment, EnvironmentStatus};
 use crate::host::{Host, HostStatus};
-use crate::id::{EnvironmentId, HostId, ProjectId, ThreadId};
+use crate::id::{EnvironmentId, HostId, ProjectId, RunId, ThreadId};
 use crate::project::Project;
+use crate::run::RunEvent;
 use crate::scope::DomainScope;
 use crate::thread::{Thread, ThreadMessage, ThreadStatus};
 
@@ -80,6 +81,23 @@ pub enum DomainEvent {
         thread_id: ThreadId,
         /// The message.
         message: ThreadMessage,
+    },
+    /// Something happened during an in-flight provider run.
+    ///
+    /// The stream is ordered and always ends in [`RunEvent::Finished`]. See
+    /// [`crate::run`] for why that terminal invariant matters: it is what
+    /// keeps a thread from being stuck in `working` after a provider crash.
+    ThreadRunEvent {
+        /// The thread the run belongs to.
+        thread_id: ThreadId,
+        /// Its project, so a consumer need not look it up.
+        project_id: ProjectId,
+        /// The run's identity.
+        run_id: RunId,
+        /// Wall-clock milliseconds of the event.
+        at_ms: u64,
+        /// The run fact.
+        event: RunEvent,
     },
     /// A host registered.
     HostRegistered {
@@ -128,6 +146,7 @@ impl DomainEvent {
             DomainEvent::ThreadCreated { .. } => "thread_created",
             DomainEvent::ThreadStatusChanged { .. } => "thread_status_changed",
             DomainEvent::ThreadMessageAdded { .. } => "thread_message_added",
+            DomainEvent::ThreadRunEvent { .. } => "thread_run_event",
             DomainEvent::HostRegistered { .. } => "host_registered",
             DomainEvent::HostStatusChanged { .. } => "host_status_changed",
             DomainEvent::EnvironmentCreated { .. } => "environment_created",
@@ -149,7 +168,8 @@ impl DomainEvent {
                 DomainScope::Project(thread.project_id.clone())
             }
             DomainEvent::ThreadStatusChanged { thread_id, .. }
-            | DomainEvent::ThreadMessageAdded { thread_id, .. } => {
+            | DomainEvent::ThreadMessageAdded { thread_id, .. }
+            | DomainEvent::ThreadRunEvent { thread_id, .. } => {
                 DomainScope::Thread(thread_id.clone())
             }
             DomainEvent::HostRegistered { host } => DomainScope::Host(host.id.clone()),
@@ -300,6 +320,28 @@ mod tests {
         assert_eq!(
             env_created.scope(),
             DomainScope::Project(project.id.clone())
+        );
+    }
+
+    #[test]
+    fn a_run_event_is_published_to_its_thread_scope() {
+        let thread_id = ThreadId::mint();
+        let project_id = ProjectId::mint();
+        let event = DomainEvent::ThreadRunEvent {
+            thread_id: thread_id.clone(),
+            project_id,
+            run_id: crate::id::RunId::mint(),
+            at_ms: 7,
+            event: crate::run::RunEvent::Finished {
+                outcome: crate::run::RunOutcome::Completed,
+                error: None,
+            },
+        };
+        assert_eq!(event.kind(), "thread_run_event");
+        assert_eq!(event.scope(), DomainScope::Thread(thread_id));
+        assert_eq!(
+            serde_json::to_value(&event).unwrap()["type"],
+            "thread_run_event"
         );
     }
 

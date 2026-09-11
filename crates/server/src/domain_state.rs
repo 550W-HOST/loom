@@ -17,7 +17,7 @@ use std::sync::{Mutex, MutexGuard};
 
 use loom_domain::{
     DomainError, DomainEvent, Host, HostId, MessageRole, NewThread, Project, ProjectId,
-    ProjectKind, Thread, ThreadId,
+    ProjectKind, RunId, Thread, ThreadId, ThreadTrigger,
 };
 
 /// A command failed either because the target does not exist or because the
@@ -224,6 +224,59 @@ impl DomainRegistry {
     /// Looks up a thread.
     pub fn thread(&self, thread_id: &ThreadId) -> Option<Thread> {
         self.lock().threads.get(thread_id).cloned()
+    }
+
+    /// Applies a lifecycle trigger to a stored thread.
+    ///
+    /// Returns the status-change event when the transition happened, `None`
+    /// when the thread is unknown or already in a status the trigger does not
+    /// apply to. The `None` case is what makes reconciliation idempotent: a
+    /// run reaped twice cannot flip a thread twice.
+    pub fn transition_thread(
+        &self,
+        thread_id: &ThreadId,
+        trigger: ThreadTrigger,
+        now_ms: u64,
+    ) -> Result<Option<DomainEvent>, CommandError> {
+        let mut inner = self.lock();
+        let thread = inner
+            .threads
+            .get_mut(thread_id)
+            .ok_or_else(|| CommandError::NotFound(format!("thread {thread_id} is not known")))?;
+        match thread.transition(trigger, now_ms) {
+            Ok(event) => Ok(Some(event)),
+            // The thread is not in a status the trigger applies to: not an
+            // error for a reconciler that races a report.
+            Err(DomainError::IllegalThreadTransition { .. }) => Ok(None),
+            Err(error) => Err(CommandError::Domain(error)),
+        }
+    }
+
+    /// Records the run now advancing a thread.
+    pub fn set_thread_run(
+        &self,
+        thread_id: &ThreadId,
+        run_id: &RunId,
+        now_ms: u64,
+    ) -> Result<(), CommandError> {
+        let mut inner = self.lock();
+        let thread = inner
+            .threads
+            .get_mut(thread_id)
+            .ok_or_else(|| CommandError::NotFound(format!("thread {thread_id} is not known")))?;
+        thread.begin_run(run_id.clone(), now_ms);
+        Ok(())
+    }
+
+    /// Clears a thread's recorded run once it has ended.
+    pub fn clear_thread_run(&self, thread_id: &ThreadId, now_ms: u64) -> Result<(), CommandError> {
+        let mut inner = self.lock();
+        let thread = inner
+            .threads
+            .get_mut(thread_id)
+            .ok_or_else(|| CommandError::NotFound(format!("thread {thread_id} is not known")))?;
+        thread.clear_run(now_ms);
+        Ok(())
     }
 
     /// Looks up a host.

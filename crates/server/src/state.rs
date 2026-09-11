@@ -7,16 +7,19 @@
 //! that keeps routing changes out of handlers.
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use loom_domain::{DomainScope, HostId};
+use loom_provider_protocol::ProviderSpec;
 use loom_relay::retention::Retention;
 use loom_relay::{now_ms, Relay, Result as RelayResult};
 
 use crate::domain_state::DomainRegistry;
 use crate::hub_actor::HubHandle;
 use crate::pump::{Pump, PumpConfig};
+use crate::runs::RunRegistry;
 
 /// How the server is wired.
 #[derive(Clone, Debug)]
@@ -54,6 +57,24 @@ pub struct AppConfig {
     /// a single-machine deployment to prefer that machine while its daemon is
     /// attached.
     pub local_host_id: Option<HostId>,
+    /// How long a dispatched run may stay in flight before the server reaps it.
+    ///
+    /// This is the backstop for a daemon that is connected but wedged. The
+    /// execution plane enforces its own provider timeout; this one exists so a
+    /// silent daemon cannot leave a thread `working` forever.
+    pub run_timeout: Duration,
+    /// How long a host may go without a heartbeat before it is considered gone
+    /// and its in-flight runs are failed.
+    ///
+    /// Must comfortably exceed the daemon's heartbeat interval; the default is
+    /// four times the daemon default.
+    pub host_stale_after: Duration,
+    /// How often the server runs the timeout/staleness sweep. `Duration::ZERO`
+    /// disables the background sweep, which is what unit tests want when they
+    /// drive reconciliation explicitly.
+    pub reconcile_interval: Duration,
+    /// The provider the control plane asks execution machines to run.
+    pub provider_spec: ProviderSpec,
 }
 
 impl Default for AppConfig {
@@ -67,6 +88,10 @@ impl Default for AppConfig {
             hub_queue_capacity: 1_024,
             pump: PumpConfig::default(),
             local_host_id: None,
+            run_timeout: Duration::from_secs(30 * 60),
+            host_stale_after: Duration::from_secs(60),
+            reconcile_interval: Duration::from_secs(5),
+            provider_spec: ProviderSpec::pi(),
         }
     }
 }
@@ -104,7 +129,13 @@ pub struct AppState {
     pub pump: Arc<Pump>,
     /// In-memory domain entities for the command API.
     pub registry: Arc<DomainRegistry>,
+    /// Provider runs that have been dispatched and not yet terminated.
+    pub runs: Arc<RunRegistry>,
     local_host_id: Option<HostId>,
+    run_timeout_ms: u64,
+    host_stale_after_ms: u64,
+    provider_spec: ProviderSpec,
+    reconcile_stop: Arc<AtomicBool>,
     started_at: Instant,
     started_at_ms: u64,
 }
@@ -144,15 +175,67 @@ impl AppState {
         let pump = Arc::new(Pump::spawn(relay.clone(), hub.clone(), config.pump));
         let started_at_ms = now_ms();
 
-        Ok(Self {
+        let state = Self {
             relay,
             hub,
             pump,
             registry: Arc::new(DomainRegistry::new(started_at_ms)),
+            runs: Arc::new(RunRegistry::new()),
             local_host_id: config.local_host_id,
+            run_timeout_ms: config.run_timeout.as_millis().min(u128::from(u64::MAX)) as u64,
+            host_stale_after_ms: config
+                .host_stale_after
+                .as_millis()
+                .min(u128::from(u64::MAX)) as u64,
+            provider_spec: config.provider_spec,
+            reconcile_stop: Arc::new(AtomicBool::new(false)),
             started_at: Instant::now(),
             started_at_ms,
-        })
+        };
+
+        // The reconciler is the guarantee that a run reaches a terminal state
+        // when the execution plane can no longer speak for it. Tests disable
+        // it and call `reconcile_runs` directly.
+        if !config.reconcile_interval.is_zero() {
+            state.spawn_reconciler(config.reconcile_interval);
+        }
+
+        Ok(state)
+    }
+
+    /// Starts the timeout/staleness sweep.
+    fn spawn_reconciler(&self, interval: Duration) {
+        let state = self.clone();
+        let stop = Arc::clone(&self.reconcile_stop);
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(interval);
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            // The first tick fires immediately; there is nothing to reconcile
+            // on a freshly built server.
+            ticker.tick().await;
+            loop {
+                ticker.tick().await;
+                if stop.load(Ordering::Relaxed) {
+                    return;
+                }
+                state.reconcile_runs(now_ms());
+            }
+        });
+    }
+
+    /// How long a run may stay in flight before it is reaped.
+    pub(crate) fn run_timeout_ms(&self) -> u64 {
+        self.run_timeout_ms
+    }
+
+    /// How long a host may go quiet before its runs are reaped.
+    pub(crate) fn host_stale_after_ms(&self) -> u64 {
+        self.host_stale_after_ms
+    }
+
+    /// The provider the control plane asks execution machines to run.
+    pub(crate) fn provider_spec(&self) -> &ProviderSpec {
+        &self.provider_spec
     }
 
     /// The operator-declared local host, if any.
@@ -212,8 +295,9 @@ impl AppState {
         self.started_at_ms
     }
 
-    /// Stops the readers. `&self` because the pump is shared via `Arc`.
+    /// Stops the readers and the reconciler. `&self` because both are shared.
     pub fn shutdown(&self) {
+        self.reconcile_stop.store(true, Ordering::Relaxed);
         self.pump.stop();
     }
 }

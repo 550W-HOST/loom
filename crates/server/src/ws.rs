@@ -37,9 +37,11 @@ use axum::extract::{State, WebSocketUpgrade};
 use axum::response::Response;
 use futures_util::{SinkExt, StreamExt};
 use loom_domain::HostId;
+use loom_relay::event_id::EventId;
 use loom_relay::scope::Scope;
 
 use crate::protocol::{ClientCommand, ServerMessage};
+use crate::runs::ReportOutcome;
 use crate::state::AppState;
 use crate::transport::ChannelTransport;
 
@@ -228,7 +230,81 @@ async fn handle_command(
             *enrolled_host = None;
             Some(ServerMessage::HostDisconnected { host_id })
         }
+        ClientCommand::RunReport { report } => {
+            let Some(host_id) = enrolled_host.clone() else {
+                return Some(ServerMessage::Error {
+                    message: "run reports require an enrolled host".into(),
+                });
+            };
+            if host_id != report.host_id {
+                return Some(ServerMessage::Error {
+                    message: "report names a different host than this connection enrolled as"
+                        .into(),
+                });
+            }
+            let run_id = report.run_id.clone();
+            let outcome = state.apply_run_report(&host_id, report);
+            let (accepted, detail) = match outcome {
+                ReportOutcome::Applied => (true, None),
+                ReportOutcome::Unknown => (
+                    false,
+                    Some("run is not in flight (already terminal)".into()),
+                ),
+                ReportOutcome::Mismatch(message) => (false, Some(message)),
+            };
+            Some(ServerMessage::RunReportAck {
+                run_id,
+                accepted,
+                detail,
+            })
+        }
+        ClientCommand::Replay {
+            scope,
+            since,
+            limit,
+        } => match replay_to_connection(connection_id, scope.clone(), since, limit, state).await {
+            Ok(count) => Some(ServerMessage::ReplayComplete { scope, count }),
+            Err(message) => Some(ServerMessage::Error { message }),
+        },
     }
+}
+
+/// Queues retained frames for `scope` to one connection, oldest first.
+///
+/// The stored payload already *is* the client-facing frame, so it is forwarded
+/// verbatim: a replayed frame and a live one are byte-identical, which is what
+/// lets a client merge them by event id alone.
+async fn replay_to_connection(
+    connection_id: u64,
+    scope: Scope,
+    since: Option<EventId>,
+    limit: Option<usize>,
+    state: &AppState,
+) -> Result<usize, String> {
+    let limit = limit.unwrap_or(500).clamp(1, 10_000);
+    // Read a wider window when a cursor is supplied so filtering by cursor
+    // cannot silently truncate the answer.
+    let read_limit = if since.is_some() {
+        limit.saturating_mul(4)
+    } else {
+        limit
+    };
+    let mut events = state
+        .relay
+        .replay_scope(&scope, read_limit)
+        .map_err(|error| error.to_string())?;
+    if let Some(since) = since {
+        events.retain(|envelope| envelope.event_id > since);
+    }
+    if events.len() > limit {
+        let start = events.len() - limit;
+        events = events.split_off(start);
+    }
+    let count = events.len();
+    for envelope in events {
+        let _ = state.hub.send_to(connection_id, envelope.payload).await;
+    }
+    Ok(count)
 }
 
 /// Publishes domain events in order and returns the last event id.

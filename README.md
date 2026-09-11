@@ -24,23 +24,27 @@ on it and it can be validated on its own.
 - [x] `loom-server` — HTTP + WebSocket surface; publish reaches subscribers through the log
 - [x] `loom-domain` — projects, threads, hosts and environments as pure types and invariants
 - [x] Server-only startup and an independently stoppable local daemon (`loom-daemon`)
+- [x] `loom-provider-protocol` — the server↔daemon provider contract, plus a Pi bridge in `loom-daemon`: dispatch through the relay, replayable run events, and a terminal-state guarantee
 - [ ] Persist domain entities (the domain registry is in-process and lost on restart)
 - [ ] Port the bb web UI unchanged, served by the Rust server
 - [ ] Check in the Node execution plane (`apps/host-daemon`) against the daemon contract
+  (`loom-daemon` is the reference implementation and exercises the whole contract today)
 - [x] Redis Streams relay backend for restart-transparent upgrades (`LOOM_REDIS_URL`)
 
 ## Layout
 
 ```
 crates/
-  domain/       loom-domain     projects, threads, hosts, environments, scopes, events
+  domain/       loom-domain     projects, threads, hosts, environments, scopes, events, runs
   relay/        loom-relay      scopes, event ids, retention, dedup, backends
   relay-hub/    loom-relay-hub  connections, rooms, delivery
-  server/       loom-server     HTTP, WebSocket, protocol, fixed readers
-  daemon/       loom-daemon     the execution plane as an independent process
+  server/       loom-server     HTTP, WebSocket, protocol, dispatch, fixed readers
+  provider-protocol/  loom-provider-protocol  the server↔daemon provider contract
+  daemon/       loom-daemon     the execution plane: enrollment, dispatch, Pi bridge
 docs/
   architecture.md
   process-model.md
+  provider-protocol.md
   redis-backend.md
 ```
 
@@ -101,14 +105,23 @@ curl -X POST localhost:38886/api/v1/threads \
   -H 'content-type: application/json' -d '{}'
 
 # Message a thread; it appends and, from idle, starts a run. Both events go
-# to thread:{id}, in order.
+# to thread:{id}, in order. With a daemon connected, a `RunDispatch` is also
+# published to `host:{id}`; the provider's output, tool calls and terminal
+# event come back as `thread_run_event`s on the thread scope.
 curl -X POST localhost:38886/api/v1/threads/thr_.../messages \
   -H 'content-type: application/json' -d '{"content":"hello"}'
+
+# In-flight runs, if you want to see the dispatch table.
+curl localhost:38886/api/v1/runs
 ```
 
 Connect a client on `ws://127.0.0.1:38886/ws`, send
 `{"type":"subscribe","scope":{"kind":"thread","id":"thr_1"}}`, and the
 published frame arrives.
+
+The provider contract — dispatch through the relay, the report path, the
+stdout guard and the guarantee that a run always ends — is specified in
+[`docs/provider-protocol.md`](docs/provider-protocol.md).
 
 ## The one idea worth reading first
 

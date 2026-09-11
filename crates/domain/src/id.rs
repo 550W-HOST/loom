@@ -80,6 +80,12 @@ entity_marker!(
     "project source",
     "Marker type for project source identifiers."
 );
+entity_marker!(
+    RunTag,
+    "run",
+    "run",
+    "Marker type for provider run identifiers."
+);
 entity_marker!(UserTag, "user", "user", "Marker type for user identifiers.");
 
 /// A project id, `proj_…`.
@@ -94,6 +100,13 @@ pub type EnvironmentId = Id<EnvironmentTag>;
 pub type MessageId = Id<MessageTag>;
 /// A project source id, `src_…`.
 pub type ProjectSourceId = Id<ProjectSourceTag>;
+/// A provider run id, `run_…`.
+///
+/// One dispatch of one thread to one provider process. It is minted by the
+/// control plane and is the idempotency key for dispatch delivery: a daemon
+/// that reconnects and receives the same run again recognises it and does not
+/// start a second provider.
+pub type RunId = Id<RunTag>;
 /// A user id, `user_…`. Reserved: there is no user entity yet, only the scope
 /// it names.
 pub type UserId = Id<UserTag>;

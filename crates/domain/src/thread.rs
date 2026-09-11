@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::DomainError;
 use crate::event::DomainEvent;
-use crate::id::{EnvironmentId, MessageId, ProjectId, ThreadId};
+use crate::id::{EnvironmentId, MessageId, ProjectId, RunId, ThreadId};
 
 /// Where a thread is in its life.
 ///
@@ -71,6 +71,7 @@ impl ThreadStatus {
             (Working, RunCompleted) => Idle,
             (Working, AwaitInput) => Waiting,
             (Working, RunFailed) => Error,
+            (Working, RunCancelled) => Idle,
             (Working, Archive) => Archived,
 
             (Waiting, InputReceived) => Working,
@@ -222,6 +223,14 @@ pub struct Thread {
     pub updated_at_ms: u64,
     /// When the thread was archived, mirroring `status == Archived`.
     pub archived_at_ms: Option<u64>,
+    /// The provider run currently advancing this thread, when there is one.
+    ///
+    /// Set when the control plane dispatches a run and cleared when that run
+    /// reaches a terminal event. A client can therefore render "which run am I
+    /// watching" without a second lookup, and reconciliation can tell an
+    /// in-flight thread from one whose run was reaped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_run_id: Option<RunId>,
 }
 
 impl Thread {
@@ -240,6 +249,7 @@ impl Thread {
             created_at_ms: now_ms,
             updated_at_ms: now_ms,
             archived_at_ms: None,
+            active_run_id: None,
         };
         let event = DomainEvent::ThreadCreated {
             thread: thread.clone(),
@@ -275,6 +285,18 @@ impl Thread {
             to,
             at_ms: now_ms,
         })
+    }
+
+    /// Records the run now advancing this thread.
+    pub fn begin_run(&mut self, run_id: RunId, now_ms: u64) {
+        self.active_run_id = Some(run_id);
+        self.updated_at_ms = now_ms;
+    }
+
+    /// Clears the recorded run once it has ended.
+    pub fn clear_run(&mut self, now_ms: u64) {
+        self.active_run_id = None;
+        self.updated_at_ms = now_ms;
     }
 
     /// Appends a message and returns the events the append produces.

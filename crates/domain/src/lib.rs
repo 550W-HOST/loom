@@ -60,6 +60,7 @@ pub mod event;
 pub mod host;
 pub mod id;
 pub mod project;
+pub mod run;
 pub mod scope;
 pub mod thread;
 
@@ -69,8 +70,10 @@ pub use event::DomainEvent;
 pub use host::{select_primary_host, Host, HostKind, HostStatus};
 pub use id::{
     Entity, EnvironmentId, EnvironmentTag, HostId, HostTag, Id, MessageId, MessageTag, ProjectId,
-    ProjectSourceId, ProjectSourceTag, ProjectTag, ThreadId, ThreadTag, UserId, UserTag,
+    ProjectSourceId, ProjectSourceTag, ProjectTag, RunId, RunTag, ThreadId, ThreadTag, UserId,
+    UserTag,
 };
 pub use project::{Project, ProjectKind, ProjectSource};
+pub use run::{NoticeLevel, OutputStream, RunEvent, RunOutcome, TurnPhase};
 pub use scope::DomainScope;
 pub use thread::{MessageRole, NewThread, Thread, ThreadMessage, ThreadStatus, ThreadTrigger};

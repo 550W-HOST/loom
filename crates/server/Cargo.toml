@@ -8,6 +8,7 @@ license.workspace = true
 
 [dependencies]
 loom-domain.workspace = true
+loom-provider-protocol.workspace = true
 loom-relay.workspace = true
 loom-relay-hub.workspace = true
 axum = { workspace = true }

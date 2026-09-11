@@ -26,6 +26,7 @@ pub mod http;
 pub mod hub_actor;
 pub mod protocol;
 pub mod pump;
+pub mod runs;
 pub mod state;
 pub mod transport;
 pub mod ws;
@@ -34,6 +35,7 @@ pub use domain_state::{CommandError, DomainRegistry};
 pub use hub_actor::{HubCommand, HubHandle};
 pub use protocol::{ClientCommand, ServerMessage};
 pub use pump::{Pump, PumpConfig};
+pub use runs::{DispatchOutcome, ReconcileSummary, ReportOutcome, RunRecord, RunRegistry};
 pub use state::{relay_scope, AppState, BuildStateError};
 pub use transport::ChannelTransport;
 

@@ -7,18 +7,21 @@
 //! ```bash
 //! loom-daemon --server-url http://127.0.0.1:38886 --name laptop
 //! loom-daemon --server-url https://loom.example.com --name builder-1 \
-//!             --state ./builder-1.host-id
+//!             --state ./builder-1.host-id --session-dir /var/lib/loom/sessions
 //! ```
 //!
 //! Everything is also settable through the environment (`LOOM_SERVER_URL`,
-//! `LOOM_HOST_NAME`, `LOOM_HOST_ID`, `LOOM_HEARTBEAT_MS`, `LOOM_DAEMON_STATE`)
-//! so a systemd unit needs no command line.
+//! `LOOM_HOST_NAME`, `LOOM_HOST_ID`, `LOOM_HEARTBEAT_MS`, `LOOM_DAEMON_STATE`,
+//! `LOOM_PROVIDER_CMD`, `LOOM_PROVIDER_ARGS`, `LOOM_SESSION_DIR`,
+//! `LOOM_RUN_TIMEOUT_MS`) so a systemd unit needs no command line.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use loom_daemon::{Daemon, DaemonConfig};
 use loom_domain::HostId;
+use loom_provider_protocol::ProviderSpec;
+use loom_relay::EventId;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -38,6 +41,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut config = DaemonConfig::new(&options.server_url, &options.name);
     config.host_id = host_id;
     config.heartbeat_interval = options.heartbeat_interval;
+    config.run_timeout = options.run_timeout;
+    config.session_dir = options.session_dir.clone();
+    config.resume_cursor = options.read_persisted_cursor()?;
+    config.provider = options.provider.clone();
 
     let mut daemon = Daemon::connect(config).await?;
     let enrolled = daemon.enroll().await?;
@@ -49,12 +56,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     tokio::select! {
         result = daemon.run() => {
+            let cursor = daemon.cursor().cloned();
             result?;
             eprintln!("loom-daemon \"{}\" lost its server connection", options.name);
+            options.persist_cursor(cursor.as_ref())?;
         }
         _ = tokio::signal::ctrl_c() => {
+            let cursor = daemon.cursor().cloned();
             eprintln!("loom-daemon \"{}\" stopping", options.name);
             daemon.disconnect().await?;
+            options.persist_cursor(cursor.as_ref())?;
         }
     }
     Ok(())
@@ -66,6 +77,9 @@ struct Options {
     name: String,
     host_id: Option<HostId>,
     heartbeat_interval: Duration,
+    run_timeout: Duration,
+    provider: Option<ProviderSpec>,
+    session_dir: Option<PathBuf>,
     state: Option<PathBuf>,
 }
 
@@ -76,7 +90,11 @@ impl Options {
         let mut name = std::env::var("LOOM_HOST_NAME").ok();
         let mut host_id = std::env::var("LOOM_HOST_ID").ok();
         let mut heartbeat_ms = std::env::var("LOOM_HEARTBEAT_MS").ok();
+        let mut run_timeout_ms = std::env::var("LOOM_RUN_TIMEOUT_MS").ok();
         let mut state = std::env::var("LOOM_DAEMON_STATE").ok();
+        let mut provider_cmd = std::env::var("LOOM_PROVIDER_CMD").ok();
+        let mut provider_args = std::env::var("LOOM_PROVIDER_ARGS").ok();
+        let mut session_dir = std::env::var("LOOM_SESSION_DIR").ok();
 
         let mut args = args.peekable();
         while let Some(arg) = args.next() {
@@ -86,7 +104,11 @@ impl Options {
                 "--name" => name = args.next(),
                 "--host-id" => host_id = args.next(),
                 "--heartbeat-ms" => heartbeat_ms = args.next(),
+                "--run-timeout-ms" => run_timeout_ms = args.next(),
                 "--state" => state = args.next(),
+                "--provider-cmd" => provider_cmd = args.next(),
+                "--provider-args" => provider_args = args.next(),
+                "--session-dir" => session_dir = args.next(),
                 other => return Err(format!("unrecognised argument: {other}")),
             }
         }
@@ -106,12 +128,35 @@ impl Options {
                     .map_err(|error| format!("--heartbeat-ms: {error}"))?,
             ),
         };
+        let run_timeout = match run_timeout_ms {
+            None => loom_daemon::DEFAULT_RUN_TIMEOUT,
+            Some(raw) => Duration::from_millis(
+                raw.parse::<u64>()
+                    .map_err(|error| format!("--run-timeout-ms: {error}"))?,
+            ),
+        };
+        // Only build an override when the operator actually chose one; an
+        // unset command means "run whatever the control plane dispatched".
+        let provider = provider_cmd
+            .filter(|value| !value.trim().is_empty())
+            .map(|command| {
+                let args = provider_args
+                    .as_deref()
+                    .unwrap_or("")
+                    .split_whitespace()
+                    .map(str::to_owned)
+                    .collect();
+                ProviderSpec::custom(command, args)
+            });
 
         Ok(Some(Self {
             server_url,
             name,
             host_id,
             heartbeat_interval,
+            run_timeout,
+            provider,
+            session_dir: session_dir.map(PathBuf::from),
             state: state.map(PathBuf::from),
         }))
     }
@@ -142,6 +187,37 @@ impl Options {
         std::fs::write(path, format!("{host_id}\n"))
             .map_err(|error| format!("{}: {error}", path.display()))
     }
+
+    /// Reads the host-scope resume cursor written by a previous run.
+    fn read_persisted_cursor(&self) -> Result<Option<EventId>, String> {
+        let Some(path) = self.cursor_path() else {
+            return Ok(None);
+        };
+        let Ok(raw) = std::fs::read_to_string(&path) else {
+            return Ok(None);
+        };
+        let raw = raw.trim();
+        if raw.is_empty() {
+            return Ok(None);
+        }
+        raw.parse::<EventId>()
+            .map(Some)
+            .map_err(|error| format!("{}: {error}", path.display()))
+    }
+
+    /// Writes the resume cursor so a restart replays only what it missed.
+    fn persist_cursor(&self, cursor: Option<&EventId>) -> Result<(), String> {
+        let (Some(path), Some(cursor)) = (self.cursor_path(), cursor) else {
+            return Ok(());
+        };
+        std::fs::write(path, format!("{cursor}\n")).map_err(|error| error.to_string())
+    }
+
+    fn cursor_path(&self) -> Option<PathBuf> {
+        self.state
+            .as_deref()
+            .map(|path| Path::new(path).with_extension("cursor"))
+    }
 }
 
 fn print_help() {
@@ -150,20 +226,32 @@ fn print_help() {
 
 USAGE:
     loom-daemon --server-url <URL> [--name <NAME>] [--host-id <HOST_ID>]
-                [--heartbeat-ms <MS>] [--state <PATH>]
+                [--heartbeat-ms <MS>] [--run-timeout-ms <MS>]
+                [--provider-cmd <CMD>] [--provider-args <ARGS>]
+                [--session-dir <PATH>] [--state <PATH>]
 
 FLAGS:
-    --server-url <URL>     Server to dial out to. Required.
-                           Env: LOOM_SERVER_URL
-    --name <NAME>          Display name for this machine. Default: loom-daemon.
-                           Env: LOOM_HOST_NAME
-    --host-id <HOST_ID>    Reuse an enrolled identity across restarts.
-                           Env: LOOM_HOST_ID
-    --heartbeat-ms <MS>    Liveness interval. Default: 15000.
-                           Env: LOOM_HEARTBEAT_MS
-    --state <PATH>         File to persist the enrolled host id in. Optional.
-                           Env: LOOM_DAEMON_STATE
-    -h, --help             Print this help.
+    --server-url <URL>       Server to dial out to. Required.
+                             Env: LOOM_SERVER_URL
+    --name <NAME>            Display name for this machine. Default: loom-daemon.
+                             Env: LOOM_HOST_NAME
+    --host-id <HOST_ID>      Reuse an enrolled identity across restarts.
+                             Env: LOOM_HOST_ID
+    --heartbeat-ms <MS>      Liveness interval. Default: 15000.
+                             Env: LOOM_HEARTBEAT_MS
+    --run-timeout-ms <MS>    Kill a provider that has not settled by then.
+                             Default: 1800000. Env: LOOM_RUN_TIMEOUT_MS
+    --provider-cmd <CMD>     Override the provider executable. Default: the
+                             provider named in the dispatch (pi).
+                             Env: LOOM_PROVIDER_CMD
+    --provider-args <ARGS>   Space-separated arguments for --provider-cmd.
+                             Env: LOOM_PROVIDER_ARGS
+    --session-dir <PATH>     Base directory for per-thread provider sessions.
+                             Env: LOOM_SESSION_DIR
+    --state <PATH>           File to persist the enrolled host id in. A sibling
+                             `.cursor` file persists the replay cursor.
+                             Env: LOOM_DAEMON_STATE
+    -h, --help               Print this help.
 
 The daemon only makes outbound connections; it needs no local server and is
 stopped independently of one."

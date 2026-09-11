@@ -19,7 +19,8 @@
 //! resume cursor.
 
 use bytes::Bytes;
-use loom_domain::Host;
+use loom_domain::{Host, RunId};
+use loom_provider_protocol::ProviderReport;
 use loom_relay::envelope::Envelope;
 use loom_relay::event_id::EventId;
 use loom_relay::scope::Scope;
@@ -68,6 +69,34 @@ pub enum ClientCommand {
     HostDisconnect {
         /// The host the daemon was enrolled as.
         host_id: loom_domain::HostId,
+    },
+    /// A daemon reports what a provider did during an in-flight run.
+    ///
+    /// This is the execution plane's upload path: the server turns the report
+    /// into a `thread_run_event` and publishes it to the thread scope through
+    /// the relay, so it is replayable like any other event. The socket only
+    /// carries the observation; it never carries the resulting fan-out.
+    RunReport {
+        /// The run observation.
+        report: ProviderReport,
+    },
+    /// Ask the server to replay retained frames for a scope to this
+    /// connection.
+    ///
+    /// **Subscribe first, then replay.** Live frames that arrive in between
+    /// are queued on this connection and are also present in the replay window,
+    /// so the caller drops the duplicate by `event_id`. This is what makes a
+    /// reconnecting daemon recover a dispatch it missed while disconnected.
+    Replay {
+        /// The scope to read back.
+        scope: Scope,
+        /// Return only frames strictly newer than this event id. Omit for the
+        /// whole retained window.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        since: Option<EventId>,
+        /// Maximum frames to return, most recent kept. The server caps it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        limit: Option<usize>,
     },
 }
 
@@ -131,6 +160,25 @@ pub enum ServerMessage {
     HostDisconnected {
         /// The host that was marked detached.
         host_id: loom_domain::HostId,
+    },
+    /// Acknowledges [`ClientCommand::RunReport`].
+    RunReportAck {
+        /// The run the report was about.
+        run_id: RunId,
+        /// Whether the report was applied. `false` means the run was already
+        /// terminal or the report contradicted the dispatcher's record; both
+        /// are normal under redelivery.
+        accepted: bool,
+        /// Why it was not applied, when it was not.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        detail: Option<String>,
+    },
+    /// Acknowledges [`ClientCommand::Replay`] after the backlog was queued.
+    ReplayComplete {
+        /// The scope that was replayed.
+        scope: Scope,
+        /// How many frames were queued.
+        count: usize,
     },
 }
 

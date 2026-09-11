@@ -28,6 +28,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/replay", get(replay))
         .route("/api/v1/threads", post(create_thread))
         .route("/api/v1/threads/{id}/messages", post(post_thread_message))
+        .route("/api/v1/runs", get(list_runs))
         .route("/api/v1/hosts", get(list_hosts).post(register_host))
         .route("/api/v1/hosts/primary", get(primary_host))
         .route("/api/v1/hosts/{id}/heartbeat", post(host_heartbeat))
@@ -214,22 +215,53 @@ async fn post_thread_message(
         Ok(thread_id) => thread_id,
         Err(error) => return error_response(StatusCode::BAD_REQUEST, error.to_string()),
     };
+    let content = request.content;
     match state.registry.post_message(
         &thread_id,
         request.role,
-        request.content,
+        content.clone(),
         loom_relay::now_ms(),
     ) {
         Ok(events) => match publish_all(&state, &events) {
-            Ok(published) => Json(PostMessageResponse {
-                thread_id,
-                events: published,
-            })
-            .into_response(),
+            Ok(published) => {
+                // A user message into an idle thread moves it to `working`.
+                // That is the trigger for dispatch: find a machine and publish a
+                // run to its scope through the relay. If no machine exists the
+                // dispatcher fails the thread on the spot, so the status change
+                // is never left dangling.
+                if published
+                    .iter()
+                    .any(|event| event.event_type == "thread_status_changed")
+                {
+                    if let Some(thread) = state.registry.thread(&thread_id) {
+                        state.dispatch_thread(&thread, &content);
+                    }
+                }
+                Json(PostMessageResponse {
+                    thread_id,
+                    events: published,
+                })
+                .into_response()
+            }
             Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
         },
         Err(error) => command_error_response(error),
     }
+}
+
+/// Provider runs currently dispatched and not yet terminal.
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+pub struct RunListResponse {
+    /// In-flight runs, in run-id order.
+    pub runs: Vec<crate::runs::RunRecord>,
+}
+
+/// Lists in-flight runs. Useful for operators and for tests asserting that a
+/// run is reaped rather than left hanging.
+async fn list_runs(State(state): State<AppState>) -> Json<RunListResponse> {
+    Json(RunListResponse {
+        runs: state.runs.all(),
+    })
 }
 
 /// Body of a host-registration request.
@@ -679,6 +711,13 @@ mod tests {
     #[tokio::test]
     async fn a_user_message_publishes_message_then_status_to_the_thread_scope() {
         let state = test_state();
+        // A connected host so the message actually dispatches a run; with no
+        // host the dispatcher would fail the thread on the spot and append
+        // terminal events this test does not want.
+        state
+            .registry
+            .enroll_host(None, "laptop".into(), loom_relay::now_ms())
+            .unwrap();
         let app = router(state.clone());
         let created = body_json(post(&app, "/api/v1/threads", serde_json::json!({})).await).await;
         let thread_id = created["thread"]["id"].as_str().unwrap().to_string();

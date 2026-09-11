@@ -2,51 +2,78 @@
 //!
 //! This is the **execution plane as an independent process**. It connects
 //! *outbound* to a server URL, enrolls as a host, keeps that host alive with
-//! heartbeats, and follows its own `host:{id}` room. It never needs the server
-//! to share its machine, process tree, or cgroup, and the server never starts
-//! or supervises it.
+//! heartbeats, follows its own `host:{id}` room, and runs the provider CLIs
+//! dispatched to it. It never needs the server to share its machine, process
+//! tree, or cgroup, and the server never starts or supervises it.
 //!
-//! Why this crate exists at all, when the real provider execution will live in
-//! bb's Node host-daemon: the process boundary is the deliverable. The wire
-//! protocol implemented here (`enroll_host` / `host_heartbeat` /
-//! `host_disconnect`) is the contract the Node execution plane implements, and
-//! this daemon is the reference implementation plus the test harness that
-//! proves a server is usable with and without it.
+//! # Why it exists before the Node execution plane
 //!
-//! What the daemon deliberately does **not** do:
-//!
-//! * it does not import a server, a relay, or storage — a daemon that cannot
-//!   reach its server is still a well-behaved process;
-//! * it does not create or own the server process;
-//! * it does not assume the server is local.
+//! bb's `apps/host-daemon` is the real execution plane and it is ~45k lines,
+//! but the *boundary* it sits behind is small: enroll, heartbeat, receive
+//! dispatch through a scope, report events back. This crate implements exactly
+//! that boundary, with a provider bridge that speaks Pi's RPC protocol. When
+//! the Node daemon lands it replaces the bridge, not the contract.
 //!
 //! # Lifecycle
 //!
 //! ```text
 //!   connect ──▶ welcome ──▶ enroll_host ──▶ host_enrolled ──▶ subscribe host:{id}
+//!                                                   │              │
+//!                                                   │              ▼
+//!                                                   │        replay since cursor
+//!                                                   │        (missed dispatches)
+//!                        heartbeat ─────────────────┤
 //!                                                   │
-//!                        heartbeat ─────────────────┤ (every interval)
+//!                        dispatch ──▶ spawn provider ──▶ reports ──▶ server
 //!                                                   │
-//!                        host_disconnect / close ───┘ (on shutdown)
+//!                        host_disconnect / close ────┘ (on shutdown)
 //! ```
 //!
-//! Stopping the daemon marks the host `disconnected`; the server and every
-//! connected UI keep running. That is the whole point of the split.
+//! Two properties matter and both are enforced in code, not convention:
+//!
+//! * **Dispatch arrives through the relay.** The daemon subscribes to
+//!   `host:{id}` and parses [`RunDispatch`] out of relayed event payloads. It
+//!   replays from its cursor on reconnect, so a dispatch published while it was
+//!   disconnected is delivered late rather than lost.
+//! * **A run always ends.** Every provider process ends in exactly one
+//!   `finished` report — see [`provider`] — and the server separately reaps a
+//!   run whose deadline passes, so a daemon that dies mid-run cannot leave the
+//!   thread `working`.
+//!
+//! [`RunDispatch`]: loom_provider_protocol::RunDispatch
 
+pub mod provider;
+
+use std::collections::{HashSet, VecDeque};
+use std::path::PathBuf;
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
-use loom_domain::HostId;
-use loom_relay::Scope;
+use loom_domain::{HostId, RunId};
+use loom_provider_protocol::{ProviderSpec, RunDispatch};
+use loom_relay::dedup::SeenSet;
+use loom_relay::{EventId, Scope};
 use loom_server::protocol::{ClientCommand, ServerMessage};
 use tokio::net::TcpStream;
+use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
+
+use crate::provider::ProviderRun;
 
 type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
 /// How often a connected daemon reports liveness by default.
 pub const DEFAULT_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(15);
+
+/// How long a provider run may take before the daemon kills it, by default.
+pub const DEFAULT_RUN_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+
+/// How many dispatch ids the daemon remembers to suppress redelivery.
+pub const DISPATCH_DEDUP_CAPACITY: usize = 512;
+
+/// How many reports may be queued before a provider task waits.
+const REPORT_CHANNEL_CAPACITY: usize = 256;
 
 /// A daemon could not connect, could not speak the protocol, or was rejected.
 #[derive(Debug)]
@@ -92,16 +119,35 @@ pub struct DaemonConfig {
     pub host_id: Option<HostId>,
     /// How often to heartbeat once connected.
     pub heartbeat_interval: Duration,
+    /// Override the provider the control plane dispatches. `None` uses the
+    /// provider named in the dispatch, which is the normal case; an operator
+    /// sets this on a machine whose provider lives at a non-standard path.
+    pub provider: Option<ProviderSpec>,
+    /// How long one provider run may take before it is killed.
+    pub run_timeout: Duration,
+    /// Base directory for per-thread provider sessions, when supported.
+    pub session_dir: Option<PathBuf>,
+    /// The host-scope event id to resume from. `None` replays the retained
+    /// window and relies on dispatch dedup.
+    pub resume_cursor: Option<EventId>,
+    /// Maximum frames to request in the reconnect replay.
+    pub replay_limit: usize,
 }
 
 impl DaemonConfig {
-    /// A configuration with the default heartbeat interval.
+    /// A configuration with the default heartbeat interval and no provider
+    /// override.
     pub fn new(server_url: impl Into<String>, name: impl Into<String>) -> Self {
         Self {
             server_url: server_url.into(),
             name: name.into(),
             host_id: None,
             heartbeat_interval: DEFAULT_HEARTBEAT_INTERVAL,
+            provider: None,
+            run_timeout: DEFAULT_RUN_TIMEOUT,
+            session_dir: None,
+            resume_cursor: None,
+            replay_limit: 500,
         }
     }
 
@@ -128,6 +174,42 @@ impl DaemonConfig {
     }
 }
 
+/// A bounded set of run ids, for suppressing dispatch redelivery.
+#[derive(Debug)]
+struct RunSeen {
+    order: VecDeque<RunId>,
+    seen: HashSet<RunId>,
+    capacity: usize,
+}
+
+impl RunSeen {
+    fn new(capacity: usize) -> Self {
+        Self {
+            order: VecDeque::new(),
+            seen: HashSet::new(),
+            capacity: capacity.max(1),
+        }
+    }
+
+    /// Records a run id, returning `true` the first time it is seen.
+    fn insert(&mut self, run_id: &RunId) -> bool {
+        if !self.seen.insert(run_id.clone()) {
+            return false;
+        }
+        self.order.push_back(run_id.clone());
+        while self.order.len() > self.capacity {
+            if let Some(evicted) = self.order.pop_front() {
+                self.seen.remove(&evicted);
+            }
+        }
+        true
+    }
+
+    fn contains(&self, run_id: &RunId) -> bool {
+        self.seen.contains(run_id)
+    }
+}
+
 /// A connected daemon.
 ///
 /// Created by [`Daemon::connect`], identified by [`Daemon::enroll`], kept
@@ -136,6 +218,18 @@ pub struct Daemon {
     socket: Socket,
     config: DaemonConfig,
     host_id: Option<HostId>,
+    /// Highest host-scope event id applied, for reconnect replay.
+    cursor: Option<EventId>,
+    /// Event ids already applied on this connection, so replay and the live
+    /// path can overlap without double-processing.
+    seen_events: SeenSet,
+    /// Dispatch ids already started, so a redelivered dispatch is a no-op.
+    seen_runs: RunSeen,
+    /// Provider reports waiting to be forwarded to the server.
+    reports: mpsc::Receiver<loom_provider_protocol::ProviderReport>,
+    reports_tx: mpsc::Sender<loom_provider_protocol::ProviderReport>,
+    /// Runs with a provider task in flight, keyed by run id.
+    running: HashSet<RunId>,
 }
 
 impl Daemon {
@@ -144,20 +238,32 @@ impl Daemon {
         let url = config.websocket_url();
         let (mut socket, _) = connect_async(&url).await?;
         match next_message(&mut socket).await? {
-            ServerMessage::Welcome { .. } => Ok(Self {
-                socket,
-                config,
-                host_id: None,
-            }),
+            ServerMessage::Welcome { .. } => {
+                let (reports_tx, reports) = mpsc::channel(REPORT_CHANNEL_CAPACITY);
+                Ok(Self {
+                    socket,
+                    cursor: config.resume_cursor,
+                    config,
+                    host_id: None,
+                    seen_events: SeenSet::new(DISPATCH_DEDUP_CAPACITY),
+                    seen_runs: RunSeen::new(DISPATCH_DEDUP_CAPACITY),
+                    reports,
+                    reports_tx,
+                    running: HashSet::new(),
+                })
+            }
             other => Err(DaemonError::Protocol(format!(
                 "expected welcome, got {other:?}"
             ))),
         }
     }
 
-    /// Enrolls as a host and follows its `host:{id}` room.
+    /// Enrolls as a host, follows its `host:{id}` room, and replays anything it
+    /// missed while disconnected.
     ///
-    /// After this returns, published `host:{id}` frames arrive on the socket.
+    /// After this returns, the daemon is receiving dispatches: live ones from
+    /// the room and anything published while it was away, replayed from the
+    /// relay's retained window.
     pub async fn enroll(&mut self) -> Result<HostId, DaemonError> {
         self.send(&ClientCommand::EnrollHost {
             host_id: self.config.host_id.clone(),
@@ -165,21 +271,23 @@ impl Daemon {
         })
         .await?;
 
-        loop {
+        let host_id = loop {
             match next_message(&mut self.socket).await? {
-                ServerMessage::HostEnrolled { host, .. } => {
-                    self.host_id = Some(host.id.clone());
-                    // Follow our own room so dispatch traffic reaches us. This
-                    // is the same subscribe a UI uses; nothing host-specific.
-                    self.subscribe(Scope::Host(host.id.to_string())).await?;
-                    return Ok(host.id);
-                }
+                ServerMessage::HostEnrolled { host, .. } => break host.id,
                 ServerMessage::Error { message } => {
                     return Err(DaemonError::Protocol(message));
                 }
                 _ => continue,
             }
-        }
+        };
+        self.host_id = Some(host_id.clone());
+
+        // Follow the room first, then replay: a live dispatch that arrives in
+        // between is queued on the socket and also present in the replay
+        // window, and the dedup set drops the overlap.
+        self.subscribe(Scope::Host(host_id.to_string())).await?;
+        self.replay_host_scope(&host_id).await?;
+        Ok(host_id)
     }
 
     /// Sends one heartbeat. Frames are not awaited: heartbeats carry no reply
@@ -193,7 +301,8 @@ impl Daemon {
     }
 
     /// Runs until the socket closes: heartbeats on an interval, absorbs
-    /// incoming frames, and returns on a clean server-side close.
+    /// incoming frames, starts providers for dispatches, and forwards the
+    /// reports those providers produce.
     ///
     /// Cancelling the future leaves the socket open; call [`Daemon::disconnect`]
     /// to announce the departure before dropping it.
@@ -211,17 +320,15 @@ impl Daemon {
                 message = self.socket.next() => {
                     match message {
                         None => return Ok(()),
-                        Some(message) => match message? {
-                            Message::Text(text) => {
-                                absorb(serde_json::from_str(text.as_str())?)?;
-                            }
-                            Message::Binary(bytes) => {
-                                absorb(serde_json::from_slice(&bytes)?)?;
-                            }
-                            Message::Close(_) => return Ok(()),
-                            Message::Ping(_) | Message::Pong(_) | Message::Frame(_) => {}
-                        },
+                        Some(message) => self.on_socket_message(message?)?,
                     }
+                }
+                report = self.reports.recv() => {
+                    let Some(report) = report else { continue };
+                    if report.event.is_terminal() {
+                        self.running.remove(&report.run_id);
+                    }
+                    self.send(&ClientCommand::RunReport { report }).await?;
                 }
             }
         }
@@ -246,6 +353,102 @@ impl Daemon {
         &self.config.name
     }
 
+    /// The highest host-scope event id applied so far.
+    ///
+    /// A daemon that restarts can persist this and pass it back as
+    /// [`DaemonConfig::resume_cursor`], so it replays exactly what it missed
+    /// instead of the whole retained window.
+    pub fn cursor(&self) -> Option<&EventId> {
+        self.cursor.as_ref()
+    }
+
+    /// The run ids with a provider task in flight.
+    pub fn running_runs(&self) -> usize {
+        self.running.len()
+    }
+
+    /// Handles one frame from the server.
+    fn on_socket_message(&mut self, message: Message) -> Result<(), DaemonError> {
+        match message {
+            Message::Text(text) => self.on_server_frame(serde_json::from_str(text.as_str())?),
+            Message::Binary(bytes) => self.on_server_frame(serde_json::from_slice(&bytes)?),
+            Message::Close(_) => Err(DaemonError::Protocol("server closed the socket".into())),
+            Message::Ping(_) | Message::Pong(_) | Message::Frame(_) => Ok(()),
+        }
+    }
+
+    /// Handles one decoded server message, starting a provider for dispatches.
+    fn on_server_frame(&mut self, message: ServerMessage) -> Result<(), DaemonError> {
+        match message {
+            ServerMessage::Event {
+                event_id,
+                scope,
+                payload,
+                ..
+            } => self.observe_event(&event_id, &scope, &payload),
+            ServerMessage::Error { message } => Err(DaemonError::Protocol(message)),
+            // Welcome, acks and pongs are the transport shell's to ignore.
+            _ => Ok(()),
+        }
+    }
+
+    /// Records an event id and starts a run if the payload is a dispatch.
+    fn observe_event(
+        &mut self,
+        event_id: &str,
+        scope: &Scope,
+        payload: &str,
+    ) -> Result<(), DaemonError> {
+        let parsed = event_id.parse::<EventId>().ok();
+        if let Some(id) = &parsed {
+            // Advance the resume cursor monotonically; replay and live traffic
+            // can arrive in either order around a reconnect.
+            if self.cursor.as_ref().map_or(true, |cursor| id > cursor) {
+                self.cursor = Some(*id);
+            }
+            if !self.seen_events.insert(*id) {
+                return Ok(());
+            }
+        }
+
+        let Scope::Host(host_id) = scope else {
+            return Ok(());
+        };
+        if Some(host_id) != self.host_id.as_ref().map(ToString::to_string).as_ref() {
+            return Ok(());
+        }
+
+        // Only a dispatch parses as one; host domain events in the same room
+        // (registration, status changes) are not dispatches and are ignored.
+        let Ok(dispatch) = serde_json::from_str::<RunDispatch>(payload) else {
+            return Ok(());
+        };
+        self.start_dispatch(dispatch);
+        Ok(())
+    }
+
+    /// Starts a provider for a dispatch unless it was already started.
+    fn start_dispatch(&mut self, dispatch: RunDispatch) {
+        if self.seen_runs.contains(&dispatch.run_id) || self.running.contains(&dispatch.run_id) {
+            return;
+        }
+        self.seen_runs.insert(&dispatch.run_id);
+        self.running.insert(dispatch.run_id.clone());
+
+        let spec = self
+            .config
+            .provider
+            .clone()
+            .unwrap_or_else(|| dispatch.provider.clone());
+        let run = ProviderRun::from_dispatch(
+            &dispatch,
+            spec,
+            self.config.run_timeout,
+            self.config.session_dir.clone(),
+        );
+        provider::spawn(run, self.reports_tx.clone());
+    }
+
     /// Subscribes and waits for the acknowledgement.
     async fn subscribe(&mut self, scope: Scope) -> Result<(), DaemonError> {
         self.send(&ClientCommand::Subscribe { scope }).await?;
@@ -258,20 +461,34 @@ impl Daemon {
         }
     }
 
+    /// Requests the backlog for the host scope and applies every dispatch in
+    /// it.
+    async fn replay_host_scope(&mut self, host_id: &HostId) -> Result<(), DaemonError> {
+        self.send(&ClientCommand::Replay {
+            scope: Scope::Host(host_id.to_string()),
+            since: self.cursor,
+            limit: Some(self.config.replay_limit),
+        })
+        .await?;
+        loop {
+            match next_message(&mut self.socket).await? {
+                ServerMessage::Event {
+                    event_id,
+                    scope,
+                    payload,
+                    ..
+                } => self.observe_event(&event_id, &scope, &payload)?,
+                ServerMessage::ReplayComplete { .. } => return Ok(()),
+                ServerMessage::Error { message } => return Err(DaemonError::Protocol(message)),
+                _ => continue,
+            }
+        }
+    }
+
     async fn send(&mut self, command: &ClientCommand) -> Result<(), DaemonError> {
         let text = serde_json::to_string(command)?;
         self.socket.send(Message::Text(text.into())).await?;
         Ok(())
-    }
-}
-
-/// Rejects a server frame that indicates the daemon is out of sync.
-fn absorb(message: ServerMessage) -> Result<(), DaemonError> {
-    match message {
-        ServerMessage::Error { message } => Err(DaemonError::Protocol(message)),
-        // Events, acks and pongs are the execution plane's to interpret; the
-        // transport shell simply keeps the connection healthy.
-        _ => Ok(()),
     }
 }
 
@@ -309,5 +526,22 @@ mod tests {
 
         let config = DaemonConfig::new("host:1234", "laptop");
         assert_eq!(config.websocket_url(), "ws://host:1234/ws");
+    }
+
+    #[test]
+    fn the_run_dedup_set_is_bounded_and_idempotent() {
+        let mut seen = RunSeen::new(2);
+        let first = RunId::mint();
+        let second = RunId::mint();
+        let third = RunId::mint();
+
+        assert!(seen.insert(&first));
+        assert!(!seen.insert(&first), "a redelivery is not a new run");
+        assert!(seen.insert(&second));
+        assert!(seen.insert(&third));
+        // `first` was evicted, but a duplicate that old is not expected: the
+        // relay window is far larger than the dedup capacity.
+        assert!(!seen.contains(&first));
+        assert!(seen.contains(&third));
     }
 }
