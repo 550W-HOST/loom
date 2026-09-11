@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark light" />
+    <title>loom</title>
+    <link rel="stylesheet" href="/style.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <h1>loom</h1>
+      <span id="connection" class="status status--connecting">connecting…</span>
+    </header>
+
+    <main class="layout">
+      <aside class="threads">
+        <div class="threads__head">
+          <h2>Threads</h2>
+          <button id="new-thread" type="button" title="New thread">+</button>
+        </div>
+        <ul id="thread-list" class="thread-list"></ul>
+      </aside>
+
+      <section class="conversation">
+        <div id="thread-header" class="conversation__head">
+          <p class="empty">Pick a thread, or create one.</p>
+        </div>
+        <ol id="timeline" class="timeline"></ol>
+        <form id="composer" class="composer" hidden>
+          <textarea
+            id="message"
+            rows="2"
+            placeholder="Message this thread…"
+            required
+          ></textarea>
+          <button type="submit">Send</button>
+        </form>
+      </section>
+    </main>
+
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

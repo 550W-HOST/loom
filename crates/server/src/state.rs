@@ -20,6 +20,7 @@ use crate::domain_state::DomainRegistry;
 use crate::hub_actor::HubHandle;
 use crate::pump::{Pump, PumpConfig};
 use crate::runs::RunRegistry;
+use crate::ui::Ui;
 
 /// How the server is wired.
 #[derive(Clone, Debug)]
@@ -75,6 +76,12 @@ pub struct AppConfig {
     pub reconcile_interval: Duration,
     /// The provider the control plane asks execution machines to run.
     pub provider_spec: ProviderSpec,
+    /// A built UI bundle to serve. `None` serves the embedded reference
+    /// client, so the server always has a UI with zero configuration.
+    pub ui_dir: Option<PathBuf>,
+    /// A frontend dev server to reverse-proxy unmatched requests to. Mutually
+    /// exclusive with [`AppConfig::ui_dir`].
+    pub ui_proxy: Option<String>,
 }
 
 impl Default for AppConfig {
@@ -92,6 +99,8 @@ impl Default for AppConfig {
             host_stale_after: Duration::from_secs(60),
             reconcile_interval: Duration::from_secs(5),
             provider_spec: ProviderSpec::pi(),
+            ui_dir: None,
+            ui_proxy: None,
         }
     }
 }
@@ -131,6 +140,8 @@ pub struct AppState {
     pub registry: Arc<DomainRegistry>,
     /// Provider runs that have been dispatched and not yet terminated.
     pub runs: Arc<RunRegistry>,
+    /// The static UI source the fallback route serves.
+    pub ui: Ui,
     local_host_id: Option<HostId>,
     run_timeout_ms: u64,
     host_stale_after_ms: u64,
@@ -150,6 +161,9 @@ impl AppState {
                     .into(),
             });
         }
+
+        let ui = Ui::from_config(config.ui_dir.clone(), config.ui_proxy.clone())
+            .map_err(|message| BuildStateError { message })?;
 
         let backend: loom_relay::SharedBackend = match (&config.backend_redis, &config.backend_path)
         {
@@ -181,6 +195,7 @@ impl AppState {
             pump,
             registry: Arc::new(DomainRegistry::new(started_at_ms)),
             runs: Arc::new(RunRegistry::new()),
+            ui,
             local_host_id: config.local_host_id,
             run_timeout_ms: config.run_timeout.as_millis().min(u128::from(u64::MAX)) as u64,
             host_stale_after_ms: config

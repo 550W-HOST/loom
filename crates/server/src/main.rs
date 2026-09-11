@@ -35,12 +35,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Ok(raw) if !raw.trim().is_empty() => Some(raw.parse::<HostId>()?),
         _ => None,
     };
+    // The UI is served from the same origin as the API. By default that is the
+    // reference client compiled into this binary; LOOM_UI_DIR points at a built
+    // bundle (production) and LOOM_UI_PROXY at a dev server (development).
+    let ui_dir = std::env::var_os("LOOM_UI_DIR").map(std::path::PathBuf::from);
+    let ui_proxy = match std::env::var("LOOM_UI_PROXY") {
+        Ok(url) if !url.trim().is_empty() => Some(url),
+        _ => None,
+    };
 
     let config = AppConfig {
         node_id: node_id.clone(),
         backend_path,
         backend_redis,
         local_host_id: local_host_id.clone(),
+        ui_dir,
+        ui_proxy,
         ..AppConfig::default()
     };
     let state = AppState::build(config)?;
@@ -55,6 +65,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "loom-server (server-only) listening on http://{bind} (node {node_id}, no local daemon)"
         ),
     }
+    eprintln!("UI served from {} at http://{bind}/", state.ui.describe());
 
     axum::serve(listener, app).await?;
     state.shutdown();
