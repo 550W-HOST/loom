@@ -40,11 +40,17 @@ no runtime, no relay dependency.
   "host_id":     "host_01M…",
   "prompt":      "fix the failing test",
   "provider":    { "name": "pi", "command": "pi",
-                   "args": ["--mode", "rpc", "--no-session"] },
+                   "args": ["--mode", "rpc", "--no-session"],
+                   "cwd": "/srv/projects/loom" },
   "deadline_ms": 1789120438372,
   "created_at_ms": 1789120430000
 }
 ```
+
+`provider.cwd` is the thread's **environment workspace**, and it is the whole
+reason a dispatch carries a provider spec rather than a bare command: a
+provider that starts in the daemon's own cwd does not know what project it is
+editing. See [the workspace section](#the-workspace-is-part-of-the-dispatch).
 
 ```jsonc
 // ProviderReport — daemon -> server socket
@@ -76,6 +82,70 @@ scope:
   "run_id": "run_…", "at_ms": 1789120438372,
   "event": { "type": "output", "stream": "assistant", "text": "hello " } }
 ```
+
+## The workspace is part of the dispatch
+
+A thread's execution context is an **environment** (`env_…`): a directory on a
+host, either *unmanaged* (it already exists; loom never removes it) or *managed*
+(loom creates it). The server owns the registry and the lifecycle; the daemon
+owns the directory layout for managed ones.
+
+```text
+  thread.environment_id ──▶ environment.path ──▶ RunDispatch.provider.cwd
+                           environment.host_id ──▶ host:{id} target
+```
+
+Three rules, all enforced in code:
+
+1. **A dispatch always names its workspace.** The server fills
+   `provider.cwd` from the environment's path and targets the environment's
+   host — the directory only exists there. See
+   `AppState::dispatch_thread` in `crates/server/src/runs.rs`.
+2. **The daemon validates the directory, never falls back.** Before spawning,
+   the daemon checks `provider.cwd` is a directory *on its own machine*. A
+   missing one fails the run with a reason naming the path; it is not a license
+   to use the daemon's cwd. See `provider::drive`.
+3. **An operator override replaces the executable, not the workspace.**
+   `LOOM_PROVIDER_CMD` swaps what runs; `cwd` still comes from the dispatch.
+
+A thread with **no environment**, or one whose environment is not `ready`, is
+failed on dispatch with an explicit error. There is deliberately no default
+directory: a silent default is the bug this contract fixes.
+
+### Managed environments: provisioning
+
+An unmanaged environment is `ready` the moment it is created. A managed one
+starts `creating` and is provisioned by a daemon:
+
+```text
+  creating ──▶ provisioning ──▶ ready
+                    │
+                    └─ failure ──▶ error ──(retry)──▶ provisioning
+```
+
+The request travels **through the relay** like a dispatch, and the outcome
+comes back up the daemon's socket like a report:
+
+```jsonc
+// EnvironmentProvision — server -> relay host:{id} -> daemon
+{ "environment_id": "env_01M…", "project_id": "proj_01M…",
+  "host_id": "host_01M…", "created_at_ms": 1789120430000 }
+
+// EnvironmentProvisionReport — daemon -> server socket
+{ "host_id": "host_01M…", "environment_id": "env_01M…",
+  "outcome": { "outcome": "provisioned", "path": "/root/env_01M…" } }
+// or
+{ "host_id": "host_01M…", "environment_id": "env_01M…",
+  "outcome": { "outcome": "failed", "error": "could not create …: permission denied" } }
+```
+
+The daemon creates `<workspace_root>/<env_id>` (`LOOM_WORKSPACE_ROOT`, default
+`$HOME/.loom/workspaces`); the control plane only learns the resulting path
+from the report, then records it and publishes `environment_status_changed` to
+`project:{id}`. A failed attempt moves the environment to `error` with the
+daemon's reason attached, and `POST /api/v1/environments/{id}/provision` retries
+it. Creation is idempotent (`create_dir_all`), so a redelivered request is
+safe.
 
 ## The invariant: a run always ends
 
@@ -142,25 +212,34 @@ RPC docs call this out explicitly because Node's `readline` also splits on
 cargo run -p loom-server
 
 # A daemon that runs whatever provider the control plane dispatches (pi).
+# LOOM_WORKSPACE_ROOT is where it will create managed environments' workspaces.
 cargo run -p loom-daemon -- --server-url http://127.0.0.1:38886 --name laptop
 
-# Post a message; the run is dispatched over the relay and its events land in
-# the thread scope, replayable at /api/v1/replay.
-curl -X POST localhost:38886/api/v1/threads -H 'content-type: application/json' -d '{}'
+# Create a workspace pointing at an existing project directory, bind a thread
+# to it, then post a message. The provider runs in that directory.
+curl -X POST localhost:38886/api/v1/environments -H 'content-type: application/json' \
+  -d '{"kind":"unmanaged","path":"/srv/projects/loom"}'
+curl -X POST localhost:38886/api/v1/threads -H 'content-type: application/json' \
+  -d '{"environment_id":"env_…"}'
 curl -X POST localhost:38886/api/v1/threads/<thread>/messages \
   -H 'content-type: application/json' -d '{"content":"hello"}'
 curl 'localhost:38886/api/v1/runs'
+curl 'localhost:38886/api/v1/environments'
 ```
 
 An operator can override the provider executable on a machine with
-`LOOM_PROVIDER_CMD` / `LOOM_PROVIDER_ARGS`, and cap a run with
-`LOOM_RUN_TIMEOUT_MS`.
+`LOOM_PROVIDER_CMD` / `LOOM_PROVIDER_ARGS`, cap a run with
+`LOOM_RUN_TIMEOUT_MS`, and choose the managed-workspace root with
+`LOOM_WORKSPACE_ROOT`. The override never changes the workspace.
 
 ## Test coverage
 
 | behaviour | where |
 | --- | --- |
 | stdout guard, Pi frame mapping, one terminal per process | `crates/daemon/src/provider.rs` unit tests |
-| dispatch, report, host ownership, timeout + stale reaping | `crates/server/src/runs.rs` unit tests |
+| dispatch, report, host ownership, timeout + stale reaping, `cwd` from the environment | `crates/server/src/runs.rs` unit tests |
+| environment registry, lifecycle, provisioning dispatch + reports | `crates/server/src/domain_state.rs`, `crates/server/src/environments.rs` unit tests |
+| environment HTTP API (create/list/get/destroy, path validation) | `crates/server/src/http.rs` unit tests |
 | normal turn, provider crash, provider timeout, missed-dispatch replay, silent-daemon reaping | `crates/daemon/tests/provider_e2e.rs` (real sockets, real processes) |
+| provider runs *in* the bound workspace; a missing workspace fails clearly; managed provisioning succeeds and fails | same file |
 | the real `pi` binary | same file, `#[ignore]`d |

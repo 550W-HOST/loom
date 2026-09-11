@@ -99,6 +99,13 @@ pub struct Environment {
     pub path: Option<String>,
     /// Provisioning status.
     pub status: EnvironmentStatus,
+    /// Why the last provisioning attempt failed, when `status` is `error`.
+    ///
+    /// Carried so the daemon's reason reaches a client instead of being
+    /// reduced to a bare status. Cleared by the next legal transition out of
+    /// `error`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
     /// Wall-clock milliseconds when the environment was created.
     pub created_at_ms: u64,
     /// Wall-clock milliseconds of the last mutation.
@@ -146,6 +153,7 @@ impl Environment {
             kind,
             path,
             status,
+            error: None,
             created_at_ms: now_ms,
             updated_at_ms: now_ms,
         };
@@ -168,6 +176,9 @@ impl Environment {
             return Err(DomainError::IllegalEnvironmentTransition { from, to });
         }
         self.status = to;
+        if to != EnvironmentStatus::Error {
+            self.error = None;
+        }
         self.updated_at_ms = now_ms;
         Ok(DomainEvent::EnvironmentStatusChanged {
             environment_id: self.id.clone(),
@@ -177,6 +188,22 @@ impl Environment {
             to,
             at_ms: now_ms,
         })
+    }
+
+    /// Moves the environment to `error` with the reason a provisioning
+    /// attempt failed.
+    ///
+    /// The reason is recorded alongside the status so a client can render it;
+    /// the transition itself is the ordinary `-> error` one and is rejected
+    /// when it is not legal (a destroyed environment, for example).
+    pub fn set_error(
+        &mut self,
+        reason: impl Into<String>,
+        now_ms: u64,
+    ) -> Result<DomainEvent, DomainError> {
+        let event = self.set_status(EnvironmentStatus::Error, now_ms)?;
+        self.error = Some(reason.into());
+        Ok(event)
     }
 
     /// Records the path once a managed environment has been provisioned.
@@ -300,5 +327,50 @@ mod tests {
             Err(DomainError::IllegalEnvironmentTransition { .. })
         ));
         assert_eq!(unmanaged.status, EnvironmentStatus::Ready);
+    }
+
+    #[test]
+    fn a_failed_provision_records_its_reason_and_clears_it_on_retry() {
+        let (mut managed, _) = Environment::create(
+            ProjectId::mint(),
+            HostId::mint(),
+            EnvironmentKind::Managed,
+            None,
+            1,
+        )
+        .unwrap();
+        managed
+            .set_status(EnvironmentStatus::Provisioning, 2)
+            .unwrap();
+        managed.set_error("could not create /srv/work", 3).unwrap();
+        assert_eq!(managed.status, EnvironmentStatus::Error);
+        assert_eq!(managed.error.as_deref(), Some("could not create /srv/work"));
+
+        // `error -> provisioning` is legal: a retry starts clean.
+        managed
+            .set_status(EnvironmentStatus::Provisioning, 4)
+            .unwrap();
+        assert_eq!(managed.error, None);
+    }
+
+    #[test]
+    fn a_destroyed_environment_rejects_a_late_failure_report() {
+        let (mut unmanaged, _) = Environment::create(
+            ProjectId::mint(),
+            HostId::mint(),
+            EnvironmentKind::Unmanaged,
+            Some("/srv/loom".into()),
+            1,
+        )
+        .unwrap();
+        unmanaged
+            .set_status(EnvironmentStatus::Destroyed, 2)
+            .unwrap();
+        assert!(matches!(
+            unmanaged.set_error("too late", 3),
+            Err(DomainError::IllegalEnvironmentTransition { .. })
+        ));
+        assert_eq!(unmanaged.status, EnvironmentStatus::Destroyed);
+        assert_eq!(unmanaged.error, None);
     }
 }

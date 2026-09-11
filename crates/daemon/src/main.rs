@@ -13,7 +13,8 @@
 //! Everything is also settable through the environment (`LOOM_SERVER_URL`,
 //! `LOOM_HOST_NAME`, `LOOM_HOST_ID`, `LOOM_HEARTBEAT_MS`, `LOOM_DAEMON_STATE`,
 //! `LOOM_PROVIDER_CMD`, `LOOM_PROVIDER_ARGS`, `LOOM_SESSION_DIR`,
-//! `LOOM_RUN_TIMEOUT_MS`) so a systemd unit needs no command line.
+//! `LOOM_RUN_TIMEOUT_MS`, `LOOM_WORKSPACE_ROOT`) so a systemd unit needs no
+//! command line.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -43,6 +44,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     config.heartbeat_interval = options.heartbeat_interval;
     config.run_timeout = options.run_timeout;
     config.session_dir = options.session_dir.clone();
+    if let Some(root) = &options.workspace_root {
+        config.environment_root = root.clone();
+    }
     config.resume_cursor = options.read_persisted_cursor()?;
     config.provider = options.provider.clone();
 
@@ -80,6 +84,7 @@ struct Options {
     run_timeout: Duration,
     provider: Option<ProviderSpec>,
     session_dir: Option<PathBuf>,
+    workspace_root: Option<PathBuf>,
     state: Option<PathBuf>,
 }
 
@@ -95,6 +100,7 @@ impl Options {
         let mut provider_cmd = std::env::var("LOOM_PROVIDER_CMD").ok();
         let mut provider_args = std::env::var("LOOM_PROVIDER_ARGS").ok();
         let mut session_dir = std::env::var("LOOM_SESSION_DIR").ok();
+        let mut workspace_root = std::env::var("LOOM_WORKSPACE_ROOT").ok();
 
         let mut args = args.peekable();
         while let Some(arg) = args.next() {
@@ -109,6 +115,7 @@ impl Options {
                 "--provider-cmd" => provider_cmd = args.next(),
                 "--provider-args" => provider_args = args.next(),
                 "--session-dir" => session_dir = args.next(),
+                "--workspace-root" => workspace_root = args.next(),
                 other => return Err(format!("unrecognised argument: {other}")),
             }
         }
@@ -157,6 +164,9 @@ impl Options {
             run_timeout,
             provider,
             session_dir: session_dir.map(PathBuf::from),
+            workspace_root: workspace_root
+                .filter(|value| !value.trim().is_empty())
+                .map(PathBuf::from),
             state: state.map(PathBuf::from),
         }))
     }
@@ -248,6 +258,9 @@ FLAGS:
                              Env: LOOM_PROVIDER_ARGS
     --session-dir <PATH>     Base directory for per-thread provider sessions.
                              Env: LOOM_SESSION_DIR
+    --workspace-root <PATH>  Root under which managed environments' workspaces
+                             are created as <root>/<env_id>. Default:
+                             $HOME/.loom/workspaces. Env: LOOM_WORKSPACE_ROOT
     --state <PATH>           File to persist the enrolled host id in. A sibling
                              `.cursor` file persists the replay cursor.
                              Env: LOOM_DAEMON_STATE

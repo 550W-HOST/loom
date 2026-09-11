@@ -41,6 +41,7 @@ use loom_relay::event_id::EventId;
 use loom_relay::now_ms;
 use loom_relay::scope::Scope;
 
+use crate::environments::EnvironmentReportOutcome;
 use crate::protocol::{ClientCommand, ServerMessage};
 use crate::runs::ReportOutcome;
 use crate::state::AppState;
@@ -255,6 +256,37 @@ async fn handle_command(
             };
             Some(ServerMessage::RunReportAck {
                 run_id,
+                accepted,
+                detail,
+            })
+        }
+        ClientCommand::EnvironmentReport { report } => {
+            let Some(host_id) = enrolled_host.clone() else {
+                return Some(ServerMessage::Error {
+                    message: "environment reports require an enrolled host".into(),
+                });
+            };
+            if host_id != report.host_id {
+                return Some(ServerMessage::Error {
+                    message: "report names a different host than this connection enrolled as"
+                        .into(),
+                });
+            }
+            let environment_id = report.environment_id.clone();
+            let outcome = state.apply_environment_report(&host_id, report);
+            let (accepted, detail) = match outcome {
+                EnvironmentReportOutcome::Applied => (true, None),
+                EnvironmentReportOutcome::Stale => (
+                    false,
+                    Some("environment is not awaiting provisioning".into()),
+                ),
+                EnvironmentReportOutcome::Unknown => {
+                    (false, Some("environment is not known".into()))
+                }
+                EnvironmentReportOutcome::Mismatch(message) => (false, Some(message)),
+            };
+            Some(ServerMessage::EnvironmentReportAck {
+                environment_id,
                 accepted,
                 detail,
             })

@@ -124,6 +124,16 @@ async fn drive(run: &ProviderRun, reports: &mpsc::Sender<ProviderReport>) -> Res
         .stderr(Stdio::piped())
         .kill_on_drop(true);
     if let Some(cwd) = &run.spec.cwd {
+        // The control plane names the workspace; the daemon is the only party
+        // that can see *this* machine's filesystem, so it validates the
+        // directory here. A missing directory is a hard error, never a silent
+        // fallback to this process's cwd — that fallback is the bug this path
+        // exists to prevent.
+        if !Path::new(cwd).is_dir() {
+            return Err(format!(
+                "the dispatched working directory {cwd:?} does not exist on this host"
+            ));
+        }
         command.current_dir(cwd);
     }
 

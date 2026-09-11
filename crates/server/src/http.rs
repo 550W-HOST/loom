@@ -9,7 +9,8 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use loom_domain::{
-    DomainError, DomainEvent, DomainScope, Host, HostId, MessageRole, Thread, ThreadId,
+    DomainError, DomainEvent, DomainScope, Environment, EnvironmentId, EnvironmentKind,
+    EnvironmentStatus, Host, HostId, MessageRole, ProjectId, Thread, ThreadId,
 };
 use loom_relay::scope::Scope;
 use serde::{Deserialize, Serialize};
@@ -29,6 +30,19 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/replay", get(replay))
         .route("/api/v1/threads", get(list_threads).post(create_thread))
         .route("/api/v1/threads/{id}/messages", post(post_thread_message))
+        .route(
+            "/api/v1/environments",
+            get(list_environments).post(create_environment),
+        )
+        .route("/api/v1/environments/{id}", get(get_environment))
+        .route(
+            "/api/v1/environments/{id}/provision",
+            post(provision_environment),
+        )
+        .route(
+            "/api/v1/environments/{id}/destroy",
+            post(destroy_environment),
+        )
         .route("/api/v1/runs", get(list_runs))
         .route("/api/v1/hosts", get(list_hosts).post(register_host))
         .route("/api/v1/hosts/primary", get(primary_host))
@@ -151,6 +165,11 @@ pub struct CreateThreadRequest {
     pub project_id: Option<loom_domain::ProjectId>,
     /// Optional display title.
     pub title: Option<String>,
+    /// The execution context to bind. Omitted leaves the thread unbound, and a
+    /// dispatch of an unbound thread is refused rather than run in the daemon's
+    /// own cwd.
+    #[serde(default)]
+    pub environment_id: Option<EnvironmentId>,
 }
 
 /// Every known thread, newest first.
@@ -187,10 +206,12 @@ async fn create_thread(
     State(state): State<AppState>,
     Json(request): Json<CreateThreadRequest>,
 ) -> Response {
-    match state
-        .registry
-        .create_thread(request.project_id, request.title, loom_relay::now_ms())
-    {
+    match state.registry.create_thread(
+        request.project_id,
+        request.title,
+        request.environment_id,
+        loom_relay::now_ms(),
+    ) {
         Ok((thread, event)) => match state.publish_domain_event(&event) {
             Ok(envelope) => Json(CreateThreadResponse {
                 thread,
@@ -391,6 +412,240 @@ async fn disconnect_host(
     {
         Ok(events) => match publish_all(&state, &events) {
             Ok(_) => Json(serde_json::json!({ "host_id": host_id })).into_response(),
+            Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+        },
+        Err(error) => command_error_response(error),
+    }
+}
+
+/// Body of a create-environment request.
+#[derive(Clone, Debug, Deserialize)]
+pub struct CreateEnvironmentRequest {
+    /// `managed` (loom creates the directory) or `unmanaged` (an existing one).
+    pub kind: EnvironmentKind,
+    /// The owning project. Omitted means the server's personal project.
+    #[serde(default)]
+    pub project_id: Option<ProjectId>,
+    /// The host the workspace lives on. Omitted uses the primary host.
+    #[serde(default)]
+    pub host_id: Option<HostId>,
+    /// Absolute path for an unmanaged environment. Must be absent for a managed
+    /// one, whose path is decided by the daemon that provisions it.
+    #[serde(default)]
+    pub path: Option<String>,
+}
+
+/// A created environment and the event that announced it.
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+pub struct CreateEnvironmentResponse {
+    /// The environment as created: `ready` for an unmanaged one, `creating` for
+    /// a managed one. A managed environment's follow-up status changes arrive
+    /// on the project scope.
+    pub environment: Environment,
+    /// The `environment_created` event, published to `project:{project_id}`.
+    pub event_id: String,
+}
+
+/// Every known environment, optionally filtered to one project.
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+pub struct EnvironmentListResponse {
+    /// Environments, oldest first.
+    pub environments: Vec<Environment>,
+}
+
+/// Query for [`list_environments`].
+#[derive(Clone, Debug, Deserialize)]
+pub struct EnvironmentListQuery {
+    /// Filter to one project.
+    #[serde(default)]
+    pub project_id: Option<String>,
+}
+
+/// Creates an environment.
+///
+/// An unmanaged environment is usable immediately: it must name an absolute
+/// path and starts `ready`. A managed one starts `creating`, and provisioning
+/// is dispatched to its host in the same request; if the daemon is not there
+/// yet the request is retained in the host room and replayed on reconnect.
+///
+/// The path's *existence* is deliberately **not** checked here. The path is on
+/// the host's filesystem, which may be another machine, so the daemon is the
+/// only party that can validate it (and it does, refusing to start a provider
+/// when the directory is missing).
+async fn create_environment(
+    State(state): State<AppState>,
+    Json(request): Json<CreateEnvironmentRequest>,
+) -> Response {
+    let host_id = match request.host_id.clone().or_else(|| {
+        state
+            .registry
+            .primary_host(state.local_host_id())
+            .map(|host| host.id)
+    }) {
+        Some(host_id) => host_id,
+        None => {
+            return error_response(
+                StatusCode::CONFLICT,
+                "no host is available to own the environment; enroll a daemon first".into(),
+            )
+        }
+    };
+
+    if request.kind == EnvironmentKind::Unmanaged {
+        match request.path.as_deref() {
+            None => {
+                return error_response(
+                    StatusCode::BAD_REQUEST,
+                    "an unmanaged environment requires a path".into(),
+                )
+            }
+            Some(path) if !std::path::Path::new(path).is_absolute() => {
+                return error_response(
+                    StatusCode::BAD_REQUEST,
+                    format!("path {path:?} must be absolute"),
+                )
+            }
+            Some(_) => {}
+        }
+    }
+
+    let (environment, events) = match state.registry.create_environment(
+        request.project_id,
+        host_id,
+        request.kind,
+        request.path,
+        loom_relay::now_ms(),
+    ) {
+        Ok(result) => result,
+        Err(error) => return command_error_response(error),
+    };
+    let published = match publish_all(&state, &events) {
+        Ok(published) => published,
+        Err(error) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+    };
+
+    // A managed environment is provisioned right away. The response still shows
+    // the state just created (`creating`), which is the fact this call
+    // produced; provisioning is an announced follow-up a client watches on the
+    // project scope. Only a rejected append is reflected, because then the
+    // environment really has moved to `error`.
+    let environment = match state.provision_environment(&environment.id) {
+        crate::environments::ProvisionOutcome::PublishFailed {
+            environment: failed,
+            ..
+        } => failed,
+        _ => environment,
+    };
+
+    Json(CreateEnvironmentResponse {
+        environment,
+        event_id: published
+            .last()
+            .map(|event| event.event_id.clone())
+            .unwrap_or_default(),
+    })
+    .into_response()
+}
+
+/// Lists environments, optionally filtered by project.
+async fn list_environments(
+    State(state): State<AppState>,
+    axum::extract::Query(query): axum::extract::Query<EnvironmentListQuery>,
+) -> Response {
+    let environments = match query.project_id.as_deref() {
+        None | Some("") => state.registry.environments(),
+        Some(raw) => match raw.parse::<ProjectId>() {
+            Ok(project_id) => state.registry.environments_for_project(&project_id),
+            Err(error) => return error_response(StatusCode::BAD_REQUEST, error.to_string()),
+        },
+    };
+    Json(EnvironmentListResponse { environments }).into_response()
+}
+
+/// Fetches one environment by id.
+async fn get_environment(
+    State(state): State<AppState>,
+    Path(raw_environment_id): Path<String>,
+) -> Response {
+    let environment_id = match raw_environment_id.parse::<EnvironmentId>() {
+        Ok(environment_id) => environment_id,
+        Err(error) => return error_response(StatusCode::BAD_REQUEST, error.to_string()),
+    };
+    match state.registry.environment(&environment_id) {
+        Some(environment) => Json(environment).into_response(),
+        None => error_response(
+            StatusCode::NOT_FOUND,
+            format!("environment {environment_id} is not known"),
+        ),
+    }
+}
+
+/// (Re)dispatches provisioning for a managed environment.
+///
+async fn provision_environment(
+    State(state): State<AppState>,
+    Path(raw_environment_id): Path<String>,
+) -> Response {
+    let environment_id = match raw_environment_id.parse::<EnvironmentId>() {
+        Ok(environment_id) => environment_id,
+        Err(error) => return error_response(StatusCode::BAD_REQUEST, error.to_string()),
+    };
+    match state.provision_environment(&environment_id) {
+        crate::environments::ProvisionOutcome::Dispatched(environment) => {
+            Json(environment).into_response()
+        }
+        crate::environments::ProvisionOutcome::Unknown => error_response(
+            StatusCode::NOT_FOUND,
+            format!("environment {environment_id} is not known"),
+        ),
+        crate::environments::ProvisionOutcome::NotProvisionable {
+            environment,
+            reason,
+        } => {
+            if environment.status == EnvironmentStatus::Destroyed {
+                command_error_response(CommandError::Domain(
+                    DomainError::IllegalEnvironmentTransition {
+                        from: environment.status,
+                        to: EnvironmentStatus::Provisioning,
+                    },
+                ))
+            } else {
+                error_response(StatusCode::CONFLICT, reason)
+            }
+        }
+        crate::environments::ProvisionOutcome::PublishFailed { environment, error } => {
+            error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!(
+                    "could not dispatch provisioning: {error}; environment is {}",
+                    environment.status
+                ),
+            )
+        }
+    }
+}
+
+/// Destroys an environment; the transition is terminal.
+///
+/// This moves the record to `destroyed`. Removing the directory of a *managed*
+/// environment is a separate concern (worktree teardown, tracked by its own
+/// issue); an unmanaged directory is never touched by loom.
+///
+async fn destroy_environment(
+    State(state): State<AppState>,
+    Path(raw_environment_id): Path<String>,
+) -> Response {
+    let environment_id = match raw_environment_id.parse::<EnvironmentId>() {
+        Ok(environment_id) => environment_id,
+        Err(error) => return error_response(StatusCode::BAD_REQUEST, error.to_string()),
+    };
+    match state.registry.set_environment_status(
+        &environment_id,
+        EnvironmentStatus::Destroyed,
+        loom_relay::now_ms(),
+    ) {
+        Ok((environment, event)) => match publish_all(&state, &[event]) {
+            Ok(_) => Json(environment).into_response(),
             Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
         },
         Err(error) => command_error_response(error),
@@ -754,15 +1009,33 @@ mod tests {
     #[tokio::test]
     async fn a_user_message_publishes_message_then_status_to_the_thread_scope() {
         let state = test_state();
-        // A connected host so the message actually dispatches a run; with no
-        // host the dispatcher would fail the thread on the spot and append
-        // terminal events this test does not want.
-        state
+        // A connected host and a bound environment so the message actually
+        // dispatches a run; without either the dispatcher would fail the thread
+        // on the spot and append terminal events this test does not want.
+        let (host, _) = state
             .registry
             .enroll_host(None, "laptop".into(), loom_relay::now_ms())
             .unwrap();
+        let (environment, _) = state
+            .registry
+            .create_environment(
+                None,
+                host.id,
+                EnvironmentKind::Unmanaged,
+                Some("/srv/loom".into()),
+                loom_relay::now_ms(),
+            )
+            .unwrap();
         let app = router(state.clone());
-        let created = body_json(post(&app, "/api/v1/threads", serde_json::json!({})).await).await;
+        let created = body_json(
+            post(
+                &app,
+                "/api/v1/threads",
+                serde_json::json!({ "environment_id": environment.id.to_string() }),
+            )
+            .await,
+        )
+        .await;
         let thread_id = created["thread"]["id"].as_str().unwrap().to_string();
 
         let response = post(
@@ -1018,6 +1291,202 @@ mod tests {
         assert!(ids.contains(&first["thread"]["id"].as_str().unwrap()));
         assert!(ids.contains(&second["thread"]["id"].as_str().unwrap()));
 
+        state.shutdown();
+    }
+
+    #[tokio::test]
+    async fn creating_an_unmanaged_environment_returns_it_ready() {
+        let state = test_state();
+        state
+            .registry
+            .enroll_host(None, "laptop".into(), loom_relay::now_ms())
+            .unwrap();
+        let app = router(state.clone());
+
+        let response = post(
+            &app,
+            "/api/v1/environments",
+            serde_json::json!({ "kind": "unmanaged", "path": "/srv/loom" }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let json = body_json(response).await;
+        assert_eq!(json["environment"]["status"], "ready");
+        assert_eq!(json["environment"]["path"], "/srv/loom");
+
+        // The creation event is in the project scope, where a client replays
+        // it alongside the thread list.
+        let project = Scope::Project(
+            json["environment"]["project_id"]
+                .as_str()
+                .unwrap()
+                .to_owned(),
+        );
+        let events = stored_events(&state, &project);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0]["type"], "environment_created");
+        state.shutdown();
+    }
+
+    #[tokio::test]
+    async fn creating_a_managed_environment_dispatches_provisioning() {
+        let state = test_state();
+        let (host, _) = state
+            .registry
+            .enroll_host(None, "laptop".into(), loom_relay::now_ms())
+            .unwrap();
+        let app = router(state.clone());
+
+        let response = post(
+            &app,
+            "/api/v1/environments",
+            serde_json::json!({ "kind": "managed" }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let json = body_json(response).await;
+        // The creation snapshot is `creating`; the follow-up status change is
+        // announced on the project scope.
+        assert_eq!(json["environment"]["status"], "creating");
+        assert!(json["environment"]["path"].is_null());
+
+        // The environment did move on, though.
+        assert_eq!(
+            state
+                .registry
+                .environment(&json["environment"]["id"].as_str().unwrap().parse().unwrap())
+                .unwrap()
+                .status,
+            EnvironmentStatus::Provisioning
+        );
+
+        // The request is in the host room, ready for a reconnecting daemon.
+        let events = stored_events(&state, &Scope::Host(host.id.to_string()));
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0]["environment_id"], json["environment"]["id"]);
+        state.shutdown();
+    }
+
+    #[tokio::test]
+    async fn an_unmanaged_environment_requires_an_absolute_path() {
+        let state = test_state();
+        state
+            .registry
+            .enroll_host(None, "laptop".into(), loom_relay::now_ms())
+            .unwrap();
+        let app = router(state.clone());
+
+        let missing = post(
+            &app,
+            "/api/v1/environments",
+            serde_json::json!({ "kind": "unmanaged" }),
+        )
+        .await;
+        assert_eq!(missing.status(), StatusCode::BAD_REQUEST);
+
+        let relative = post(
+            &app,
+            "/api/v1/environments",
+            serde_json::json!({ "kind": "unmanaged", "path": "srv/loom" }),
+        )
+        .await;
+        assert_eq!(relative.status(), StatusCode::BAD_REQUEST);
+        state.shutdown();
+    }
+
+    #[tokio::test]
+    async fn creating_an_environment_with_no_host_is_a_conflict() {
+        let state = test_state();
+        let app = router(state.clone());
+        let response = post(
+            &app,
+            "/api/v1/environments",
+            serde_json::json!({ "kind": "unmanaged", "path": "/srv/loom" }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        state.shutdown();
+    }
+
+    #[tokio::test]
+    async fn environments_are_listable_by_project_and_fetchable_by_id() {
+        let state = test_state();
+        let (host, _) = state
+            .registry
+            .enroll_host(None, "laptop".into(), loom_relay::now_ms())
+            .unwrap();
+        let (environment, _) = state
+            .registry
+            .create_environment(
+                None,
+                host.id,
+                EnvironmentKind::Unmanaged,
+                Some("/srv/loom".into()),
+                loom_relay::now_ms(),
+            )
+            .unwrap();
+        let app = router(state.clone());
+
+        let project_id = state.registry.personal_project_id();
+        let listed = body_json(
+            get(
+                &app,
+                &format!("/api/v1/environments?project_id={project_id}"),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(listed["environments"].as_array().unwrap().len(), 1);
+
+        let by_id = get(&app, &format!("/api/v1/environments/{}", environment.id)).await;
+        assert_eq!(by_id.status(), StatusCode::OK);
+        assert_eq!(body_json(by_id).await["id"], environment.id.to_string());
+
+        let missing = get(
+            &app,
+            &format!("/api/v1/environments/{}", EnvironmentId::mint()),
+        )
+        .await;
+        assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+        state.shutdown();
+    }
+
+    #[tokio::test]
+    async fn destroying_an_environment_is_terminal() {
+        let state = test_state();
+        let (host, _) = state
+            .registry
+            .enroll_host(None, "laptop".into(), loom_relay::now_ms())
+            .unwrap();
+        let (environment, _) = state
+            .registry
+            .create_environment(
+                None,
+                host.id,
+                EnvironmentKind::Unmanaged,
+                Some("/srv/loom".into()),
+                loom_relay::now_ms(),
+            )
+            .unwrap();
+        let app = router(state.clone());
+
+        let response = post(
+            &app,
+            &format!("/api/v1/environments/{}/destroy", environment.id),
+            serde_json::json!({}),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(body_json(response).await["status"], "destroyed");
+
+        // Destroyed is terminal, so a second destroy is a conflict.
+        let again = post(
+            &app,
+            &format!("/api/v1/environments/{}/destroy", environment.id),
+            serde_json::json!({}),
+        )
+        .await;
+        assert_eq!(again.status(), StatusCode::CONFLICT);
         state.shutdown();
     }
 

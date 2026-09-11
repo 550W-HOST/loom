@@ -34,7 +34,7 @@
 //!
 //! [`RunEvent`]: loom_domain::RunEvent
 
-use loom_domain::{HostId, ProjectId, RunEvent, RunId, ThreadId};
+use loom_domain::{EnvironmentId, HostId, ProjectId, RunEvent, RunId, ThreadId};
 use serde::{Deserialize, Serialize};
 
 /// How to start a provider process.
@@ -122,6 +122,56 @@ pub struct RunDispatch {
     pub deadline_ms: u64,
     /// When the control plane minted the dispatch.
     pub created_at_ms: u64,
+}
+
+/// A request to provision a managed environment's workspace on a host.
+///
+/// Like [`RunDispatch`] this travels **through the relay**, published to the
+/// target host's scope, so a daemon that was disconnected while it was sent
+/// still receives it on reconnect. The daemon owns the directory layout and
+/// chooses the actual path under its configured workspace root; the control
+/// plane only learns it from [`EnvironmentProvisionReport`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EnvironmentProvision {
+    /// The environment to provision.
+    pub environment_id: EnvironmentId,
+    /// Its project, carried so a report needs no lookup.
+    pub project_id: ProjectId,
+    /// The host expected to provision it.
+    pub host_id: HostId,
+    /// Wall-clock milliseconds when the control plane minted the request.
+    pub created_at_ms: u64,
+}
+
+/// What a daemon did with an [`EnvironmentProvision`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "outcome", rename_all = "snake_case")]
+pub enum EnvironmentProvisionOutcome {
+    /// The workspace exists and is usable at `path`.
+    Provisioned {
+        /// Absolute path the daemon created.
+        path: String,
+    },
+    /// Provisioning failed; the environment moves to `error`.
+    Failed {
+        /// Why, verbatim, so it can be shown to a user.
+        error: String,
+    },
+}
+
+/// A daemon's report about one provisioning attempt.
+///
+/// Sent up the daemon's own socket, exactly like [`ProviderReport`]: the
+/// server turns it into environment status events and publishes them to the
+/// project scope through the relay.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EnvironmentProvisionReport {
+    /// The host making the report.
+    pub host_id: HostId,
+    /// The environment being provisioned.
+    pub environment_id: EnvironmentId,
+    /// What happened.
+    pub outcome: EnvironmentProvisionOutcome,
 }
 
 /// A daemon's observation about an in-flight run.
@@ -263,6 +313,49 @@ mod tests {
     #[test]
     fn the_guard_tolerates_a_crlf_terminator() {
         assert!(is_protocol_frame("{\"type\":\"agent_start\"}\r"));
+    }
+
+    #[test]
+    fn an_environment_provision_round_trips_both_outcomes() {
+        let provision = EnvironmentProvision {
+            environment_id: EnvironmentId::mint(),
+            project_id: ProjectId::mint(),
+            host_id: HostId::mint(),
+            created_at_ms: 7,
+        };
+        let encoded = serde_json::to_string(&provision).unwrap();
+        assert_eq!(
+            serde_json::from_str::<EnvironmentProvision>(&encoded).unwrap(),
+            provision
+        );
+
+        let ok = EnvironmentProvisionReport {
+            host_id: HostId::mint(),
+            environment_id: EnvironmentId::mint(),
+            outcome: EnvironmentProvisionOutcome::Provisioned {
+                path: "/srv/loom".into(),
+            },
+        };
+        let value = serde_json::to_value(&ok).unwrap();
+        assert_eq!(value["outcome"]["outcome"], "provisioned");
+        assert_eq!(
+            serde_json::from_str::<EnvironmentProvisionReport>(
+                &serde_json::to_string(&ok).unwrap()
+            )
+            .unwrap(),
+            ok
+        );
+
+        let failed = EnvironmentProvisionReport {
+            host_id: HostId::mint(),
+            environment_id: EnvironmentId::mint(),
+            outcome: EnvironmentProvisionOutcome::Failed {
+                error: "permission denied".into(),
+            },
+        };
+        let value = serde_json::to_value(&failed).unwrap();
+        assert_eq!(value["outcome"]["outcome"], "failed");
+        assert_eq!(value["outcome"]["error"], "permission denied");
     }
 
     #[test]

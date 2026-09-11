@@ -45,12 +45,15 @@
 pub mod provider;
 
 use std::collections::{HashSet, VecDeque};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
 use loom_domain::{HostId, RunId};
-use loom_provider_protocol::{ProviderSpec, RunDispatch};
+use loom_provider_protocol::{
+    EnvironmentProvision, EnvironmentProvisionOutcome, EnvironmentProvisionReport, ProviderSpec,
+    RunDispatch,
+};
 use loom_relay::dedup::SeenSet;
 use loom_relay::{EventId, Scope};
 use loom_server::protocol::{ClientCommand, ServerMessage};
@@ -74,6 +77,21 @@ pub const DISPATCH_DEDUP_CAPACITY: usize = 512;
 
 /// How many reports may be queued before a provider task waits.
 const REPORT_CHANNEL_CAPACITY: usize = 256;
+
+/// Where managed environments' workspaces are created by default.
+///
+/// `LOOM_WORKSPACE_ROOT` overrides it; otherwise `$HOME/.loom/workspaces`, or
+/// the system temp directory when there is no home. The daemon owns this
+/// layout: the control plane only learns the resulting path from the report.
+pub fn default_environment_root() -> PathBuf {
+    if let Some(root) = std::env::var_os("LOOM_WORKSPACE_ROOT") {
+        return PathBuf::from(root);
+    }
+    if let Some(home) = std::env::var_os("HOME") {
+        return PathBuf::from(home).join(".loom").join("workspaces");
+    }
+    std::env::temp_dir().join("loom-workspaces")
+}
 
 /// A daemon could not connect, could not speak the protocol, or was rejected.
 #[derive(Debug)]
@@ -145,6 +163,12 @@ pub struct DaemonConfig {
     pub run_timeout: Duration,
     /// Base directory for per-thread provider sessions, when supported.
     pub session_dir: Option<PathBuf>,
+    /// Root under which managed environments' workspaces are created.
+    ///
+    /// A managed environment's directory is `<environment_root>/<env_id>`. The
+    /// daemon chooses the actual path and reports it; the control plane never
+    /// presumes a layout.
+    pub environment_root: PathBuf,
     /// The host-scope event id to resume from. `None` replays the retained
     /// window and relies on dispatch dedup.
     pub resume_cursor: Option<EventId>,
@@ -164,6 +188,7 @@ impl DaemonConfig {
             provider: None,
             run_timeout: DEFAULT_RUN_TIMEOUT,
             session_dir: None,
+            environment_root: default_environment_root(),
             resume_cursor: None,
             replay_limit: 500,
         }
@@ -246,6 +271,9 @@ pub struct Daemon {
     /// Provider reports waiting to be forwarded to the server.
     reports: mpsc::Receiver<loom_provider_protocol::ProviderReport>,
     reports_tx: mpsc::Sender<loom_provider_protocol::ProviderReport>,
+    /// Environment-provisioning reports waiting to be forwarded to the server.
+    env_reports: mpsc::Receiver<EnvironmentProvisionReport>,
+    env_reports_tx: mpsc::Sender<EnvironmentProvisionReport>,
     /// Runs with a provider task in flight, keyed by run id.
     running: HashSet<RunId>,
 }
@@ -263,6 +291,7 @@ impl Daemon {
                 // A mismatch after enrollment would corrupt dispatch/runs.
                 ensure_compatible_protocol(protocol_version)?;
                 let (reports_tx, reports) = mpsc::channel(REPORT_CHANNEL_CAPACITY);
+                let (env_reports_tx, env_reports) = mpsc::channel(REPORT_CHANNEL_CAPACITY);
                 Ok(Self {
                     socket,
                     cursor: config.resume_cursor,
@@ -272,6 +301,8 @@ impl Daemon {
                     seen_runs: RunSeen::new(DISPATCH_DEDUP_CAPACITY),
                     reports,
                     reports_tx,
+                    env_reports,
+                    env_reports_tx,
                     running: HashSet::new(),
                 })
             }
@@ -352,6 +383,10 @@ impl Daemon {
                         self.running.remove(&report.run_id);
                     }
                     self.send(&ClientCommand::RunReport { report }).await?;
+                }
+                report = self.env_reports.recv() => {
+                    let Some(report) = report else { continue };
+                    self.send(&ClientCommand::EnvironmentReport { report }).await?;
                 }
             }
         }
@@ -441,12 +476,13 @@ impl Daemon {
             return Ok(());
         }
 
-        // Only a dispatch parses as one; host domain events in the same room
-        // (registration, status changes) are not dispatches and are ignored.
-        let Ok(dispatch) = serde_json::from_str::<RunDispatch>(payload) else {
-            return Ok(());
-        };
-        self.start_dispatch(dispatch);
+        // Only a dispatch or a provisioning request parses as one; host domain
+        // events in the same room (registration, status changes) are neither.
+        if let Ok(dispatch) = serde_json::from_str::<RunDispatch>(payload) {
+            self.start_dispatch(dispatch);
+        } else if let Ok(provision) = serde_json::from_str::<EnvironmentProvision>(payload) {
+            self.start_provision(provision);
+        }
         Ok(())
     }
 
@@ -458,11 +494,18 @@ impl Daemon {
         self.seen_runs.insert(&dispatch.run_id);
         self.running.insert(dispatch.run_id.clone());
 
-        let spec = self
-            .config
-            .provider
-            .clone()
-            .unwrap_or_else(|| dispatch.provider.clone());
+        // An operator override replaces the *executable*, never the workspace:
+        // the environment decides where a provider runs, the machine decides
+        // which binary. Carrying `cwd` across the override is what keeps a
+        // `LOOM_PROVIDER_CMD` from silently running in the daemon's own cwd.
+        let spec = match &self.config.provider {
+            Some(override_spec) => {
+                let mut spec = override_spec.clone();
+                spec.cwd = dispatch.provider.cwd.clone();
+                spec
+            }
+            None => dispatch.provider.clone(),
+        };
         let run = ProviderRun::from_dispatch(
             &dispatch,
             spec,
@@ -470,6 +513,28 @@ impl Daemon {
             self.config.session_dir.clone(),
         );
         provider::spawn(run, self.reports_tx.clone());
+    }
+
+    /// Creates a managed environment's workspace in the background and queues
+    /// the report for the socket loop to forward.
+    ///
+    /// Provisioning is idempotent (`create_dir_all` accepts an existing
+    /// directory), so a replay of the same request is safe even without a dedup
+    /// set; the relay's own per-connection dedup already suppresses a replayed
+    /// event id.
+    fn start_provision(&mut self, provision: EnvironmentProvision) {
+        let root = self.config.environment_root.clone();
+        let reports = self.env_reports_tx.clone();
+        tokio::spawn(async move {
+            let outcome = provision_environment(&root, &provision).await;
+            let _ = reports
+                .send(EnvironmentProvisionReport {
+                    host_id: provision.host_id.clone(),
+                    environment_id: provision.environment_id.clone(),
+                    outcome,
+                })
+                .await;
+        });
     }
 
     /// Subscribes and waits for the acknowledgement.
@@ -532,6 +597,26 @@ impl Daemon {
     }
 }
 
+/// Creates one managed environment's workspace under `root`.
+///
+/// The directory is `<root>/<environment_id>`. Creation is idempotent, so a
+/// redelivered provisioning request is harmless; a failure carries the path and
+/// the OS error so the reason survives to the UI.
+async fn provision_environment(
+    root: &Path,
+    provision: &EnvironmentProvision,
+) -> EnvironmentProvisionOutcome {
+    let path = root.join(provision.environment_id.to_string());
+    match tokio::fs::create_dir_all(&path).await {
+        Ok(()) => EnvironmentProvisionOutcome::Provisioned {
+            path: path.to_string_lossy().into_owned(),
+        },
+        Err(error) => EnvironmentProvisionOutcome::Failed {
+            error: format!("could not create {}: {error}", path.display()),
+        },
+    }
+}
+
 async fn next_message(socket: &mut Socket) -> Result<ServerMessage, DaemonError> {
     loop {
         let message = socket
@@ -591,5 +676,55 @@ mod tests {
         // relay window is far larger than the dedup capacity.
         assert!(!seen.contains(&first));
         assert!(seen.contains(&third));
+    }
+
+    #[tokio::test]
+    async fn provisioning_creates_the_workspace_and_reports_its_path() {
+        let root = tempfile::tempdir().unwrap();
+        let provision = EnvironmentProvision {
+            environment_id: loom_domain::EnvironmentId::mint(),
+            project_id: loom_domain::ProjectId::mint(),
+            host_id: HostId::mint(),
+            created_at_ms: 1,
+        };
+
+        let outcome = provision_environment(root.path(), &provision).await;
+        let EnvironmentProvisionOutcome::Provisioned { path } = outcome else {
+            panic!("expected a provisioned workspace, got {outcome:?}");
+        };
+        assert_eq!(
+            path,
+            root.path()
+                .join(provision.environment_id.to_string())
+                .to_string_lossy()
+        );
+        assert!(Path::new(&path).is_dir());
+
+        // Idempotent: a replay of the same request is not an error.
+        assert!(matches!(
+            provision_environment(root.path(), &provision).await,
+            EnvironmentProvisionOutcome::Provisioned { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn provisioning_under_a_non_directory_root_reports_why() {
+        let root = tempfile::tempdir().unwrap();
+        // A regular file where the root directory should be: every attempt to
+        // create a child fails, and the reason must name the path.
+        let file = root.path().join("not-a-dir");
+        std::fs::write(&file, "x").unwrap();
+        let provision = EnvironmentProvision {
+            environment_id: loom_domain::EnvironmentId::mint(),
+            project_id: loom_domain::ProjectId::mint(),
+            host_id: HostId::mint(),
+            created_at_ms: 1,
+        };
+
+        let outcome = provision_environment(&file, &provision).await;
+        let EnvironmentProvisionOutcome::Failed { error } = outcome else {
+            panic!("expected a failure, got {outcome:?}");
+        };
+        assert!(error.contains("not-a-dir"), "{error}");
     }
 }

@@ -22,6 +22,7 @@
 #![forbid(unsafe_code)]
 
 pub mod domain_state;
+pub mod environments;
 pub mod http;
 pub mod hub_actor;
 pub mod protocol;
@@ -33,6 +34,7 @@ pub mod ui;
 pub mod ws;
 
 pub use domain_state::{CommandError, DomainRegistry};
+pub use environments::{EnvironmentReportOutcome, ProvisionOutcome};
 pub use hub_actor::{HubCommand, HubHandle};
 pub use protocol::{ClientCommand, ServerMessage};
 pub use pump::{Pump, PumpConfig};
