@@ -304,12 +304,90 @@ async fn a_malformed_command_is_reported_without_closing_the_socket() {
     state.shutdown();
 }
 
+#[tokio::test]
+async fn the_host_and_thread_commands_drive_a_real_conversation() {
+    let (addr, state) = spawn_server().await;
+
+    let host = http_post_json(&addr, "/api/v1/hosts", &json!({ "name": "laptop" })).await;
+    assert!(
+        host["host"]["id"].as_str().unwrap().starts_with("host_"),
+        "unexpected host: {host}"
+    );
+
+    let created = http_post_json(&addr, "/api/v1/threads", &json!({})).await;
+    let thread_id = created["thread"]["id"].as_str().unwrap().to_string();
+    let project_id = created["thread"]["project_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(created["thread"]["status"], "idle");
+
+    // Subscribe to the conversation scope, then send a message through the
+    // HTTP command API. The message and the status change it causes both
+    // arrive on that scope, in order.
+    let mut client = Client::connect(&addr).await;
+    client.subscribe(Scope::Thread(thread_id.clone())).await;
+    client.subscribe(Scope::Project(project_id)).await;
+
+    let posted = http_post_json(
+        &addr,
+        &format!("/api/v1/threads/{thread_id}/messages"),
+        &json!({ "content": "hello loom" }),
+    )
+    .await;
+    assert_eq!(posted["events"].as_array().unwrap().len(), 2);
+
+    let message = client.recv().await;
+    assert_eq!(message["scope"]["kind"], "thread");
+    assert_eq!(message["scope"]["id"], thread_id);
+    let payload: Value = serde_json::from_str(message["payload"].as_str().unwrap()).unwrap();
+    assert_eq!(payload["type"], "thread_message_added");
+    assert_eq!(payload["message"]["content"], "hello loom");
+
+    let status = client.recv().await;
+    let payload: Value = serde_json::from_str(status["payload"].as_str().unwrap()).unwrap();
+    assert_eq!(payload["type"], "thread_status_changed");
+    assert_eq!(payload["from"], "idle");
+    assert_eq!(payload["to"], "working");
+
+    // The thread-scoped events must not leak into the project scope.
+    assert!(client.try_recv(Duration::from_millis(300)).await.is_none());
+
+    state.shutdown();
+}
+
 /// Minimal HTTP GET, so the test suite needs no HTTP client dependency.
 async fn http_json(addr: &str, path: &str) -> Value {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     let mut stream = TcpStream::connect(addr).await.unwrap();
     let request = format!("GET {path} HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n");
+    stream.write_all(request.as_bytes()).await.unwrap();
+    stream.flush().await.unwrap();
+
+    let mut response = Vec::new();
+    tokio::time::timeout(TIMEOUT, stream.read_to_end(&mut response))
+        .await
+        .expect("HTTP response timed out")
+        .unwrap();
+    let text = String::from_utf8(response).unwrap();
+    let body = text
+        .split_once("\r\n\r\n")
+        .expect("response had no body separator")
+        .1;
+    serde_json::from_str(body).unwrap_or_else(|error| panic!("bad JSON body: {error}\n{body}"))
+}
+
+/// Minimal HTTP POST with a JSON body, sharing the GET helper's parsing.
+async fn http_post_json(addr: &str, path: &str, body: &Value) -> Value {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let payload = body.to_string();
+    let mut stream = TcpStream::connect(addr).await.unwrap();
+    let request = format!(
+        "POST {path} HTTP/1.1\r\nHost: {addr}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{payload}",
+        payload.len()
+    );
     stream.write_all(request.as_bytes()).await.unwrap();
     stream.flush().await.unwrap();
 

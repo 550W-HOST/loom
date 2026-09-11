@@ -10,9 +10,11 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
+use loom_domain::DomainScope;
 use loom_relay::retention::Retention;
 use loom_relay::{now_ms, Relay, Result as RelayResult};
 
+use crate::domain_state::DomainRegistry;
 use crate::hub_actor::HubHandle;
 use crate::pump::{Pump, PumpConfig};
 
@@ -82,6 +84,8 @@ pub struct AppState {
     pub hub: HubHandle,
     /// The fixed shard readers.
     pub pump: Arc<Pump>,
+    /// In-memory domain entities for the command API.
+    pub registry: Arc<DomainRegistry>,
     started_at: Instant,
     started_at_ms: u64,
 }
@@ -103,13 +107,15 @@ impl AppState {
         let relay = Relay::new(backend, config.retention, config.node_id.clone())?;
         let (hub, _actor) = HubHandle::spawn(config.hub_queue_capacity);
         let pump = Arc::new(Pump::spawn(relay.clone(), hub.clone(), config.pump));
+        let started_at_ms = now_ms();
 
         Ok(Self {
             relay,
             hub,
             pump,
+            registry: Arc::new(DomainRegistry::new(started_at_ms)),
             started_at: Instant::now(),
-            started_at_ms: now_ms(),
+            started_at_ms,
         })
     }
 
@@ -137,6 +143,20 @@ impl AppState {
         Ok(envelope)
     }
 
+    /// Publishes a domain event to the scope the domain assigned it.
+    ///
+    /// This is the only place the server translates a
+    /// [`loom_domain::DomainScope`] into a [`loom_relay::Scope`]; handlers deal
+    /// only in domain events. The stored payload is the serialized event, so a
+    /// client dispatches on its `type` tag and replay is byte-identical.
+    pub fn publish_domain_event(
+        &self,
+        event: &loom_domain::DomainEvent,
+    ) -> RelayResult<loom_relay::Envelope> {
+        let payload = serde_json::to_vec(event).expect("a DomainEvent always serializes to JSON");
+        self.publish(relay_scope(&event.scope()), payload)
+    }
+
     /// Milliseconds since the server was wired up.
     pub fn uptime_ms(&self) -> u64 {
         self.started_at.elapsed().as_millis() as u64
@@ -150,6 +170,21 @@ impl AppState {
     /// Stops the readers. `&self` because the pump is shared via `Arc`.
     pub fn shutdown(&self) {
         self.pump.stop();
+    }
+}
+
+/// Maps a domain scope onto the relay scope that routes it.
+///
+/// The two types describe the same `(kind, id)` room, but they live in
+/// different crates with a one-way dependency: the domain must not know the
+/// relay exists, so the translation lives here, at the publish boundary.
+pub fn relay_scope(scope: &DomainScope) -> loom_relay::Scope {
+    match scope {
+        DomainScope::Global => loom_relay::Scope::Global,
+        DomainScope::Project(id) => loom_relay::Scope::Project(id.to_string()),
+        DomainScope::Thread(id) => loom_relay::Scope::Thread(id.to_string()),
+        DomainScope::Host(id) => loom_relay::Scope::Host(id.to_string()),
+        DomainScope::User(id) => loom_relay::Scope::User(id.to_string()),
     }
 }
 
@@ -251,6 +286,34 @@ mod tests {
         assert_eq!(
             state.pump.reader_count(),
             usize::from(loom_relay::SHARD_COUNT)
+        );
+    }
+
+    #[test]
+    fn every_domain_scope_maps_onto_a_relay_scope() {
+        use loom_domain::{HostId, ProjectId, ThreadId, UserId};
+
+        assert_eq!(relay_scope(&DomainScope::Global), Scope::Global);
+
+        let project = ProjectId::mint();
+        assert_eq!(
+            relay_scope(&DomainScope::Project(project.clone())),
+            Scope::Project(project.to_string())
+        );
+        let thread = ThreadId::mint();
+        assert_eq!(
+            relay_scope(&DomainScope::Thread(thread.clone())),
+            Scope::Thread(thread.to_string())
+        );
+        let host = HostId::mint();
+        assert_eq!(
+            relay_scope(&DomainScope::Host(host.clone())),
+            Scope::Host(host.to_string())
+        );
+        let user = UserId::mint();
+        assert_eq!(
+            relay_scope(&DomainScope::User(user.clone())),
+            Scope::User(user.to_string())
         );
     }
 }

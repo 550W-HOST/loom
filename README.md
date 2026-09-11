@@ -22,7 +22,8 @@ on it and it can be validated on its own.
 - [x] `loom-relay` — scoped, sharded, replayable event log
 - [x] `loom-relay-hub` — rooms, idempotent fan-out, backpressure signal
 - [x] `loom-server` — HTTP + WebSocket surface; publish reaches subscribers through the log
-- [ ] Persist the log (durable backend) and port the real domain model
+- [x] `loom-domain` — projects, threads, hosts and environments as pure types and invariants
+- [ ] Persist domain entities (the domain registry is in-process and lost on restart)
 - [ ] Port the bb web UI unchanged, served by the Rust server
 - [ ] Server-only startup and independently stoppable local daemon
 - [ ] Redis/NATS relay backend for restart-transparent upgrades
@@ -31,6 +32,7 @@ on it and it can be validated on its own.
 
 ```
 crates/
+  domain/       loom-domain     projects, threads, hosts, environments, scopes, events
   relay/        loom-relay      scopes, event ids, retention, dedup, backends
   relay-hub/    loom-relay-hub  connections, rooms, delivery
   server/       loom-server     HTTP, WebSocket, protocol, fixed readers
@@ -61,6 +63,24 @@ curl -X POST localhost:38886/api/v1/publish \
   -H 'content-type: application/json' \
   -d '{"scope":{"kind":"thread","id":"thr_1"},"payload":"{\"hello\":\"loom\"}"}'
 curl 'localhost:38886/api/v1/replay?scope_kind=thread&scope_id=thr_1'
+```
+
+Minimal domain commands — create a thread, message it, register a host. Each
+publishes a typed `loom-domain` event through the relay:
+
+```bash
+# Register a host; the `host_registered` event goes to host:{id}.
+curl -X POST localhost:38886/api/v1/hosts \
+  -H 'content-type: application/json' -d '{"name":"laptop"}'
+
+# Create a thread; the `thread_created` event goes to the project's scope.
+curl -X POST localhost:38886/api/v1/threads \
+  -H 'content-type: application/json' -d '{}'
+
+# Message a thread; it appends and, from idle, starts a run. Both events go
+# to thread:{id}, in order.
+curl -X POST localhost:38886/api/v1/threads/thr_.../messages \
+  -H 'content-type: application/json' -d '{"content":"hello"}'
 ```
 
 Connect a client on `ws://127.0.0.1:38886/ws`, send

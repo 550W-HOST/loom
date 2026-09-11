@@ -3,14 +3,16 @@
 //! Small on purpose. The interesting surface is the WebSocket; these routes
 //! exist so a server can be probed, identified and fed events.
 
-use axum::extract::State;
+use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use loom_domain::{DomainError, DomainEvent, DomainScope, Host, MessageRole, Thread, ThreadId};
 use loom_relay::scope::Scope;
 use serde::{Deserialize, Serialize};
 
+use crate::domain_state::CommandError;
 use crate::state::AppState;
 use crate::ws;
 use crate::PROTOCOL_VERSION;
@@ -22,6 +24,9 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/version", get(version))
         .route("/api/v1/publish", post(publish))
         .route("/api/v1/replay", get(replay))
+        .route("/api/v1/threads", post(create_thread))
+        .route("/api/v1/threads/{id}/messages", post(post_thread_message))
+        .route("/api/v1/hosts", post(register_host))
         .route("/ws", get(ws::client_socket))
         .with_state(state)
 }
@@ -116,6 +121,176 @@ async fn publish(State(state): State<AppState>, Json(request): Json<PublishReque
 
 fn error_response(status: StatusCode, message: String) -> Response {
     (status, Json(serde_json::json!({ "error": message }))).into_response()
+}
+
+/// Body of a create-thread request.
+#[derive(Clone, Debug, Deserialize)]
+pub struct CreateThreadRequest {
+    /// The owning project. Omitted means the server's personal project.
+    pub project_id: Option<loom_domain::ProjectId>,
+    /// Optional display title.
+    pub title: Option<String>,
+}
+
+/// A created thread and the event that announced it.
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+pub struct CreateThreadResponse {
+    /// The new thread, in status `idle`.
+    pub thread: Thread,
+    /// The `thread_created` event, published to `project:{project_id}`.
+    pub event_id: String,
+}
+
+/// Creates a thread.
+///
+/// The event goes to the project scope, not the (brand new, unsubscribable)
+/// thread scope: it is the project's thread list that has to learn about it.
+async fn create_thread(
+    State(state): State<AppState>,
+    Json(request): Json<CreateThreadRequest>,
+) -> Response {
+    match state
+        .registry
+        .create_thread(request.project_id, request.title, loom_relay::now_ms())
+    {
+        Ok((thread, event)) => match state.publish_domain_event(&event) {
+            Ok(envelope) => Json(CreateThreadResponse {
+                thread,
+                event_id: envelope.event_id.to_string(),
+            })
+            .into_response(),
+            Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+        },
+        Err(error) => command_error_response(error),
+    }
+}
+
+/// Body of a post-message request.
+#[derive(Clone, Debug, Deserialize)]
+pub struct PostMessageRequest {
+    /// The message body.
+    pub content: String,
+    /// Who produced it. Defaults to the user.
+    #[serde(default)]
+    pub role: MessageRole,
+}
+
+/// One event a command published.
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+pub struct PublishedEvent {
+    /// The event id, usable as a resume cursor.
+    pub event_id: String,
+    /// The stable event type tag.
+    pub event_type: &'static str,
+    /// The scope it was published to.
+    pub scope: DomainScope,
+}
+
+/// The events a message produced.
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+pub struct PostMessageResponse {
+    /// The thread the message landed in.
+    pub thread_id: ThreadId,
+    /// Events in publication order: the message, then any status change.
+    pub events: Vec<PublishedEvent>,
+}
+
+/// Appends a message to a thread.
+///
+/// A user message into an `idle` thread also starts a run, so this commonly
+/// publishes two events to the thread scope. They are published in order, so a
+/// subscriber sees the message and then the status change.
+async fn post_thread_message(
+    State(state): State<AppState>,
+    Path(raw_thread_id): Path<String>,
+    Json(request): Json<PostMessageRequest>,
+) -> Response {
+    let thread_id = match raw_thread_id.parse::<ThreadId>() {
+        Ok(thread_id) => thread_id,
+        Err(error) => return error_response(StatusCode::BAD_REQUEST, error.to_string()),
+    };
+    match state.registry.post_message(
+        &thread_id,
+        request.role,
+        request.content,
+        loom_relay::now_ms(),
+    ) {
+        Ok(events) => match publish_all(&state, &events) {
+            Ok(published) => Json(PostMessageResponse {
+                thread_id,
+                events: published,
+            })
+            .into_response(),
+            Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+        },
+        Err(error) => command_error_response(error),
+    }
+}
+
+/// Body of a host-registration request.
+#[derive(Clone, Debug, Deserialize)]
+pub struct RegisterHostRequest {
+    /// The machine's display name.
+    pub name: String,
+}
+
+/// A registered host and the event that announced it.
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+pub struct RegisterHostResponse {
+    /// The host, in status `connected`.
+    pub host: Host,
+    /// The `host_registered` event, published to `host:{id}`.
+    pub event_id: String,
+}
+
+/// Registers a host.
+async fn register_host(
+    State(state): State<AppState>,
+    Json(request): Json<RegisterHostRequest>,
+) -> Response {
+    match state
+        .registry
+        .register_host(request.name, loom_relay::now_ms())
+    {
+        Ok((host, event)) => match state.publish_domain_event(&event) {
+            Ok(envelope) => Json(RegisterHostResponse {
+                host,
+                event_id: envelope.event_id.to_string(),
+            })
+            .into_response(),
+            Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+        },
+        Err(error) => command_error_response(error),
+    }
+}
+
+/// Publishes each domain event to the scope the domain assigned it, in order.
+fn publish_all(
+    state: &AppState,
+    events: &[DomainEvent],
+) -> loom_relay::Result<Vec<PublishedEvent>> {
+    events
+        .iter()
+        .map(|event| {
+            let envelope = state.publish_domain_event(event)?;
+            Ok(PublishedEvent {
+                event_id: envelope.event_id.to_string(),
+                event_type: event.kind(),
+                scope: event.scope(),
+            })
+        })
+        .collect()
+}
+
+/// Maps a command failure onto an HTTP status.
+fn command_error_response(error: CommandError) -> Response {
+    match error {
+        CommandError::NotFound(message) => error_response(StatusCode::NOT_FOUND, message),
+        CommandError::Domain(
+            error @ (DomainError::InvalidField { .. } | DomainError::MalformedId { .. }),
+        ) => error_response(StatusCode::BAD_REQUEST, error.to_string()),
+        CommandError::Domain(error) => error_response(StatusCode::CONFLICT, error.to_string()),
+    }
 }
 
 /// Query for [`replay`].
@@ -248,6 +423,33 @@ mod tests {
         serde_json::from_slice(&bytes).unwrap()
     }
 
+    async fn post(app: &Router, path: &str, body: serde_json::Value) -> Response {
+        app.clone()
+            .oneshot(
+                Request::post(path)
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+    }
+
+    /// Reads back the domain event stored in a scope's last frame.
+    fn stored_events(state: &AppState, scope: &Scope) -> Vec<serde_json::Value> {
+        state
+            .relay
+            .replay_scope(scope, 100)
+            .unwrap()
+            .into_iter()
+            .map(|envelope| {
+                let frame: serde_json::Value = serde_json::from_slice(&envelope.payload).unwrap();
+                assert_eq!(frame["type"], "event");
+                serde_json::from_str(frame["payload"].as_str().unwrap()).unwrap()
+            })
+            .collect()
+    }
+
     #[tokio::test]
     async fn health_reports_the_fixed_reader_count() {
         let app = router(test_state());
@@ -320,5 +522,137 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    #[tokio::test]
+    async fn creating_a_thread_defaults_to_the_personal_project() {
+        let state = test_state();
+        let app = router(state.clone());
+
+        let response = post(&app, "/api/v1/threads", serde_json::json!({})).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let json = body_json(response).await;
+        assert_eq!(json["thread"]["status"], "idle");
+        assert_eq!(
+            json["thread"]["project_id"],
+            state.registry.personal_project_id().to_string()
+        );
+        assert_eq!(json["event_id"].as_str().unwrap().len(), 26);
+
+        // `thread_created` lands in the project scope, not the thread scope:
+        // it is the project's thread list that has to learn about it.
+        let project = Scope::Project(state.registry.personal_project_id().to_string());
+        let events = stored_events(&state, &project);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0]["type"], "thread_created");
+
+        state.shutdown();
+    }
+
+    #[tokio::test]
+    async fn creating_a_thread_in_an_unknown_project_is_not_found() {
+        let app = router(test_state());
+        let response = post(
+            &app,
+            "/api/v1/threads",
+            serde_json::json!({ "project_id": loom_domain::ProjectId::mint().to_string() }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn a_user_message_publishes_message_then_status_to_the_thread_scope() {
+        let state = test_state();
+        let app = router(state.clone());
+        let created = body_json(post(&app, "/api/v1/threads", serde_json::json!({})).await).await;
+        let thread_id = created["thread"]["id"].as_str().unwrap().to_string();
+
+        let response = post(
+            &app,
+            &format!("/api/v1/threads/{thread_id}/messages"),
+            serde_json::json!({ "content": "hello" }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let json = body_json(response).await;
+        let published = json["events"].as_array().unwrap();
+        assert_eq!(published.len(), 2);
+        assert_eq!(published[0]["event_type"], "thread_message_added");
+        assert_eq!(published[0]["scope"]["kind"], "thread");
+        assert_eq!(published[1]["event_type"], "thread_status_changed");
+        assert_eq!(published[1]["scope"]["id"], thread_id);
+
+        let scope = Scope::Thread(thread_id);
+        let stored = stored_events(&state, &scope);
+        assert_eq!(stored.len(), 2);
+        assert_eq!(stored[0]["type"], "thread_message_added");
+        assert_eq!(stored[1]["type"], "thread_status_changed");
+
+        state.shutdown();
+    }
+
+    #[tokio::test]
+    async fn messaging_an_unknown_thread_is_not_found() {
+        let app = router(test_state());
+        let response = post(
+            &app,
+            &format!("/api/v1/threads/{}/messages", ThreadId::mint()),
+            serde_json::json!({ "content": "hello" }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn an_empty_message_is_rejected() {
+        let state = test_state();
+        let app = router(state.clone());
+        let created = body_json(post(&app, "/api/v1/threads", serde_json::json!({})).await).await;
+        let thread_id = created["thread"]["id"].as_str().unwrap().to_string();
+
+        let response = post(
+            &app,
+            &format!("/api/v1/threads/{thread_id}/messages"),
+            serde_json::json!({ "content": "   " }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn a_malformed_thread_id_is_rejected() {
+        let app = router(test_state());
+        let response = post(
+            &app,
+            "/api/v1/threads/not-a-thread/messages",
+            serde_json::json!({ "content": "hello" }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn registering_a_host_publishes_to_the_host_scope() {
+        let state = test_state();
+        let app = router(state.clone());
+
+        let response = post(
+            &app,
+            "/api/v1/hosts",
+            serde_json::json!({ "name": "laptop" }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let json = body_json(response).await;
+        assert_eq!(json["host"]["status"], "connected");
+        let host_id = json["host"]["id"].as_str().unwrap().to_string();
+
+        let scope = Scope::Host(host_id);
+        let events = stored_events(&state, &scope);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0]["type"], "host_registered");
+
+        state.shutdown();
     }
 }

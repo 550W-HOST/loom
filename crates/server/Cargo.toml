@@ -7,6 +7,7 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+loom-domain.workspace = true
 loom-relay.workspace = true
 loom-relay-hub.workspace = true
 axum = { workspace = true }
