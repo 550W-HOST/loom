@@ -26,7 +26,8 @@ on it and it can be validated on its own.
 - [x] Server-only startup and an independently stoppable local daemon (`loom-daemon`)
 - [x] `loom-provider-protocol` — the server↔daemon provider contract, plus a Pi bridge in `loom-daemon`: dispatch through the relay, replayable run events, and a terminal-state guarantee
 - [ ] Persist domain entities (the domain registry is in-process and lost on restart)
-- [ ] Port the bb web UI unchanged, served by the Rust server
+- [x] `loom-server` hosts the UI from its own origin; a client subscribes to `thread:{id}` through the relay and reconnects by subscribe-then-replay (`docs/ui.md`)
+- [ ] Check in the bb web UI (`apps/app`) and serve its built bundle unchanged via `LOOM_UI_DIR`
 - [ ] Check in the Node execution plane (`apps/host-daemon`) against the daemon contract
   (`loom-daemon` is the reference implementation and exercises the whole contract today)
 - [x] Redis Streams relay backend for restart-transparent upgrades (`LOOM_REDIS_URL`)
@@ -38,14 +39,16 @@ crates/
   domain/       loom-domain     projects, threads, hosts, environments, scopes, events, runs
   relay/        loom-relay      scopes, event ids, retention, dedup, backends
   relay-hub/    loom-relay-hub  connections, rooms, delivery
-  server/       loom-server     HTTP, WebSocket, protocol, dispatch, fixed readers
+  server/       loom-server     HTTP, WebSocket, protocol, dispatch, fixed readers, UI hosting
   provider-protocol/  loom-provider-protocol  the server↔daemon provider contract
   daemon/       loom-daemon     the execution plane: enrollment, dispatch, Pi bridge
+ui/             the reference UI client: buildless, served by loom-server
 docs/
   architecture.md
   process-model.md
   provider-protocol.md
   redis-backend.md
+  ui.md
 ```
 
 Application code from the bb fork (`apps/`, `packages/`, `plugins/`) lands here
@@ -118,6 +121,13 @@ curl localhost:38886/api/v1/runs
 Connect a client on `ws://127.0.0.1:38886/ws`, send
 `{"type":"subscribe","scope":{"kind":"thread","id":"thr_1"}}`, and the
 published frame arrives.
+
+The UI is served from the same origin: open `http://127.0.0.1:38886/`. With no
+configuration that is the reference client compiled into the binary; point
+`LOOM_UI_DIR` at a built bundle (the ported bb UI) or `LOOM_UI_PROXY` at a
+frontend dev server. The client derives its server from its own origin and
+reconnects with subscribe-then-replay — the contract is in
+[`docs/ui.md`](docs/ui.md).
 
 The provider contract — dispatch through the relay, the report path, the
 stdout guard and the guarantee that a run always ends — is specified in

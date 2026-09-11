@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::domain_state::CommandError;
 use crate::state::AppState;
+use crate::ui;
 use crate::ws;
 use crate::PROTOCOL_VERSION;
 
@@ -26,7 +27,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/version", get(version))
         .route("/api/v1/publish", post(publish))
         .route("/api/v1/replay", get(replay))
-        .route("/api/v1/threads", post(create_thread))
+        .route("/api/v1/threads", get(list_threads).post(create_thread))
         .route("/api/v1/threads/{id}/messages", post(post_thread_message))
         .route("/api/v1/runs", get(list_runs))
         .route("/api/v1/hosts", get(list_hosts).post(register_host))
@@ -34,6 +35,9 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/hosts/{id}/heartbeat", post(host_heartbeat))
         .route("/api/v1/hosts/{id}/disconnect", post(disconnect_host))
         .route("/ws", get(ws::client_socket))
+        // Everything else is a client route: the UI shell (or a dev-server
+        // proxy). API and socket paths are excluded inside the handler.
+        .fallback(ui::serve)
         .with_state(state)
 }
 
@@ -136,6 +140,23 @@ pub struct CreateThreadRequest {
     pub project_id: Option<loom_domain::ProjectId>,
     /// Optional display title.
     pub title: Option<String>,
+}
+
+/// Every known thread, newest first.
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+pub struct ThreadListResponse {
+    /// Threads the UI can open.
+    pub threads: Vec<Thread>,
+}
+
+/// Lists threads.
+///
+/// The UI begins here: fetch the list, then open one thread and subscribe to
+/// its scope on the socket for the conversation itself.
+async fn list_threads(State(state): State<AppState>) -> Json<ThreadListResponse> {
+    Json(ThreadListResponse {
+        threads: state.registry.threads(),
+    })
 }
 
 /// A created thread and the event that announced it.
@@ -942,5 +963,48 @@ mod tests {
         let primary = state.registry.primary_host(Some(&local)).unwrap();
         assert_eq!(primary.id, local);
         assert_ne!(primary.id, remote.id);
+    }
+
+    #[tokio::test]
+    async fn the_thread_list_is_the_uis_entry_point() {
+        let state = test_state();
+        let app = router(state.clone());
+
+        // Empty to begin with, and an empty list is not an error.
+        let empty = body_json(get(&app, "/api/v1/threads").await).await;
+        assert_eq!(empty["threads"].as_array().unwrap().len(), 0);
+
+        let first = body_json(post(&app, "/api/v1/threads", serde_json::json!({})).await).await;
+        let second = body_json(
+            post(
+                &app,
+                "/api/v1/threads",
+                serde_json::json!({ "title": "second" }),
+            )
+            .await,
+        )
+        .await;
+
+        let listed = body_json(get(&app, "/api/v1/threads").await).await;
+        let ids: Vec<&str> = listed["threads"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|thread| thread["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids.len(), 2);
+        assert!(ids.contains(&first["thread"]["id"].as_str().unwrap()));
+        assert!(ids.contains(&second["thread"]["id"].as_str().unwrap()));
+
+        state.shutdown();
+    }
+
+    #[tokio::test]
+    async fn the_root_path_serves_the_ui_shell() {
+        let app = router(test_state());
+        let response = get(&app, "/").await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        assert!(String::from_utf8_lossy(&body).contains("<title>loom</title>"));
     }
 }

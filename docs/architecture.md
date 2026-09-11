@@ -258,6 +258,13 @@ configuration.
 That makes these three genuinely the same client, which is why the native
 mobile app is not maintained here.
 
+This is implemented. `loom-server` serves the UI from the same origin as the
+API; by default that is a buildless reference client compiled into the binary,
+and `LOOM_UI_DIR` points at a built bundle (where the ported bb UI will live)
+while `LOOM_UI_PROXY` reverse-proxies to a dev server. The client contract —
+subscribe on the socket first, then replay the backlog `since` the last event
+id, merging by `event_id` — is in [`ui.md`](ui.md).
+
 ### Optional local daemon
 
 The desktop shell may start, and independently stop, a local daemon. A daemon
@@ -280,6 +287,9 @@ policy, and the desktop shell's two supervision switches — is specified in
 ## Open questions
 
 - Whether the desktop shell earns its maintenance cost once the UI is a URL
-  client, or whether an installed PWA covers it.
+  client, or whether an installed PWA covers it. Current recommendation: keep
+  `apps/desktop` in the tree but reduce it to a webview pointed at a URL plus
+  the two supervision switches, and delete nothing until that shell is proven
+  (see [`ui.md`](ui.md) § "Desktop shell").
 - How much of bb's existing Node daemon is kept as-is: it is ~45k lines and its
   provider bridge is the part that actually touches agents.

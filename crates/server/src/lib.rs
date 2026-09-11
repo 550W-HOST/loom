@@ -29,6 +29,7 @@ pub mod pump;
 pub mod runs;
 pub mod state;
 pub mod transport;
+pub mod ui;
 pub mod ws;
 
 pub use domain_state::{CommandError, DomainRegistry};

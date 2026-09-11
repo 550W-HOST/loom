@@ -226,6 +226,21 @@ impl DomainRegistry {
         self.lock().threads.get(thread_id).cloned()
     }
 
+    /// Every known thread, newest first.
+    ///
+    /// The list a UI renders in its sidebar. Ordering is by creation time and
+    /// then id, so it is stable when two threads share a millisecond.
+    pub fn threads(&self) -> Vec<Thread> {
+        let mut threads: Vec<Thread> = self.lock().threads.values().cloned().collect();
+        threads.sort_by(|left, right| {
+            right
+                .created_at_ms
+                .cmp(&left.created_at_ms)
+                .then_with(|| left.id.cmp(&right.id))
+        });
+        threads
+    }
+
     /// Applies a lifecycle trigger to a stored thread.
     ///
     /// Returns the status-change event when the transition happened, `None`
