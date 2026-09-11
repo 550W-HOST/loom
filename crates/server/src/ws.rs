@@ -38,6 +38,7 @@ use axum::response::Response;
 use futures_util::{SinkExt, StreamExt};
 use loom_domain::HostId;
 use loom_relay::event_id::EventId;
+use loom_relay::now_ms;
 use loom_relay::scope::Scope;
 
 use crate::protocol::{ClientCommand, ServerMessage};
@@ -263,7 +264,11 @@ async fn handle_command(
             since,
             limit,
         } => match replay_to_connection(connection_id, scope.clone(), since, limit, state).await {
-            Ok(count) => Some(ServerMessage::ReplayComplete { scope, count }),
+            Ok((count, has_more)) => Some(ServerMessage::ReplayComplete {
+                scope,
+                count,
+                has_more,
+            }),
             Err(message) => Some(ServerMessage::Error { message }),
         },
     }
@@ -280,31 +285,36 @@ async fn replay_to_connection(
     since: Option<EventId>,
     limit: Option<usize>,
     state: &AppState,
-) -> Result<usize, String> {
+) -> Result<(usize, bool), String> {
     let limit = limit.unwrap_or(500).clamp(1, 10_000);
-    // Read a wider window when a cursor is supplied so filtering by cursor
-    // cannot silently truncate the answer.
-    let read_limit = if since.is_some() {
-        limit.saturating_mul(4)
-    } else {
-        limit
+    let (events, has_more) = match since {
+        // Resume: page forward so a consumer that repeats the call with the
+        // returned last id cannot skip a frame. Returning the newest frames
+        // here would drop everything between the cursor and the page, and the
+        // advanced cursor would make the gap unrecoverable.
+        Some(since) => {
+            let page = state
+                .relay
+                .replay_page_after(&scope, Some(since), now_ms(), limit)
+                .map_err(|error| error.to_string())?;
+            (page.events, page.has_more)
+        }
+        // Fresh view: the newest frames in the window, which is what a client
+        // opening a scope wants. No cursor exists to advance past a gap, so
+        // nothing can be lost.
+        None => {
+            let events = state
+                .relay
+                .replay_scope(&scope, limit)
+                .map_err(|error| error.to_string())?;
+            (events, false)
+        }
     };
-    let mut events = state
-        .relay
-        .replay_scope(&scope, read_limit)
-        .map_err(|error| error.to_string())?;
-    if let Some(since) = since {
-        events.retain(|envelope| envelope.event_id > since);
-    }
-    if events.len() > limit {
-        let start = events.len() - limit;
-        events = events.split_off(start);
-    }
     let count = events.len();
     for envelope in events {
         let _ = state.hub.send_to(connection_id, envelope.payload).await;
     }
-    Ok(count)
+    Ok((count, has_more))
 }
 
 /// Publishes domain events in order and returns the last event id.

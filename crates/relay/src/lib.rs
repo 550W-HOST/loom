@@ -42,7 +42,7 @@ pub use backend::{LogRecord, RelayBackend, SharedBackend};
 pub use envelope::{Envelope, NodeId, WireEnvelope};
 pub use error::{RelayError, Result};
 pub use event_id::EventId;
-pub use relay::{MaintenanceReport, Relay};
+pub use relay::{MaintenanceReport, Relay, ReplayPage};
 pub use retention::Retention;
 pub use scope::{Scope, ShardId, SHARD_COUNT};
 

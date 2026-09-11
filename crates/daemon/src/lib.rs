@@ -486,24 +486,41 @@ impl Daemon {
 
     /// Requests the backlog for the host scope and applies every dispatch in
     /// it.
+    ///
+    /// Pages until the server reports the head. One page is not enough: a
+    /// reconnect after a burst can leave more dispatches queued than the page
+    /// limit, and the server returns the *oldest* frames after the cursor
+    /// precisely so that repeating the request with the advanced cursor cannot
+    /// skip any. Stopping at the first page would advance the cursor past the
+    /// dispatches that did not fit, and they would never be retried.
     async fn replay_host_scope(&mut self, host_id: &HostId) -> Result<(), DaemonError> {
-        self.send(&ClientCommand::Replay {
-            scope: Scope::Host(host_id.to_string()),
-            since: self.cursor,
-            limit: Some(self.config.replay_limit),
-        })
-        .await?;
+        let scope = Scope::Host(host_id.to_string());
         loop {
-            match next_message(&mut self.socket).await? {
-                ServerMessage::Event {
-                    event_id,
-                    scope,
-                    payload,
-                    ..
-                } => self.observe_event(&event_id, &scope, &payload)?,
-                ServerMessage::ReplayComplete { .. } => return Ok(()),
-                ServerMessage::Error { message } => return Err(DaemonError::Protocol(message)),
-                _ => continue,
+            self.send(&ClientCommand::Replay {
+                scope: scope.clone(),
+                since: self.cursor,
+                limit: Some(self.config.replay_limit),
+            })
+            .await?;
+
+            // `ReplayComplete` carries `has_more`, so read the page and decide
+            // from the server's answer rather than inferring from `count`.
+            let has_more = loop {
+                match next_message(&mut self.socket).await? {
+                    ServerMessage::Event {
+                        event_id,
+                        scope,
+                        payload,
+                        ..
+                    } => self.observe_event(&event_id, &scope, &payload)?,
+                    ServerMessage::ReplayComplete { has_more, .. } => break has_more,
+                    ServerMessage::Error { message } => return Err(DaemonError::Protocol(message)),
+                    _ => continue,
+                }
+            };
+
+            if !has_more {
+                return Ok(());
             }
         }
     }

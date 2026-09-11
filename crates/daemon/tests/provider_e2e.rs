@@ -497,3 +497,97 @@ async fn the_real_pi_process_streams_through_the_bridge() {
     daemon.abort();
     state.shutdown();
 }
+
+/// A reconnect that missed more dispatches than one replay page must still
+/// receive every one of them.
+///
+/// The server pages a cursor replay from the **oldest** frame after the cursor
+/// precisely so this works. The daemon advances its persisted resume cursor as
+/// it applies frames, so a single-page replay would move that cursor to the
+/// newest frame and silently strand every dispatch in between — they would
+/// never be retried. Here `replay_limit` is 4 and 10 runs are queued after the
+/// cursor.
+#[tokio::test]
+async fn a_reconnect_recovers_more_dispatches_than_one_replay_page() {
+    let dir = tempfile::tempdir().unwrap();
+    let provider = write_stub(
+        dir.path(),
+        "quick.sh",
+        r#"read -r _prompt
+printf '%s\n' '{"type":"agent_start"}'
+printf '%s\n' '{"type":"agent_settled"}'
+sleep 1
+"#,
+    );
+
+    let (url, state) = spawn_server(AppConfig {
+        provider_spec: provider.clone(),
+        run_timeout: Duration::from_secs(60),
+        ..AppConfig::default()
+    })
+    .await;
+
+    // A daemon enrolls so the dispatcher has a host, but it never runs its
+    // event loop: every dispatch lands in its room and is left unread.
+    let mut first_config = DaemonConfig::new(&url, "test-daemon");
+    first_config.provider = Some(provider.clone());
+    let mut first = Daemon::connect(first_config).await.unwrap();
+    let host_id = first.enroll().await.unwrap();
+    let host_scope = loom_relay::Scope::Host(host_id.to_string());
+
+    // A warm-up dispatch establishes the point a restarting daemon would have
+    // cursored past before it went away.
+    start_turn(&state, "warm-up");
+    let cursor = state
+        .relay
+        .replay_scope(&host_scope, 100)
+        .unwrap()
+        .last()
+        .expect("the warm-up dispatch is in the host room")
+        .event_id;
+
+    // The backlog: strictly after the cursor, and more than one page.
+    const BACKLOG: usize = 10;
+    let mut threads = Vec::new();
+    for i in 0..BACKLOG {
+        threads.push(start_turn(&state, &format!("backlog {i}")));
+    }
+
+    first.disconnect().await.unwrap();
+    assert!(
+        eventually(|| state
+            .registry
+            .host(&host_id)
+            .map(|host| host.status == HostStatus::Disconnected)
+            .unwrap_or(false))
+        .await
+    );
+
+    // Restart with the persisted cursor and a page limit far below the backlog.
+    let mut resume_config = DaemonConfig::new(&url, "test-daemon");
+    resume_config.host_id = Some(host_id.clone());
+    resume_config.provider = Some(provider);
+    resume_config.run_timeout = Duration::from_secs(60);
+    resume_config.heartbeat_interval = Duration::from_millis(50);
+    resume_config.resume_cursor = Some(cursor);
+    resume_config.replay_limit = 4;
+    let mut resumed = Daemon::connect(resume_config).await.unwrap();
+    assert_eq!(resumed.enroll().await.unwrap(), host_id);
+    let daemon = tokio::spawn(async move {
+        let _ = resumed.run().await;
+    });
+
+    // Every queued run must reach a terminal state, not just the newest page.
+    for (i, thread_id) in threads.iter().enumerate() {
+        assert_eq!(
+            wait_for_terminal(&state, thread_id).await,
+            ThreadStatus::Idle,
+            "dispatch {i} must run; a single-page replay would strand it"
+        );
+        let events = thread_events(&state, thread_id);
+        assert_eq!(terminal_outcome(&events), Some("completed".into()));
+    }
+
+    daemon.abort();
+    state.shutdown();
+}

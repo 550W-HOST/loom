@@ -56,6 +56,14 @@ pub struct HealthResponse {
     pub readers: usize,
     /// Records currently retained across all shards.
     pub retained_events: usize,
+    /// The backend's latched failure, if it has one.
+    ///
+    /// Present means the process is serving from memory and its durability is
+    /// degraded: the frame the log just accepted may not survive a restart.
+    /// Reads continue to work by design, so this field — not a missing
+    /// response — is how an operator learns about it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub backend_error: Option<String>,
 }
 
 async fn health(State(state): State<AppState>) -> Response {
@@ -66,12 +74,15 @@ async fn health(State(state): State<AppState>) -> Response {
         }
     };
     Json(HealthResponse {
+        // Liveness is about answering at all; a degraded backend is reported
+        // in `backend_error` rather than by taking the process out of service.
         status: "ok",
         protocol_version: PROTOCOL_VERSION,
         node_id: state.relay.origin().to_string(),
         uptime_ms: state.uptime_ms(),
         readers: state.pump.reader_count(),
         retained_events,
+        backend_error: state.relay.backend_error(),
     })
     .into_response()
 }
@@ -461,10 +472,16 @@ pub struct ReplayQuery {
     pub scope_kind: String,
     /// Scope id. Omitted only for `global`.
     pub scope_id: Option<String>,
-    /// Maximum frames to return, most recent kept. Defaults to 100.
+    /// Maximum frames per response. Defaults to 100.
     pub limit: Option<usize>,
-    /// Return only events strictly newer than this id. Intended to be the last
-    /// id the caller already has.
+    /// Page forward from this event id, exclusively.
+    ///
+    /// With a cursor the response is the **oldest** frames after it, and
+    /// [`ReplayResponse::has_more`] says whether another page exists. A client
+    /// resuming must keep paging while `has_more`, otherwise it advances past a
+    /// gap it can no longer recover. Without a cursor the response is the
+    /// **newest** frames in the retention window and `has_more` is always
+    /// `false`.
     pub since: Option<String>,
 }
 
@@ -477,15 +494,18 @@ pub struct ReplayQuery {
 pub struct ReplayResponse {
     /// Client frames in ascending event-id order.
     pub frames: Vec<serde_json::Value>,
+    /// Whether more frames exist after this page. Only ever `true` when a
+    /// cursor was supplied.
+    pub has_more: bool,
 }
 
 /// Replays retained frames for a scope.
 ///
-/// Correct client flow is: subscribe on the socket **first**, then call this.
-/// Any frame that arrives live in the meantime is also present here (or is
-/// newer than the window), and because every frame carries an [`EventId`] the
-/// client drops the duplicate. Fetching first would instead risk missing a
-/// frame published between the two calls.
+/// Correct client flow is: subscribe on the socket **first**, then call this,
+/// paging while `has_more`. Any frame that arrives live in the meantime is also
+/// present here (or is newer than the window), and because every frame carries
+/// an [`EventId`] the client drops the duplicate. Fetching first would instead
+/// risk missing a frame published between the two calls.
 ///
 /// [`EventId`]: loom_relay::EventId
 async fn replay(
@@ -510,27 +530,26 @@ async fn replay(
         },
     };
 
-    // Read a wider window than requested when a cursor is supplied, so
-    // filtering by cursor cannot silently truncate the answer.
     let limit = query.limit.unwrap_or(100).clamp(1, 10_000);
-    let read_limit = if since.is_some() {
-        limit.saturating_mul(4)
-    } else {
-        limit
+    let (events, has_more) = match since {
+        Some(since) => {
+            match state
+                .relay
+                .replay_page_after(&scope, Some(since), loom_relay::now_ms(), limit)
+            {
+                Ok(page) => (page.events, page.has_more),
+                Err(error) => {
+                    return error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
+                }
+            }
+        }
+        None => match state.relay.replay_scope(&scope, limit) {
+            Ok(events) => (events, false),
+            Err(error) => {
+                return error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
+            }
+        },
     };
-
-    let mut events = match state.relay.replay_scope(&scope, read_limit) {
-        Ok(events) => events,
-        Err(error) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
-    };
-
-    if let Some(since) = since {
-        events.retain(|envelope| envelope.event_id > since);
-    }
-    if events.len() > limit {
-        let start = events.len() - limit;
-        events = events.split_off(start);
-    }
 
     Json(ReplayResponse {
         frames: events
@@ -545,6 +564,7 @@ async fn replay(
                 })
             })
             .collect(),
+        has_more,
     })
     .into_response()
 }
@@ -631,6 +651,8 @@ mod tests {
         assert_eq!(json["status"], "ok");
         assert_eq!(json["readers"], usize::from(loom_relay::SHARD_COUNT));
         assert_eq!(json["protocol_version"], PROTOCOL_VERSION);
+        // A healthy backend omits the field rather than reporting null.
+        assert!(json.get("backend_error").is_none());
     }
 
     #[tokio::test]

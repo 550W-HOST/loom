@@ -93,6 +93,19 @@ pub trait RelayBackend: Send + Sync {
     fn is_empty(&self, shard: ShardId) -> Result<bool> {
         self.len(shard).map(|len| len == 0)
     }
+
+    /// A latched backend-level failure, if any.
+    ///
+    /// A backend whose IO is synchronous reports failures at the call site and
+    /// returns `None` here. A backend that hands work to a writer and returns
+    /// before the write happens cannot: the failure surfaces after the call it
+    /// belongs to, so it is latched and reported here instead. Reads keep
+    /// working in that state (the in-memory view is intact), which is exactly
+    /// why this must be observable — otherwise a durability failure looks like
+    /// a healthy server until the next restart loses the window.
+    fn backend_error(&self) -> Option<String> {
+        None
+    }
 }
 
 /// A shared, type-erased backend handle.

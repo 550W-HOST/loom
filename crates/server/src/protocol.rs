@@ -90,11 +90,17 @@ pub enum ClientCommand {
     Replay {
         /// The scope to read back.
         scope: Scope,
-        /// Return only frames strictly newer than this event id. Omit for the
-        /// whole retained window.
+        /// Page forward from this event id, exclusively. Omit for the newest
+        /// frames in the retention window.
+        ///
+        /// The two cases differ deliberately. With a cursor the server returns
+        /// the **oldest** frames after it, so a consumer that repeats the call
+        /// with the returned last id always advances and always converges.
+        /// Without one it returns the **newest**, which is what a client
+        /// opening a scope wants. See [`ServerMessage::ReplayComplete`].
         #[serde(default, skip_serializing_if = "Option::is_none")]
         since: Option<EventId>,
-        /// Maximum frames to return, most recent kept. The server caps it.
+        /// Maximum frames per page. The server caps it.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         limit: Option<usize>,
     },
@@ -179,6 +185,11 @@ pub enum ServerMessage {
         scope: Scope,
         /// How many frames were queued.
         count: usize,
+        /// Whether more frames follow this page. A consumer resuming from a
+        /// cursor must keep paging while this is `true`; stopping early leaves
+        /// a gap it can no longer recover, because it already advanced its
+        /// cursor past it.
+        has_more: bool,
     },
 }
 

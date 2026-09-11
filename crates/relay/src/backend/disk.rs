@@ -352,6 +352,24 @@ impl RelayBackend for DiskBackend {
             .unwrap_or_else(|poison| poison.into_inner())
             .len())
     }
+
+    /// The first write failure any shard's writer latched.
+    ///
+    /// `append` publishes its write to the shard's writer thread and returns,
+    /// so the failure of *that* write is only known afterwards. It is latched
+    /// rather than dropped, and reported here, so a broken disk is observable
+    /// instead of looking like a healthy server whose log happens to be
+    /// memory-only.
+    fn backend_error(&self) -> Option<String> {
+        self.shards.iter().find_map(|shard| {
+            shard
+                .writer
+                .error
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner())
+                .clone()
+        })
+    }
 }
 
 impl Drop for DiskBackend {
@@ -975,6 +993,70 @@ mod tests {
         let backend = DiskBackend::open(dir.path(), 10).unwrap();
         assert!(backend.append(SHARD_COUNT, record(1)).is_err());
         assert!(backend.read_after(SHARD_COUNT, None, 10).is_err());
+    }
+
+    /// An unwritable shard is refused at open, not silently degraded.
+    ///
+    /// Recovery scans each shard file read-write, so a data directory that
+    /// cannot be written fails the backend at startup rather than producing a
+    /// process that accepts events it cannot keep.
+    #[cfg(unix)]
+    #[test]
+    fn opening_an_unwritable_shard_fails_rather_than_degrading_silently() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = TempDir::new().unwrap();
+        let unwritable = shard_path(dir.path(), 1);
+        std::fs::write(&unwritable, b"").unwrap();
+        std::fs::set_permissions(&unwritable, std::fs::Permissions::from_mode(0o444)).unwrap();
+
+        // Skip when permissions are not enforced (a root shell).
+        if OpenOptions::new().write(true).open(&unwritable).is_ok() {
+            eprintln!("skipping: file permissions are not enforced for this user");
+            return;
+        }
+
+        assert!(
+            DiskBackend::open(dir.path(), 100).is_err(),
+            "an unwritable shard must fail the backend at open"
+        );
+    }
+
+    /// A failure that happens *after* a successful open — disk full, an IO
+    /// error, the file replaced underneath the writer — lands in the shard's
+    /// writer thread after the `append` that caused it already returned. It is
+    /// latched and surfaced through `backend_error`, because the alternative is
+    /// a process that serves reads from memory while its durability is gone,
+    /// and whose loss only appears after a restart.
+    ///
+    /// The latch is poked directly here: an ENOSPC/IO error cannot be induced
+    /// portably, and what needs pinning is that a latched failure is surfaced
+    /// and that appends on that shard become loud.
+    #[test]
+    fn backend_error_surfaces_a_latched_writer_failure() {
+        let dir = TempDir::new().unwrap();
+        let backend = DiskBackend::open(dir.path(), 100).unwrap();
+        assert_eq!(backend.backend_error(), None, "a fresh backend is healthy");
+
+        // This is exactly what `WriterState::record` does on an IO failure.
+        backend.shards[2]
+            .writer
+            .error
+            .lock()
+            .unwrap()
+            .replace("disk on fire".to_owned());
+
+        assert_eq!(
+            backend.backend_error().as_deref(),
+            Some("disk on fire"),
+            "the latched failure must be observable"
+        );
+
+        // Appending to the broken shard is loud; other shards keep working, and
+        // reads stay available so the server degrades rather than dies.
+        assert!(backend.append(2, record(1)).is_err());
+        backend.append(3, record(2)).unwrap();
+        assert_eq!(backend.read_after(3, None, 10).unwrap().len(), 1);
     }
 
     #[test]

@@ -239,11 +239,27 @@ function sortFrames(frames) {
   return [...frames].sort((a, b) => (a.event_id < b.event_id ? -1 : a.event_id > b.event_id ? 1 : 0));
 }
 
+/**
+ * Fetches the backlog for the open thread, paging until the head.
+ *
+ * The server returns the *oldest* frames after a cursor precisely so this loop
+ * can converge: repeating with the advanced cursor never skips a frame. Taking
+ * only one page would leave the cursor past whatever did not fit, and that gap
+ * would be unrecoverable. Without a cursor the server returns the newest frames
+ * and `has_more` is false, so a first-ever open is a single request.
+ */
 async function replaySince(key, cursor) {
-  const query = new URLSearchParams({ scope_kind: "thread", scope_id: current.id });
-  if (cursor) query.set("since", cursor);
-  const body = await api(`/api/v1/replay?${query}`);
-  return body.frames.filter((frame) => frame.type === "event");
+  const frames = [];
+  let since = cursor;
+  for (;;) {
+    const query = new URLSearchParams({ scope_kind: "thread", scope_id: current.id });
+    if (since) query.set("since", since);
+    const body = await api(`/api/v1/replay?${query}`);
+    const page = body.frames.filter((frame) => frame.type === "event");
+    frames.push(...page);
+    if (!body.has_more || page.length === 0) return frames;
+    since = page[page.length - 1].event_id;
+  }
 }
 
 /* ------------------------------------------------------------------ */

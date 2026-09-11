@@ -347,3 +347,192 @@ fn a_crashed_restart_loses_at_most_the_tail() {
         assert_eq!(envelope.payload, Bytes::from(format!("{{\"n\":{i}}}")));
     }
 }
+
+// ---------------------------------------------------------------------------
+// Forward pagination
+//
+// A resuming consumer advances its cursor to the last frame it received. These
+// scenarios pin the properties that make that safe: a page always moves
+// forward, `has_more` is exact, and no frame is skipped — over every backend.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_page_returns_the_oldest_frames_after_the_cursor() {
+    for case in cases() {
+        let relay = case.relay(1_000);
+        let scope = Scope::Thread("thr_page".into());
+        for i in 0..10 {
+            relay
+                .publish(scope.clone(), format!("{{\"n\":{i}}}"))
+                .unwrap();
+        }
+
+        let first = relay.replay_page_after(&scope, None, now_ms(), 4).unwrap();
+        assert_eq!(first.events.len(), 4);
+        assert!(first.has_more);
+        assert_eq!(first.events[0].payload, Bytes::from_static(b"{\"n\":0}"));
+        assert_eq!(first.events[3].payload, Bytes::from_static(b"{\"n\":3}"));
+
+        let second = relay
+            .replay_page_after(&scope, first.next_cursor(), now_ms(), 4)
+            .unwrap();
+        assert_eq!(second.events[0].payload, Bytes::from_static(b"{\"n\":4}"));
+        assert_eq!(second.events[3].payload, Bytes::from_static(b"{\"n\":7}"));
+        assert!(second.has_more);
+
+        let last = relay
+            .replay_page_after(&scope, second.next_cursor(), now_ms(), 4)
+            .unwrap();
+        assert_eq!(last.events.len(), 2);
+        assert_eq!(last.events[0].payload, Bytes::from_static(b"{\"n\":8}"));
+        assert!(!last.has_more, "the final page is short and says so");
+
+        // Contrast: the tail view ignores the cursor and keeps the newest
+        // frames, which is what a client opening the scope wants.
+        let tail = relay.replay_scope(&scope, 4).unwrap();
+        assert_eq!(tail.len(), 4);
+        assert_eq!(tail[0].payload, Bytes::from_static(b"{\"n\":6}"));
+    }
+}
+
+/// The point of forward paging: a reconnect that missed more frames than one
+/// page must still recover every one of them.
+#[test]
+fn paging_from_a_cursor_recovers_every_missed_frame() {
+    for case in cases() {
+        let relay = case.relay(10_000);
+        let scope = Scope::Thread("thr_missed".into());
+
+        let mut ids = Vec::new();
+        for i in 0..50 {
+            ids.push(
+                relay
+                    .publish(scope.clone(), format!("{{\"n\":{i}}}"))
+                    .unwrap()
+                    .event_id,
+            );
+        }
+
+        // Resume just after the second frame, with a page size far below the
+        // backlog: 48 frames remain, 5 per page.
+        let mut cursor = Some(ids[1]);
+        let mut seen = Vec::new();
+        let mut pages = 0;
+        loop {
+            let page = relay
+                .replay_page_after(&scope, cursor, now_ms(), 5)
+                .unwrap();
+            assert!(page.events.len() <= 5, "the page limit is honoured");
+            let last = page.next_cursor();
+            seen.extend(page.events.iter().map(|envelope| envelope.event_id));
+            pages += 1;
+            if !page.has_more {
+                break;
+            }
+            cursor = last;
+            assert!(pages < 100, "paging must terminate");
+        }
+
+        assert_eq!(seen.len(), 48, "every frame after the cursor must arrive");
+        assert_eq!(
+            seen,
+            ids[2..].to_vec(),
+            "in order, with no gap and no repeat"
+        );
+    }
+}
+
+/// `has_more` is exact, not "the page happened to be full".
+#[test]
+fn has_more_is_exact_at_the_boundary() {
+    for case in cases() {
+        let relay = case.relay(1_000);
+        let scope = Scope::Thread("thr_exact".into());
+        for i in 0..4 {
+            relay
+                .publish(scope.clone(), format!("{{\"n\":{i}}}"))
+                .unwrap();
+        }
+
+        let exact = relay.replay_page_after(&scope, None, now_ms(), 4).unwrap();
+        assert_eq!(exact.events.len(), 4);
+        assert!(
+            !exact.has_more,
+            "a page that exactly consumed the log is done"
+        );
+
+        let short = relay.replay_page_after(&scope, None, now_ms(), 5).unwrap();
+        assert_eq!(short.events.len(), 4);
+        assert!(!short.has_more);
+
+        let more = relay.replay_page_after(&scope, None, now_ms(), 3).unwrap();
+        assert_eq!(more.events.len(), 3);
+        assert!(more.has_more);
+    }
+}
+
+#[test]
+fn a_page_filters_by_scope_and_stays_inside_the_window() {
+    for case in cases() {
+        let relay = case.relay(10_000);
+        let scope = Scope::Thread("thr_mine".into());
+        // Enough other scopes to guarantee shard sharing.
+        for i in 0..64 {
+            relay
+                .publish(Scope::Thread(format!("thr_other_{i}")), "{\"other\":true}")
+                .unwrap();
+        }
+        for i in 0..6 {
+            relay
+                .publish(scope.clone(), format!("{{\"n\":{i}}}"))
+                .unwrap();
+        }
+
+        let page = relay
+            .replay_page_after(&scope, None, now_ms(), 100)
+            .unwrap();
+        assert_eq!(page.events.len(), 6);
+        assert!(page.events.iter().all(|envelope| envelope.scope == scope));
+        assert!(!page.has_more);
+
+        // A frame outside the replay window is not paged back. This uses its
+        // own scope because `case` owns one storage that a second `relay()`
+        // would reopen — a durable backend sees the same log again.
+        let windowed_scope = Scope::Thread("thr_window".into());
+        let now = now_ms();
+        let stale = case.relay(100);
+        stale
+            .publish_at(windowed_scope.clone(), "{\"old\":true}", now - 3_600_000)
+            .unwrap();
+        stale
+            .publish_at(windowed_scope.clone(), "{\"new\":true}", now)
+            .unwrap();
+        let windowed = stale
+            .replay_page_after(&windowed_scope, None, now, 100)
+            .unwrap();
+        assert_eq!(windowed.events.len(), 1);
+        assert_eq!(
+            windowed.events[0].payload,
+            Bytes::from_static(b"{\"new\":true}")
+        );
+    }
+}
+
+#[test]
+fn an_empty_page_reports_no_more() {
+    for case in cases() {
+        let relay = case.relay(100);
+        let scope = Scope::Thread("thr_empty".into());
+
+        let empty = relay.replay_page_after(&scope, None, now_ms(), 10).unwrap();
+        assert!(empty.events.is_empty());
+        assert!(!empty.has_more);
+
+        let published = relay.publish(scope.clone(), "{}").unwrap();
+        let after = relay
+            .replay_page_after(&scope, Some(published.event_id), now_ms(), 10)
+            .unwrap();
+        assert!(after.events.is_empty());
+        assert!(!after.has_more);
+    }
+}

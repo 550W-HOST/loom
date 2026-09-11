@@ -107,6 +107,14 @@ subscriber, a room or a socket.
     [`redis-backend.md`](redis-backend.md).
 
   Nothing above `RelayBackend` changes between them.
+
+  A backend whose IO is asynchronous reports failures at the call site;
+  `DiskBackend` hands writes to a per-shard thread and therefore latches a
+  failure instead, surfaced through `RelayBackend::backend_error` and reported
+  by `/health` as `backend_error`. Reads keep working in that state, so the
+  field is how an operator learns that durability — not availability — is what
+  broke. The complementary case, a data directory that cannot be written at
+  all, fails the backend at open rather than starting in a degraded mode.
 - **The relay is testable without sockets,** and the hub is testable without a
   broker.
 - **The dependency direction is enforced.** `loom-relay` does not know
@@ -162,6 +170,34 @@ Because delivery can be attempted more than once, every consumer deduplicates
 by id. That is what makes replay and the local fast path coexist: a frame that
 arrives twice is delivered once, and a frame that arrives late is still
 delivered.
+
+### Two replay modes, and why they are not the same call
+
+A client either has no cursor or it has one, and the two cases need opposite
+ends of the window.
+
+| Caller | Server returns | `has_more` |
+| --- | --- | --- |
+| No cursor | the **newest** `limit` frames (a tail view) | always `false` |
+| Cursor | the **oldest** `limit` frames strictly after it | true when more exist |
+
+A cursor replay is a **forward page**, and that is a correctness requirement,
+not a preference. A resuming consumer advances its cursor to the last frame it
+received. If the page held the *newest* frames, everything between the old
+cursor and that page would be skipped, and the advanced cursor would leave the
+gap permanently unrecoverable. Returning the oldest frames after the cursor
+means repeating the call always moves forward and always converges: keep paging
+while `has_more`.
+
+This is the same failure mode as a reader that applies `limit` before its
+cursor filter, and it is why both the resolver here and
+`RelayBackend::read_after` take the cursor as input rather than leaving it to
+the caller.
+
+Regression coverage: `paging_from_a_cursor_recovers_every_missed_frame` over
+every backend, and `a_reconnect_recovers_more_dispatches_than_one_replay_page`
+end to end — a daemon restarted with a cursor and a page limit of 4 still
+executes all 10 queued runs.
 
 ### Retention
 

@@ -22,6 +22,24 @@ pub struct MaintenanceReport {
     pub trimmed: u64,
 }
 
+/// One forward page of a scope's retained frames.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ReplayPage {
+    /// Frames in ascending event-id order, strictly after the requested cursor.
+    pub events: Vec<Envelope>,
+    /// Whether at least one more frame exists after this page. A consumer that
+    /// keeps paging while this is `true` is guaranteed to reach the head
+    /// without skipping a frame.
+    pub has_more: bool,
+}
+
+impl ReplayPage {
+    /// The cursor to resume from: the last frame in the page.
+    pub fn next_cursor(&self) -> Option<EventId> {
+        self.events.last().map(|envelope| envelope.event_id)
+    }
+}
+
 /// Routes, stores and replays scoped events.
 #[derive(Clone)]
 pub struct Relay {
@@ -183,6 +201,11 @@ impl Relay {
     }
 
     /// [`Relay::replay_scope`] with an explicit "now" (deterministic tests).
+    ///
+    /// This is the **tail** view: the newest `limit` frames in the window,
+    /// ascending. It is what a client opening a scope with no cursor wants, and
+    /// it cannot lose anything, because there is no cursor to advance past a
+    /// gap.
     pub fn replay_scope_from(
         &self,
         scope: &Scope,
@@ -205,6 +228,49 @@ impl Relay {
         Ok(matching)
     }
 
+    /// One forward page of a scope's retained frames, strictly after `after`.
+    ///
+    /// This is the **resume** view, and the distinction from
+    /// [`Relay::replay_scope_from`] is what makes a reconnect lossless.
+    ///
+    /// A resuming consumer advances its cursor to the last frame it received,
+    /// so a page that returned the *newest* frames would silently skip
+    /// everything between the cursor and that page — and the advanced cursor
+    /// would make the gap unrecoverable. Returning the **oldest** frames after
+    /// the cursor means repeated calls always move forward and always converge:
+    /// keep calling with the returned last id while [`ReplayPage::has_more`].
+    ///
+    /// `after == None` pages from the oldest retained frame.
+    pub fn replay_page_after(
+        &self,
+        scope: &Scope,
+        after: Option<EventId>,
+        now_ms: u64,
+        limit: usize,
+    ) -> Result<ReplayPage> {
+        if limit == 0 {
+            return Ok(ReplayPage::default());
+        }
+        let from_ms = self.retention.replay_start_ms(now_ms);
+        // Read one extra so `has_more` is exact rather than "the page was full".
+        let mut matching = Vec::new();
+        for envelope in self.read_shard_after(scope.shard(), after, usize::MAX)? {
+            if &envelope.scope != scope || envelope.created_at_ms < from_ms {
+                continue;
+            }
+            matching.push(envelope);
+            if matching.len() > limit {
+                break;
+            }
+        }
+        let has_more = matching.len() > limit;
+        matching.truncate(limit);
+        Ok(ReplayPage {
+            events: matching,
+            has_more,
+        })
+    }
+
     /// Runs one maintenance pass: trims every shard at the trim horizon.
     pub fn maintain(&self, now_ms: u64) -> Result<MaintenanceReport> {
         let before_ms = self.retention.trim_before_ms(now_ms);
@@ -222,6 +288,11 @@ impl Relay {
             total += self.backend.len(shard)?;
         }
         Ok(total)
+    }
+
+    /// The backend's latched failure, if any. See [`RelayBackend::backend_error`].
+    pub fn backend_error(&self) -> Option<String> {
+        self.backend.backend_error()
     }
 }
 
