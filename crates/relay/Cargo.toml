@@ -1,0 +1,14 @@
+[package]
+name = "bb-relay"
+description = "Fixed relay layer: scoped, sharded, replayable event log for bb"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+bytes.workspace = true
+serde.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

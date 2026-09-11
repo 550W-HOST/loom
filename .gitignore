@@ -1,0 +1,14 @@
+# Rust
+/target
+**/target
+
+# Node (bb fork apps live here later)
+node_modules/
+**/node_modules/
+dist/
+**/dist/
+
+# Local state
+*.log
+.DS_Store
+.bb-dev/
