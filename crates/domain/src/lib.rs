@@ -66,7 +66,7 @@ pub mod thread;
 pub use environment::{Environment, EnvironmentKind, EnvironmentStatus};
 pub use error::DomainError;
 pub use event::DomainEvent;
-pub use host::{Host, HostKind, HostStatus};
+pub use host::{select_primary_host, Host, HostKind, HostStatus};
 pub use id::{
     Entity, EnvironmentId, EnvironmentTag, HostId, HostTag, Id, MessageId, MessageTag, ProjectId,
     ProjectSourceId, ProjectSourceTag, ProjectTag, ThreadId, ThreadTag, UserId, UserTag,

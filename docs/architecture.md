@@ -236,6 +236,12 @@ UI. Two consequences drive the implementation:
    daemon's id file. With no local daemon, that fallback must not strand file
    browsing and host lookups on a host that is intentionally absent.
 
+Both are now implemented: `loom-server` is server-only, `loom-daemon` is the
+independent execution-plane entry point, and primary-host resolution degrades
+instead of failing. The boundary contract — the wire protocol, the primary
+policy, and the desktop shell's two supervision switches — is specified in
+[`process-model.md`](process-model.md).
+
 ## Open questions
 
 - Whether the desktop shell earns its maintenance cost once the UI is a URL

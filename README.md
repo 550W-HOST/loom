@@ -23,9 +23,10 @@ on it and it can be validated on its own.
 - [x] `loom-relay-hub` — rooms, idempotent fan-out, backpressure signal
 - [x] `loom-server` — HTTP + WebSocket surface; publish reaches subscribers through the log
 - [x] `loom-domain` — projects, threads, hosts and environments as pure types and invariants
+- [x] Server-only startup and an independently stoppable local daemon (`loom-daemon`)
 - [ ] Persist domain entities (the domain registry is in-process and lost on restart)
 - [ ] Port the bb web UI unchanged, served by the Rust server
-- [ ] Server-only startup and independently stoppable local daemon
+- [ ] Check in the Node execution plane (`apps/host-daemon`) against the daemon contract
 - [ ] Redis/NATS relay backend for restart-transparent upgrades
 
 ## Layout
@@ -36,8 +37,10 @@ crates/
   relay/        loom-relay      scopes, event ids, retention, dedup, backends
   relay-hub/    loom-relay-hub  connections, rooms, delivery
   server/       loom-server     HTTP, WebSocket, protocol, fixed readers
+  daemon/       loom-daemon     the execution plane as an independent process
 docs/
   architecture.md
+  process-model.md
 ```
 
 Application code from the bb fork (`apps/`, `packages/`, `plugins/`) lands here
@@ -56,14 +59,30 @@ No external services are required: the default backend is in-process.
 Run it:
 
 ```bash
+# Server-only: the control plane and nothing else. It never starts a daemon
+# and never exits because one is missing.
 cargo run -p loom-server            # listens on 127.0.0.1:38886
 
 curl localhost:38886/health
+curl localhost:38886/api/v1/hosts/primary
 curl -X POST localhost:38886/api/v1/publish \
   -H 'content-type: application/json' \
   -d '{"scope":{"kind":"thread","id":"thr_1"},"payload":"{\"hello\":\"loom\"}"}'
 curl 'localhost:38886/api/v1/replay?scope_kind=thread&scope_id=thr_1'
 ```
+
+Daemon-only, in a second terminal. It dials the server outbound and can stop
+without touching it:
+
+```bash
+cargo run -p loom-daemon -- --server-url http://127.0.0.1:38886 --name laptop
+# → loom-daemon "laptop" enrolled as host_01M… with http://127.0.0.1:38886
+```
+
+With no daemon at all, `GET /api/v1/hosts/primary` answers `200` with
+`{"host":null,"source":"no_host"}` rather than an error — a server-only
+deployment degrades, it does not break. The full boundary contract is in
+[`docs/process-model.md`](docs/process-model.md).
 
 Minimal domain commands — create a thread, message it, register a host. Each
 publishes a typed `loom-domain` event through the relay:

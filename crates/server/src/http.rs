@@ -8,7 +8,9 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use loom_domain::{DomainError, DomainEvent, DomainScope, Host, MessageRole, Thread, ThreadId};
+use loom_domain::{
+    DomainError, DomainEvent, DomainScope, Host, HostId, MessageRole, Thread, ThreadId,
+};
 use loom_relay::scope::Scope;
 use serde::{Deserialize, Serialize};
 
@@ -26,7 +28,10 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/replay", get(replay))
         .route("/api/v1/threads", post(create_thread))
         .route("/api/v1/threads/{id}/messages", post(post_thread_message))
-        .route("/api/v1/hosts", post(register_host))
+        .route("/api/v1/hosts", get(list_hosts).post(register_host))
+        .route("/api/v1/hosts/primary", get(primary_host))
+        .route("/api/v1/hosts/{id}/heartbeat", post(host_heartbeat))
+        .route("/api/v1/hosts/{id}/disconnect", post(disconnect_host))
         .route("/ws", get(ws::client_socket))
         .with_state(state)
 }
@@ -230,6 +235,10 @@ async fn post_thread_message(
 /// Body of a host-registration request.
 #[derive(Clone, Debug, Deserialize)]
 pub struct RegisterHostRequest {
+    /// A daemon-chosen identity, so a reconnect updates the same machine
+    /// instead of creating a second one. Omitted mints a fresh id.
+    #[serde(default)]
+    pub id: Option<HostId>,
     /// The machine's display name.
     pub name: String,
 }
@@ -239,29 +248,127 @@ pub struct RegisterHostRequest {
 pub struct RegisterHostResponse {
     /// The host, in status `connected`.
     pub host: Host,
-    /// The `host_registered` event, published to `host:{id}`.
+    /// The `host_registered` event, published to `host:{id}`. Empty when a
+    /// reconnect changed nothing.
     pub event_id: String,
 }
 
-/// Registers a host.
+/// Registers or re-enrolls a host.
+///
+/// Idempotent when the body carries an `id`: a daemon that reconnects under
+/// the identity it was given produces a status change, not a new machine.
 async fn register_host(
     State(state): State<AppState>,
     Json(request): Json<RegisterHostRequest>,
 ) -> Response {
     match state
         .registry
-        .register_host(request.name, loom_relay::now_ms())
+        .enroll_host(request.id, request.name, loom_relay::now_ms())
     {
-        Ok((host, event)) => match state.publish_domain_event(&event) {
-            Ok(envelope) => Json(RegisterHostResponse {
+        Ok((host, events)) => match publish_all(&state, &events) {
+            Ok(published) => Json(RegisterHostResponse {
                 host,
-                event_id: envelope.event_id.to_string(),
+                event_id: published
+                    .last()
+                    .map(|event| event.event_id.clone())
+                    .unwrap_or_default(),
             })
             .into_response(),
             Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
         },
         Err(error) => command_error_response(error),
     }
+}
+
+/// Every host the server knows, in id order.
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+pub struct HostListResponse {
+    /// Known hosts, connected or not.
+    pub hosts: Vec<Host>,
+}
+
+async fn list_hosts(State(state): State<AppState>) -> Json<HostListResponse> {
+    Json(HostListResponse {
+        hosts: state.registry.hosts(),
+    })
+}
+
+/// Records a daemon heartbeat. Heartbeats are high frequency and deliberately
+/// do not publish a frame.
+async fn host_heartbeat(
+    State(state): State<AppState>,
+    Path(raw_host_id): Path<String>,
+) -> Response {
+    let host_id = match raw_host_id.parse::<HostId>() {
+        Ok(host_id) => host_id,
+        Err(error) => return error_response(StatusCode::BAD_REQUEST, error.to_string()),
+    };
+    match state
+        .registry
+        .host_heartbeat(&host_id, loom_relay::now_ms())
+    {
+        Ok(host) => Json(host).into_response(),
+        Err(error) => command_error_response(error),
+    }
+}
+
+/// Marks a host's daemon detached without closing anything on the server.
+async fn disconnect_host(
+    State(state): State<AppState>,
+    Path(raw_host_id): Path<String>,
+) -> Response {
+    let host_id = match raw_host_id.parse::<HostId>() {
+        Ok(host_id) => host_id,
+        Err(error) => return error_response(StatusCode::BAD_REQUEST, error.to_string()),
+    };
+    match state
+        .registry
+        .mark_host_disconnected(&host_id, loom_relay::now_ms())
+    {
+        Ok(events) => match publish_all(&state, &events) {
+            Ok(_) => Json(serde_json::json!({ "host_id": host_id })).into_response(),
+            Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+        },
+        Err(error) => command_error_response(error),
+    }
+}
+
+/// Where the primary host came from.
+#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PrimaryHostSource {
+    /// The operator-declared local host, which is connected.
+    Local,
+    /// A connected execution machine that is not the server's own machine.
+    Remote,
+    /// No host is enrolled and connected. A normal state, not an error.
+    NoHost,
+}
+
+/// The host file browsing and usage queries should use.
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+pub struct PrimaryHostResponse {
+    /// The chosen host, or `null` when none is available.
+    pub host: Option<Host>,
+    /// Why that host, so a client can render the degradation honestly.
+    pub source: PrimaryHostSource,
+}
+
+/// Resolves the primary host.
+///
+/// Always `200`. The one property this route exists to guarantee: a machine
+/// with no local daemon must not make file browsing or host lookups fail. The
+/// local host is a preference only, and its absence degrades to a remote host
+/// or to an explicit `no_host` — never to `host_unavailable`.
+async fn primary_host(State(state): State<AppState>) -> Json<PrimaryHostResponse> {
+    let local = state.local_host_id();
+    let host = state.registry.primary_host(local);
+    let source = match &host {
+        None => PrimaryHostSource::NoHost,
+        Some(host) if Some(&host.id) == local => PrimaryHostSource::Local,
+        Some(_) => PrimaryHostSource::Remote,
+    };
+    Json(PrimaryHostResponse { host, source })
 }
 
 /// Publishes each domain event to the scope the domain assigned it, in order.
@@ -409,6 +516,7 @@ fn parse_scope(kind: &str, id: Option<&str>) -> Result<Scope, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::state::AppConfig;
     use axum::body::Body;
     use axum::http::Request;
     use http_body_util::BodyExt;
@@ -431,6 +539,13 @@ mod tests {
                     .body(Body::from(body.to_string()))
                     .unwrap(),
             )
+            .await
+            .unwrap()
+    }
+
+    async fn get(app: &Router, path: &str) -> Response {
+        app.clone()
+            .oneshot(Request::get(path).body(Body::empty()).unwrap())
             .await
             .unwrap()
     }
@@ -654,5 +769,139 @@ mod tests {
         assert_eq!(events[0]["type"], "host_registered");
 
         state.shutdown();
+    }
+
+    #[tokio::test]
+    async fn a_server_with_no_daemon_stays_up_and_reports_no_primary_host() {
+        let state = test_state();
+        let app = router(state.clone());
+
+        // Health must answer whether or not any daemon ever connected.
+        let health = get(&app, "/health").await;
+        assert_eq!(health.status(), StatusCode::OK);
+        assert_eq!(body_json(health).await["status"], "ok");
+
+        // The primary-host lookup degrades to an explicit "no host", never an
+        // error, so file browsing is not stranded on an absent local daemon.
+        let primary = get(&app, "/api/v1/hosts/primary").await;
+        assert_eq!(primary.status(), StatusCode::OK);
+        let json = body_json(primary).await;
+        assert!(json["host"].is_null());
+        assert_eq!(json["source"], "no_host");
+
+        let hosts = body_json(get(&app, "/api/v1/hosts").await).await;
+        assert_eq!(hosts["hosts"].as_array().unwrap().len(), 0);
+
+        state.shutdown();
+    }
+
+    #[tokio::test]
+    async fn a_remote_host_becomes_primary_and_reconnects_keep_its_identity() {
+        // The server declares a local host that never enrolls — exactly the
+        // server-only case.
+        let local = HostId::mint();
+        let state = AppState::build(AppConfig {
+            local_host_id: Some(local.clone()),
+            ..AppConfig::default()
+        })
+        .unwrap();
+        let app = router(state.clone());
+
+        let created = body_json(
+            post(
+                &app,
+                "/api/v1/hosts",
+                serde_json::json!({ "name": "remote-1" }),
+            )
+            .await,
+        )
+        .await;
+        let host_id = created["host"]["id"].as_str().unwrap().to_string();
+
+        // The absent local host does not win; the remote one is primary.
+        let primary = body_json(get(&app, "/api/v1/hosts/primary").await).await;
+        assert_eq!(primary["source"], "remote");
+        assert_eq!(primary["host"]["id"], host_id);
+
+        // Re-enrolling with the same id is idempotent.
+        let again = body_json(
+            post(
+                &app,
+                "/api/v1/hosts",
+                serde_json::json!({ "id": host_id, "name": "remote-1" }),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(again["host"]["id"], host_id);
+        assert_eq!(again["event_id"], "", "a no-op reconnect publishes nothing");
+
+        let hosts = body_json(get(&app, "/api/v1/hosts").await).await;
+        assert_eq!(hosts["hosts"].as_array().unwrap().len(), 1);
+
+        state.shutdown();
+    }
+
+    #[tokio::test]
+    async fn heartbeat_and_disconnect_move_the_host_status() {
+        let state = test_state();
+        let app = router(state.clone());
+        let created = body_json(
+            post(
+                &app,
+                "/api/v1/hosts",
+                serde_json::json!({ "name": "laptop" }),
+            )
+            .await,
+        )
+        .await;
+        let host_id = created["host"]["id"].as_str().unwrap().to_string();
+
+        let beat = post(
+            &app,
+            &format!("/api/v1/hosts/{host_id}/heartbeat"),
+            serde_json::json!({}),
+        )
+        .await;
+        assert_eq!(beat.status(), StatusCode::OK);
+
+        let gone = post(
+            &app,
+            &format!("/api/v1/hosts/{host_id}/disconnect"),
+            serde_json::json!({}),
+        )
+        .await;
+        assert_eq!(gone.status(), StatusCode::OK);
+
+        let primary = body_json(get(&app, "/api/v1/hosts/primary").await).await;
+        assert_eq!(primary["source"], "no_host");
+
+        let hosts = body_json(get(&app, "/api/v1/hosts").await).await;
+        assert_eq!(hosts["hosts"][0]["status"], "disconnected");
+
+        state.shutdown();
+    }
+
+    #[tokio::test]
+    async fn a_declared_local_host_wins_when_it_is_connected() {
+        let state = test_state();
+        let local = HostId::mint();
+        state
+            .registry
+            .enroll_host(
+                Some(local.clone()),
+                "this-machine".into(),
+                loom_relay::now_ms(),
+            )
+            .unwrap();
+        let remote = state
+            .registry
+            .enroll_host(None, "remote".into(), loom_relay::now_ms())
+            .unwrap()
+            .0;
+
+        let primary = state.registry.primary_host(Some(&local)).unwrap();
+        assert_eq!(primary.id, local);
+        assert_ne!(primary.id, remote.id);
     }
 }

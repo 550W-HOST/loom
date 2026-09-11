@@ -1,8 +1,14 @@
 //! `loom-server` binary.
 //!
+//! This is the **server-only** path. Starting it starts the control plane and
+//! nothing else: it never launches a daemon, never waits for one, and does not
+//! exit when none is present. A full-stack convenience launcher, if any, is a
+//! separate process that supervises this one and a daemon independently.
+//!
 //! Deliberately thin: parse configuration, wire the state, serve. Every
 //! decision worth testing lives in the library.
 
+use loom_domain::HostId;
 use loom_server::http::router;
 use loom_server::state::{AppConfig, AppState};
 
@@ -13,17 +19,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Without LOOM_DATA_DIR the relay log is in-process and the server needs
     // no configuration at all. Setting it turns on the durable backend.
     let backend_path = std::env::var_os("LOOM_DATA_DIR").map(std::path::PathBuf::from);
+    // Optional: declare which enrolled host runs on this machine. Unset (the
+    // default) is the server-only shape — primary-host queries fall to
+    // connected remote hosts instead of an absent local daemon.
+    let local_host_id = match std::env::var("LOOM_LOCAL_HOST_ID") {
+        Ok(raw) if !raw.trim().is_empty() => Some(raw.parse::<HostId>()?),
+        _ => None,
+    };
 
     let config = AppConfig {
         node_id: node_id.clone(),
         backend_path,
+        local_host_id: local_host_id.clone(),
         ..AppConfig::default()
     };
     let state = AppState::build(config)?;
     let app = router(state.clone());
 
     let listener = tokio::net::TcpListener::bind(&bind).await?;
-    eprintln!("loom-server listening on http://{bind} (node {node_id})");
+    match &local_host_id {
+        Some(host_id) => eprintln!(
+            "loom-server (server-only) listening on http://{bind} (node {node_id}, local host {host_id})"
+        ),
+        None => eprintln!(
+            "loom-server (server-only) listening on http://{bind} (node {node_id}, no local daemon)"
+        ),
+    }
 
     axum::serve(listener, app).await?;
     state.shutdown();

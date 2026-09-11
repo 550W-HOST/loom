@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
-use loom_domain::DomainScope;
+use loom_domain::{DomainScope, HostId};
 use loom_relay::retention::Retention;
 use loom_relay::{now_ms, Relay, Result as RelayResult};
 
@@ -38,6 +38,15 @@ pub struct AppConfig {
     pub hub_queue_capacity: usize,
     /// Reader tuning.
     pub pump: PumpConfig,
+    /// The id of the host on the *server's* machine, if the operator declared
+    /// one.
+    ///
+    /// Defaults to `None`, which is what makes the server-only path safe: no
+    /// local daemon is assumed, so primary-host resolution never gets stranded
+    /// on an absent local machine. Set `LOOM_LOCAL_HOST_ID` (or this field) on
+    /// a single-machine deployment to prefer that machine while its daemon is
+    /// attached.
+    pub local_host_id: Option<HostId>,
 }
 
 impl Default for AppConfig {
@@ -49,6 +58,7 @@ impl Default for AppConfig {
             retention: Retention::default(),
             hub_queue_capacity: 1_024,
             pump: PumpConfig::default(),
+            local_host_id: None,
         }
     }
 }
@@ -86,6 +96,7 @@ pub struct AppState {
     pub pump: Arc<Pump>,
     /// In-memory domain entities for the command API.
     pub registry: Arc<DomainRegistry>,
+    local_host_id: Option<HostId>,
     started_at: Instant,
     started_at_ms: u64,
 }
@@ -114,9 +125,19 @@ impl AppState {
             hub,
             pump,
             registry: Arc::new(DomainRegistry::new(started_at_ms)),
+            local_host_id: config.local_host_id,
             started_at: Instant::now(),
             started_at_ms,
         })
+    }
+
+    /// The operator-declared local host, if any.
+    ///
+    /// `None` is the normal server-only state: this server does not claim any
+    /// machine as local, so primary-host queries go straight to enrolled
+    /// hosts instead of a local fallback.
+    pub fn local_host_id(&self) -> Option<&HostId> {
+        self.local_host_id.as_ref()
     }
 
     /// Publishes a frame and wakes the readers.

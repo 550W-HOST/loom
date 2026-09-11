@@ -356,6 +356,65 @@ async fn the_host_and_thread_commands_drive_a_real_conversation() {
     state.shutdown();
 }
 
+#[tokio::test]
+async fn a_daemon_enrolls_over_the_socket_and_a_lost_socket_detaches_it() {
+    let (addr, state) = spawn_server().await;
+
+    let mut daemon = Client::connect(&addr).await;
+    daemon
+        .send(json!({ "type": "enroll_host", "name": "laptop" }))
+        .await;
+    let enrolled = daemon.recv().await;
+    assert_eq!(enrolled["type"], "host_enrolled");
+    assert_eq!(enrolled["host"]["status"], "connected");
+    let host_id = enrolled["host"]["id"].as_str().unwrap().to_string();
+    assert!(enrolled["event_id"].as_str().unwrap().len() == 26);
+
+    // A heartbeat from the enrolled connection is acknowledged.
+    daemon
+        .send(json!({ "type": "host_heartbeat", "host_id": host_id }))
+        .await;
+    let ack = daemon.recv().await;
+    assert_eq!(ack["type"], "host_heartbeat_ack");
+    assert_eq!(ack["host_id"], host_id);
+
+    // Dispatch reaches a daemon that follows its own host room.
+    daemon.subscribe(Scope::Host(host_id.clone())).await;
+    state
+        .publish(Scope::Host(host_id.clone()), "{\"dispatch\":1}")
+        .unwrap();
+    assert_eq!(daemon.recv().await["payload"], "{\"dispatch\":1}");
+
+    // A daemon may not speak for another machine.
+    let other = loom_domain::HostId::mint();
+    daemon
+        .send(json!({ "type": "host_heartbeat", "host_id": other }))
+        .await;
+    assert_eq!(daemon.recv().await["type"], "error");
+
+    // Dropping the socket without a goodbye still detaches the host, and the
+    // server keeps serving.
+    drop(daemon);
+    let host_id = host_id.parse::<loom_domain::HostId>().unwrap();
+    for _ in 0..200 {
+        if state
+            .registry
+            .host(&host_id)
+            .map(|host| host.status == loom_domain::HostStatus::Disconnected)
+            .unwrap_or(false)
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    assert_eq!(
+        state.registry.host(&host_id).unwrap().status,
+        loom_domain::HostStatus::Disconnected
+    );
+
+    state.shutdown();
+}
+
 /// Minimal HTTP GET, so the test suite needs no HTTP client dependency.
 async fn http_json(addr: &str, path: &str) -> Value {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/domain", "crates/relay", "crates/relay-hub", "crates/server"]
+members = ["crates/daemon", "crates/domain", "crates/relay", "crates/relay-hub", "crates/server"]
 
 [workspace.package]
 version = "0.1.0"
@@ -12,6 +12,7 @@ license = "MIT"
 loom-domain = { path = "crates/domain" }
 loom-relay = { path = "crates/relay" }
 loom-relay-hub = { path = "crates/relay-hub" }
+loom-server = { path = "crates/server" }
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio", "ws"] }
 bytes = "1.6"
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }

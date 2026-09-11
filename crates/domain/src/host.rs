@@ -56,8 +56,23 @@ impl Host {
     /// Registers a host and returns the event it produces.
     ///
     /// Registration happens when a daemon first announces itself, so the
-    /// initial status is `connected` and `last_seen_at_ms` is set.
+    /// initial status is `connected` and `last_seen_at_ms` is set. The id is
+    /// freshly minted; a daemon that wants to keep its identity across
+    /// reconnects uses [`Host::register_as`].
     pub fn register(
+        name: impl Into<String>,
+        now_ms: u64,
+    ) -> Result<(Self, DomainEvent), DomainError> {
+        Self::register_as(None, name, now_ms)
+    }
+
+    /// Registers a host under an identity the caller already knows.
+    ///
+    /// A daemon presents the id it was enrolled with so that a reconnect is a
+    /// status change on the same host, not a second machine. `None` mints a
+    /// fresh id, exactly like [`Host::register`].
+    pub fn register_as(
+        id: Option<HostId>,
         name: impl Into<String>,
         now_ms: u64,
     ) -> Result<(Self, DomainEvent), DomainError> {
@@ -69,7 +84,7 @@ impl Host {
             });
         }
         let host = Self {
-            id: HostId::mint(),
+            id: id.unwrap_or_else(HostId::mint),
             name,
             kind: HostKind::Persistent,
             status: HostStatus::Connected,
@@ -116,9 +131,102 @@ impl Host {
     }
 }
 
+/// Chooses the host that a `"primary host"` query should use.
+///
+/// The rule exists to make server-only operation safe. bb's server falls back
+/// to the *local* daemon's id file, so a machine with no daemon leaves file
+/// browsing and host lookups stranded on a host that is intentionally absent.
+/// Here the local host is only a *preference*:
+/// 1. the declared local host, but only while a daemon is actually attached to
+///    it (status `connected`);
+/// 2. otherwise the most recently seen connected host of any kind — the
+///    primary simply falls to a remote execution machine;
+/// 3. otherwise `None`, which is a normal "no host enrolled yet" answer.
+///
+/// It deliberately cannot fail, so no caller can surface a
+/// `host_unavailable` error merely because this machine has no local daemon.
+pub fn select_primary_host<'a>(
+    hosts: &'a [Host],
+    local_host_id: Option<&HostId>,
+) -> Option<&'a Host> {
+    if let Some(local_host_id) = local_host_id {
+        if let Some(host) = hosts
+            .iter()
+            .find(|host| &host.id == local_host_id && host.status == HostStatus::Connected)
+        {
+            return Some(host);
+        }
+    }
+    hosts
+        .iter()
+        .filter(|host| host.status == HostStatus::Connected)
+        .max_by_key(|host| host.last_seen_at_ms.unwrap_or(0))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn connected(name: &str, id: Option<HostId>, seen_at: u64) -> Host {
+        let (host, _) = Host::register_as(id, name, seen_at).unwrap();
+        host
+    }
+
+    #[test]
+    fn register_as_keeps_a_daemon_supplied_identity() {
+        let id = HostId::mint();
+        let (host, _) = Host::register_as(Some(id.clone()), "laptop", 3).unwrap();
+        assert_eq!(host.id, id);
+    }
+
+    #[test]
+    fn a_declared_local_host_wins_while_it_is_connected() {
+        let local_id = HostId::mint();
+        let local = connected("local", Some(local_id.clone()), 1);
+        let remote = connected("remote", None, 99);
+        // Older than the remote host, but still the declared local one.
+        let hosts = [local, remote];
+        let selected = select_primary_host(&hosts, Some(&local_id)).unwrap();
+        assert_eq!(selected.id, local_id);
+    }
+
+    #[test]
+    fn an_absent_local_host_falls_back_to_a_remote_one() {
+        let absent_local = HostId::mint();
+        let remote = connected("remote", None, 5);
+        let hosts = [remote.clone()];
+        let selected = select_primary_host(&hosts, Some(&absent_local)).unwrap();
+        assert_eq!(selected.id, remote.id);
+    }
+
+    #[test]
+    fn a_disconnected_local_host_falls_back_to_a_remote_one() {
+        let local_id = HostId::mint();
+        let mut local = connected("local", Some(local_id.clone()), 1);
+        local.mark_disconnected(2);
+        let remote = connected("remote", None, 3);
+        let hosts = [local, remote.clone()];
+        let selected = select_primary_host(&hosts, Some(&local_id)).unwrap();
+        assert_eq!(selected.id, remote.id);
+    }
+
+    #[test]
+    fn no_connected_host_selects_nothing_instead_of_failing() {
+        assert!(select_primary_host(&[], Some(&HostId::mint())).is_none());
+        let mut only = connected("local", None, 1);
+        only.mark_disconnected(2);
+        let hosts = [only];
+        assert!(select_primary_host(&hosts, None).is_none());
+    }
+
+    #[test]
+    fn the_most_recently_seen_connected_host_wins() {
+        let older = connected("older", None, 10);
+        let newer = connected("newer", None, 20);
+        let hosts = [older, newer.clone()];
+        let selected = select_primary_host(&hosts, None).unwrap();
+        assert_eq!(selected.id, newer.id);
+    }
 
     #[test]
     fn register_rejects_an_empty_name() {

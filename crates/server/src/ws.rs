@@ -1,17 +1,28 @@
-//! WebSocket surface for UI clients.
+//! WebSocket surface for clients and daemons.
 //!
-//! The client protocol is intentionally tiny and scoped:
+//! The client protocol is intentionally tiny and scoped. A UI says:
 //!
 //! ```json
 //! // client -> server
 //! {"type":"subscribe","scope":{"kind":"thread","id":"thr_1"}}
 //! {"type":"unsubscribe","scope":{"kind":"thread","id":"thr_1"}}
 //! {"type":"ping"}
+//! ```
 //!
-//! // server -> client
+//! A daemon uses the same socket to enroll, then follows its own `host:{id}`
+//! room:
+//!
+//! ```json
+//! // daemon -> server
+//! {"type":"enroll_host","name":"laptop"}
+//! {"type":"host_heartbeat","host_id":"host_..."}
+//! {"type":"host_disconnect","host_id":"host_..."}
+//!
+//! // server -> daemon
 //! {"type":"welcome","connection_id":1,"protocol_version":1}
-//! {"type":"subscribed","scope":{"kind":"thread","id":"thr_1"},"first_subscriber":true}
-//! {"type":"unsubscribed","scope":{"kind":"thread","id":"thr_1"}}
+//! {"type":"host_enrolled","host":{...},"event_id":"01M..."}
+//! {"type":"host_heartbeat_ack","host_id":"host_...","last_seen_at_ms":1}
+//! {"type":"host_disconnected","host_id":"host_..."}
 //! {"type":"event","event_id":"...","scope":{...},"payload":"{...}","created_at_ms":1}
 //! {"type":"pong"}
 //! {"type":"error","message":"..."}
@@ -25,6 +36,7 @@ use axum::extract::ws::{Message, WebSocket};
 use axum::extract::{State, WebSocketUpgrade};
 use axum::response::Response;
 use futures_util::{SinkExt, StreamExt};
+use loom_domain::HostId;
 use loom_relay::scope::Scope;
 
 use crate::protocol::{ClientCommand, ServerMessage};
@@ -75,6 +87,11 @@ async fn handle_client(socket: WebSocket, state: AppState) {
         }
     });
 
+    // A connection is a UI or a daemon. A daemon that enrolled is remembered
+    // here so that closing the socket marks the host detached; a UI never sets
+    // it and is unaffected by host bookkeeping.
+    let mut enrolled_host: Option<HostId> = None;
+
     while let Some(message) = stream.next().await {
         let Ok(message) = message else {
             break;
@@ -90,7 +107,7 @@ async fn handle_client(socket: WebSocket, state: AppState) {
         };
 
         let reply = match serde_json::from_str::<ClientCommand>(&text) {
-            Ok(command) => handle_command(connection_id, command, &state).await,
+            Ok(command) => handle_command(connection_id, command, &state, &mut enrolled_host).await,
             Err(error) => Some(ServerMessage::Error {
                 message: format!("unrecognised command: {error}"),
             }),
@@ -107,6 +124,20 @@ async fn handle_client(socket: WebSocket, state: AppState) {
         }
     }
 
+    // A daemon that dropped without saying goodbye is still gone: the socket
+    // closing is what detaches the host. This is deliberately independent of
+    // the server's own lifetime, so stopping a daemon never touches the server.
+    if let Some(host_id) = enrolled_host {
+        if let Ok(events) = state
+            .registry
+            .mark_host_disconnected(&host_id, loom_relay::now_ms())
+        {
+            for event in &events {
+                let _ = state.publish_domain_event(event);
+            }
+        }
+    }
+
     let _ = state.hub.disconnect(connection_id).await;
     writer.abort();
 }
@@ -115,6 +146,7 @@ async fn handle_command(
     connection_id: u64,
     command: ClientCommand,
     state: &AppState,
+    enrolled_host: &mut Option<HostId>,
 ) -> Option<ServerMessage> {
     match command {
         ClientCommand::Subscribe { scope } => {
@@ -145,7 +177,73 @@ async fn handle_command(
             })
         }
         ClientCommand::Ping => Some(ServerMessage::Pong),
+        ClientCommand::EnrollHost { host_id, name } => {
+            match state
+                .registry
+                .enroll_host(host_id, name, loom_relay::now_ms())
+            {
+                Ok((host, events)) => {
+                    *enrolled_host = Some(host.id.clone());
+                    Some(ServerMessage::HostEnrolled {
+                        host,
+                        event_id: publish_all(state, &events),
+                    })
+                }
+                Err(error) => Some(ServerMessage::Error {
+                    message: error.to_string(),
+                }),
+            }
+        }
+        ClientCommand::HostHeartbeat { host_id } => {
+            if enrolled_host.as_ref() != Some(&host_id) {
+                return Some(ServerMessage::Error {
+                    message: "this connection is not enrolled as that host".into(),
+                });
+            }
+            match state
+                .registry
+                .host_heartbeat(&host_id, loom_relay::now_ms())
+            {
+                Ok(host) => Some(ServerMessage::HostHeartbeatAck {
+                    host_id,
+                    last_seen_at_ms: host.last_seen_at_ms.unwrap_or(0),
+                }),
+                Err(error) => Some(ServerMessage::Error {
+                    message: error.to_string(),
+                }),
+            }
+        }
+        ClientCommand::HostDisconnect { host_id } => {
+            if enrolled_host.as_ref() != Some(&host_id) {
+                return Some(ServerMessage::Error {
+                    message: "this connection is not enrolled as that host".into(),
+                });
+            }
+            let events = state
+                .registry
+                .mark_host_disconnected(&host_id, loom_relay::now_ms())
+                .unwrap_or_default();
+            publish_all(state, &events);
+            // Cleared so the socket-close path does not mark it twice.
+            *enrolled_host = None;
+            Some(ServerMessage::HostDisconnected { host_id })
+        }
     }
+}
+
+/// Publishes domain events in order and returns the last event id.
+///
+/// An empty string means nothing was published — a daemon reconnect that
+/// changed no state. The caller acks the command either way; the frame is a
+/// convenience, not the ack.
+fn publish_all(state: &AppState, events: &[loom_domain::DomainEvent]) -> String {
+    let mut last = String::new();
+    for event in events {
+        if let Ok(envelope) = state.publish_domain_event(event) {
+            last = envelope.event_id.to_string();
+        }
+    }
+    last
 }
 
 async fn send(

@@ -19,13 +19,19 @@
 //! resume cursor.
 
 use bytes::Bytes;
+use loom_domain::Host;
 use loom_relay::envelope::Envelope;
 use loom_relay::event_id::EventId;
 use loom_relay::scope::Scope;
 use serde::{Deserialize, Serialize};
 
 /// Messages a client may send.
-#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+///
+/// The same socket serves UI clients and daemons. A UI subscribes to the rooms
+/// it displays; a daemon enrolls, then follows its own `host:{id}` room. Both
+/// connect outbound to the same URL, which is what keeps a daemon independent
+/// of the server's process tree.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ClientCommand {
     /// Start receiving frames for a scope.
@@ -40,6 +46,29 @@ pub enum ClientCommand {
     },
     /// Liveness probe.
     Ping,
+    /// A daemon announces itself as a host.
+    ///
+    /// `host_id` is the identity the daemon was previously given, so a
+    /// reconnect is a status change rather than a new machine. Omitted on a
+    /// first enrollment, where the server mints one and returns it in
+    /// [`ServerMessage::HostEnrolled`].
+    EnrollHost {
+        /// The daemon's existing identity, if it has one.
+        #[serde(default)]
+        host_id: Option<loom_domain::HostId>,
+        /// The machine's display name.
+        name: String,
+    },
+    /// A daemon reports that it is still alive.
+    HostHeartbeat {
+        /// The host the daemon was enrolled as.
+        host_id: loom_domain::HostId,
+    },
+    /// A daemon leaves deliberately, before the socket closes.
+    HostDisconnect {
+        /// The host the daemon was enrolled as.
+        host_id: loom_domain::HostId,
+    },
 }
 
 /// Messages the server sends.
@@ -83,6 +112,26 @@ pub enum ServerMessage {
         /// Why it was rejected.
         message: String,
     },
+    /// Acknowledges [`ClientCommand::EnrollHost`].
+    HostEnrolled {
+        /// The host, with the identity to reuse on reconnect.
+        host: Host,
+        /// The id of the `host_registered` or `host_status_changed` event, or
+        /// an empty string when the reconnect changed nothing.
+        event_id: String,
+    },
+    /// Acknowledges [`ClientCommand::HostHeartbeat`].
+    HostHeartbeatAck {
+        /// The host that was kept alive.
+        host_id: loom_domain::HostId,
+        /// Its new last-seen wall-clock time.
+        last_seen_at_ms: u64,
+    },
+    /// Acknowledges [`ClientCommand::HostDisconnect`].
+    HostDisconnected {
+        /// The host that was marked detached.
+        host_id: loom_domain::HostId,
+    },
 }
 
 /// Builds the frame a client receives for an event.
@@ -117,6 +166,55 @@ pub fn frame_from_envelope(envelope: &Envelope) -> Bytes {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_host_enrollment_with_and_without_an_identity() {
+        let fresh: ClientCommand =
+            serde_json::from_str(r#"{"type":"enroll_host","name":"laptop"}"#).unwrap();
+        assert_eq!(
+            fresh,
+            ClientCommand::EnrollHost {
+                host_id: None,
+                name: "laptop".into()
+            }
+        );
+
+        let host_id = loom_domain::HostId::mint();
+        let returning: ClientCommand = serde_json::from_str(&format!(
+            r#"{{"type":"enroll_host","host_id":"{host_id}","name":"laptop"}}"#
+        ))
+        .unwrap();
+        assert_eq!(
+            returning,
+            ClientCommand::EnrollHost {
+                host_id: Some(host_id),
+                name: "laptop".into()
+            }
+        );
+    }
+
+    #[test]
+    fn host_replies_round_trip() {
+        let (host, _) = loom_domain::Host::register("laptop", 1).unwrap();
+        let enrolled = ServerMessage::HostEnrolled {
+            host: host.clone(),
+            event_id: "01M".into(),
+        };
+        let encoded = serde_json::to_string(&enrolled).unwrap();
+        assert_eq!(
+            serde_json::from_str::<ServerMessage>(&encoded).unwrap(),
+            enrolled
+        );
+
+        let ack = ServerMessage::HostHeartbeatAck {
+            host_id: host.id.clone(),
+            last_seen_at_ms: 9,
+        };
+        assert_eq!(
+            serde_json::from_str::<ServerMessage>(&serde_json::to_string(&ack).unwrap()).unwrap(),
+            ack
+        );
+    }
 
     #[test]
     fn parses_subscribe_with_a_tagged_scope() {
