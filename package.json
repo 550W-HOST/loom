@@ -4,9 +4,9 @@
   "type": "module",
   "packageManager": "pnpm@9.15.0",
   "scripts": {
-    "build": "pnpm --filter './ui/packages/*' run build",
-    "typecheck": "pnpm --filter './ui/packages/*' run typecheck",
-    "test": "pnpm --filter './ui/packages/*' run test",
+    "build": "pnpm --filter @loom/ui run build && pnpm --filter './ui/packages/*' run build",
+    "typecheck": "pnpm --filter @loom/ui run typecheck && pnpm --filter './ui/packages/*' run typecheck",
+    "test": "pnpm --filter @loom/ui run test && pnpm --filter './ui/packages/*' run test",
     "example": "tsx ui/examples/thread-timeline.ts"
   },
   "dependencies": {
