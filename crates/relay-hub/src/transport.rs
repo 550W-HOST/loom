@@ -15,7 +15,7 @@ pub trait Transport: Send {
     /// Returns `true` when the frame was accepted, `false` when the connection
     /// is closed or too far behind. The hub counts a `false` as a drop and
     /// does not retry — a client that cannot keep up recovers by replaying
-    /// from its last seen [`EventId`](bb_relay::EventId).
+    /// from its last seen [`EventId`](loom_relay::EventId).
     fn send(&mut self, frame: &[u8]) -> bool;
 }
 

@@ -1,4 +1,4 @@
-# bb
+# loom
 
 A hard fork of [bb](https://github.com/get-bb/bb) with a Rust control plane and a
 fixed relay layer. No upstream tracking: this repository owns its code.
@@ -19,19 +19,21 @@ number of structural decisions, and each one is being replaced:
 Early. The foundation is the relay layer, because every other decision depends
 on it and it can be validated on its own.
 
-- [x] `bb-relay` — scoped, sharded, replayable event log
-- [x] `bb-relay-hub` — rooms, idempotent fan-out, backpressure signal
-- [ ] Rust control plane (`bb-server`) on top of the relay
+- [x] `loom-relay` — scoped, sharded, replayable event log
+- [x] `loom-relay-hub` — rooms, idempotent fan-out, backpressure signal
+- [x] `loom-server` — HTTP + WebSocket surface; publish reaches subscribers through the log
+- [ ] Persist the log (durable backend) and port the real domain model
 - [ ] Port the bb web UI unchanged, served by the Rust server
-- [ ] Optional local daemon supervision in the desktop shell
+- [ ] Server-only startup and independently stoppable local daemon
 - [ ] Redis/NATS relay backend for restart-transparent upgrades
 
 ## Layout
 
 ```
 crates/
-  relay/        bb-relay      scopes, event ids, retention, dedup, backends
-  relay-hub/    bb-relay-hub  connections, rooms, delivery
+  relay/        loom-relay      scopes, event ids, retention, dedup, backends
+  relay-hub/    loom-relay-hub  connections, rooms, delivery
+  server/       loom-server     HTTP, WebSocket, protocol, fixed readers
 docs/
   architecture.md
 ```
@@ -48,6 +50,22 @@ cargo fmt --all
 ```
 
 No external services are required: the default backend is in-process.
+
+Run it:
+
+```bash
+cargo run -p loom-server            # listens on 127.0.0.1:38886
+
+curl localhost:38886/health
+curl -X POST localhost:38886/api/v1/publish \
+  -H 'content-type: application/json' \
+  -d '{"scope":{"kind":"thread","id":"thr_1"},"payload":"{\"hello\":\"loom\"}"}'
+curl 'localhost:38886/api/v1/replay?scope_kind=thread&scope_id=thr_1'
+```
+
+Connect a client on `ws://127.0.0.1:38886/ws`, send
+`{"type":"subscribe","scope":{"kind":"thread","id":"thr_1"}}`, and the
+published frame arrives.
 
 ## The one idea worth reading first
 

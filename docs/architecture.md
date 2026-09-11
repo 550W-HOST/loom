@@ -26,19 +26,19 @@ different lifetimes and different failure modes.
 
 ```
                  ┌───────────────────────────────┐
-   control plane │  bb-server (Rust)             │
+   control plane │  loom-server (Rust)           │
    publishes ───▶│  relay.publish(scope, frame)   │
                  └───────────────┬───────────────┘
                                  │  Envelope { event_id, scope, payload, ... }
                  ┌───────────────▼───────────────┐
-                 │  bb-relay                     │
+                 │  loom-relay                   │
                  │  sharding · retention · replay │
                  │  dedup · backends              │
                  │  (durable, replayable)         │
                  └───────────────┬───────────────┘
                                  │  Envelope stream
                  ┌───────────────▼───────────────┐
-                 │  bb-relay-hub                 │
+                 │  loom-relay-hub               │
                  │  rooms · subscriptions ·       │
                  │  per-connection dedup ·        │
                  │  backpressure                  │
@@ -48,8 +48,45 @@ different lifetimes and different failure modes.
                    client WS ────┴──── daemon WS
 ```
 
-`bb-relay` answers *does this event reach this node?* `bb-relay-hub` answers
+`loom-relay` answers *does this event reach this node?* `loom-relay-hub` answers
 *which sockets on this node get it, exactly once?*
+
+### What is stored
+
+The bytes appended to the log are the **client-facing frame**, not a bare
+domain payload:
+
+```json
+{"type":"event","event_id":"01M27Y...","scope":{"kind":"thread","id":"thr_1"},"payload":"{\"hello\":\"loom\"}","created_at_ms":1789120438372}
+```
+
+The frame is built by the producer, once, before the append
+(`protocol::build_event_frame`). Two properties follow, and both are
+load-bearing:
+
+- **Replay and live delivery are byte-identical.** A reconnecting client merges
+  backlog and live frames by event id, with no shape translation.
+- **The hub stays protocol-agnostic.** It forwards opaque bytes and never needs
+  to know that an event has an id.
+
+The event id therefore appears both in the envelope and inside the frame. That
+duplication is deliberate: the envelope needs the id for ordering, trimming and
+dedup; the frame needs it as the client's resume cursor.
+
+At runtime `loom-server` wires the three layers together with one fixed reader
+task per shard:
+
+```text
+  HTTP handler ──▶ Relay::publish_with(scope, build_frame)
+                       │  append to one shard
+  fixed readers  ──────┘  SHARD_COUNT tasks, one cursor each
+                       │
+                       ▼
+                 Hub actor ──▶ subscriber sockets
+```
+
+A producer calls `AppState::publish` and nothing else. It never consults a
+subscriber, a room or a socket.
 
 ### Why the split matters
 
@@ -58,8 +95,8 @@ different lifetimes and different failure modes.
   transparent to connected daemons. Nothing above `RelayBackend` changes.
 - **The relay is testable without sockets,** and the hub is testable without a
   broker.
-- **The dependency direction is enforced.** `bb-relay` does not know
-  `bb-relay-hub` exists. Connection state can never leak into routing.
+- **The dependency direction is enforced.** `loom-relay` does not know
+  `loom-relay-hub` exists. Connection state can never leak into routing.
 
 ### Fixed fan-in
 
@@ -134,15 +171,15 @@ count are all present with the in-process backend.
 ### A. Single machine
 
 ```
-desktop shell → bb-server (loopback) → bb-relay (in-process) → UI + local daemon
+desktop shell → loom-server (loopback) → loom-relay (in-process) → UI + local daemon
 ```
 
 ### B. Server plus execution machines
 
 ```
                   ┌────────────────────────────┐
-                  │ bb-server (systemd unit)    │
-                  │ bb-relay (in-process)       │
+                  │ loom-server (systemd unit)    │
+                  │ loom-relay (in-process)       │
                   └──────────────┬─────────────┘
         ┌──────────────┬─────────┼──────────┬──────────────┐
         ▼              ▼         ▼          ▼              ▼

@@ -1,11 +1,11 @@
 //! End-to-end behaviour of the relay layer through its public API.
 
-use bb_relay::backend::memory::MemoryBackend;
-use bb_relay::backend::SharedBackend;
-use bb_relay::dedup::SeenSet;
-use bb_relay::retention::Retention;
-use bb_relay::{now_ms, Envelope, Relay, Scope, WireEnvelope, SHARD_COUNT};
 use bytes::Bytes;
+use loom_relay::backend::memory::MemoryBackend;
+use loom_relay::backend::SharedBackend;
+use loom_relay::dedup::SeenSet;
+use loom_relay::retention::Retention;
+use loom_relay::{now_ms, Envelope, Relay, Scope, WireEnvelope, SHARD_COUNT};
 use std::sync::Arc;
 
 fn relay(max_len: usize) -> Relay {

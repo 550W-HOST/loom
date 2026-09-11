@@ -6,9 +6,9 @@
 
 use std::collections::{HashMap, HashSet};
 
-use bb_relay::dedup::{SeenSet, DEFAULT_DEDUP_CAPACITY};
-use bb_relay::envelope::Envelope;
-use bb_relay::scope::Scope;
+use loom_relay::dedup::{SeenSet, DEFAULT_DEDUP_CAPACITY};
+use loom_relay::envelope::Envelope;
+use loom_relay::scope::Scope;
 
 use crate::transport::Transport;
 

@@ -1,0 +1,23 @@
+[package]
+name = "loom-server"
+description = "loom control plane: HTTP API and WebSocket surface on top of the relay"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+loom-relay.workspace = true
+loom-relay-hub.workspace = true
+axum = { workspace = true }
+bytes.workspace = true
+futures-util.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
+tokio-tungstenite.workspace = true
+http-body-util = "0.1"
+tower = { version = "0.5", features = ["util"] }

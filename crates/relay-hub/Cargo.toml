@@ -1,11 +1,11 @@
 [package]
-name = "bb-relay-hub"
-description = "Connection and fan-out layer for the bb relay: rooms, idempotent delivery, backpressure"
+name = "loom-relay-hub"
+description = "Connection and fan-out layer for the loom relay: rooms, idempotent delivery, backpressure"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
-bb-relay.workspace = true
+loom-relay.workspace = true
 bytes.workspace = true

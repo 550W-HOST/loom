@@ -1,5 +1,5 @@
 [package]
-name = "bb-relay"
+name = "loom-relay"
 description = "Fixed relay layer: scoped, sharded, replayable event log for bb"
 version.workspace = true
 edition.workspace = true

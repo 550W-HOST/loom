@@ -1,9 +1,9 @@
 //! Hub behaviour: subscription routing, idempotent delivery, backpressure.
 
-use bb_relay::envelope::Envelope;
-use bb_relay::event_id::EventId;
-use bb_relay::scope::Scope;
-use bb_relay_hub::{DeliveryReport, Hub, RecordingTransport, SubscribeOutcome};
+use loom_relay::envelope::Envelope;
+use loom_relay::event_id::EventId;
+use loom_relay::scope::Scope;
+use loom_relay_hub::{DeliveryReport, Hub, RecordingTransport, SubscribeOutcome};
 
 fn envelope(scope: Scope, event_id: EventId, payload: &str) -> Envelope {
     Envelope {

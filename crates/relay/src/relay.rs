@@ -11,6 +11,7 @@ use bytes::Bytes;
 use crate::backend::{LogRecord, SharedBackend};
 use crate::envelope::Envelope;
 use crate::error::{RelayError, Result};
+use crate::event_id::EventId;
 use crate::retention::Retention;
 use crate::scope::{Scope, ShardId, SHARD_COUNT};
 
@@ -82,6 +83,30 @@ impl Relay {
     /// Publishes a frame to a scope, returning the stored envelope.
     pub fn publish(&self, scope: Scope, payload: impl Into<Bytes>) -> Result<Envelope> {
         let envelope = Envelope::new(self.origin.clone(), scope, payload);
+        self.store(&envelope)?;
+        Ok(envelope)
+    }
+
+    /// Publishes a frame whose bytes depend on the event's identity.
+    ///
+    /// Needed because the deliverable frame carries its own [`EventId`] as the
+    /// consumer's resume cursor, but the id is only known once it is minted
+    /// here. Building the frame before the store is what guarantees a replayed
+    /// frame is byte-identical to the live one.
+    pub fn publish_with<F>(&self, scope: Scope, build: F) -> Result<Envelope>
+    where
+        F: FnOnce(EventId, u64) -> Bytes,
+    {
+        let event_id = EventId::new();
+        let created_at_ms = crate::now_ms();
+        let envelope = Envelope {
+            event_id,
+            scope,
+            payload: build(event_id, created_at_ms),
+            created_at_ms,
+            origin: self.origin.clone(),
+            exclude: None,
+        };
         self.store(&envelope)?;
         Ok(envelope)
     }
@@ -334,5 +359,25 @@ mod tests {
         let first = relay.publish(scope.clone(), "{}").unwrap();
         let second = relay.publish(scope, "{}").unwrap();
         assert!(first.event_id < second.event_id);
+    }
+
+    #[test]
+    fn publish_with_can_embed_the_assigned_event_id() {
+        let relay = relay();
+        let envelope = relay
+            .publish_with(Scope::Thread("thr_1".into()), |event_id, created_at_ms| {
+                Bytes::from(format!("{event_id}:{created_at_ms}"))
+            })
+            .unwrap();
+
+        let rendered = String::from_utf8(envelope.payload.to_vec()).unwrap();
+        assert!(rendered.starts_with(&envelope.event_id.to_string()));
+        assert!(rendered.ends_with(&envelope.created_at_ms.to_string()));
+
+        // The stored bytes are what replay returns, unchanged.
+        let replayed = relay
+            .replay_scope(&Scope::Thread("thr_1".into()), 10)
+            .unwrap();
+        assert_eq!(replayed[0].payload, envelope.payload);
     }
 }

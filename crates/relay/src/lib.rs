@@ -1,9 +1,9 @@
-//! The bb relay layer.
+//! The loom relay layer.
 //!
 //! The control plane never touches a connection. It only publishes an
 //! [`Envelope`] to a [`Scope`]. The relay decides where that envelope is
 //! stored and how it is made available to every node, and the connection layer
-//! ([`bb_relay_hub`]) decides which sockets on this node receive it.
+//! ([`loom_relay_hub`]) decides which sockets on this node receive it.
 //!
 //! Three properties make this layer worth its own crate:
 //!
@@ -37,6 +37,7 @@ pub mod scope;
 
 pub use backend::{LogRecord, RelayBackend, SharedBackend};
 pub use envelope::{Envelope, NodeId, WireEnvelope};
+pub use error::{RelayError, Result};
 pub use event_id::EventId;
 pub use relay::{MaintenanceReport, Relay};
 pub use retention::Retention;
