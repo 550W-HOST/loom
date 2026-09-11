@@ -107,6 +107,24 @@ impl From<serde_json::Error> for DaemonError {
     }
 }
 
+/// Refuses a server whose welcome protocol version this daemon cannot speak.
+///
+/// The server and every daemon and UI bundle must agree on
+/// [`loom_server::PROTOCOL_VERSION`]: it is the wire contract, not a marketing
+/// version. A mixed deployment is rejected here, at the first frame, rather
+/// than misbehaving mid-run. See `docs/upgrades.md`.
+pub fn ensure_compatible_protocol(server_protocol_version: u32) -> Result<(), DaemonError> {
+    let local = loom_server::PROTOCOL_VERSION;
+    if server_protocol_version == local {
+        Ok(())
+    } else {
+        Err(DaemonError::Protocol(format!(
+            "server speaks protocol version {server_protocol_version}, \
+             this daemon speaks {local}; upgrade server and daemon together"
+        )))
+    }
+}
+
 /// Everything a daemon needs to reach and describe itself.
 #[derive(Clone, Debug)]
 pub struct DaemonConfig {
@@ -238,7 +256,12 @@ impl Daemon {
         let url = config.websocket_url();
         let (mut socket, _) = connect_async(&url).await?;
         match next_message(&mut socket).await? {
-            ServerMessage::Welcome { .. } => {
+            ServerMessage::Welcome {
+                protocol_version, ..
+            } => {
+                // Refuse a peer this build cannot speak to, before enrolling.
+                // A mismatch after enrollment would corrupt dispatch/runs.
+                ensure_compatible_protocol(protocol_version)?;
                 let (reports_tx, reports) = mpsc::channel(REPORT_CHANNEL_CAPACITY);
                 Ok(Self {
                     socket,
@@ -526,6 +549,14 @@ mod tests {
 
         let config = DaemonConfig::new("host:1234", "laptop");
         assert_eq!(config.websocket_url(), "ws://host:1234/ws");
+    }
+
+    #[test]
+    fn a_mismatched_server_protocol_version_is_refused() {
+        assert!(ensure_compatible_protocol(loom_server::PROTOCOL_VERSION).is_ok());
+        let error = ensure_compatible_protocol(loom_server::PROTOCOL_VERSION + 1)
+            .expect_err("a newer server must be refused");
+        assert!(error.to_string().contains("protocol version"), "{error}");
     }
 
     #[test]

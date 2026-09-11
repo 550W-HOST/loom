@@ -43,12 +43,17 @@ crates/
   provider-protocol/  loom-provider-protocol  the server↔daemon provider contract
   daemon/       loom-daemon     the execution plane: enrollment, dispatch, Pi bridge
 ui/             the reference UI client: buildless, served by loom-server
+deploy/         systemd units, environment templates, install/uninstall scripts
 docs/
   architecture.md
   process-model.md
   provider-protocol.md
   redis-backend.md
   ui.md
+  remote-access.md
+  mobile.md
+  upgrades.md
+  deployment-verification.md
 ```
 
 Application code from the bb fork (`apps/`, `packages/`, `plugins/`) lands here
@@ -132,6 +137,15 @@ reconnects with subscribe-then-replay — the contract is in
 The provider contract — dispatch through the relay, the report path, the
 stdout guard and the guarantee that a run always ends — is specified in
 [`docs/provider-protocol.md`](docs/provider-protocol.md).
+
+Deploying the multi-machine shape (server plus execution machines) is
+[`deploy/`](deploy/README.md): two systemd units, environment templates, and an
+idempotent install/uninstall script. Remote access is
+[`docs/remote-access.md`](docs/remote-access.md) (Tailscale Serve in front of a
+loopback bind), phones are
+[`docs/mobile.md`](docs/mobile.md) (installed PWA, no daemon), and upgrades are
+[`docs/upgrades.md`](docs/upgrades.md). The recorded clean-machine run is
+[`docs/deployment-verification.md`](docs/deployment-verification.md).
 
 ## The one idea worth reading first
 

@@ -150,25 +150,35 @@ machine A.
 
 ## Deploying it
 
+The ready-to-use units, environment templates and install script live in
+[`../deploy/`](../deploy/README.md). The shape is:
+
 Server-only, as its own unit:
 
 ```bash
 # /etc/systemd/system/loom-server.service
 [Service]
 ExecStart=/usr/local/bin/loom-server
-Environment=LOOM_BIND=0.0.0.0:38886
-Environment=LOOM_DATA_DIR=/var/lib/loom
+Environment=LOOM_BIND=127.0.0.1:38886
+Environment=LOOM_DATA_DIR=/var/lib/loom/server
 ```
 
-Daemon-only, on a different machine, as its own unit:
+Daemon-only, on a different machine, as its own unit (one instance per server):
 
 ```bash
-# /etc/systemd/system/loom-daemon.service
+# /etc/systemd/system/loom-host-daemon@builder-1.service
 [Service]
-ExecStart=/usr/local/bin/loom-daemon --server-url https://loom.example.com
+ExecStart=/usr/local/bin/loom-daemon
+Environment=LOOM_SERVER_URL=https://loom.example.com
 Environment=LOOM_HOST_NAME=builder-1
-Environment=LOOM_DAEMON_STATE=/var/lib/loom/host-id
+Environment=LOOM_DAEMON_STATE=/var/lib/loom/machines/builder-1/host-id
 ```
 
 The two units have separate resource domains and separate lifetimes. Stopping
-`loom-daemon` cannot stop `loom-server`, and vice versa.
+the daemon cannot stop `loom-server`, and vice versa.
+
+Keep `LOOM_BIND` on loopback. The API has no authentication and a daemon
+executes commands and reads files on its machine, so binding it to a public
+interface (bb's `--server-bind-host 0.0.0.0`, here `LOOM_BIND=0.0.0.0:38886`)
+exposes all of that. Put Tailscale or an authenticating reverse proxy in front
+instead; see [`remote-access.md`](remote-access.md).

@@ -203,7 +203,10 @@ desktop shell → loom-server (loopback) → loom-relay (in-process) → UI + lo
 The server and each daemon are separate services with separate data
 directories and separate resource domains. One agent exhausting a machine
 cannot take the control plane with it. Daemons make outbound connections only,
-so they work behind NAT.
+so they work behind NAT. This shape is packaged as systemd units in
+[`../deploy/`](../deploy/README.md), with the network boundary in
+[`remote-access.md`](remote-access.md) and the update rules in
+[`upgrades.md`](upgrades.md).
 
 ### C. Shared relay, restart-transparent
 
