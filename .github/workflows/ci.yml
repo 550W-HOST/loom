@@ -136,9 +136,8 @@ jobs:
   # `the_real_pi_process_streams_through_the_bridge` is `#[ignore]`d because it
   # runs the actual `pi` CLI. It is the only automated coverage of the bridge
   # the daemon really uses, so it runs here rather than staying manual — but on
-  # its own job, allowed to fail, because an upstream `pi` release is not a
-  # reason to block a merge. It needs no credentials: with no model to answer,
-  # the run ends `timed_out` and that is the expected outcome.
+  # its own job, allowed to fail, because `pi` is an upstream package and a
+  # release of it is not a reason to block a merge into this repository.
   pi:
     name: real pi provider (allowed to fail)
     runs-on: ubuntu-24.04
@@ -161,5 +160,25 @@ jobs:
       - name: Install the pi CLI
         run: npm install -g @earendil-works/pi-coding-agent@0.85.1
 
+      # A configured `pi`, not merely an installed one, is the prerequisite. On
+      # a stock runner `$HOME/.pi/agent` does not exist, and `pi --mode rpc`
+      # then exits without emitting a single frame, so the test fails in under a
+      # second every time — a permanently red job that carries no information.
+      # Probe the behaviour the test actually needs and skip loudly instead.
+      - name: Is pi configured on this runner?
+        id: pi
+        run: |
+          set -uo pipefail
+          # `</dev/null` makes pi exit on EOF, so this returns in a few seconds.
+          # No `pipefail` masking: the output is captured whole, not piped.
+          frames="$(timeout 30 pi --mode rpc --no-session </dev/null 2>/dev/null || true)"
+          if [ -n "$frames" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=real pi test skipped::pi is installed but not configured on this runner (no \$HOME/.pi/agent), so it emits no RPC frames. Configure pi to enable this job; see docs/ci.md."
+          fi
+
       - name: cargo test -p loom-daemon --test provider_e2e -- --ignored
+        if: steps.pi.outputs.configured == 'true'
         run: cargo test -p loom-daemon --test provider_e2e --locked -- --ignored

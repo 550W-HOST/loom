@@ -17,7 +17,7 @@ CI validates, it does not ship.
 | `checks` | `fmt + clippy + test` | `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace` |
 | `msrv` | `MSRV` | the workspace still compiles on the `rust-version` floor in the manifests |
 | `contract` | `bb contract is reproducible` | re-exporting bb's contract yields the committed `contracts/bb` byte for byte |
-| `pi` | `real pi provider (allowed to fail)` | the `#[ignore]`d provider test against the real `pi` CLI |
+| `pi` | `real pi provider (allowed to fail)` | the `#[ignore]`d provider test against the real `pi` CLI, skipped unless the runner has a configured `pi` |
 
 `cargo clippy` and `cargo test` run with `--locked`, so a build that would need a
 lockfile update fails instead of quietly resolving one.
@@ -181,10 +181,30 @@ things follow from what it is:
 - **`continue-on-error: true`,** so a red `pi` job does not fail the workflow
   run. It shows in the checks list as failed, which is where a human should
   notice it, without gating anything.
-- **No credentials.** It asserts the terminal-state guarantee and that real Pi
-  frames reached the bridge; it does not require a model to answer. With none
-  configured the run ends `timed_out`, which it accepts. Verified locally: the
-  test passes on a machine with `pi 0.85.1` installed and no credentials.
+- **Skipped unless `pi` is configured.** This is the part that is not obvious.
+  The test's doc comment says it passes on a machine with no credentials; what
+  it actually requires is a *configured* `pi`, and those are different things.
+  A runner that has the CLI installed but no `$HOME/.pi/agent` gets no frames at
+  all: `pi --mode rpc --no-session </dev/null` exits immediately, emitting
+  nothing, and the test then fails on `should report `started`` in under a
+  second — deterministically, on every run, with no credentials involved.
+
+  A job that is red every time is worse than no job: it trains people to ignore
+  the checks list. So the job probes the behaviour the test needs and skips with
+  a `::notice::` when it is absent, which is the state of a stock runner. Red
+  then means something really changed.
+
+  The probe captures `pi --mode rpc --no-session </dev/null` and asks whether it
+  produced any frames. `</dev/null` makes pi exit on EOF so it returns in a few
+  seconds either way, and the output is captured whole rather than piped, so
+  `pipefail` cannot mistake a `SIGPIPE` for "no frames". Verified both ways
+  locally: clean `$HOME` → `configured=false` in 0.4 s, configured `$HOME` →
+  `configured=true` in 2.3 s and the test passes.
+
+  To enable real coverage, give the job a configured `pi` — a `$HOME/.pi/agent`
+  with the models and credentials you want the bridge exercised against. Without
+  that, the test stays a local check; the command is in
+  [Reproducing CI locally](#reproducing-ci-locally).
 
 The CLI is installed from npm (`npm install -g @earendil-works/pi-coding-agent@0.85.1`,
 about 3 s) rather than expected on the runner, and the version is pinned so a new
@@ -201,7 +221,10 @@ Protect `main` and require these three checks:
 | `bb contract is reproducible` | the committed contract is what the exporter produces |
 
 Do **not** require `real pi provider (allowed to fail)`. It is `continue-on-error`
-by design and an upstream CLI must not gate this repository.
+by design, an upstream CLI must not gate this repository, and on a runner with an
+unconfigured `pi` it skips rather than reporting. Revisit this if the job is ever
+given a configured `pi`; it would then be worth requiring, since it is the only
+coverage of the production bridge.
 
 On GitHub: *Settings → Branches → Branch protection rules → `main`*, enable
 *Require status checks to pass before merging*, then select the three above. Two
@@ -240,6 +263,14 @@ git clone --filter=blob:none https://github.com/get-bb/bb.git /tmp/bb
 git -C /tmp/bb checkout "$(jq -r .source.commit contracts/bb/manifest.json)"
 BB_SRC=/tmp/bb scripts/export-bb-contract.sh
 git diff --exit-code -- contracts/bb
+```
+
+The `pi` job needs `pi` installed *and configured*; the test is skipped in CI
+without the latter, so this is where it actually runs:
+
+```bash
+npm install -g @earendil-works/pi-coding-agent@0.85.1
+cargo test -p loom-daemon --test provider_e2e -- --ignored
 ```
 
 These are the commands the workflow runs, not equivalents of them.
