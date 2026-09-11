@@ -215,6 +215,25 @@ the window a recovering reader depends on. The relationships are validated, not
 assumed: getting them backwards breaks replay exactly after an outage, which is
 the worst possible moment to discover it.
 
+### Domain state across restarts
+
+The relay log says *what happened*; the control plane's `DomainRegistry` (and
+the in-flight `RunRegistry`) is the *entity view* derived from it. With
+`LOOM_DATA_DIR` set, both the log and the entity view survive a restart. The
+entity view is stored as a **snapshot plus a replay cursor**, not as a second
+copy of the log:
+
+- the snapshot holds projects, threads, hosts and environments, plus the
+  newest `EventId` it incorporates and the runs that were in flight;
+- recovery loads it and replays only the retained log events **after** that
+  cursor;
+- a thread left `working` by a restart is failed with a terminal run event, so
+  "a thread cannot be stuck in `working`" holds across restarts too.
+
+The design, its crash-safety argument and the choices that were *not* taken
+(pure snapshot, pure replay, an external database) are in
+[`domain-persistence.md`](domain-persistence.md).
+
 ### Backpressure
 
 `Transport::send` returns `false` when a connection is closed or too far

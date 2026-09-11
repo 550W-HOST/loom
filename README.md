@@ -53,6 +53,7 @@ docs/
   architecture.md
   ci.md
   contract.md
+  domain-persistence.md
   process-model.md
   provider-protocol.md
   redis-backend.md
@@ -79,9 +80,13 @@ and the contract-reproducibility check; [`docs/ci.md`](docs/ci.md) lists the
 jobs, the required checks and the measured duration.
 
 No external services are required: the default backend is in-process. A
-`LOOM_DATA_DIR` keeps the replay window on local disk; `LOOM_REDIS_URL` moves
-it to Redis Streams so it is shared and survives a server upgrade. See
-[`docs/redis-backend.md`](docs/redis-backend.md) for the deployment contract.
+`LOOM_DATA_DIR` keeps the replay window on local disk **and** persists the
+domain entity view (projects, threads, hosts, environments) across restarts;
+`LOOM_REDIS_URL` moves the log to Redis Streams so it is shared and survives a
+server upgrade. See [`docs/domain-persistence.md`](docs/domain-persistence.md)
+for how domain state recovers, and
+[`docs/redis-backend.md`](docs/redis-backend.md) for the Redis deployment
+contract.
 
 Run it:
 

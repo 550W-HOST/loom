@@ -17,9 +17,10 @@ use std::sync::{Mutex, MutexGuard};
 
 use loom_domain::{
     DomainError, DomainEvent, Environment, EnvironmentId, EnvironmentKind, EnvironmentStatus, Host,
-    HostId, MessageRole, NewThread, Project, ProjectId, ProjectKind, RunId, Thread, ThreadId,
-    ThreadTrigger,
+    HostId, MessageRole, NewThread, Project, ProjectId, ProjectKind, RunEvent, RunId, Thread,
+    ThreadId, ThreadStatus, ThreadTrigger,
 };
+use serde::{Deserialize, Serialize};
 
 /// A command failed either because the target does not exist or because the
 /// domain rejected the change.
@@ -52,6 +53,24 @@ impl From<DomainError> for CommandError {
 #[derive(Debug)]
 pub struct DomainRegistry {
     inner: Mutex<RegistryInner>,
+}
+
+/// A point-in-time copy of the registry, as stored in a domain snapshot.
+///
+/// Vectors rather than maps so the serialized form is stable and diffable;
+/// [`DomainRegistry::export`] sorts each one by id before returning.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RegistrySnapshot {
+    /// The project threads default to.
+    pub personal_project_id: ProjectId,
+    /// Every project.
+    pub projects: Vec<Project>,
+    /// Every thread.
+    pub threads: Vec<Thread>,
+    /// Every host.
+    pub hosts: Vec<Host>,
+    /// Every environment.
+    pub environments: Vec<Environment>,
 }
 
 #[derive(Debug)]
@@ -428,6 +447,164 @@ impl DomainRegistry {
             .lock()
             .unwrap_or_else(|poison| poison.into_inner())
     }
+
+    /// Copies every entity out, in id order, for a durable snapshot.
+    ///
+    /// This is the entity view, not the log: messages and run history are
+    /// deliberately absent, because those are what the relay log is for.
+    pub fn export(&self) -> RegistrySnapshot {
+        let inner = self.lock();
+        let mut projects: Vec<Project> = inner.projects.values().cloned().collect();
+        projects.sort_by(|left, right| left.id.cmp(&right.id));
+        let mut threads: Vec<Thread> = inner.threads.values().cloned().collect();
+        threads.sort_by(|left, right| left.id.cmp(&right.id));
+        let mut hosts: Vec<Host> = inner.hosts.values().cloned().collect();
+        hosts.sort_by(|left, right| left.id.cmp(&right.id));
+        let mut environments: Vec<Environment> = inner.environments.values().cloned().collect();
+        environments.sort_by(|left, right| left.id.cmp(&right.id));
+        RegistrySnapshot {
+            personal_project_id: inner.personal_project_id.clone(),
+            projects,
+            threads,
+            hosts,
+            environments,
+        }
+    }
+
+    /// Replaces every entity with a snapshot's contents.
+    ///
+    /// The caller replays the log "after" the snapshot's watermark once this
+    /// returns; this restores only the baseline. The personal project is kept
+    /// even if the snapshot omitted it, so `create_thread` always resolves.
+    pub fn restore(&self, snapshot: RegistrySnapshot) {
+        let mut inner = self.lock();
+        *inner = RegistryInner::from_snapshot(snapshot);
+    }
+
+    /// Applies one already-published domain event to the registry.
+    ///
+    /// This is replay, not command handling. It is idempotent, never fails and
+    /// never panics: an event whose entity is unknown, or one that does not
+    /// affect the entity view (a message), is a no-op. That tolerance is what
+    /// lets recovery run against a log that is older, newer or more complete
+    /// than the snapshot without a correctness cliff.
+    pub fn apply_event(&self, event: &DomainEvent) {
+        let mut inner = self.lock();
+        match event {
+            DomainEvent::ProjectCreated { project } | DomainEvent::ProjectUpdated { project } => {
+                inner.projects.insert(project.id.clone(), project.clone());
+            }
+            DomainEvent::ThreadCreated { thread } => {
+                inner.threads.insert(thread.id.clone(), thread.clone());
+            }
+            DomainEvent::ThreadStatusChanged {
+                thread_id,
+                to,
+                at_ms,
+                ..
+            } => {
+                if let Some(thread) = inner.threads.get_mut(thread_id) {
+                    thread.status = *to;
+                    thread.updated_at_ms = *at_ms;
+                    thread.archived_at_ms = (*to == ThreadStatus::Archived).then_some(*at_ms);
+                }
+            }
+            // Messages are the log's business; the registry holds no timeline.
+            DomainEvent::ThreadMessageAdded { .. } => {}
+            DomainEvent::ThreadRunEvent {
+                thread_id,
+                run_id,
+                at_ms,
+                event,
+                ..
+            } => {
+                if let Some(thread) = inner.threads.get_mut(thread_id) {
+                    thread.active_run_id = match event {
+                        RunEvent::Finished { .. } => None,
+                        _ => Some(run_id.clone()),
+                    };
+                    thread.updated_at_ms = *at_ms;
+                }
+            }
+            DomainEvent::HostRegistered { host } => {
+                inner.hosts.insert(host.id.clone(), host.clone());
+            }
+            DomainEvent::HostStatusChanged {
+                host_id, to, at_ms, ..
+            } => {
+                if let Some(host) = inner.hosts.get_mut(host_id) {
+                    host.status = *to;
+                    host.updated_at_ms = *at_ms;
+                }
+            }
+            DomainEvent::EnvironmentCreated { environment } => {
+                inner
+                    .environments
+                    .insert(environment.id.clone(), environment.clone());
+            }
+            DomainEvent::EnvironmentStatusChanged {
+                environment_id,
+                to,
+                at_ms,
+                ..
+            } => {
+                if let Some(environment) = inner.environments.get_mut(environment_id) {
+                    environment.status = *to;
+                    environment.updated_at_ms = *at_ms;
+                    if *to != EnvironmentStatus::Error {
+                        environment.error = None;
+                    }
+                }
+            }
+        }
+    }
+}
+
+impl RegistryInner {
+    fn from_snapshot(snapshot: RegistrySnapshot) -> Self {
+        let mut projects: HashMap<ProjectId, Project> = snapshot
+            .projects
+            .into_iter()
+            .map(|project| (project.id.clone(), project))
+            .collect();
+        let threads = snapshot
+            .threads
+            .into_iter()
+            .map(|thread| (thread.id.clone(), thread))
+            .collect();
+        let hosts = snapshot
+            .hosts
+            .into_iter()
+            .map(|host| (host.id.clone(), host))
+            .collect();
+        let environments = snapshot
+            .environments
+            .into_iter()
+            .map(|environment| (environment.id.clone(), environment))
+            .collect();
+        let personal_project_id = snapshot.personal_project_id;
+        // Defensive: a snapshot that lost its personal project still has to
+        // resolve a default, so the id stays stable and a placeholder is
+        // synthesised rather than minting a second identity.
+        projects
+            .entry(personal_project_id.clone())
+            .or_insert(Project {
+                id: personal_project_id.clone(),
+                kind: ProjectKind::Personal,
+                name: "Personal".into(),
+                git_remote_url: None,
+                sources: Vec::new(),
+                created_at_ms: 0,
+                updated_at_ms: 0,
+            });
+        Self {
+            personal_project_id,
+            projects,
+            threads,
+            hosts,
+            environments,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -693,5 +870,84 @@ mod tests {
             ),
             Err(CommandError::NotFound(_))
         ));
+    }
+
+    #[test]
+    fn export_and_restore_round_trip_every_entity() {
+        let registry = registry();
+        let host = enrolled(&registry);
+        let (environment, _) = registry
+            .create_environment(
+                None,
+                host,
+                EnvironmentKind::Unmanaged,
+                Some("/srv/loom".into()),
+                3,
+            )
+            .unwrap();
+        let (thread, _) = registry
+            .create_thread(None, Some("t".into()), Some(environment.id.clone()), 4)
+            .unwrap();
+
+        let snapshot = registry.export();
+        let restored = DomainRegistry::new(9_999);
+        restored.restore(snapshot.clone());
+
+        assert_eq!(restored.export(), snapshot);
+        assert_eq!(
+            restored.thread(&thread.id).unwrap().title.as_deref(),
+            Some("t")
+        );
+        assert!(restored.environment(&environment.id).is_some());
+        assert_eq!(restored.hosts().len(), 1);
+    }
+
+    #[test]
+    fn replaying_an_event_whose_entity_is_missing_is_a_noop() {
+        let registry = registry();
+        registry.apply_event(&DomainEvent::ThreadStatusChanged {
+            thread_id: ThreadId::mint(),
+            project_id: ProjectId::mint(),
+            from: ThreadStatus::Idle,
+            to: ThreadStatus::Working,
+            at_ms: 5,
+        });
+        registry.apply_event(&DomainEvent::EnvironmentStatusChanged {
+            environment_id: EnvironmentId::mint(),
+            project_id: ProjectId::mint(),
+            host_id: HostId::mint(),
+            from: EnvironmentStatus::Creating,
+            to: EnvironmentStatus::Ready,
+            at_ms: 5,
+        });
+        registry.apply_event(&DomainEvent::HostStatusChanged {
+            host_id: HostId::mint(),
+            from: loom_domain::HostStatus::Connected,
+            to: loom_domain::HostStatus::Disconnected,
+            at_ms: 5,
+        });
+        // Nothing was invented and nothing panicked.
+        assert!(registry.threads().is_empty());
+        assert!(registry.environments().is_empty());
+        assert!(registry.hosts().is_empty());
+    }
+
+    #[test]
+    fn replaying_a_status_change_twice_lands_on_the_same_status() {
+        let registry = registry();
+        let (thread, _) = registry.create_thread(None, None, None, 2).unwrap();
+        let event = DomainEvent::ThreadStatusChanged {
+            thread_id: thread.id.clone(),
+            project_id: thread.project_id.clone(),
+            from: ThreadStatus::Idle,
+            to: ThreadStatus::Working,
+            at_ms: 3,
+        };
+        registry.apply_event(&event);
+        registry.apply_event(&event);
+        assert_eq!(
+            registry.thread(&thread.id).unwrap().status,
+            ThreadStatus::Working
+        );
     }
 }
