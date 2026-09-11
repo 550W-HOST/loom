@@ -96,7 +96,7 @@ The events the daemon produces from Pi frames:
 | `thread/tokenUsage/updated` | `agent_end` | from the assistant `usage` block |
 | `provider/error` | `agent_end` (`stopReason: error`), retry failure | |
 | `provider/warning` | `extension_error`, declined dialog | |
-| `provider/unhandled` | anything else with a real payload | the contract's diagnostic type, carrying the raw frame |
+| _(unmapped)_ | anything else | reported on stderr; **no event**. loom has no `provider/unhandled` fallback body (see [`event-model.md`](event-model.md)) |
 | `turn/completed` | `agent_settled`, rejected prompt, exit, timeout | **terminal** |
 
 On the wire, the server stores the whole envelope as a domain event on the

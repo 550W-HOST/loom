@@ -34,14 +34,14 @@ use std::process::Stdio;
 use std::time::{Duration, Instant};
 
 use loom_domain::{
-    FileChange, FileChangeKind, ItemStatus, ProviderEvent, ProviderEventType, ProviderRawEvent,
+    FileChange, FileChangeKind, ItemStatus, ProviderEvent, ProviderEventType,
     ProviderWarningCategory, RunEvent, RunOutcome, SearchMode, ThreadEventItem, TurnError,
     TurnStatus,
 };
 use loom_provider_protocol::{
     guard_stdout_line, GuardedLine, ProviderReport, ProviderSpec, RunDispatch,
 };
-use serde_json::{json, Map, Value};
+use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::mpsc;
@@ -467,11 +467,13 @@ impl PiBridge {
 
     /// Translates one Pi frame into zero or more contract events.
     ///
-    /// A frame loom does not model yields an empty vector *only* when it is a
-    /// pure no-op (a streaming boundary with no state). A frame that carries
-    /// real information but has no dedicated contract type becomes
-    /// `provider/unhandled` with the raw payload, which is the contract's own
-    /// diagnostic type — never a re-purposed `provider/warning`.
+    /// Every Pi frame loom models has its own arm; a frame that is a pure
+    /// streaming boundary with no state yields nothing. A frame Pi emits that
+    /// loom reaches no arm for is reported **explicitly on stderr** and
+    /// produces no event: this bridge does not synthesize a catch-all
+    /// `provider/unhandled` row. That is deliberate — a silent fallback hides
+    /// a missing mapping, and the contract's diagnostic type is not an excuse
+    /// to stop modelling. See `docs/event-model.md`.
     pub fn observe(&mut self, frame: &Value, at_ms: u64) -> Vec<RunEvent> {
         let kind = match frame.get("type").and_then(Value::as_str) {
             Some(kind) => kind,
@@ -659,17 +661,14 @@ impl PiBridge {
             // deltas and the terminal event, so they are not re-emitted as a
             // second, differently-shaped fact.
             "message_start" | "message_end" | "turn_start" | "turn_end" | "queue_update" => {}
-            // A frame Pi can emit that the contract has no dedicated type for.
-            // It is preserved verbatim as the contract's own diagnostic event,
-            // never folded into a warning with a different meaning.
+            // A frame Pi emits that loom does not model. Reported explicitly,
+            // never turned into a fallback event: a missing mapping must be
+            // visible rather than papered over with a diagnostic row.
             other => {
-                events.push(self.event(ProviderEvent::ProviderUnhandled {
-                    provider_thread_id: self.ptid(),
-                    provider_id: self.provider.clone(),
-                    raw_type: other.to_owned(),
-                    raw_event: raw_event_from(frame, other),
-                    parent_tool_call_id: None,
-                }));
+                eprintln!(
+                    "[provider:{}] unmapped frame `{other}`: {}",
+                    self.provider, frame
+                );
             }
         }
         events
@@ -1163,27 +1162,6 @@ fn close_pi_tool(
     }
 }
 
-/// Builds the contract's raw-event diagnostic from a Pi frame.
-fn raw_event_from(frame: &Value, kind: &str) -> ProviderRawEvent {
-    ProviderRawEvent {
-        jsonrpc: "2.0".into(),
-        id: frame.get("id").cloned().filter(|id| !id.is_null()),
-        method: kind.to_owned(),
-        params: frame
-            .as_object()
-            .map(|object| {
-                let mut params = Map::new();
-                for (key, value) in object {
-                    if key != "type" {
-                        params.insert(key.clone(), value.clone());
-                    }
-                }
-                Value::Object(params)
-            })
-            .filter(|params| params.as_object().is_some_and(|map| !map.is_empty())),
-    }
-}
-
 /// Reads Pi's `usage` block into the contract's token breakdown.
 fn assistant_usage(assistant: &Value) -> Option<loom_domain::ThreadTokenUsage> {
     let usage = assistant.get("usage")?;
@@ -1241,7 +1219,7 @@ fn content_text(value: &Value) -> String {
 /// Exposed so a test can assert the bridge's coverage against the contract
 /// rather than trusting a prose list. `docs/event-model.md` records, for every
 /// remaining contract type, whether a server produces it or nothing does.
-pub const BRIDGE_PROVIDER_TYPES: [ProviderEventType; 14] = [
+pub const BRIDGE_PROVIDER_TYPES: [ProviderEventType; 13] = [
     ProviderEventType::ThreadIdentity,
     ProviderEventType::TurnStarted,
     ProviderEventType::TurnCompleted,
@@ -1255,7 +1233,6 @@ pub const BRIDGE_PROVIDER_TYPES: [ProviderEventType; 14] = [
     ProviderEventType::ThreadTokenUsageUpdated,
     ProviderEventType::ProviderError,
     ProviderEventType::ProviderWarning,
-    ProviderEventType::ProviderUnhandled,
 ];
 
 #[cfg(test)]
@@ -1406,20 +1383,15 @@ mod tests {
     }
 
     #[test]
-    fn an_unmodelled_frame_becomes_the_contract_diagnostic_not_a_warning() {
+    fn an_unmodelled_frame_produces_no_fallback_event() {
+        // The issue forbids a `provider/unhandled`-style catch-all: an unmapped
+        // frame must be an explicit, visible non-event, not a synthesized row.
         let mut bridge = new_bridge();
         let events = bridge.observe(
             &json!({ "type": "bash_execution_update", "id": "req-1", "delta": "x" }),
             1,
         );
-        assert_eq!(kinds(&events), vec!["provider/unhandled"]);
-        let value = serde_json::to_value(&events[0]).unwrap();
-        assert_eq!(value["event"]["rawType"], "bash_execution_update");
-        assert_eq!(value["event"]["providerId"], "custom");
-        assert_eq!(
-            value["event"]["rawEvent"]["method"],
-            "bash_execution_update"
-        );
+        assert!(events.is_empty(), "no fallback event may be produced");
     }
 
     #[test]
@@ -1533,7 +1505,6 @@ mod tests {
             json!({ "type": "compaction_end", "reason": "threshold", "aborted": false }),
             json!({ "type": "auto_retry_start", "attempt": 1, "maxAttempts": 3 }),
             json!({ "type": "extension_ui_request", "id": "u1", "method": "confirm", "title": "?" }),
-            json!({ "type": "bash_execution_update", "id": "req-1", "delta": "x" }),
             json!({
                 "type": "agent_end",
                 "willRetry": false,

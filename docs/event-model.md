@@ -18,8 +18,9 @@ file change, and so on.
 
 The model is now:
 
-- **`loom_domain::ProviderEvent`** — the contract's 35 provider event types, one
-  variant each, internally tagged by `type` with the exact contract tokens.
+- **`loom_domain::ProviderEvent`** — the contract's provider event types, one
+  variant each (34 of the 35; see `provider/unhandled` below), internally
+  tagged by `type` with the exact contract tokens.
 - **`loom_domain::ThreadEventItem`** — the contract's item union (18 kinds),
   used by `item/started`, `item/completed`, the background-task and delegation
   progress events.
@@ -90,7 +91,7 @@ provider bridge.
 | 32 | `thread/extensionState/updated` | not produced | loom has no plugin/extension system, by decision. |
 | 33 | `provider/warning` | produced | daemon; Pi `extension_error`, a declined interactive dialog, a skipped compaction. |
 | 34 | `provider/modelFallback` | not produced | Pi does not report a model fallback as an event. |
-| 35 | `provider/unhandled` | produced | daemon; any frame with a real payload that has no contract type. This is the contract's own diagnostic type, **not** a loom catch-all: it carries the raw frame, and it is emitted only when the frame is genuinely unclassified. |
+| 35 | `provider/unhandled` | **not produced** | bb's diagnostic for an unmapped provider frame. loom deliberately has **no body variant** for it: an unmapped Pi frame is reported explicitly on stderr and produces no event. A catch-all row would hide a missing mapping. The token is still classified (see below). |
 
 ### Client and system types (13)
 
@@ -113,6 +114,20 @@ These are authored by a server or a client, never by a provider, so
 | `system/userQuestion/lifecycle` | not produced | as above: a question dialog is auto-declined and surfaced as `provider/warning`. |
 | `system/thread-provisioning` | not produced | Environment provisioning emits `environment_status_changed` on the project scope, not a thread event. |
 | `system/provider-turn-watchdog` | not produced | bb's legacy persisted diagnostic; nothing produces it. |
+
+## The `provider/unhandled` non-decision
+
+bb declares `provider/unhandled` as the diagnostic a bridge emits for a frame
+it could not map. loom **classifies the token** — `ThreadEventType` and
+`ProviderEventType` both list it, so the union is total and an incoming frame
+is never "unknown" when it is really this — but `ProviderEvent` has no
+`ProviderUnhandled` body variant and the bridge never constructs one.
+
+The reason is the issue's own constraint: a fallback type is a place for
+mapping gaps to hide. An unmapped Pi frame is written to stderr with the raw
+frame and produces no event, so a new provider frame shows up as a visible
+gap rather than a timeline row nobody reads. Adding a variant later is a
+deliberate decision with a test, not a default.
 
 ## The terminal-event invariant
 
@@ -147,9 +162,10 @@ frame. bb #1180 (Pi's OSC 777 notification wedging a turn) stays prevented.
 ## Enforcement
 
 - `crates/contract/tests/event_model.rs` asserts, against the exported
-  schema, that **every** contract type is classified, that all 35 provider
-  types have a sample, and that each sample's serialized `RunEvent` validates.
-  A renamed field or discriminant fails there.
+  schema, that **every** contract type is classified, that every provider
+  type except the deliberately unmodelled `provider/unhandled` has a sample,
+  and that each sample's serialized `RunEvent` validates. A renamed field or
+  discriminant fails there.
 - `crates/daemon/tests/provider_e2e.rs::a_provider_turn_runs_end_to_end_and_is_replayable`
   runs a provider whose stdout is deliberately polluted and validates every
   produced frame.

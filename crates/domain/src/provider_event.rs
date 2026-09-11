@@ -435,26 +435,6 @@ pub enum ModelFallbackReason {
     Provider,
 }
 
-/// The raw provider frame carried by `provider/unhandled`.
-///
-/// This is a *diagnostic* record of a frame loom does not model. It is not a
-/// catch-all event: loom's own bridge reports an unmapped frame only when it
-/// genuinely cannot classify it, and the raw payload is preserved verbatim so
-/// an operator can see why.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct ProviderRawEvent {
-    /// Always `"2.0"`.
-    pub jsonrpc: String,
-    /// The request id, when any.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub id: Option<Value>,
-    /// The method.
-    pub method: String,
-    /// The params, when any.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub params: Option<Value>,
-}
-
 /// A `provider.env-resolved` entry.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct EnvResolvedEntry {
@@ -1265,25 +1245,6 @@ pub enum ProviderEvent {
         /// A human-readable message.
         message: String,
     },
-    /// A provider frame loom does not model.
-    ///
-    /// This is the contract's own last-resort *provider* event, not a loom
-    /// catch-all: bb defines it, and the projection renders it as diagnostic.
-    /// loom's bridge emits it only for a provider frame it truly cannot map.
-    #[serde(rename = "provider/unhandled")]
-    ProviderUnhandled {
-        /// The provider's thread/session id.
-        provider_thread_id: String,
-        /// The provider id, e.g. `pi`.
-        provider_id: String,
-        /// The raw frame's `type`/method.
-        raw_type: String,
-        /// The raw frame.
-        raw_event: ProviderRawEvent,
-        /// The tool call this frame belongs to, when nested.
-        #[serde(skip_serializing_if = "Option::is_none")]
-        parent_tool_call_id: Option<String>,
-    },
 }
 
 impl ProviderEvent {
@@ -1330,7 +1291,6 @@ impl ProviderEvent {
             ProviderEvent::ThreadExtensionStateUpdated { .. } => "thread/extensionState/updated",
             ProviderEvent::ProviderWarning { .. } => "provider/warning",
             ProviderEvent::ProviderModelFallback { .. } => "provider/modelFallback",
-            ProviderEvent::ProviderUnhandled { .. } => "provider/unhandled",
         }
     }
 
@@ -1432,9 +1392,6 @@ impl ProviderEvent {
             }
             | ProviderEvent::ProviderModelFallback {
                 provider_thread_id, ..
-            }
-            | ProviderEvent::ProviderUnhandled {
-                provider_thread_id, ..
             } => Some(provider_thread_id),
             ProviderEvent::TurnCompleted {
                 provider_thread_id, ..
@@ -1519,9 +1476,12 @@ impl std::error::Error for ProviderEventError {}
 
 /// The 35 provider event discriminators, as an exhaustive enum.
 ///
-/// Kept separate from [`ProviderEvent`] so code can enumerate and validate the
-/// contract's type set (for example when checking that loom models every one)
-/// without constructing an event.
+/// Kept separate from [`ProviderEvent`] so code can enumerate and classify the
+/// contract's type set without constructing an event. One type is deliberately
+/// absent from [`ProviderEvent`]: `provider/unhandled`, the contract's own
+/// diagnostic for an unmapped provider frame. loom does not carry a fallback
+/// body variant — a frame with no mapping is reported explicitly instead — but
+/// the token is still classified here so the union is total.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum ProviderEventType {
     /// `thread/started`
@@ -1924,6 +1884,26 @@ mod tests {
         assert!(value["providerThreadId"].is_null());
         assert_eq!(value["status"], "failed");
         assert_eq!(value["error"]["message"], "boom");
+    }
+
+    #[test]
+    fn no_fallback_body_variant_exists() {
+        // `provider/unhandled` is classified but intentionally not
+        // constructible: loom reports an unmapped frame explicitly rather than
+        // filling in a catch-all event. The token stays in the union so the
+        // contract's type set is total; `ProviderEvent` simply has no variant
+        // for it, and this exhaustive match would fail to compile if one were
+        // added without updating the list.
+        assert_eq!(
+            ProviderEventType::ProviderUnhandled.as_str(),
+            "provider/unhandled"
+        );
+        let modelled: Vec<&str> = ProviderEventType::ALL
+            .iter()
+            .map(|event_type| event_type.as_str())
+            .filter(|token| *token != "provider/unhandled")
+            .collect();
+        assert_eq!(modelled.len(), 34);
     }
 
     #[test]

@@ -80,9 +80,9 @@ pub use provider_event::{
     FileChange, FileChangeKind, GoalStatus, ItemPresentation, ItemStatus, ModelFallbackReason,
     PlanStep, PlanStepStatus, PresentationBadge, PresentationIcon, PresentationLabel,
     PresentationTint, PresentationTone, ProviderErrorCategory, ProviderErrorInfo, ProviderEvent,
-    ProviderEventError, ProviderEventType, ProviderRawEvent, ProviderWarningCategory, SearchMode,
-    ThreadEvent, ThreadEventItem, ThreadEventScope, ThreadEventType, ThreadTokenUsage,
-    TokenUsageBreakdown, TurnError, TurnStatus, UserContent,
+    ProviderEventError, ProviderEventType, ProviderWarningCategory, SearchMode, ThreadEvent,
+    ThreadEventItem, ThreadEventScope, ThreadEventType, ThreadTokenUsage, TokenUsageBreakdown,
+    TurnError, TurnStatus, UserContent,
 };
 pub use run::{RunEvent, RunOutcome};
 pub use scope::DomainScope;

@@ -253,18 +253,6 @@ fn samples() -> Vec<ProviderEvent> {
             reason: loom_domain::ModelFallbackReason::Provider,
             message: "fell back".into(),
         },
-        ProviderEvent::ProviderUnhandled {
-            provider_thread_id: ptid.clone(),
-            provider_id: "pi".into(),
-            raw_type: "bash_execution_update".into(),
-            raw_event: loom_domain::ProviderRawEvent {
-                jsonrpc: "2.0".into(),
-                id: Some(json!("req-1")),
-                method: "bash_execution_update".into(),
-                params: None,
-            },
-            parent_tool_call_id: None,
-        },
     ]
 }
 
@@ -351,18 +339,29 @@ fn every_contract_type_is_classified() {
     );
 }
 
+/// The one provider type loom deliberately does not model as an event body.
+///
+/// The issue forbids introducing a `provider/unhandled`-style fallback, so the
+/// bridge reports an unmapped frame explicitly instead. The token stays in the
+/// classification enum; it just has no constructible body.
+const NO_BODY_VARIANT: &str = "provider/unhandled";
+
 #[test]
 fn every_provider_type_has_a_sample() {
     let samples = samples();
     let produced: Vec<&str> = samples.iter().map(ProviderEvent::kind).collect();
     for event_type in ProviderEventType::ALL {
+        let token = event_type.as_str();
         assert!(
-            produced.contains(&event_type.as_str()),
-            "`{}` has no sample; add one so the wire shape is checked",
-            event_type.as_str()
+            produced.contains(&token) || token == NO_BODY_VARIANT,
+            "`{token}` has no sample; add one so the wire shape is checked"
         );
     }
-    assert_eq!(samples.len(), 35);
+    // 34, not 35: `provider/unhandled` has no loom body variant by decision
+    // (an unmapped frame is reported explicitly, never as a fallback row). The
+    // token is still classified in `ThreadEventType`; the coverage test below
+    // accounts for it explicitly.
+    assert_eq!(samples.len(), 34);
 }
 
 #[test]
