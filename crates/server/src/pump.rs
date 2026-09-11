@@ -162,22 +162,17 @@ fn drain(
             return;
         }
 
-        // The timestamp bound is a safe superset of "after the cursor":
-        // event ids are monotonic, so no record after the cursor can carry an
-        // earlier timestamp. The id comparison below is the real filter.
-        let from_ms = cursor.map(|id| id.timestamp_ms()).unwrap_or(0);
-        let Ok(records) = relay.replay_shard(shard, from_ms, limit) else {
+        // The cursor is an event id, not a timestamp: the backend returns the
+        // next `limit` records *after* it. A burst larger than `limit` in one
+        // millisecond therefore still advances one batch at a time instead of
+        // pinning the reader on records it has already passed.
+        let Ok(records) = relay.read_shard_after(shard, *cursor, limit) else {
             return;
         };
 
         let mut forwarded = 0usize;
         let mut stopped = false;
         for envelope in records {
-            if let Some(current) = *cursor {
-                if envelope.event_id <= current {
-                    continue;
-                }
-            }
             *cursor = Some(envelope.event_id);
             match hub.try_deliver(envelope) {
                 // A backpressured frame is dropped, but the cursor still

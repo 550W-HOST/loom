@@ -130,6 +130,25 @@ The hash is hand-rolled FNV-1a rather than `std::hash::DefaultHasher` on
 purpose: the same value is computed by every node and by any future non-Rust
 backend, so it must not be allowed to change between Rust releases.
 
+### A reader resumes by event id, and the backend applies the cursor
+
+A shard reader holds the last `EventId` it delivered and asks for "the next
+`limit` records after this one". That cursor is a **backend parameter**
+(`RelayBackend::read_after`), not a filter the caller applies to a bounded
+read.
+
+The distinction is not stylistic. A read bounded only by a timestamp and
+limited *before* the cursor filter can return a full batch the caller must
+discard entirely — and then return the same batch on the next pass, forever. A
+burst of more than `limit` events minted in the same millisecond therefore
+stalls that shard's reader permanently and silently swallows every later event
+behind it. Expressing the cursor in the read makes progress unconditional:
+the backend either returns records newer than the cursor or returns nothing
+because there are none.
+
+`crates/server/tests/pump.rs` pins this with a same-millisecond burst larger
+than the batch limit.
+
 ### Identity and replay
 
 Every event carries an `EventId` — 48-bit millisecond timestamp plus 80 bits of

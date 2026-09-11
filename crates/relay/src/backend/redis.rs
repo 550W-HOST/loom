@@ -370,24 +370,43 @@ impl RelayBackend for RedisBackend {
         Ok(())
     }
 
-    fn read(&self, shard: ShardId, from_ms: u64, limit: usize) -> Result<Vec<LogRecord>> {
+    /// Reads entries newer than `after`.
+    ///
+    /// `XRANGE` is bounded server-side by a start id anchored to the cursor's
+    /// millisecond, so resuming does not scan the whole stream. Stream ids are
+    /// time-ordered, and an [`EventId`] carries the same millisecond, so the
+    /// `{ms}-0` anchor cannot skip a record the cursor has not passed: any
+    /// entry after the cursor has a stream id in the same or a later
+    /// millisecond. Records in that millisecond that are at or before the
+    /// cursor are then filtered by full event id.
+    fn read_after(
+        &self,
+        shard: ShardId,
+        after: Option<EventId>,
+        limit: usize,
+    ) -> Result<Vec<LogRecord>> {
         if limit == 0 {
             return Ok(Vec::new());
         }
         let key = self.config.shard_key(shard);
+        let start = match after {
+            None => b"-".to_vec(),
+            Some(cursor) => format!("{}-0", cursor.timestamp_ms()).into_bytes(),
+        };
         let reply = self.with_connection(shard, |connection| {
-            connection.command(&[b"XRANGE", key.as_bytes(), b"-", b"+"])
+            connection.command(&[b"XRANGE", key.as_bytes(), start.as_slice(), b"+"])
         })?;
         let entries = reply.into_array("XRANGE")?;
 
         let mut records = Vec::new();
         for entry in &entries {
             let decoded = parse_entry(entry)?;
-            if decoded.record.created_at_ms >= from_ms {
-                records.push(decoded.record);
-                if records.len() >= limit {
-                    break;
-                }
+            if after.is_some_and(|cursor| decoded.record.event_id <= cursor) {
+                continue;
+            }
+            records.push(decoded.record);
+            if records.len() >= limit {
+                break;
             }
         }
         Ok(records)

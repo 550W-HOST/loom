@@ -58,9 +58,29 @@ pub trait RelayBackend: Send + Sync {
     /// Appends a record to a shard.
     fn append(&self, shard: ShardId, record: LogRecord) -> Result<()>;
 
-    /// Reads records with `created_at_ms >= from_ms`, in append order, up to
-    /// `limit` records.
-    fn read(&self, shard: ShardId, from_ms: u64, limit: usize) -> Result<Vec<LogRecord>>;
+    /// Reads records strictly newer than `after`, in append order, up to
+    /// `limit` records. `None` starts from the oldest retained record.
+    ///
+    /// # Why the cursor is a parameter and not a caller-side filter
+    ///
+    /// A reader resumes from the last [`EventId`] it delivered, so what it
+    /// needs is "the next `limit` records *after* this one". Filtering that in
+    /// the caller is **not** equivalent. A timestamp-bounded read that applies
+    /// `limit` before the cursor filter can return a full batch that the caller
+    /// must discard entirely, and then return that same batch forever. That is
+    /// not hypothetical: a burst of more than `limit` events minted in the same
+    /// millisecond stalls that shard's reader permanently, silently dropping
+    /// every later event behind it.
+    ///
+    /// Expressing the cursor in the read makes progress unconditional — either
+    /// the backend returns records newer than the cursor, or it returns nothing
+    /// because there are none.
+    fn read_after(
+        &self,
+        shard: ShardId,
+        after: Option<EventId>,
+        limit: usize,
+    ) -> Result<Vec<LogRecord>>;
 
     /// Drops records with `created_at_ms < before_ms`, returning how many were
     /// removed.

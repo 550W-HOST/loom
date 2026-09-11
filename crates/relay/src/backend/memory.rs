@@ -17,6 +17,7 @@
 use std::sync::{Mutex, MutexGuard};
 
 use crate::error::{RelayError, Result};
+use crate::event_id::EventId;
 use crate::scope::{ShardId, SHARD_COUNT};
 
 use super::{LogRecord, RelayBackend};
@@ -82,11 +83,19 @@ impl RelayBackend for MemoryBackend {
         Ok(())
     }
 
-    fn read(&self, shard: ShardId, from_ms: u64, limit: usize) -> Result<Vec<LogRecord>> {
+    fn read_after(
+        &self,
+        shard: ShardId,
+        after: Option<EventId>,
+        limit: usize,
+    ) -> Result<Vec<LogRecord>> {
         let guard = self.shard(shard)?;
         Ok(guard
             .iter()
-            .filter(|record| record.created_at_ms >= from_ms)
+            .filter(|record| match after {
+                None => true,
+                Some(cursor) => record.event_id > cursor,
+            })
             .take(limit)
             .cloned()
             .collect())
@@ -127,24 +136,57 @@ mod tests {
         for ts in [10, 20, 30] {
             backend.append(0, record(ts)).unwrap();
         }
-        let read = backend.read(0, 0, 100).unwrap();
+        let read = backend.read_after(0, None, 100).unwrap();
         let stamps: Vec<u64> = read.iter().map(|r| r.created_at_ms).collect();
         assert_eq!(stamps, vec![10, 20, 30]);
     }
 
     #[test]
-    fn read_filters_by_timestamp_and_limit() {
+    fn read_after_returns_only_newer_records() {
         let backend = MemoryBackend::new(100);
-        for ts in [10, 20, 30, 40] {
-            backend.append(1, record(ts)).unwrap();
+        let first = record(10);
+        let second = record(20);
+        let third = record(30);
+        for item in [&first, &second, &third] {
+            backend.append(1, item.clone()).unwrap();
         }
-        let read = backend.read(1, 25, 100).unwrap();
-        let stamps: Vec<u64> = read.iter().map(|r| r.created_at_ms).collect();
-        assert_eq!(stamps, vec![30, 40]);
 
-        let limited = backend.read(1, 0, 2).unwrap();
+        let all = backend.read_after(1, None, 100).unwrap();
+        assert_eq!(all.len(), 3);
+
+        let after_first = backend.read_after(1, Some(first.event_id), 100).unwrap();
+        assert_eq!(
+            after_first.iter().map(|r| r.event_id).collect::<Vec<_>>(),
+            vec![second.event_id, third.event_id]
+        );
+
+        let limited = backend.read_after(1, None, 2).unwrap();
         assert_eq!(limited.len(), 2);
-        assert_eq!(limited[0].created_at_ms, 10);
+
+        let none_left = backend.read_after(1, Some(third.event_id), 100).unwrap();
+        assert!(none_left.is_empty());
+    }
+
+    /// A burst larger than the read limit, all in one millisecond, must still
+    /// make progress: the cursor is exclusive in id space, not time space.
+    #[test]
+    fn read_after_progresses_through_a_same_millisecond_burst() {
+        let backend = MemoryBackend::new(1_000);
+        for _ in 0..32 {
+            backend.append(1, record(50)).unwrap();
+        }
+
+        let mut cursor = None;
+        let mut delivered = 0;
+        loop {
+            let batch = backend.read_after(1, cursor, 4).unwrap();
+            if batch.is_empty() {
+                break;
+            }
+            delivered += batch.len();
+            cursor = Some(batch.last().unwrap().event_id);
+        }
+        assert_eq!(delivered, 32);
     }
 
     #[test]
@@ -156,7 +198,7 @@ mod tests {
         let removed = backend.trim(2, 30).unwrap();
         assert_eq!(removed, 2);
         let remaining: Vec<u64> = backend
-            .read(2, 0, 100)
+            .read_after(2, None, 100)
             .unwrap()
             .iter()
             .map(|r| r.created_at_ms)
@@ -172,7 +214,7 @@ mod tests {
         }
         assert_eq!(backend.len(3).unwrap(), 3);
         let stamps: Vec<u64> = backend
-            .read(3, 0, 100)
+            .read_after(3, None, 100)
             .unwrap()
             .iter()
             .map(|r| r.created_at_ms)
@@ -196,6 +238,6 @@ mod tests {
     fn out_of_range_shard_is_an_error() {
         let backend = MemoryBackend::new(10);
         assert!(backend.append(SHARD_COUNT, record(1)).is_err());
-        assert!(backend.read(SHARD_COUNT, 0, 10).is_err());
+        assert!(backend.read_after(SHARD_COUNT, None, 10).is_err());
     }
 }

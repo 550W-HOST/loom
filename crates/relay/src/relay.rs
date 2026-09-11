@@ -141,16 +141,39 @@ impl Relay {
         )
     }
 
-    /// Replays a single shard from `from_ms` (inclusive), in append order.
+    /// Reads records strictly newer than `after` on one shard.
+    ///
+    /// This is the reader primitive: the cursor travels into the backend so
+    /// "the next `limit` records" cannot be starved by a burst of records the
+    /// cursor has already passed. See [`RelayBackend::read_after`].
+    pub fn read_shard_after(
+        &self,
+        shard: ShardId,
+        after: Option<EventId>,
+        limit: usize,
+    ) -> Result<Vec<Envelope>> {
+        self.backend
+            .read_after(shard, after, limit)
+            .map(|records| records.into_iter().map(record_to_envelope).collect())
+    }
+
+    /// Replays a single shard's records with `created_at_ms >= from_ms`.
+    ///
+    /// A timestamp window, not a cursor; used by replay, where the caller wants
+    /// "everything in the retention window" rather than "the next batch". The
+    /// read is bounded by the backend's per-shard cap.
     pub fn replay_shard(
         &self,
         shard: ShardId,
         from_ms: u64,
         limit: usize,
     ) -> Result<Vec<Envelope>> {
-        self.backend
-            .read(shard, from_ms, limit)
-            .map(|records| records.into_iter().map(record_to_envelope).collect())
+        Ok(self
+            .read_shard_after(shard, None, usize::MAX)?
+            .into_iter()
+            .filter(|envelope| envelope.created_at_ms >= from_ms)
+            .take(limit)
+            .collect())
     }
 
     /// Replays one scope over the guaranteed replay window, returning at most
@@ -246,7 +269,12 @@ mod tests {
             fn append(&self, _: ShardId, _: LogRecord) -> Result<()> {
                 Ok(())
             }
-            fn read(&self, _: ShardId, _: u64, _: usize) -> Result<Vec<LogRecord>> {
+            fn read_after(
+                &self,
+                _: ShardId,
+                _: Option<EventId>,
+                _: usize,
+            ) -> Result<Vec<LogRecord>> {
                 Ok(Vec::new())
             }
             fn trim(&self, _: ShardId, _: u64) -> Result<u64> {

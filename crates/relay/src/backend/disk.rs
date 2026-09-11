@@ -301,14 +301,22 @@ impl RelayBackend for DiskBackend {
         Ok(())
     }
 
-    fn read(&self, shard: ShardId, from_ms: u64, limit: usize) -> Result<Vec<LogRecord>> {
+    fn read_after(
+        &self,
+        shard: ShardId,
+        after: Option<EventId>,
+        limit: usize,
+    ) -> Result<Vec<LogRecord>> {
         Ok(self
             .shard(shard)?
             .log
             .lock()
             .unwrap_or_else(|poison| poison.into_inner())
             .iter()
-            .filter(|record| record.created_at_ms >= from_ms)
+            .filter(|record| match after {
+                None => true,
+                Some(cursor) => record.event_id > cursor,
+            })
             .take(limit)
             .cloned()
             .collect())
@@ -852,26 +860,59 @@ mod tests {
         for ts in [10, 20, 30] {
             backend.append(0, record(ts)).unwrap();
         }
-        let read = backend.read(0, 0, 100).unwrap();
+        let read = backend.read_after(0, None, 100).unwrap();
         let stamps: Vec<u64> = read.iter().map(|record| record.created_at_ms).collect();
         assert_eq!(stamps, vec![10, 20, 30]);
         backend.flush().unwrap();
     }
 
     #[test]
-    fn read_filters_by_timestamp_and_limit() {
+    fn read_after_returns_only_newer_records() {
         let dir = TempDir::new().unwrap();
         let backend = DiskBackend::open(dir.path(), 100).unwrap();
+        let mut ids = Vec::new();
         for ts in [10, 20, 30, 40] {
-            backend.append(1, record(ts)).unwrap();
+            let entry = record(ts);
+            ids.push(entry.event_id);
+            backend.append(1, entry).unwrap();
         }
-        let read = backend.read(1, 25, 100).unwrap();
-        let stamps: Vec<u64> = read.iter().map(|record| record.created_at_ms).collect();
+
+        let all = backend.read_after(1, None, 100).unwrap();
+        assert_eq!(all.len(), 4);
+
+        // The cursor is exclusive, so resuming after the second record yields
+        // the last two — in append order, regardless of timestamp.
+        let resumed = backend.read_after(1, Some(ids[1]), 100).unwrap();
+        let stamps: Vec<u64> = resumed.iter().map(|r| r.created_at_ms).collect();
         assert_eq!(stamps, vec![30, 40]);
 
-        let limited = backend.read(1, 0, 2).unwrap();
+        let limited = backend.read_after(1, None, 2).unwrap();
         assert_eq!(limited.len(), 2);
         assert_eq!(limited[0].created_at_ms, 10);
+        backend.flush().unwrap();
+    }
+
+    /// A burst larger than the read limit, all in one millisecond, must still
+    /// make progress rather than pinning the reader on records it passed.
+    #[test]
+    fn read_after_progresses_through_a_same_millisecond_burst() {
+        let dir = TempDir::new().unwrap();
+        let backend = DiskBackend::open(dir.path(), 1_000).unwrap();
+        for _ in 0..32 {
+            backend.append(1, record(50)).unwrap();
+        }
+
+        let mut cursor = None;
+        let mut delivered = 0;
+        loop {
+            let batch = backend.read_after(1, cursor, 4).unwrap();
+            if batch.is_empty() {
+                break;
+            }
+            delivered += batch.len();
+            cursor = Some(batch.last().unwrap().event_id);
+        }
+        assert_eq!(delivered, 32);
         backend.flush().unwrap();
     }
 
@@ -885,7 +926,7 @@ mod tests {
         let removed = backend.trim(2, 30).unwrap();
         assert_eq!(removed, 2);
         let remaining: Vec<u64> = backend
-            .read(2, 0, 100)
+            .read_after(2, None, 100)
             .unwrap()
             .iter()
             .map(|record| record.created_at_ms)
@@ -903,7 +944,7 @@ mod tests {
         }
         assert_eq!(backend.len(3).unwrap(), 3);
         let stamps: Vec<u64> = backend
-            .read(3, 0, 100)
+            .read_after(3, None, 100)
             .unwrap()
             .iter()
             .map(|record| record.created_at_ms)
@@ -933,7 +974,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let backend = DiskBackend::open(dir.path(), 10).unwrap();
         assert!(backend.append(SHARD_COUNT, record(1)).is_err());
-        assert!(backend.read(SHARD_COUNT, 0, 10).is_err());
+        assert!(backend.read_after(SHARD_COUNT, None, 10).is_err());
     }
 
     #[test]
@@ -995,7 +1036,9 @@ mod tests {
 
         let backend = DiskBackend::open(dir.path(), 100).unwrap();
         for record in expected {
-            let read = backend.read(record.scope.shard(), 0, 1_000).unwrap();
+            let read = backend
+                .read_after(record.scope.shard(), None, 1_000)
+                .unwrap();
             assert!(
                 read.iter().any(|candidate| candidate == &record),
                 "scope {} did not survive the round trip",
@@ -1031,7 +1074,7 @@ mod tests {
 
         let backend = DiskBackend::open(dir.path(), 100).unwrap();
         let stamps: Vec<u64> = backend
-            .read(4, 0, 100)
+            .read_after(4, None, 100)
             .unwrap()
             .iter()
             .map(|record| record.created_at_ms)
@@ -1116,7 +1159,7 @@ mod tests {
         let backend = DiskBackend::open(dir.path(), 5).unwrap();
         assert_eq!(backend.len(0).unwrap(), 5);
         let stamps: Vec<u64> = backend
-            .read(0, 0, 100)
+            .read_after(0, None, 100)
             .unwrap()
             .iter()
             .map(|record| record.created_at_ms)
