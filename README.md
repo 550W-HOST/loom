@@ -62,6 +62,7 @@ docs/
   mobile.md
   upgrades.md
   deployment-verification.md
+  ui-package-sync.md
 ```
 
 Application code from the bb fork (`apps/`, `packages/`, `plugins/`) lands here
@@ -73,7 +74,17 @@ next, alongside the Rust workspace rather than replacing it.
 cargo test --workspace
 cargo clippy --workspace --all-targets
 cargo fmt --all
+
+pnpm install
+pnpm build
+pnpm test
+pnpm example
 ```
+
+The ported `thread-view`, `client-core`, `core-ui`, `shared-ui`, and contract
+packages live under `ui/packages/`. The projection baseline and deliberate hard
+fork synchronization policy are recorded in
+[`docs/ui-package-sync.md`](docs/ui-package-sync.md).
 
 CI runs the check forms of these on every push and PR, plus the declared MSRV
 and the contract-reproducibility check; [`docs/ci.md`](docs/ci.md) lists the
