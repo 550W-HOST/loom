@@ -62,8 +62,6 @@ jobs:
       # compiles with. Every crate inherits it, hence the single-value check.
       - name: Read rust-version from the workspace
         id: msrv
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           version="$(cargo metadata --no-deps --format-version 1 --locked \
