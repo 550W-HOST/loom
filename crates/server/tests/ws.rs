@@ -314,7 +314,29 @@ async fn the_host_and_thread_commands_drive_a_real_conversation() {
         "unexpected host: {host}"
     );
 
-    let created = http_post_json(&addr, "/api/v1/threads", &json!({})).await;
+    // Bind the thread to an environment so its message dispatches a run
+    // instead of failing for want of a workspace.
+    let environment = http_post_json(
+        &addr,
+        "/api/v1/environments",
+        &json!({
+            "kind": "unmanaged",
+            "host_id": host["host"]["id"],
+            "path": "/srv/loom-ws-test",
+        }),
+    )
+    .await;
+    let environment_id = environment["environment"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let created = http_post_json(
+        &addr,
+        "/api/v1/threads",
+        &json!({ "environment_id": environment_id }),
+    )
+    .await;
     let thread_id = created["thread"]["id"].as_str().unwrap().to_string();
     let project_id = created["thread"]["project_id"]
         .as_str()

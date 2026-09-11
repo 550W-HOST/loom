@@ -19,8 +19,8 @@
 //! resume cursor.
 
 use bytes::Bytes;
-use loom_domain::{Host, RunId};
-use loom_provider_protocol::ProviderReport;
+use loom_domain::{EnvironmentId, Host, RunId};
+use loom_provider_protocol::{EnvironmentProvisionReport, ProviderReport};
 use loom_relay::envelope::Envelope;
 use loom_relay::event_id::EventId;
 use loom_relay::scope::Scope;
@@ -79,6 +79,15 @@ pub enum ClientCommand {
     RunReport {
         /// The run observation.
         report: ProviderReport,
+    },
+    /// A daemon reports the outcome of provisioning a managed environment's
+    /// workspace.
+    ///
+    /// The server turns it into `environment_status_changed` (and, on success,
+    /// records the workspace path) and publishes it to the project scope.
+    EnvironmentReport {
+        /// The provisioning observation.
+        report: EnvironmentProvisionReport,
     },
     /// Ask the server to replay retained frames for a scope to this
     /// connection.
@@ -174,6 +183,17 @@ pub enum ServerMessage {
         /// Whether the report was applied. `false` means the run was already
         /// terminal or the report contradicted the dispatcher's record; both
         /// are normal under redelivery.
+        accepted: bool,
+        /// Why it was not applied, when it was not.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        detail: Option<String>,
+    },
+    /// Acknowledges [`ClientCommand::EnvironmentReport`].
+    EnvironmentReportAck {
+        /// The environment the report was about.
+        environment_id: EnvironmentId,
+        /// Whether the report was applied. `false` means the environment was
+        /// not awaiting provisioning (a duplicate or a late redelivery).
         accepted: bool,
         /// Why it was not applied, when it was not.
         #[serde(default, skip_serializing_if = "Option::is_none")]

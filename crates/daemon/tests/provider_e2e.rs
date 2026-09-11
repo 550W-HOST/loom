@@ -12,7 +12,9 @@ use std::path::Path;
 use std::time::Duration;
 
 use loom_daemon::{Daemon, DaemonConfig};
-use loom_domain::{HostId, HostStatus, MessageRole, ThreadId, ThreadStatus};
+use loom_domain::{
+    EnvironmentKind, EnvironmentStatus, HostId, HostStatus, MessageRole, ThreadId, ThreadStatus,
+};
 use loom_provider_protocol::ProviderSpec;
 use loom_server::http::router;
 use loom_server::state::{AppConfig, AppState};
@@ -65,11 +67,37 @@ async fn enroll_daemon(
     (host_id, handle)
 }
 
-/// Creates a thread, appends a user message, and dispatches the resulting run.
-fn start_turn(state: &AppState, content: &str) -> ThreadId {
+/// Creates a thread bound to an unmanaged environment at `workspace`, appends a
+/// user message, and dispatches the resulting run.
+///
+/// The workspace must exist: the daemon refuses a dispatch whose directory is
+/// missing, which is exactly the validation these tests exercise.
+fn start_turn(state: &AppState, workspace: &Path, content: &str) -> ThreadId {
+    let host_id = state
+        .registry
+        .hosts()
+        .into_iter()
+        .next()
+        .expect("a host must be enrolled before dispatching")
+        .id;
+    let (environment, _) = state
+        .registry
+        .create_environment(
+            None,
+            host_id,
+            loom_domain::EnvironmentKind::Unmanaged,
+            Some(workspace.to_string_lossy().into_owned()),
+            loom_relay::now_ms(),
+        )
+        .unwrap();
     let (thread, created) = state
         .registry
-        .create_thread(None, Some("turn".into()), loom_relay::now_ms())
+        .create_thread(
+            None,
+            Some("turn".into()),
+            Some(environment.id),
+            loom_relay::now_ms(),
+        )
         .unwrap();
     state.publish_domain_event(&created).unwrap();
     let events = state
@@ -206,7 +234,7 @@ sleep 1
         .await
     );
 
-    let thread_id = start_turn(&state, "say hello");
+    let thread_id = start_turn(&state, dir.path(), "say hello");
     assert_eq!(
         wait_for_terminal(&state, &thread_id).await,
         ThreadStatus::Idle
@@ -246,6 +274,114 @@ sleep 1
 }
 
 #[tokio::test]
+async fn a_provider_runs_in_the_environment_workspace() {
+    let dir = tempfile::tempdir().unwrap();
+    // The workspace is deliberately a *different* directory from the stub's, so
+    // the assertion cannot pass by accident from the daemon's own cwd.
+    let workspace = tempfile::tempdir().unwrap();
+    let provider = write_stub(
+        dir.path(),
+        "pwd.sh",
+        r#"read -r _prompt
+pwd > pwd.out
+printf '%s\n' '{"type":"agent_start"}'
+printf '%s\n' '{"type":"agent_settled"}'
+sleep 1
+"#,
+    );
+
+    let (url, state) = spawn_server(AppConfig {
+        provider_spec: provider.clone(),
+        ..AppConfig::default()
+    })
+    .await;
+    let (host_id, daemon) =
+        enroll_daemon(&url, None, Some(provider), Duration::from_secs(10)).await;
+    assert!(
+        eventually(|| state
+            .registry
+            .host(&host_id)
+            .map(|host| host.status == HostStatus::Connected)
+            .unwrap_or(false))
+        .await
+    );
+
+    let thread_id = start_turn(&state, workspace.path(), "where am i?");
+    assert_eq!(
+        wait_for_terminal(&state, &thread_id).await,
+        ThreadStatus::Idle
+    );
+
+    // The provider wrote its cwd where it actually ran. It must be the
+    // environment's workspace, not the daemon's process cwd.
+    let recorded = std::fs::read_to_string(workspace.path().join("pwd.out")).unwrap();
+    assert_eq!(
+        std::fs::canonicalize(recorded.trim()).unwrap(),
+        std::fs::canonicalize(workspace.path()).unwrap()
+    );
+    assert_ne!(recorded.trim(), dir.path().to_string_lossy());
+
+    daemon.abort();
+    state.shutdown();
+}
+
+#[tokio::test]
+async fn a_dispatch_to_a_missing_workspace_fails_with_a_clear_reason() {
+    let dir = tempfile::tempdir().unwrap();
+    let provider = write_stub(
+        dir.path(),
+        "never-runs.sh",
+        r#"read -r _prompt
+printf '%s\n' '{"type":"agent_settled"}'
+"#,
+    );
+
+    let (url, state) = spawn_server(AppConfig {
+        provider_spec: provider.clone(),
+        ..AppConfig::default()
+    })
+    .await;
+    let (host_id, daemon) =
+        enroll_daemon(&url, None, Some(provider), Duration::from_secs(10)).await;
+    assert!(
+        eventually(|| state
+            .registry
+            .host(&host_id)
+            .map(|host| host.status == HostStatus::Connected)
+            .unwrap_or(false))
+        .await
+    );
+
+    // A path that exists on the server's filesystem but is deliberately removed
+    // before the daemon sees it: the daemon must refuse, not fall back to its
+    // own cwd.
+    let missing = dir.path().join("gone");
+    let thread_id = start_turn(&state, &missing, "nowhere to run");
+    assert_eq!(
+        wait_for_terminal(&state, &thread_id).await,
+        ThreadStatus::Error
+    );
+
+    let events = thread_events(&state, &thread_id);
+    assert_eq!(terminal_outcome(&events), Some("failed".into()));
+    let finished = run_events(&events)
+        .into_iter()
+        .find(|event| event["event"]["type"] == "finished")
+        .cloned()
+        .unwrap();
+    assert!(
+        finished["event"]["error"]
+            .as_str()
+            .is_some_and(|error| error.contains("does not exist")),
+        "the failure should name the missing directory: {finished}"
+    );
+    assert!(state.runs.is_empty());
+
+    daemon.abort();
+    state.shutdown();
+}
+
+#[tokio::test]
 async fn a_crashing_provider_leaves_the_thread_in_error() {
     let dir = tempfile::tempdir().unwrap();
     let provider = write_stub(
@@ -274,7 +410,7 @@ exit 7
         .await
     );
 
-    let thread_id = start_turn(&state, "crash please");
+    let thread_id = start_turn(&state, dir.path(), "crash please");
     assert_eq!(
         wait_for_terminal(&state, &thread_id).await,
         ThreadStatus::Error
@@ -329,7 +465,7 @@ sleep 30
         .await
     );
 
-    let thread_id = start_turn(&state, "hang forever");
+    let thread_id = start_turn(&state, dir.path(), "hang forever");
     assert_eq!(
         wait_for_terminal(&state, &thread_id).await,
         ThreadStatus::Error
@@ -370,7 +506,7 @@ sleep 1
     let mut first = Daemon::connect(first_config).await.unwrap();
     let host_id = first.enroll().await.unwrap();
 
-    let thread_id = start_turn(&state, "will you catch up?");
+    let thread_id = start_turn(&state, dir.path(), "will you catch up?");
     // The dispatch is now in the host room and retained in the relay.
 
     first.disconnect().await.unwrap();
@@ -429,7 +565,7 @@ async fn a_run_on_a_silent_daemon_is_reaped_by_the_stale_heartbeat_sweep() {
     let mut daemon = Daemon::connect(config).await.unwrap();
     let host_id = daemon.enroll().await.unwrap();
 
-    let thread_id = start_turn(&state, "nobody is listening");
+    let thread_id = start_turn(&state, dir.path(), "nobody is listening");
     assert_eq!(
         wait_for_terminal(&state, &thread_id).await,
         ThreadStatus::Error
@@ -454,6 +590,114 @@ fn the_protocol_version_is_pinned() {
     assert_eq!(PROTOCOL_VERSION, 1);
 }
 
+#[tokio::test]
+async fn a_managed_environment_is_provisioned_by_the_daemon() {
+    let root = tempfile::tempdir().unwrap();
+    let (url, state) = spawn_server(AppConfig::default()).await;
+
+    let mut config = DaemonConfig::new(&url, "test-daemon");
+    config.environment_root = root.path().to_path_buf();
+    config.heartbeat_interval = Duration::from_millis(50);
+    let mut daemon = Daemon::connect(config).await.unwrap();
+    let host_id = daemon.enroll().await.unwrap();
+    let handle = tokio::spawn(async move {
+        let _ = daemon.run().await;
+    });
+
+    let (environment, _) = state
+        .registry
+        .create_environment(
+            None,
+            host_id,
+            EnvironmentKind::Managed,
+            None,
+            loom_relay::now_ms(),
+        )
+        .unwrap();
+    assert!(matches!(
+        state.provision_environment(&environment.id),
+        loom_server::environments::ProvisionOutcome::Dispatched(_)
+    ));
+
+    assert!(
+        eventually(|| state
+            .registry
+            .environment(&environment.id)
+            .map(|environment| environment.status == EnvironmentStatus::Ready)
+            .unwrap_or(false))
+        .await,
+        "the daemon should provision the workspace"
+    );
+
+    let stored = state.registry.environment(&environment.id).unwrap();
+    let path = stored
+        .path
+        .as_deref()
+        .expect("a ready environment has a path");
+    assert_eq!(
+        path,
+        root.path()
+            .join(environment.id.to_string())
+            .to_string_lossy()
+    );
+    assert!(Path::new(path).is_dir());
+
+    handle.abort();
+    state.shutdown();
+}
+
+#[tokio::test]
+async fn a_failing_provision_records_the_daemon_reason() {
+    let root = tempfile::tempdir().unwrap();
+    // A regular file where the workspace root should be: every create fails.
+    let not_a_dir = root.path().join("not-a-dir");
+    std::fs::write(&not_a_dir, "x").unwrap();
+
+    let (url, state) = spawn_server(AppConfig::default()).await;
+    let mut config = DaemonConfig::new(&url, "test-daemon");
+    config.environment_root = not_a_dir;
+    config.heartbeat_interval = Duration::from_millis(50);
+    let mut daemon = Daemon::connect(config).await.unwrap();
+    let host_id = daemon.enroll().await.unwrap();
+    let handle = tokio::spawn(async move {
+        let _ = daemon.run().await;
+    });
+
+    let (environment, _) = state
+        .registry
+        .create_environment(
+            None,
+            host_id,
+            EnvironmentKind::Managed,
+            None,
+            loom_relay::now_ms(),
+        )
+        .unwrap();
+    state.provision_environment(&environment.id);
+
+    assert!(
+        eventually(|| state
+            .registry
+            .environment(&environment.id)
+            .map(|environment| environment.status == EnvironmentStatus::Error)
+            .unwrap_or(false))
+        .await,
+        "a failed provision should reach `error`"
+    );
+    let stored = state.registry.environment(&environment.id).unwrap();
+    assert!(
+        stored
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("not-a-dir")),
+        "the daemon's reason should survive: {:?}",
+        stored.error
+    );
+
+    handle.abort();
+    state.shutdown();
+}
+
 /// The real provider, not a stub.
 ///
 /// Ignored by default because it runs the actual `pi` CLI. It asserts the
@@ -464,6 +708,7 @@ fn the_protocol_version_is_pinned() {
 #[tokio::test]
 #[ignore = "runs the real `pi` CLI"]
 async fn the_real_pi_process_streams_through_the_bridge() {
+    let dir = tempfile::tempdir().unwrap();
     let (url, state) = spawn_server(AppConfig::default()).await;
     // 20s is long enough to see Pi's startup frames and short enough that a
     // model-less environment still ends the turn.
@@ -477,7 +722,7 @@ async fn the_real_pi_process_streams_through_the_bridge() {
         .await
     );
 
-    let thread_id = start_turn(&state, "Reply with exactly the word: pong");
+    let thread_id = start_turn(&state, dir.path(), "Reply with exactly the word: pong");
     let status = wait_for_terminal_for(&state, &thread_id, Duration::from_secs(60)).await;
     assert!(
         matches!(status, ThreadStatus::Idle | ThreadStatus::Error),
@@ -537,7 +782,7 @@ sleep 1
 
     // A warm-up dispatch establishes the point a restarting daemon would have
     // cursored past before it went away.
-    start_turn(&state, "warm-up");
+    start_turn(&state, dir.path(), "warm-up");
     let cursor = state
         .relay
         .replay_scope(&host_scope, 100)
@@ -550,7 +795,7 @@ sleep 1
     const BACKLOG: usize = 10;
     let mut threads = Vec::new();
     for i in 0..BACKLOG {
-        threads.push(start_turn(&state, &format!("backlog {i}")));
+        threads.push(start_turn(&state, dir.path(), &format!("backlog {i}")));
     }
 
     first.disconnect().await.unwrap();

@@ -16,8 +16,9 @@ use std::fmt;
 use std::sync::{Mutex, MutexGuard};
 
 use loom_domain::{
-    DomainError, DomainEvent, Host, HostId, MessageRole, NewThread, Project, ProjectId,
-    ProjectKind, RunId, Thread, ThreadId, ThreadTrigger,
+    DomainError, DomainEvent, Environment, EnvironmentId, EnvironmentKind, EnvironmentStatus, Host,
+    HostId, MessageRole, NewThread, Project, ProjectId, ProjectKind, RunId, Thread, ThreadId,
+    ThreadTrigger,
 };
 
 /// A command failed either because the target does not exist or because the
@@ -59,6 +60,7 @@ struct RegistryInner {
     projects: HashMap<ProjectId, Project>,
     threads: HashMap<ThreadId, Thread>,
     hosts: HashMap<HostId, Host>,
+    environments: HashMap<EnvironmentId, Environment>,
 }
 
 impl DomainRegistry {
@@ -75,6 +77,7 @@ impl DomainRegistry {
                 projects,
                 threads: HashMap::new(),
                 hosts: HashMap::new(),
+                environments: HashMap::new(),
             }),
         }
     }
@@ -85,10 +88,14 @@ impl DomainRegistry {
     }
 
     /// Creates a thread and returns it with its creation event.
+    ///
+    /// An `environment_id` that is unknown is rejected here rather than at
+    /// dispatch: a thread bound to a non-existent environment could never run.
     pub fn create_thread(
         &self,
         project_id: Option<ProjectId>,
         title: Option<String>,
+        environment_id: Option<EnvironmentId>,
         now_ms: u64,
     ) -> Result<(Thread, DomainEvent), CommandError> {
         let mut inner = self.lock();
@@ -101,17 +108,134 @@ impl DomainRegistry {
             }
             None => inner.personal_project_id.clone(),
         };
+        if let Some(id) = &environment_id {
+            if !inner.environments.contains_key(id) {
+                return Err(CommandError::NotFound(format!(
+                    "environment {id} is not known"
+                )));
+            }
+        }
         let (thread, event) = Thread::create(
             NewThread {
                 project_id,
                 title,
                 parent_thread_id: None,
-                environment_id: None,
+                environment_id,
             },
             now_ms,
         );
         inner.threads.insert(thread.id.clone(), thread.clone());
         Ok((thread, event))
+    }
+
+    /// Creates an environment and returns it with the events it produced.
+    ///
+    /// The owning project defaults to the personal project, exactly like a
+    /// thread. An `unmanaged` environment starts `ready` with its path; a
+    /// `managed` one starts `creating` with none, and is provisioned later by
+    /// a daemon.
+    pub fn create_environment(
+        &self,
+        project_id: Option<ProjectId>,
+        host_id: HostId,
+        kind: EnvironmentKind,
+        path: Option<String>,
+        now_ms: u64,
+    ) -> Result<(Environment, Vec<DomainEvent>), CommandError> {
+        let mut inner = self.lock();
+        let project_id = match project_id {
+            Some(id) => {
+                if !inner.projects.contains_key(&id) {
+                    return Err(CommandError::NotFound(format!("project {id} is not known")));
+                }
+                id
+            }
+            None => inner.personal_project_id.clone(),
+        };
+        if !inner.hosts.contains_key(&host_id) {
+            return Err(CommandError::NotFound(format!(
+                "host {host_id} is not known"
+            )));
+        }
+        let (environment, event) = Environment::create(project_id, host_id, kind, path, now_ms)?;
+        inner
+            .environments
+            .insert(environment.id.clone(), environment.clone());
+        Ok((environment, vec![event]))
+    }
+
+    /// Looks up an environment.
+    pub fn environment(&self, environment_id: &EnvironmentId) -> Option<Environment> {
+        self.lock().environments.get(environment_id).cloned()
+    }
+
+    /// Every known environment, oldest first.
+    pub fn environments(&self) -> Vec<Environment> {
+        let mut environments: Vec<Environment> =
+            self.lock().environments.values().cloned().collect();
+        environments.sort_by(|left, right| left.id.cmp(&right.id));
+        environments
+    }
+
+    /// Every environment owned by a project, oldest first.
+    pub fn environments_for_project(&self, project_id: &ProjectId) -> Vec<Environment> {
+        let mut environments: Vec<Environment> = self
+            .lock()
+            .environments
+            .values()
+            .filter(|environment| &environment.project_id == project_id)
+            .cloned()
+            .collect();
+        environments.sort_by(|left, right| left.id.cmp(&right.id));
+        environments
+    }
+
+    /// Moves an environment to `to` and returns the status-change event.
+    ///
+    /// An illegal transition is a `CommandError::Domain`, not a silent no-op:
+    /// the caller decides whether a late report is harmless.
+    pub fn set_environment_status(
+        &self,
+        environment_id: &EnvironmentId,
+        to: EnvironmentStatus,
+        now_ms: u64,
+    ) -> Result<(Environment, DomainEvent), CommandError> {
+        let mut inner = self.lock();
+        let environment = inner.environments.get_mut(environment_id).ok_or_else(|| {
+            CommandError::NotFound(format!("environment {environment_id} is not known"))
+        })?;
+        let event = environment.set_status(to, now_ms)?;
+        Ok((environment.clone(), event))
+    }
+
+    /// Moves an environment to `error`, recording why.
+    pub fn fail_environment(
+        &self,
+        environment_id: &EnvironmentId,
+        reason: String,
+        now_ms: u64,
+    ) -> Result<(Environment, DomainEvent), CommandError> {
+        let mut inner = self.lock();
+        let environment = inner.environments.get_mut(environment_id).ok_or_else(|| {
+            CommandError::NotFound(format!("environment {environment_id} is not known"))
+        })?;
+        let event = environment.set_error(reason, now_ms)?;
+        Ok((environment.clone(), event))
+    }
+
+    /// Records the path a managed environment was provisioned at.
+    pub fn set_environment_path(
+        &self,
+        environment_id: &EnvironmentId,
+        path: String,
+        now_ms: u64,
+    ) -> Result<Environment, CommandError> {
+        let mut inner = self.lock();
+        let environment = inner.environments.get_mut(environment_id).ok_or_else(|| {
+            CommandError::NotFound(format!("environment {environment_id} is not known"))
+        })?;
+        environment.set_provisioned_path(path, now_ms)?;
+        Ok(environment.clone())
     }
 
     /// Appends a message to a thread and returns the events it produced.
@@ -318,7 +442,7 @@ mod tests {
     fn a_thread_defaults_to_the_personal_project() {
         let registry = registry();
         let (thread, _) = registry
-            .create_thread(None, Some("first".into()), 2)
+            .create_thread(None, Some("first".into()), None, 2)
             .unwrap();
         assert_eq!(thread.project_id, registry.personal_project_id());
         assert_eq!(registry.thread(&thread.id).unwrap(), thread);
@@ -328,7 +452,16 @@ mod tests {
     fn a_thread_cannot_be_created_in_an_unknown_project() {
         let registry = registry();
         assert!(matches!(
-            registry.create_thread(Some(ProjectId::mint()), None, 2),
+            registry.create_thread(Some(ProjectId::mint()), None, None, 2),
+            Err(CommandError::NotFound(_))
+        ));
+    }
+
+    #[test]
+    fn a_thread_cannot_be_bound_to_an_unknown_environment() {
+        let registry = registry();
+        assert!(matches!(
+            registry.create_thread(None, None, Some(EnvironmentId::mint()), 2),
             Err(CommandError::NotFound(_))
         ));
     }
@@ -345,7 +478,7 @@ mod tests {
     #[test]
     fn a_user_message_advances_the_stored_thread() {
         let registry = registry();
-        let (thread, _) = registry.create_thread(None, None, 2).unwrap();
+        let (thread, _) = registry.create_thread(None, None, None, 2).unwrap();
         let events = registry
             .post_message(&thread.id, MessageRole::User, "hello".into(), 3)
             .unwrap();
@@ -426,6 +559,138 @@ mod tests {
         let registry = registry();
         assert!(matches!(
             registry.host_heartbeat(&HostId::mint(), 2),
+            Err(CommandError::NotFound(_))
+        ));
+    }
+
+    fn enrolled(registry: &DomainRegistry) -> HostId {
+        registry.enroll_host(None, "laptop".into(), 2).unwrap().0.id
+    }
+
+    #[test]
+    fn an_unmanaged_environment_starts_ready_with_its_path() {
+        let registry = registry();
+        let host = enrolled(&registry);
+        let (environment, events) = registry
+            .create_environment(
+                None,
+                host,
+                EnvironmentKind::Unmanaged,
+                Some("/srv/loom".into()),
+                3,
+            )
+            .unwrap();
+
+        assert_eq!(environment.status, EnvironmentStatus::Ready);
+        assert_eq!(environment.path.as_deref(), Some("/srv/loom"));
+        assert_eq!(events.len(), 1);
+        assert!(matches!(events[0], DomainEvent::EnvironmentCreated { .. }));
+        assert_eq!(
+            registry.environment(&environment.id),
+            Some(environment.clone())
+        );
+        assert_eq!(
+            registry.environments_for_project(&registry.personal_project_id()),
+            vec![environment]
+        );
+    }
+
+    #[test]
+    fn a_managed_environment_starts_creating_and_advances_through_provisioning() {
+        let registry = registry();
+        let host = enrolled(&registry);
+        let (environment, _) = registry
+            .create_environment(None, host, EnvironmentKind::Managed, None, 3)
+            .unwrap();
+        assert_eq!(environment.status, EnvironmentStatus::Creating);
+        assert_eq!(environment.path, None);
+
+        let (provisioning, event) = registry
+            .set_environment_status(&environment.id, EnvironmentStatus::Provisioning, 4)
+            .unwrap();
+        assert_eq!(provisioning.status, EnvironmentStatus::Provisioning);
+        assert!(matches!(
+            event,
+            DomainEvent::EnvironmentStatusChanged { .. }
+        ));
+
+        registry
+            .set_environment_path(&environment.id, "/srv/work".into(), 5)
+            .unwrap();
+        let (ready, _) = registry
+            .set_environment_status(&environment.id, EnvironmentStatus::Ready, 6)
+            .unwrap();
+        assert_eq!(ready.status, EnvironmentStatus::Ready);
+        assert_eq!(ready.path.as_deref(), Some("/srv/work"));
+    }
+
+    #[test]
+    fn a_failed_provision_is_recorded_as_error_with_its_reason() {
+        let registry = registry();
+        let host = enrolled(&registry);
+        let (environment, _) = registry
+            .create_environment(None, host, EnvironmentKind::Managed, None, 3)
+            .unwrap();
+        registry
+            .set_environment_status(&environment.id, EnvironmentStatus::Provisioning, 4)
+            .unwrap();
+        let (failed, event) = registry
+            .fail_environment(&environment.id, "permission denied".into(), 5)
+            .unwrap();
+        assert_eq!(failed.status, EnvironmentStatus::Error);
+        assert_eq!(failed.error.as_deref(), Some("permission denied"));
+        assert!(matches!(
+            event,
+            DomainEvent::EnvironmentStatusChanged { .. }
+        ));
+    }
+
+    #[test]
+    fn destroying_an_environment_is_terminal() {
+        let registry = registry();
+        let host = enrolled(&registry);
+        let (environment, _) = registry
+            .create_environment(
+                None,
+                host,
+                EnvironmentKind::Unmanaged,
+                Some("/srv/loom".into()),
+                3,
+            )
+            .unwrap();
+        registry
+            .set_environment_status(&environment.id, EnvironmentStatus::Destroyed, 4)
+            .unwrap();
+        assert!(matches!(
+            registry.set_environment_status(&environment.id, EnvironmentStatus::Ready, 5),
+            Err(CommandError::Domain(
+                DomainError::IllegalEnvironmentTransition { .. }
+            ))
+        ));
+    }
+
+    #[test]
+    fn an_environment_in_an_unknown_project_or_host_is_not_found() {
+        let registry = registry();
+        let host = enrolled(&registry);
+        assert!(matches!(
+            registry.create_environment(
+                Some(ProjectId::mint()),
+                host,
+                EnvironmentKind::Unmanaged,
+                Some("/srv/loom".into()),
+                3,
+            ),
+            Err(CommandError::NotFound(_))
+        ));
+        assert!(matches!(
+            registry.create_environment(
+                None,
+                HostId::mint(),
+                EnvironmentKind::Unmanaged,
+                Some("/srv/loom".into()),
+                3,
+            ),
             Err(CommandError::NotFound(_))
         ));
     }

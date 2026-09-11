@@ -4,10 +4,13 @@
 //! [`loom_provider_protocol`]. Three responsibilities, and the reason each is
 //! here rather than in a route handler:
 //!
-//! 1. **Dispatch goes through the relay.** [`AppState::dispatch_thread`] mints
-//!    a run, records it, and publishes a [`RunDispatch`] to `host:{id}`. The
-//!    handler never touches a daemon socket, so a daemon that is momentarily
-//!    disconnected still gets the run on reconnect.
+//! 1. **Dispatch goes through the relay, to the environment's host.**
+//!    [`AppState::dispatch_thread`] resolves the thread's environment, fills the
+//!    provider's working directory from it, mints a run, and publishes a
+//!    [`RunDispatch`] to that host's scope. The handler never touches a daemon
+//!    socket, so once the run is in the log a reconnect cannot lose it. A thread
+//!    with no usable environment, or whose host is detached, is *failed*, never
+//!    run somewhere else.
 //! 2. **Reports become thread events.** [`AppState::apply_run_report`] turns a
 //!    daemon observation into a `thread_run_event` and publishes it to the
 //!    thread scope, in order. The daemon's socket is not the fan-out path.
@@ -27,8 +30,8 @@ use std::collections::HashMap;
 use std::sync::{Mutex, MutexGuard};
 
 use loom_domain::{
-    DomainEvent, HostId, HostStatus, ProjectId, RunEvent, RunId, RunOutcome, Thread, ThreadId,
-    ThreadTrigger,
+    DomainEvent, Environment, EnvironmentStatus, HostId, HostStatus, ProjectId, RunEvent, RunId,
+    RunOutcome, Thread, ThreadId, ThreadTrigger,
 };
 use loom_provider_protocol::{ProviderReport, RunDispatch};
 use loom_relay::{now_ms, Scope};
@@ -139,6 +142,13 @@ impl RunRegistry {
 pub enum DispatchOutcome {
     /// The dispatch was appended to the host's scope and the run is in flight.
     Dispatched(RunRecord),
+    /// The thread has no usable environment, so there is no workspace to run
+    /// the provider in. The run was failed on the spot rather than letting a
+    /// provider start in the daemon's own cwd.
+    NoEnvironment {
+        /// The synthetic run id reported in the terminal event.
+        run_id: RunId,
+    },
     /// No execution machine is connected. The run was failed on the spot so the
     /// thread does not sit in `working` waiting for a machine that is not
     /// there.
@@ -182,13 +192,62 @@ impl AppState {
     /// Mints a run, records it, and publishes the dispatch to `host:{id}`.
     ///
     /// The caller must already have moved `thread` into `working` (a user
-    /// message does that). This method only decides *where* it runs and records
-    /// that it is running.
+    /// message does that). This method only decides *where* it runs, records
+    /// that it is running, and — the point of the whole path — tells the daemon
+    /// **which directory** to run the provider in.
+    ///
+    /// The workspace comes from the thread's environment: its path fills
+    /// [`ProviderSpec::cwd`] and its host is the machine the dispatch targets,
+    /// because the directory only exists there. A thread with no environment,
+    /// an environment that is not `ready`, or a host that is detached is failed
+    /// on the spot rather than silently run somewhere else. See
+    /// [`AppState::dispatch_thread`] and `docs/provider-protocol.md`.
     pub fn dispatch_thread(&self, thread: &Thread, prompt: &str) -> DispatchOutcome {
         let now = now_ms();
-        let Some(host) = self.registry.primary_host(self.local_host_id()) else {
+
+        let environment = match self.resolve_environment(thread) {
+            Ok(environment) => environment,
+            Err(error) => {
+                return DispatchOutcome::NoEnvironment {
+                    run_id: self.fail_thread(thread, error, now),
+                }
+            }
+        };
+
+        // The workspace lives on exactly one machine, so the run must go to the
+        // environment's host rather than to whichever host is "primary".
+        let Some(host) = self.registry.host(&environment.host_id) else {
             return DispatchOutcome::NoHost {
-                run_id: self.fail_unhosted(thread, now),
+                run_id: self.fail_thread(
+                    thread,
+                    format!("host {} is not known", environment.host_id),
+                    now,
+                ),
+            };
+        };
+        if host.status != HostStatus::Connected {
+            return DispatchOutcome::NoHost {
+                run_id: self.fail_thread(
+                    thread,
+                    format!(
+                        "host {} owns this thread's workspace but is not connected",
+                        host.id
+                    ),
+                    now,
+                ),
+            };
+        }
+
+        // A `ready` environment always has a path for a managed one and, by
+        // construction, for an unmanaged one. Treat `None` as an internal
+        // inconsistency rather than dispatch a provider without a workspace.
+        let Some(workspace) = environment.path.clone() else {
+            return DispatchOutcome::NoEnvironment {
+                run_id: self.fail_thread(
+                    thread,
+                    format!("environment {} has no workspace path", environment.id),
+                    now,
+                ),
             };
         };
 
@@ -201,13 +260,17 @@ impl AppState {
             started_at_ms: now,
             deadline_ms: now.saturating_add(self.run_timeout_ms()),
         };
+        // The dispatched spec carries the working directory. The provider is
+        // otherwise exactly the one this server was configured with.
+        let mut provider = self.provider_spec().clone();
+        provider.cwd = Some(workspace);
         let dispatch = RunDispatch {
             run_id: run_id.clone(),
             thread_id: thread.id.clone(),
             project_id: thread.project_id.clone(),
             host_id: host.id.clone(),
             prompt: prompt.to_owned(),
-            provider: self.provider_spec().clone(),
+            provider,
             deadline_ms: record.deadline_ms,
             created_at_ms: now,
         };
@@ -230,6 +293,32 @@ impl AppState {
                 }
             }
         }
+    }
+
+    /// Resolves the environment a thread must run in.
+    ///
+    /// The explicit rejection of a thread with no environment is deliberate:
+    /// falling back to the daemon's own cwd is the bug this path fixes, so an
+    /// unbound thread is an error, never a silent default.
+    fn resolve_environment(&self, thread: &Thread) -> Result<Environment, String> {
+        let Some(environment_id) = &thread.environment_id else {
+            return Err("thread has no environment bound; bind one before dispatching".to_owned());
+        };
+        let Some(environment) = self.registry.environment(environment_id) else {
+            return Err(format!("environment {environment_id} is not known"));
+        };
+        if environment.status != EnvironmentStatus::Ready {
+            return Err(format!(
+                "environment {environment_id} is {} and not ready to run",
+                environment.status
+            ));
+        }
+        if environment.path.is_none() {
+            return Err(format!(
+                "environment {environment_id} has no workspace path"
+            ));
+        }
+        Ok(environment)
     }
 
     /// Applies one daemon report.
@@ -348,12 +437,12 @@ impl AppState {
         }
     }
 
-    /// Fails a thread that never got a host to run on.
+    /// Fails a thread that never got a run started.
     ///
     /// Returns the synthetic run id reported in the terminal event. No record
     /// is inserted, because there is nothing to reconcile: the run is already
     /// terminal.
-    fn fail_unhosted(&self, thread: &Thread, now: u64) -> RunId {
+    fn fail_thread(&self, thread: &Thread, reason: String, now: u64) -> RunId {
         let run_id = RunId::mint();
         self.publish_domain_event(&DomainEvent::ThreadRunEvent {
             thread_id: thread.id.clone(),
@@ -362,7 +451,7 @@ impl AppState {
             at_ms: now,
             event: RunEvent::Finished {
                 outcome: RunOutcome::Failed,
-                error: Some("no host is connected to execute the run".into()),
+                error: Some(reason),
             },
         })
         .ok();
@@ -393,7 +482,7 @@ impl AppState {
 mod tests {
     use super::*;
     use crate::state::AppConfig;
-    use loom_domain::{MessageRole, RunId, ThreadStatus};
+    use loom_domain::{EnvironmentKind, MessageRole, RunId, ThreadStatus};
     use std::time::Duration;
 
     /// A state with reconciliation disabled, so a test drives it explicitly.
@@ -413,6 +502,29 @@ mod tests {
             .enroll_host(None, "laptop".into(), loom_relay::now_ms())
             .unwrap();
         host.id
+    }
+
+    /// A thread bound to a `ready` unmanaged environment on a connected host.
+    ///
+    /// The path need not exist on the server: existence is the daemon's check
+    /// at spawn time, which is what keeps a remote host's workspace valid.
+    fn thread_with_workspace(state: &AppState, path: &str) -> (HostId, Thread, String) {
+        let host_id = enroll_host(state);
+        let (environment, _) = state
+            .registry
+            .create_environment(
+                None,
+                host_id.clone(),
+                EnvironmentKind::Unmanaged,
+                Some(path.into()),
+                loom_relay::now_ms(),
+            )
+            .unwrap();
+        let (thread, _) = state
+            .registry
+            .create_thread(None, Some("t".into()), Some(environment.id), 1)
+            .unwrap();
+        (host_id, thread, path.into())
     }
 
     fn count_run_events(state: &AppState, thread_id: &ThreadId) -> (usize, usize) {
@@ -462,11 +574,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_run_with_no_host_fails_the_thread_on_the_spot() {
+    async fn a_run_with_no_environment_is_failed_on_the_spot() {
         let state = state();
         let (thread, _) = state
             .registry
-            .create_thread(None, Some("t".into()), 1)
+            .create_thread(None, Some("t".into()), None, 1)
             .unwrap();
         state
             .registry
@@ -475,8 +587,10 @@ mod tests {
         let thread = state.registry.thread(&thread.id).unwrap();
         assert_eq!(thread.status, ThreadStatus::Working);
 
+        // No environment means no workspace. The dispatch is refused rather
+        // than letting a provider run in the daemon's own cwd.
         let outcome = state.dispatch_thread(&thread, "hi");
-        assert!(matches!(outcome, DispatchOutcome::NoHost { .. }));
+        assert!(matches!(outcome, DispatchOutcome::NoEnvironment { .. }));
         assert_eq!(
             state.registry.thread(&thread.id).unwrap().status,
             ThreadStatus::Error
@@ -486,13 +600,60 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_run_whose_workspace_host_is_detached_is_failed_on_the_spot() {
+        let state = state();
+        let (host_id, thread, _) = thread_with_workspace(&state, "/srv/project-a");
+        state
+            .registry
+            .post_message(&thread.id, MessageRole::User, "hi".into(), 2)
+            .unwrap();
+        state
+            .registry
+            .mark_host_disconnected(&host_id, loom_relay::now_ms())
+            .unwrap();
+        let thread = state.registry.thread(&thread.id).unwrap();
+
+        let outcome = state.dispatch_thread(&thread, "hi");
+        assert!(matches!(outcome, DispatchOutcome::NoHost { .. }));
+        assert_eq!(
+            state.registry.thread(&thread.id).unwrap().status,
+            ThreadStatus::Error
+        );
+        state.shutdown();
+    }
+
+    #[tokio::test]
+    async fn the_dispatch_carries_the_environment_workspace() {
+        let state = state();
+        let (host_id, thread, workspace) = thread_with_workspace(&state, "/srv/project-a");
+        state
+            .registry
+            .post_message(&thread.id, MessageRole::User, "hi".into(), 2)
+            .unwrap();
+        let thread = state.registry.thread(&thread.id).unwrap();
+        assert!(matches!(
+            state.dispatch_thread(&thread, "hi"),
+            DispatchOutcome::Dispatched(_)
+        ));
+
+        // The dispatched spec names the thread's environment path, which is the
+        // whole point: the daemon no longer chooses a cwd of its own.
+        let frames = state
+            .relay
+            .replay_scope(&Scope::Host(host_id.to_string()), 10)
+            .unwrap();
+        assert_eq!(frames.len(), 1);
+        let frame: serde_json::Value = serde_json::from_slice(&frames[0].payload).unwrap();
+        let dispatch: serde_json::Value =
+            serde_json::from_str(frame["payload"].as_str().unwrap()).unwrap();
+        assert_eq!(dispatch["provider"]["cwd"], workspace);
+        state.shutdown();
+    }
+
+    #[tokio::test]
     async fn a_dispatched_run_is_reported_and_completes() {
         let state = state();
-        let host_id = enroll_host(&state);
-        let (thread, _) = state
-            .registry
-            .create_thread(None, Some("t".into()), 1)
-            .unwrap();
+        let (host_id, thread, _) = thread_with_workspace(&state, "/srv/project-a");
         state
             .registry
             .post_message(&thread.id, MessageRole::User, "hi".into(), 2)
@@ -528,16 +689,10 @@ mod tests {
     #[tokio::test]
     async fn a_report_from_the_wrong_host_is_rejected() {
         let state = state();
-        // The dispatcher must have a connected host; only its identity in the
-        // registry matters, so the id is not bound.
-        enroll_host(&state);
+        let (_, thread, _) = thread_with_workspace(&state, "/srv/project-a");
         // A host id nobody enrolled: the report must not be accepted for a run
-        // owned by `host_id`.
+        // owned by the environment's host.
         let other = HostId::mint();
-        let (thread, _) = state
-            .registry
-            .create_thread(None, Some("t".into()), 1)
-            .unwrap();
         state
             .registry
             .post_message(&thread.id, MessageRole::User, "hi".into(), 2)
@@ -578,11 +733,7 @@ mod tests {
             ..AppConfig::default()
         })
         .unwrap();
-        enroll_host(&state);
-        let (thread, _) = state
-            .registry
-            .create_thread(None, Some("t".into()), 1)
-            .unwrap();
+        let (_, thread, _) = thread_with_workspace(&state, "/srv/project-a");
         state
             .registry
             .post_message(&thread.id, MessageRole::User, "hi".into(), 2)
@@ -632,11 +783,7 @@ mod tests {
             ..AppConfig::default()
         })
         .unwrap();
-        enroll_host(&state);
-        let (thread, _) = state
-            .registry
-            .create_thread(None, Some("t".into()), 1)
-            .unwrap();
+        let (_, thread, _) = thread_with_workspace(&state, "/srv/project-a");
         state
             .registry
             .post_message(&thread.id, MessageRole::User, "hi".into(), 2)
