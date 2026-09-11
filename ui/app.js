@@ -159,27 +159,79 @@ function renderDomainEvent(event) {
 
 function renderRunEvent(event) {
   const { run_id: runId, event: run } = event;
+  // `run` is a bb `ThreadEvent`: dispatch on its `type` and read camelCase
+  // fields. See docs/event-model.md.
   switch (run.type) {
-    case "output":
-      pushEntry({ className: `run run--${run.stream}`, role: "assistant", text: run.text });
+    case "item/agentMessage/delta":
+      appendRunText(`run run--assistant`, "assistant", run.delta);
       break;
-    case "tool_call":
-      pushEntry({ className: "tool", text: `⚙ ${run.name} ${JSON.stringify(run.args)}` });
+    case "item/reasoning/textDelta":
+      appendRunText(`run run--thinking`, "thinking", run.delta);
       break;
-    case "tool_result":
-      pushEntry({ className: "tool", text: `↳ ${run.name}: ${run.output}` });
+    case "item/started":
+      pushEntry({ className: "tool", text: `⚙ ${describeItem(run.item)}` });
       break;
-    case "notice":
-      pushEntry({ className: `notice notice--${run.level}`, text: run.message });
+    case "item/completed":
+      pushEntry({ className: "tool", text: `↳ ${describeItem(run.item)}` });
       break;
-    case "started":
+    case "turn/started":
       if (current) current.runs.set(runId, true);
       break;
-    case "finished":
+    case "provider/error":
+      pushEntry({ className: "notice notice--error", text: run.message });
+      break;
+    case "provider/warning":
+      pushEntry({ className: "notice notice--warning", text: run.summary || run.details || "warning" });
+      break;
+    case "provider/unhandled":
+      pushEntry({ className: "notice notice--info", text: `unhandled provider event: ${run.rawType}` });
+      break;
+    case "turn/completed":
       if (current) current.runs.delete(runId);
+      pushEntry({ className: "status", text: `turn → ${run.status}` });
       break;
     default:
       break;
+  }
+}
+
+/**
+ * Appends streamed text to the last entry when it is the same channel, so a
+ * delta burst renders as one growing block rather than one line per chunk.
+ */
+function appendRunText(className, role, text) {
+  const view = current;
+  if (!view) return;
+  const last = view.timeline[view.timeline.length - 1];
+  if (last && last.className === className && last.role === role) {
+    last.text += text;
+    els.timeline.replaceChild(renderEntry(last), els.timeline.lastElementChild);
+    els.timeline.scrollTop = els.timeline.scrollHeight;
+    return;
+  }
+  pushEntry({ className, role, text });
+}
+
+/** One line describing a contract item. */
+function describeItem(item) {
+  if (!item) return "item";
+  switch (item.type) {
+    case "commandExecution":
+      return `${item.command} (${item.status})`;
+    case "fileChange":
+      return `${(item.changes || []).map((change) => `${change.kind} ${change.path}`).join(", ")} (${item.status})`;
+    case "toolCall":
+      return `${item.tool} ${JSON.stringify(item.arguments || {})} (${item.status})`;
+    case "fileRead":
+      return `${item.path} (${item.status})`;
+    case "search":
+      return `${item.mode} ${item.query} (${item.status})`;
+    case "reasoning":
+      return "reasoning";
+    case "agentMessage":
+      return item.text;
+    default:
+      return `${item.type} ${item.id || ""}`;
   }
 }
 

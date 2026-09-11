@@ -233,6 +233,7 @@ async fn handle_command(
             Some(ServerMessage::HostDisconnected { host_id })
         }
         ClientCommand::RunReport { report } => {
+            let report = *report;
             let Some(host_id) = enrolled_host.clone() else {
                 return Some(ServerMessage::Error {
                     message: "run reports require an enrolled host".into(),
@@ -244,7 +245,7 @@ async fn handle_command(
                         .into(),
                 });
             }
-            let run_id = report.run_id.clone();
+            let run_id = report.event.run_id.clone();
             let outcome = state.apply_run_report(&host_id, report);
             let (accepted, detail) = match outcome {
                 ReportOutcome::Applied => (true, None),

@@ -380,9 +380,12 @@ impl Daemon {
                 report = self.reports.recv() => {
                     let Some(report) = report else { continue };
                     if report.event.is_terminal() {
-                        self.running.remove(&report.run_id);
+                        self.running.remove(&report.event.run_id);
                     }
-                    self.send(&ClientCommand::RunReport { report }).await?;
+                    self.send(&ClientCommand::RunReport {
+                        report: Box::new(report),
+                    })
+                    .await?;
                 }
                 report = self.env_reports.recv() => {
                     let Some(report) = report else { continue };

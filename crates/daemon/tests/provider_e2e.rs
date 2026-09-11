@@ -179,20 +179,67 @@ fn run_events(events: &[Value]) -> Vec<&Value> {
         .collect()
 }
 
+/// The streamed assistant text, in order.
+///
+/// The contract carries this as `item/agentMessage/delta` chunks; a client
+/// concatenates them into the answer.
 fn output_texts(events: &[Value]) -> Vec<String> {
     run_events(events)
         .into_iter()
-        .filter(|event| event["event"]["type"] == "output")
-        .filter_map(|event| event["event"]["text"].as_str().map(str::to_owned))
+        .filter(|event| event["event"]["type"] == "item/agentMessage/delta")
+        .filter_map(|event| event["event"]["delta"].as_str().map(str::to_owned))
         .collect()
 }
 
-fn terminal_outcome(events: &[Value]) -> Option<String> {
+/// The terminal contract events, in order.
+fn turn_completions(events: &[Value]) -> Vec<&Value> {
     run_events(events)
         .into_iter()
-        .filter(|event| event["event"]["type"] == "finished")
-        .filter_map(|event| event["event"]["outcome"].as_str().map(str::to_owned))
-        .next_back()
+        .filter(|event| event["event"]["type"] == "turn/completed")
+        .collect()
+}
+
+/// Asserts every run event a turn produced is a valid bb `ThreadEvent`.
+///
+/// This is the wire contract check: a consumer (bb's projection layer)
+/// dispatches on the inner `type` and reads camelCase fields, so a renamed
+/// discriminant or field must fail here rather than in the UI.
+fn assert_contract_conformant(events: &[Value]) {
+    let contract = loom_contract::Contract::load();
+    let run_events = run_events(events);
+    assert!(
+        !run_events.is_empty(),
+        "a turn must produce at least one run event"
+    );
+    for event in &run_events {
+        let contract_event = &event["event"];
+        let event_type = contract_event["type"]
+            .as_str()
+            .expect("every run event carries a `type`");
+        assert!(
+            contract.thread_event_schema(event_type).is_some(),
+            "`{event_type}` is not a contract ThreadEvent type"
+        );
+        let violations = contract.validate_thread_event(contract_event);
+        assert!(
+            violations.is_empty(),
+            "`{event_type}` is not a valid ThreadEvent: {violations:?}\n{contract_event}"
+        );
+    }
+}
+
+/// loom's verdict on the run, from the terminal event's envelope.
+///
+/// The contract's `turn/completed.status` collapses a deadline, a stale host
+/// and a cancellation; loom's `outcome` keeps them apart, so this reads the
+/// envelope field and falls back to the contract status for a bare event.
+fn terminal_outcome(events: &[Value]) -> Option<String> {
+    turn_completions(events).last().and_then(|event| {
+        event["outcome"]
+            .as_str()
+            .or_else(|| event["event"]["status"].as_str())
+            .map(str::to_owned)
+    })
 }
 
 #[tokio::test]
@@ -247,11 +294,13 @@ sleep 1
 
     let tool_calls = run_events(&events)
         .into_iter()
-        .filter(|event| event["event"]["type"] == "tool_call")
+        .filter(|event| event["event"]["type"] == "item/started")
+        .filter(|event| event["event"]["item"]["type"] == "commandExecution")
         .count();
     let tool_results = run_events(&events)
         .into_iter()
-        .filter(|event| event["event"]["type"] == "tool_result")
+        .filter(|event| event["event"]["type"] == "item/completed")
+        .filter(|event| event["event"]["item"]["type"] == "commandExecution")
         .count();
     assert_eq!(tool_calls, 1);
     assert_eq!(tool_results, 1);
@@ -265,6 +314,10 @@ sleep 1
         .iter()
         .filter(|event| event["type"] == "thread_status_changed")
         .any(|event| event["to"] == "idle"));
+
+    // Every frame this turn produced is a valid bb ThreadEvent, including the
+    // ones around the deliberately polluted stdout.
+    assert_contract_conformant(&events);
 
     // No run is left in flight.
     assert!(state.runs.is_empty());
@@ -364,13 +417,13 @@ printf '%s\n' '{"type":"agent_settled"}'
 
     let events = thread_events(&state, &thread_id);
     assert_eq!(terminal_outcome(&events), Some("failed".into()));
-    let finished = run_events(&events)
+    let finished = turn_completions(&events)
         .into_iter()
-        .find(|event| event["event"]["type"] == "finished")
+        .next_back()
         .cloned()
         .unwrap();
     assert!(
-        finished["event"]["error"]
+        finished["event"]["error"]["message"]
             .as_str()
             .is_some_and(|error| error.contains("does not exist")),
         "the failure should name the missing directory: {finished}"
@@ -418,13 +471,13 @@ exit 7
 
     let events = thread_events(&state, &thread_id);
     assert_eq!(terminal_outcome(&events), Some("failed".into()));
-    let finished = run_events(&events)
+    let finished = turn_completions(&events)
         .into_iter()
-        .find(|event| event["event"]["type"] == "finished")
+        .next_back()
         .cloned()
         .unwrap();
     assert!(
-        finished["event"]["error"]
+        finished["event"]["error"]["message"]
             .as_str()
             .is_some_and(|error| error.contains("exit")),
         "the failure reason should name the exit: {finished}"
@@ -732,12 +785,18 @@ async fn the_real_pi_process_streams_through_the_bridge() {
     let events = thread_events(&state, &thread_id);
     let started = run_events(&events)
         .into_iter()
-        .any(|event| event["event"]["type"] == "started");
-    assert!(started, "the real Pi process should report `started`");
+        .any(|event| event["event"]["type"] == "turn/started");
+    assert!(started, "the real Pi process should report `turn/started`");
     assert!(
         terminal_outcome(&events).is_some(),
         "every run must end with exactly one terminal event"
     );
+
+    // Every event a real Pi turn produced must be a valid bb `ThreadEvent`.
+    // This is the conformance check the contract export exists for: the frame
+    // a consumer receives is checked against `contracts/bb/thread-event.json`,
+    // not against a hand-written expectation.
+    assert_contract_conformant(&events);
 
     daemon.abort();
     state.shutdown();

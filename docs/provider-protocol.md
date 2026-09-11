@@ -55,33 +55,72 @@ editing. See [the workspace section](#the-workspace-is-part-of-the-dispatch).
 ```jsonc
 // ProviderReport — daemon -> server socket
 {
-  "host_id":   "host_01M…",
-  "run_id":    "run_01M…",
-  "thread_id": "thr_01M…",
-  "event":     { "type": "output", "stream": "assistant", "text": "hello " }
+  "host_id": "host_01M…",
+  "event": {
+    "thread_id": "thr_01M…",
+    "project_id": "proj_01M…",
+    "run_id": "run_01M…",
+    "at_ms": 1789120438372,
+    "event": {
+      "threadId": "thr_01M…",
+      "scope": { "kind": "turn", "turnId": "run_01M…" },
+      "providerThreadId": "thr_01M…",
+      "type": "item/agentMessage/delta",
+      "itemId": "assistant-1",
+      "delta": "hello "
+    }
+  }
 }
 ```
 
-`ProviderReport.event` is a `RunEvent`:
+`ProviderReport.event` is a `RunEvent`: loom's envelope (`thread_id`,
+`project_id`, `run_id`, `at_ms`) around a **bb `ThreadEvent`**. The inner event
+is the contract's own shape — `type` discriminant and camelCase fields — so
+bb's projection layer consumes it unchanged. See
+[`event-model.md`](event-model.md) for the full type map and the per-type
+decisions.
 
-| `type` | meaning |
-| --- | --- |
-| `started` | the provider process is up |
-| `output` | a chunk of `assistant` / `thinking` / `log` text |
-| `tool_call` | a tool call began (`tool_call_id`, `name`, `args`) |
-| `tool_result` | a tool call finished (`ok`, `output`) |
-| `turn` | a turn boundary (`started` / `began` / `ended`) |
-| `notice` | anything else the provider reported |
-| `finished` | **terminal**: `completed` / `failed` / `timed_out` / `host_stale` / `cancelled` |
+The events the daemon produces from Pi frames:
 
-On the wire, the server stores each of these as a domain event on the thread
-scope:
+| contract `type` | Pi frame | note |
+| --- | --- | --- |
+| `thread/identity` | `agent_start` (first) | `providerThreadId` is the thread id |
+| `turn/started` | `agent_start` | |
+| `item/agentMessage/delta` | `message_update` / `text_delta` | assistant answer channel |
+| `item/reasoning/textDelta` | `message_update` / `thinking_delta` | reasoning channel, a distinct type |
+| `item/started` | `tool_execution_start`, `compaction_start` | `bash` → `commandExecution`, `edit`/`write` → `fileChange`, `read` → `fileRead`, `grep`/`find`/`ls` → `search`, else `toolCall` |
+| `item/completed` | `tool_execution_end`, `text_end`, `thinking_end`, `compaction_end` | |
+| `item/commandExecution/outputDelta` | `tool_execution_update` (bash) | `reset: true`, because Pi sends a snapshot |
+| `item/toolCall/progress` | `tool_execution_update` (other) | |
+| `thread/compacted` | `compaction_end` (success) | |
+| `thread/tokenUsage/updated` | `agent_end` | from the assistant `usage` block |
+| `provider/error` | `agent_end` (`stopReason: error`), retry failure | |
+| `provider/warning` | `extension_error`, declined dialog | |
+| `provider/unhandled` | anything else with a real payload | the contract's diagnostic type, carrying the raw frame |
+| `turn/completed` | `agent_settled`, rejected prompt, exit, timeout | **terminal** |
+
+On the wire, the server stores the whole envelope as a domain event on the
+thread scope:
 
 ```jsonc
-{ "type": "thread_run_event", "thread_id": "thr_…", "project_id": "proj_…",
-  "run_id": "run_…", "at_ms": 1789120438372,
-  "event": { "type": "output", "stream": "assistant", "text": "hello " } }
+{ "type": "thread_run_event",
+  "thread_id": "thr_…", "project_id": "proj_…",
+  "run_id": "run_…", "at_ms": 1789120438372, "outcome": "completed",
+  "event": {
+    "threadId": "thr_…",
+    "scope": { "kind": "turn", "turnId": "run_…" },
+    "providerThreadId": "thr_…",
+    "type": "turn/completed",
+    "status": "completed"
+  }
+}
 ```
+
+`outcome` is loom's own verdict and is present only on the terminal event; it
+is outside the contract event so the inner payload still validates against
+`contracts/bb/thread-event.json`. It is how a deadline (`timed_out`), a stale
+host (`host_stale`) and a cancellation (`cancelled`) stay distinguishable even
+though the contract folds them into `status`
 
 ## The workspace is part of the dispatch
 
