@@ -281,6 +281,28 @@ impl Relay {
         Ok(MaintenanceReport { trimmed })
     }
 
+    /// The newest event id currently retained across every shard.
+    ///
+    /// The control plane records this alongside a domain snapshot: the
+    /// snapshot's entity view incorporates every event at or below it, and
+    /// recovery replays what follows. It is the maximum rather than a per-shard
+    /// cursor because an entity's events all share one shard, so one global
+    /// "after this id" resume point is safe for a reader that merges shards.
+    ///
+    /// Returns `None` for a log that holds no records yet.
+    pub fn high_watermark(&self) -> Result<Option<EventId>> {
+        let mut watermark: Option<EventId> = None;
+        for shard in 0..SHARD_COUNT {
+            if let Some(last) = self.backend.read_after(shard, None, usize::MAX)?.last() {
+                watermark = Some(match watermark {
+                    Some(current) => current.max(last.event_id),
+                    None => last.event_id,
+                });
+            }
+        }
+        Ok(watermark)
+    }
+
     /// Total records currently held across all shards.
     pub fn retained(&self) -> Result<usize> {
         let mut total = 0;
@@ -458,6 +480,24 @@ mod tests {
         let first = relay.publish(scope.clone(), "{}").unwrap();
         let second = relay.publish(scope, "{}").unwrap();
         assert!(first.event_id < second.event_id);
+    }
+
+    #[test]
+    fn the_high_watermark_is_the_newest_id_across_shards() {
+        let relay = relay();
+        assert_eq!(relay.high_watermark().unwrap(), None);
+
+        // Two scopes, so the result is a merge over shards rather than one read.
+        let first = relay
+            .publish(Scope::Thread("thr_1".into()), "{}")
+            .unwrap()
+            .event_id;
+        let second = relay
+            .publish(Scope::Host("hst_1".into()), "{}")
+            .unwrap()
+            .event_id;
+        let expected = first.max(second);
+        assert_eq!(relay.high_watermark().unwrap(), Some(expected));
     }
 
     #[test]

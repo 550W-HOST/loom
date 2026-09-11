@@ -67,7 +67,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     eprintln!("UI served from {} at http://{bind}/", state.ui.describe());
 
-    axum::serve(listener, app).await?;
+    // A SIGINT/Ctrl-C drains connections, then the process writes a final
+    // domain snapshot and stops its background tasks. A hard kill skips the
+    // snapshot; the periodic writer and log replay are what make that safe.
+    let shutdown = async {
+        let _ = tokio::signal::ctrl_c().await;
+    };
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown)
+        .await?;
     state.shutdown();
     Ok(())
 }
