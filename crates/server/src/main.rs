@@ -19,6 +19,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Without LOOM_DATA_DIR the relay log is in-process and the server needs
     // no configuration at all. Setting it turns on the durable backend.
     let backend_path = std::env::var_os("LOOM_DATA_DIR").map(std::path::PathBuf::from);
+    // LOOM_REDIS_URL moves the log into Redis Streams so several nodes share
+    // one window and a server restart does not lose it. It replaces, rather
+    // than supplements, the local data directory.
+    let backend_redis = match std::env::var("LOOM_REDIS_URL") {
+        Ok(url) if !url.trim().is_empty() => Some(
+            loom_relay::backend::redis::RedisConfig::from_url(url.trim())?,
+        ),
+        _ => None,
+    };
     // Optional: declare which enrolled host runs on this machine. Unset (the
     // default) is the server-only shape — primary-host queries fall to
     // connected remote hosts instead of an absent local daemon.
@@ -30,6 +39,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = AppConfig {
         node_id: node_id.clone(),
         backend_path,
+        backend_redis,
         local_host_id: local_host_id.clone(),
         ..AppConfig::default()
     };

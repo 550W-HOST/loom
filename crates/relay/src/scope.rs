@@ -77,6 +77,23 @@ impl Scope {
     pub fn shard(&self) -> ShardId {
         shard_for(self.kind(), self.id())
     }
+
+    /// Reconstructs a scope from its canonical [`Scope::kind`] name and id.
+    ///
+    /// Used by backends that persist a scope as its two text parts rather than
+    /// its Rust representation. `Global` ignores `id`, because it has no
+    /// identity of its own; any unknown kind yields `None`.
+    pub fn from_kind_id(kind: &str, id: impl Into<String>) -> Option<Self> {
+        match kind {
+            "global" => Some(Scope::Global),
+            "project" => Some(Scope::Project(id.into())),
+            "thread" => Some(Scope::Thread(id.into())),
+            "host" => Some(Scope::Host(id.into())),
+            "client" => Some(Scope::Client(id.into())),
+            "user" => Some(Scope::User(id.into())),
+            _ => None,
+        }
+    }
 }
 
 impl std::fmt::Display for Scope {
@@ -159,5 +176,22 @@ mod tests {
     fn display_is_kind_colon_id() {
         assert_eq!(Scope::Thread("thr_1".into()).to_string(), "thread:thr_1");
         assert_eq!(Scope::Global.to_string(), "global:all");
+    }
+
+    #[test]
+    fn kind_id_round_trips_every_variant() {
+        let scopes = [
+            Scope::Global,
+            Scope::Project("prj_1".into()),
+            Scope::Thread("thr_1".into()),
+            Scope::Host("hst_1".into()),
+            Scope::Client("cli_1".into()),
+            Scope::User("usr_1".into()),
+        ];
+        for scope in scopes {
+            let restored = Scope::from_kind_id(scope.kind(), scope.id());
+            assert_eq!(restored, Some(scope));
+        }
+        assert_eq!(Scope::from_kind_id("planet", "x"), None);
     }
 }

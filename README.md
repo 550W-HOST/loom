@@ -27,7 +27,7 @@ on it and it can be validated on its own.
 - [ ] Persist domain entities (the domain registry is in-process and lost on restart)
 - [ ] Port the bb web UI unchanged, served by the Rust server
 - [ ] Check in the Node execution plane (`apps/host-daemon`) against the daemon contract
-- [ ] Redis/NATS relay backend for restart-transparent upgrades
+- [x] Redis Streams relay backend for restart-transparent upgrades (`LOOM_REDIS_URL`)
 
 ## Layout
 
@@ -41,6 +41,7 @@ crates/
 docs/
   architecture.md
   process-model.md
+  redis-backend.md
 ```
 
 Application code from the bb fork (`apps/`, `packages/`, `plugins/`) lands here
@@ -54,7 +55,10 @@ cargo clippy --workspace --all-targets
 cargo fmt --all
 ```
 
-No external services are required: the default backend is in-process.
+No external services are required: the default backend is in-process. A
+`LOOM_DATA_DIR` keeps the replay window on local disk; `LOOM_REDIS_URL` moves
+it to Redis Streams so it is shared and survives a server upgrade. See
+[`docs/redis-backend.md`](docs/redis-backend.md) for the deployment contract.
 
 Run it:
 

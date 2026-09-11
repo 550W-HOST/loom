@@ -22,8 +22,10 @@
 //! in-process [`backend::memory::MemoryBackend`], which needs no external
 //! service and is enough for a single self-hosted server. [`backend::disk::DiskBackend`]
 //! adds a dependency-free local log so a restart replays the grace window
-//! instead of losing it. Redis/NATS backends exist for a log shared across
-//! nodes; none of them change anything above this line.
+//! instead of losing it. [`backend::redis::RedisBackend`] keeps the log in
+//! Redis Streams, which a second node can attach to and which makes a server
+//! restart invisible to connected daemons; it is configuration, not a new
+//! default. None of them change anything above this line.
 
 #![forbid(unsafe_code)]
 

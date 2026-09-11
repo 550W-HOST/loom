@@ -32,6 +32,13 @@ pub struct AppConfig {
     /// `Some(path)` uses the durable backend, so the grace window replays
     /// across a restart.
     pub backend_path: Option<PathBuf>,
+    /// A shared relay log in Redis Streams.
+    ///
+    /// `None` (the default) is the single-machine shape. `Some` makes the log
+    /// the source of truth for every node pointed at the same Redis and key
+    /// prefix, so a server restart or upgrade reattaches to the same window
+    /// instead of losing it. Mutually exclusive with [`AppConfig::backend_path`].
+    pub backend_redis: Option<loom_relay::backend::redis::RedisConfig>,
     /// Retention windows for the log.
     pub retention: Retention,
     /// Bound on the hub actor's command queue.
@@ -55,6 +62,7 @@ impl Default for AppConfig {
             node_id: "loom-node".into(),
             backend_max_len: 2_000,
             backend_path: None,
+            backend_redis: None,
             retention: Retention::default(),
             hub_queue_capacity: 1_024,
             pump: PumpConfig::default(),
@@ -104,16 +112,32 @@ pub struct AppState {
 impl AppState {
     /// Wires the relay, hub actor and readers together.
     pub fn build(config: AppConfig) -> Result<Self, BuildStateError> {
-        let backend: loom_relay::SharedBackend = match &config.backend_path {
-            // Durable backend: replay survives a restart.
-            Some(path) => Arc::new(loom_relay::backend::disk::DiskBackend::open(
+        if config.backend_redis.is_some() && config.backend_path.is_some() {
+            return Err(BuildStateError {
+                message: "LOOM_REDIS_URL (shared) and LOOM_DATA_DIR (local disk) are both set; \
+                          choose one backend"
+                    .into(),
+            });
+        }
+
+        let backend: loom_relay::SharedBackend = match (&config.backend_redis, &config.backend_path)
+        {
+            // Shared backend: every node attaches to the same window, so a
+            // restart does not drop what a connected daemon already had.
+            (Some(redis), None) => Arc::new(loom_relay::backend::redis::RedisBackend::open(
+                redis.clone(),
+                config.backend_max_len,
+            )?),
+            // Durable backend: replay survives a restart on this machine.
+            (None, Some(path)) => Arc::new(loom_relay::backend::disk::DiskBackend::open(
                 path,
                 config.backend_max_len,
             )?),
             // Default: in-process, zero external service.
-            None => Arc::new(loom_relay::backend::memory::MemoryBackend::new(
+            (None, None) => Arc::new(loom_relay::backend::memory::MemoryBackend::new(
                 config.backend_max_len,
             )),
+            (Some(_), Some(_)) => unreachable!("guarded above"),
         };
         let relay = Relay::new(backend, config.retention, config.node_id.clone())?;
         let (hub, _actor) = HubHandle::spawn(config.hub_queue_capacity);
@@ -292,6 +316,21 @@ mod tests {
         assert_eq!(replayed[0].event_id, envelope.event_id);
 
         state.shutdown();
+    }
+
+    #[tokio::test]
+    async fn refuses_two_durable_backends_at_once() {
+        let dir = TempDir::new().unwrap();
+        let config = AppConfig {
+            backend_path: Some(dir.path().to_path_buf()),
+            backend_redis: Some(loom_relay::backend::redis::RedisConfig::new(
+                "127.0.0.1",
+                6_379,
+            )),
+            ..AppConfig::default()
+        };
+        let error = AppState::build(config).unwrap_err();
+        assert!(error.to_string().contains("choose one backend"));
     }
 
     #[tokio::test]

@@ -97,8 +97,14 @@ subscriber, a room or a socket.
   - [`backend::disk::DiskBackend`] — one crash-safe append-only file per
     shard under a data directory. Still in-process and dependency-free, but
     the replay window survives a restart.
-  - Redis/NATS — for a shared relay across nodes. Added only when a restart
-    must be transparent to daemons *and* more than one node serves the log.
+  - [`backend::redis::RedisBackend`] — the log in Redis Streams, one stream
+    per shard, shared by every node that points at the same Redis. This is
+    the backend that makes a server upgrade invisible to connected daemons
+    and lets a second node attach to the same window. It is optional
+    configuration (`LOOM_REDIS_URL`), not a dependency: the client is a
+    hand-rolled RESP2 client, so a default build still compiles nothing
+    extra. Deployment and operational cost are in
+    [`redis-backend.md`](redis-backend.md).
 
   Nothing above `RelayBackend` changes between them.
 - **The relay is testable without sockets,** and the hub is testable without a
@@ -205,8 +211,37 @@ For a single server that must not lose its replay window on restart, the
 `DiskBackend` already covers it with no new process: the log lives in a data
 directory (`LOOM_DATA_DIR`), one append-only file per shard. When a server
 upgrade must additionally not disconnect running daemons *and* a second node
-must attach to the same log, the backend moves to Redis Streams or NATS. Only
-the `RelayBackend` implementation changes.
+must attach to the same log, point the server at Redis Streams instead:
+
+```
+                  ┌────────────────────────────┐
+                  │ loom-server  (node A)      │
+                  └──────────────┬─────────────┘
+                                 │  XADD / XRANGE, one stream per shard
+                  ┌──────────────▼─────────────┐
+                  │ loom-server  (node B)      │
+                  └──────────────┬─────────────┘
+                                 │
+                  ┌──────────────▼─────────────┐
+                  │ redis (AOF on)             │
+                  │ loom:relay:shard:0 … :7    │
+                  └────────────────────────────┘
+```
+
+```bash
+LOOM_REDIS_URL=redis://127.0.0.1:6379 loom-server
+```
+
+Only the [`RelayBackend`] implementation changes: `loom-relay`, the fixed
+`SHARD_COUNT` readers, retention, dedup and every handler above it are
+untouched. The default remains the in-process backend, and `LOOM_DATA_DIR`
+and `LOOM_REDIS_URL` are mutually exclusive.
+
+We deliberately keep the reference design's **fixed shards plus fixed
+readers** model rather than per-scope subscriptions: `SHARD_COUNT` is still a
+constant, every node still runs exactly one reader per shard, and the
+`shard_for` FNV-1a hash is still the only routing function — so a non-Rust
+node can compute the same shard. Redis only stores what those shards produce.
 
 ## UI as a URL client
 
@@ -246,6 +281,5 @@ policy, and the desktop shell's two supervision switches — is specified in
 
 - Whether the desktop shell earns its maintenance cost once the UI is a URL
   client, or whether an installed PWA covers it.
-- Which relay backend, if any, a single self-hosted server ever needs.
 - How much of bb's existing Node daemon is kept as-is: it is ~45k lines and its
   provider bridge is the part that actually touches agents.
