@@ -1,0 +1,1140 @@
+{
+  "$defs": {
+    "d0": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "project-list",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "type": "object"
+    },
+    "d1": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "pong",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "type": "object"
+    },
+    "d10": {
+      "anyOf": [
+        {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "d11": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "host-list",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "type": "object"
+    },
+    "d12": {
+      "additionalProperties": false,
+      "properties": {
+        "displayStatus": {
+          "$ref": "#/$defs/d15"
+        },
+        "hostReconnectGraceExpiresAt": {
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "displayStatus",
+        "hostReconnectGraceExpiresAt"
+      ],
+      "type": "object"
+    },
+    "d13": {
+      "enum": [
+        "pending",
+        "idle",
+        "starting",
+        "active",
+        "stopping",
+        "error"
+      ],
+      "type": "string"
+    },
+    "d14": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "thread-detail",
+          "type": "string"
+        },
+        "threadId": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "threadId"
+      ],
+      "type": "object"
+    },
+    "d15": {
+      "enum": [
+        "pending",
+        "idle",
+        "starting",
+        "active",
+        "stopping",
+        "error",
+        "provisioning",
+        "host-reconnecting",
+        "waiting-for-host"
+      ],
+      "type": "string"
+    },
+    "d16": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "environment-list",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "type": "object"
+    },
+    "d17": {
+      "anyOf": [
+        {
+          "maximum": 9007199254740991,
+          "minimum": -9007199254740991,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "d18": {
+      "enum": [
+        "user",
+        "process-exit",
+        "daemon-disconnect",
+        "environment-destroyed",
+        "thread-archived",
+        "thread-deleted",
+        "open-timeout"
+      ],
+      "type": "string"
+    },
+    "d19": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/d14"
+        },
+        {
+          "$ref": "#/$defs/d8"
+        },
+        {
+          "$ref": "#/$defs/d5"
+        },
+        {
+          "$ref": "#/$defs/d0"
+        },
+        {
+          "$ref": "#/$defs/d7"
+        },
+        {
+          "$ref": "#/$defs/d16"
+        },
+        {
+          "$ref": "#/$defs/d2"
+        },
+        {
+          "$ref": "#/$defs/d11"
+        },
+        {
+          "$ref": "#/$defs/d20"
+        }
+      ]
+    },
+    "d2": {
+      "additionalProperties": false,
+      "properties": {
+        "hostId": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "kind": {
+          "const": "host-detail",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "hostId"
+      ],
+      "type": "object"
+    },
+    "d20": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "system",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "type": "object"
+    },
+    "d3": {
+      "additionalProperties": false,
+      "properties": {
+        "activeBackgroundAgentCount": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "activeBackgroundCommandCount": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "activeGoalCount": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "activePlanModeCount": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "activeWorkflowCount": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "activeWorkflowCount",
+        "activeBackgroundAgentCount",
+        "activeBackgroundCommandCount",
+        "activePlanModeCount",
+        "activeGoalCount"
+      ],
+      "type": "object"
+    },
+    "d4": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/d18"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "d5": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "project-detail",
+          "type": "string"
+        },
+        "projectId": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "projectId"
+      ],
+      "type": "object"
+    },
+    "d6": {
+      "additionalProperties": false,
+      "properties": {
+        "closeReason": {
+          "$ref": "#/$defs/d4"
+        },
+        "cols": {
+          "exclusiveMinimum": 0,
+          "maximum": 500,
+          "type": "integer"
+        },
+        "createdAt": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "environmentId": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "exitCode": {
+          "$ref": "#/$defs/d17"
+        },
+        "hostId": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "id": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "initialCwd": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "lastUserInputAt": {
+          "$ref": "#/$defs/d10"
+        },
+        "rows": {
+          "exclusiveMinimum": 0,
+          "maximum": 200,
+          "type": "integer"
+        },
+        "status": {
+          "enum": [
+            "starting",
+            "running",
+            "disconnected",
+            "exited"
+          ],
+          "type": "string"
+        },
+        "threadId": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "title": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "updatedAt": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "threadId",
+        "environmentId",
+        "hostId",
+        "title",
+        "initialCwd",
+        "cols",
+        "rows",
+        "status",
+        "exitCode",
+        "closeReason",
+        "createdAt",
+        "updatedAt",
+        "lastUserInputAt"
+      ],
+      "type": "object"
+    },
+    "d7": {
+      "additionalProperties": false,
+      "properties": {
+        "environmentId": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "kind": {
+          "const": "environment-detail",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "environmentId"
+      ],
+      "type": "object"
+    },
+    "d8": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "thread-list",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "type": "object"
+    },
+    "d9": {
+      "additionalProperties": false,
+      "properties": {
+        "activity": {
+          "$ref": "#/$defs/d3"
+        },
+        "latestAttentionAt": {
+          "type": "number"
+        },
+        "runtime": {
+          "$ref": "#/$defs/d12"
+        },
+        "status": {
+          "$ref": "#/$defs/d13"
+        },
+        "updatedAt": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "status",
+        "runtime",
+        "activity",
+        "latestAttentionAt",
+        "updatedAt"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "changeKinds": {
+    "environment": [
+      "environment-created",
+      "environment-deleted",
+      "metadata-changed",
+      "status-changed",
+      "work-status-changed",
+      "git-refs-changed",
+      "thread-storage-changed"
+    ],
+    "host": [
+      "host-connected",
+      "host-disconnected"
+    ],
+    "project": [
+      "project-created",
+      "project-updated",
+      "project-deleted",
+      "project-sources-changed",
+      "threads-changed",
+      "project-order-changed"
+    ],
+    "system": [
+      "config-changed",
+      "plugins-changed",
+      "provider-registrations-changed",
+      "ui-preferences-changed",
+      "environment-availability-changed"
+    ],
+    "thread": [
+      "thread-created",
+      "thread-deleted",
+      "events-appended",
+      "history-rewritten",
+      "interactions-changed",
+      "status-changed",
+      "title-changed",
+      "queue-changed",
+      "archived-changed",
+      "pin-state-changed",
+      "parent-changed",
+      "environment-changed",
+      "read-state-changed",
+      "order-changed",
+      "tabs-changed",
+      "terminals-changed"
+    ]
+  },
+  "kind": "bb-client-ws",
+  "protocols": [
+    {
+      "clientToServer": [
+        {
+          "name": "clientMessage",
+          "schema": {
+            "oneOf": [
+              {
+                "properties": {
+                  "target": {
+                    "$ref": "#/$defs/d19"
+                  },
+                  "type": {
+                    "const": "subscribe",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "target"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "target": {
+                    "$ref": "#/$defs/d19"
+                  },
+                  "type": {
+                    "const": "unsubscribe",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "target"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "type": {
+                    "const": "ping",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "type": "object"
+              }
+            ]
+          }
+        }
+      ],
+      "endpoint": "/ws",
+      "id": "client",
+      "serverToClient": [
+        {
+          "name": "pong",
+          "schema": {
+            "$ref": "#/$defs/d1"
+          }
+        },
+        {
+          "name": "changed",
+          "schema": {
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "changes": {
+                    "items": {
+                      "enum": [
+                        "thread-created",
+                        "thread-deleted",
+                        "events-appended",
+                        "history-rewritten",
+                        "interactions-changed",
+                        "status-changed",
+                        "title-changed",
+                        "queue-changed",
+                        "archived-changed",
+                        "pin-state-changed",
+                        "parent-changed",
+                        "environment-changed",
+                        "read-state-changed",
+                        "order-changed",
+                        "tabs-changed",
+                        "terminals-changed"
+                      ],
+                      "type": "string"
+                    },
+                    "readOnly": true,
+                    "type": "array"
+                  },
+                  "entity": {
+                    "const": "thread",
+                    "type": "string"
+                  },
+                  "id": {
+                    "type": "string"
+                  },
+                  "metadata": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "backgroundActivityChanged": {
+                        "type": "boolean"
+                      },
+                      "eventTypes": {
+                        "items": {
+                          "type": "string"
+                        },
+                        "readOnly": true,
+                        "type": "array"
+                      },
+                      "hasPendingInteraction": {
+                        "type": "boolean"
+                      },
+                      "projectId": {
+                        "type": "string"
+                      },
+                      "statusChange": {
+                        "$ref": "#/$defs/d9"
+                      }
+                    },
+                    "type": "object"
+                  },
+                  "type": {
+                    "const": "changed",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "entity",
+                  "changes"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "changes": {
+                    "items": {
+                      "enum": [
+                        "project-created",
+                        "project-updated",
+                        "project-deleted",
+                        "project-sources-changed",
+                        "threads-changed",
+                        "project-order-changed"
+                      ],
+                      "type": "string"
+                    },
+                    "readOnly": true,
+                    "type": "array"
+                  },
+                  "entity": {
+                    "const": "project",
+                    "type": "string"
+                  },
+                  "id": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "changed",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "entity",
+                  "changes"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "changes": {
+                    "items": {
+                      "enum": [
+                        "environment-created",
+                        "environment-deleted",
+                        "metadata-changed",
+                        "status-changed",
+                        "work-status-changed",
+                        "git-refs-changed",
+                        "thread-storage-changed"
+                      ],
+                      "type": "string"
+                    },
+                    "readOnly": true,
+                    "type": "array"
+                  },
+                  "entity": {
+                    "const": "environment",
+                    "type": "string"
+                  },
+                  "id": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "changed",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "entity",
+                  "changes"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "changes": {
+                    "items": {
+                      "enum": [
+                        "host-connected",
+                        "host-disconnected"
+                      ],
+                      "type": "string"
+                    },
+                    "readOnly": true,
+                    "type": "array"
+                  },
+                  "entity": {
+                    "const": "host",
+                    "type": "string"
+                  },
+                  "id": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "changed",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "entity",
+                  "changes"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "changes": {
+                    "items": {
+                      "enum": [
+                        "config-changed",
+                        "plugins-changed",
+                        "provider-registrations-changed",
+                        "ui-preferences-changed",
+                        "environment-availability-changed"
+                      ],
+                      "type": "string"
+                    },
+                    "readOnly": true,
+                    "type": "array"
+                  },
+                  "entity": {
+                    "const": "system",
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "changed",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "entity",
+                  "changes"
+                ],
+                "type": "object"
+              }
+            ]
+          }
+        },
+        {
+          "name": "changedLenient",
+          "schema": {
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "changes": {},
+                  "entity": {
+                    "const": "thread",
+                    "type": "string"
+                  },
+                  "id": {
+                    "type": "string"
+                  },
+                  "metadata": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "backgroundActivityChanged": {
+                        "type": "boolean"
+                      },
+                      "eventTypes": {},
+                      "hasPendingInteraction": {
+                        "type": "boolean"
+                      },
+                      "projectId": {
+                        "type": "string"
+                      },
+                      "statusChange": {
+                        "$ref": "#/$defs/d9"
+                      }
+                    },
+                    "type": "object"
+                  },
+                  "type": {
+                    "const": "changed",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "entity",
+                  "changes"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "changes": {},
+                  "entity": {
+                    "const": "project",
+                    "type": "string"
+                  },
+                  "id": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "changed",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "entity",
+                  "changes"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "changes": {},
+                  "entity": {
+                    "const": "environment",
+                    "type": "string"
+                  },
+                  "id": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "changed",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "entity",
+                  "changes"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "changes": {},
+                  "entity": {
+                    "const": "host",
+                    "type": "string"
+                  },
+                  "id": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "changed",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "entity",
+                  "changes"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "changes": {},
+                  "entity": {
+                    "const": "system",
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "changed",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "entity",
+                  "changes"
+                ],
+                "type": "object"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "clientToServer": [
+        {
+          "name": "terminalClientMessage",
+          "schema": {
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "dataBase64": {
+                    "maxLength": 87384,
+                    "minLength": 1,
+                    "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$",
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "input",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "dataBase64"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "cols": {
+                    "exclusiveMinimum": 0,
+                    "maximum": 500,
+                    "type": "integer"
+                  },
+                  "rows": {
+                    "exclusiveMinimum": 0,
+                    "maximum": 200,
+                    "type": "integer"
+                  },
+                  "type": {
+                    "const": "resize",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "cols",
+                  "rows"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "reason": {
+                    "const": "user",
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "close",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "reason"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "type": {
+                    "const": "ping",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "type": "object"
+              }
+            ]
+          }
+        }
+      ],
+      "endpoint": "/ws/terminals/:terminalId",
+      "id": "terminal",
+      "serverToClient": [
+        {
+          "name": "terminalServerMessage",
+          "schema": {
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "nextSeq": {
+                    "maximum": 9007199254740991,
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "replayStartSeq": {
+                    "maximum": 9007199254740991,
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "session": {
+                    "$ref": "#/$defs/d6"
+                  },
+                  "type": {
+                    "const": "attached",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "session",
+                  "replayStartSeq",
+                  "nextSeq"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "chunk": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "dataBase64": {
+                        "maxLength": 87384,
+                        "minLength": 1,
+                        "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$",
+                        "type": "string"
+                      },
+                      "seq": {
+                        "maximum": 9007199254740991,
+                        "minimum": 0,
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "seq",
+                      "dataBase64"
+                    ],
+                    "type": "object"
+                  },
+                  "type": {
+                    "const": "output",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "chunk"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "session": {
+                    "$ref": "#/$defs/d6"
+                  },
+                  "type": {
+                    "const": "session-updated",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "session"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "session": {
+                    "$ref": "#/$defs/d6"
+                  },
+                  "type": {
+                    "const": "exited",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "session"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "code": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "message": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "error",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "code",
+                  "message"
+                ],
+                "type": "object"
+              },
+              {
+                "$ref": "#/$defs/d1"
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "subscriptionTarget": {
+    "$ref": "#/$defs/d19"
+  },
+  "x-loom-contract-format": "loom.bb-contract/v1"
+}

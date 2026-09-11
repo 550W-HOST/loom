@@ -1,0 +1,619 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "codes": [
+    {
+      "code": "awaiting_user_interaction",
+      "statuses": [
+        409
+      ]
+    },
+    {
+      "code": "child_threads_confirmation_required",
+      "statuses": [
+        409
+      ]
+    },
+    {
+      "code": "cli_skill_unavailable",
+      "statuses": [
+        500
+      ]
+    },
+    {
+      "code": "command_result_type_mismatch",
+      "statuses": [
+        500
+      ]
+    },
+    {
+      "code": "command_timeout",
+      "statuses": [
+        504
+      ]
+    },
+    {
+      "code": "conflict",
+      "statuses": [
+        409
+      ]
+    },
+    {
+      "code": "connect_host_offline",
+      "statuses": [
+        503
+      ]
+    },
+    {
+      "code": "connect_host_unenrolled",
+      "statuses": [
+        409
+      ]
+    },
+    {
+      "code": "connect_machine_id_mismatch",
+      "statuses": [
+        403
+      ]
+    },
+    {
+      "code": "desktop_control_expired",
+      "statuses": [
+        409
+      ]
+    },
+    {
+      "code": "desktop_control_scope",
+      "statuses": [
+        403
+      ]
+    },
+    {
+      "code": "desktop_personal_handoff_required",
+      "statuses": [
+        403
+      ]
+    },
+    {
+      "code": "desktop_tab_scope",
+      "statuses": [
+        403,
+        502
+      ]
+    },
+    {
+      "code": "dispatch_hook_failed",
+      "statuses": [
+        502
+      ]
+    },
+    {
+      "code": "dispatch_rejected",
+      "statuses": [
+        409
+      ]
+    },
+    {
+      "code": "environment_not_found",
+      "statuses": [
+        404
+      ]
+    },
+    {
+      "code": "environment_not_ready",
+      "statuses": [
+        409
+      ]
+    },
+    {
+      "code": "environment_provider_failed",
+      "statuses": [
+        502
+      ]
+    },
+    {
+      "code": "environment_provider_rejected",
+      "statuses": [
+        409
+      ]
+    },
+    {
+      "code": "event_data_too_large",
+      "statuses": [
+        413
+      ]
+    },
+    {
+      "code": "file_too_large",
+      "statuses": [
+        413
+      ]
+    },
+    {
+      "code": "forbidden",
+      "statuses": [
+        403
+      ]
+    },
+    {
+      "code": "fork_source_session_unavailable",
+      "statuses": [
+        400
+      ]
+    },
+    {
+      "code": "host_cannot_self_update",
+      "statuses": [
+        409
+      ]
+    },
+    {
+      "code": "host_disconnected",
+      "statuses": [
+        502
+      ]
+    },
+    {
+      "code": "host_not_found",
+      "statuses": [
+        404
+      ]
+    },
+    {
+      "code": "host_unavailable",
+      "statuses": [
+        502
+      ]
+    },
+    {
+      "code": "host_update_not_needed",
+      "statuses": [
+        409
+      ]
+    },
+    {
+      "code": "inactive_session",
+      "statuses": [
+        401
+      ]
+    },
+    {
+      "code": "internal_error",
+      "statuses": [
+        500
+      ]
+    },
+    {
+      "code": "invalid_config",
+      "statuses": [
+        422
+      ]
+    },
+    {
+      "code": "invalid_path",
+      "statuses": [
+        400
+      ]
+    },
+    {
+      "code": "invalid_registry_skill",
+      "statuses": [
+        400
+      ]
+    },
+    {
+      "code": "invalid_registry_source",
+      "statuses": [
+        400
+      ]
+    },
+    {
+      "code": "invalid_request",
+      "statuses": [
+        400,
+        403,
+        404,
+        409,
+        413
+      ]
+    },
+    {
+      "code": "invalid_terminal_socket_query",
+      "statuses": [
+        400
+      ]
+    },
+    {
+      "code": "machine_host_management_forbidden",
+      "statuses": [
+        403
+      ]
+    },
+    {
+      "code": "missing_git_remote",
+      "statuses": [
+        400
+      ]
+    },
+    {
+      "code": "model_catalog_unavailable",
+      "statuses": [
+        503
+      ]
+    },
+    {
+      "code": "model_required",
+      "statuses": [
+        400
+      ]
+    },
+    {
+      "code": "native_picker_unavailable",
+      "statuses": [
+        409
+      ]
+    },
+    {
+      "code": "no_changes",
+      "statuses": [
+        409
+      ]
+    },
+    {
+      "code": "no_failed_turn",
+      "statuses": [
+        409
+      ]
+    },
+    {
+      "code": "no_provider_available",
+      "statuses": [
+        409
+      ]
+    },
+    {
+      "code": "not_configured",
+      "statuses": [
+        501
+      ]
+    },
+    {
+      "code": "not_found",
+      "statuses": [
+        404
+      ]
+    },
+    {
+      "code": "parent_thread_invalid",
+      "statuses": [
+        400
+      ]
+    },
+    {
+      "code": "plugin_host_artifact_not_found",
+      "statuses": [
+        404
+      ]
+    },
+    {
+      "code": "plugin_mention_resolve_failed",
+      "statuses": [
+        422
+      ]
+    },
+    {
+      "code": "plugin_not_running",
+      "statuses": [
+        503
+      ]
+    },
+    {
+      "code": "plugin_reloaded",
+      "statuses": [
+        503
+      ]
+    },
+    {
+      "code": "plugin_websocket_failed",
+      "statuses": [
+        500
+      ]
+    },
+    {
+      "code": "primary_host_removal_refused",
+      "statuses": [
+        400
+      ]
+    },
+    {
+      "code": "project_not_found",
+      "statuses": [
+        404
+      ]
+    },
+    {
+      "code": "project_source_host_conflict",
+      "statuses": [
+        409
+      ]
+    },
+    {
+      "code": "project_unavailable",
+      "statuses": [
+        404
+      ]
+    },
+    {
+      "code": "protocol_version_mismatch",
+      "statuses": [
+        400
+      ]
+    },
+    {
+      "code": "provider_bridge_unavailable",
+      "statuses": [
+        409
+      ]
+    },
+    {
+      "code": "provider_installation_unavailable",
+      "statuses": [
+        404
+      ]
+    },
+    {
+      "code": "provider_logo_not_found",
+      "statuses": [
+        404
+      ]
+    },
+    {
+      "code": "provider_rpc_error",
+      "statuses": [
+        502
+      ]
+    },
+    {
+      "code": "provider_unavailable",
+      "statuses": [
+        409
+      ]
+    },
+    {
+      "code": "pull_request_action_failed",
+      "statuses": [
+        409
+      ]
+    },
+    {
+      "code": "pull_request_not_mergeable",
+      "statuses": [
+        409
+      ]
+    },
+    {
+      "code": "pull_request_unavailable",
+      "statuses": [
+        409
+      ]
+    },
+    {
+      "code": "queued_message_auto_send_paused",
+      "statuses": [
+        409
+      ]
+    },
+    {
+      "code": "queued_message_claim_lost",
+      "statuses": [
+        409
+      ]
+    },
+    {
+      "code": "queued_message_still_waiting",
+      "statuses": [
+        409
+      ]
+    },
+    {
+      "code": "registry_install_failed",
+      "statuses": [
+        502
+      ]
+    },
+    {
+      "code": "registry_repository_stars_unavailable",
+      "statuses": [
+        503
+      ]
+    },
+    {
+      "code": "registry_skill_invalid",
+      "statuses": [
+        422
+      ]
+    },
+    {
+      "code": "registry_skill_not_found",
+      "statuses": [
+        404
+      ]
+    },
+    {
+      "code": "registry_skill_unavailable",
+      "statuses": [
+        404
+      ]
+    },
+    {
+      "code": "retry_already_queued",
+      "statuses": [
+        409
+      ]
+    },
+    {
+      "code": "section_name_conflict",
+      "statuses": [
+        409
+      ]
+    },
+    {
+      "code": "section_not_found",
+      "statuses": [
+        404
+      ]
+    },
+    {
+      "code": "skill_already_installed",
+      "statuses": [
+        409
+      ]
+    },
+    {
+      "code": "skill_install_conflict",
+      "statuses": [
+        409
+      ]
+    },
+    {
+      "code": "skill_tree_not_found",
+      "statuses": [
+        404
+      ]
+    },
+    {
+      "code": "skills_registry_unavailable",
+      "statuses": [
+        503
+      ]
+    },
+    {
+      "code": "terminal_not_found",
+      "statuses": [
+        404
+      ]
+    },
+    {
+      "code": "terminal_not_running",
+      "statuses": [
+        409
+      ]
+    },
+    {
+      "code": "terminal_open_cancelled",
+      "statuses": [
+        409
+      ]
+    },
+    {
+      "code": "terminal_output_unavailable",
+      "statuses": [
+        409
+      ]
+    },
+    {
+      "code": "theme_not_found",
+      "statuses": [
+        404
+      ]
+    },
+    {
+      "code": "thread_environment_unavailable",
+      "statuses": [
+        409
+      ]
+    },
+    {
+      "code": "thread_not_found",
+      "statuses": [
+        404
+      ]
+    },
+    {
+      "code": "thread_not_writable",
+      "statuses": [
+        409
+      ]
+    },
+    {
+      "code": "thread_tabs_conflict",
+      "statuses": [
+        409
+      ]
+    },
+    {
+      "code": "transcription_timeout",
+      "statuses": [
+        504
+      ]
+    },
+    {
+      "code": "transcription_unavailable",
+      "statuses": [
+        503
+      ]
+    },
+    {
+      "code": "turn_start_not_ready",
+      "statuses": [
+        503
+      ]
+    },
+    {
+      "code": "ui_preference_conflict",
+      "statuses": [
+        409
+      ]
+    },
+    {
+      "code": "ui_preference_not_found",
+      "statuses": [
+        404
+      ]
+    },
+    {
+      "code": "unauthorized",
+      "statuses": [
+        401
+      ]
+    },
+    {
+      "code": "unknown_plugin",
+      "statuses": [
+        404
+      ]
+    },
+    {
+      "code": "unknown_plugin_websocket",
+      "statuses": [
+        404
+      ]
+    },
+    {
+      "code": "unsupported_host",
+      "statuses": [
+        400
+      ]
+    },
+    {
+      "code": "unsupported_media_type",
+      "statuses": [
+        415
+      ]
+    },
+    {
+      "code": "workspace_busy",
+      "statuses": [
+        409
+      ]
+    },
+    {
+      "code": "workspace_unavailable",
+      "statuses": [
+        409
+      ]
+    }
+  ],
+  "kind": "bb-error-codes",
+  "note": "Best-effort inventory scanned from apps/server/src; the contract package types the error body but leaves `code` a free string.",
+  "x-loom-contract-format": "loom.bb-contract/v1"
+}
