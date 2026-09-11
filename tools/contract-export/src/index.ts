@@ -10,10 +10,12 @@ import {
   collectHttpRoutes,
   collectNamedSchemas,
   collectProtocols,
+  collectThreadEvents,
   loadBbModules,
   type BbModules,
   type HttpRouteModel,
   type ProtocolModel,
+  type ThreadEventModel,
 } from "./collect.js";
 import { collectErrorCodes } from "./error-codes.js";
 import { internSubtrees } from "./intern.js";
@@ -218,6 +220,18 @@ function buildHostDaemon(
   });
 }
 
+function buildThreadEvent(model: ThreadEventModel): JsonValue {
+  return asJson({
+    $schema: JSON_SCHEMA_DIALECT,
+    "x-loom-contract-format": FORMAT,
+    kind: "bb-thread-event",
+    discriminator: "type",
+    schema: model.schema,
+    eventTypes: model.eventTypes,
+    schemasByType: model.schemasByType,
+  });
+}
+
 function writeJson(
   path: string,
   value: JsonValue,
@@ -244,6 +258,10 @@ async function main(): Promise<void> {
     "hostDaemonContract",
     "domain",
   ]);
+  const threadEvent = collectThreadEvents(
+    requiredSchema(named.schemas, "threadEventSchema"),
+    modules.domain.threadEventTypeValues,
+  );
   const daemonProtocol = protocols.find((p) => p.id === "host-daemon")!;
 
   const serverApi = buildServerApi(routes, named.schemas);
@@ -278,6 +296,10 @@ async function main(): Promise<void> {
     join(args.outDir, "error-codes.json"),
     errorCodes,
   );
+  files["thread-event.json"] = writeJson(
+    join(args.outDir, "thread-event.json"),
+    buildThreadEvent(threadEvent),
+  );
 
   const manifest = asJson({
     format: FORMAT,
@@ -294,6 +316,7 @@ async function main(): Promise<void> {
       httpRoutesWithOpaqueResponse: responseSchemas.unresolved.length,
       clientProtocols: protocols.length,
       namedSchemas: Object.keys(named.schemas).length,
+      threadEventTypes: threadEvent.eventTypes.length,
       errorCodes: (errorCodes as { codes: unknown[] }).codes.length,
     },
     failures: {

@@ -78,6 +78,7 @@ fn every_declared_schema_resolves() {
     for (label, document) in [
         ("client", contract.client_ws()),
         ("host-daemon", contract.host_daemon()),
+        ("thread-event", contract.thread_event()),
     ] {
         let dangling = unresolved_refs(document);
         assert!(
@@ -251,6 +252,190 @@ fn daemon_contract_is_typed() {
     assert!(!contract
         .validate_daemon_message(&json!({ "type": "not-a-message" }))
         .is_empty());
+}
+
+fn resolve_schema<'a>(root: &'a Value, schema: &'a Value) -> &'a Value {
+    let mut current = schema;
+    for _ in 0..64 {
+        let Some(reference) = current.get("$ref").and_then(Value::as_str) else {
+            break;
+        };
+        let Some(pointer) = reference.strip_prefix('#') else {
+            break;
+        };
+        let Some(target) = root.pointer(pointer) else {
+            break;
+        };
+        if std::ptr::eq(current, target) {
+            break;
+        }
+        current = target;
+    }
+    current
+}
+
+fn sample_from_schema(root: &Value, schema: &Value, depth: usize) -> Value {
+    assert!(
+        depth < 64,
+        "schema sample generation exceeded recursion limit"
+    );
+    let schema = resolve_schema(root, schema);
+
+    if let Some(value) = schema.get("const") {
+        return value.clone();
+    }
+    if let Some(values) = schema.get("enum").and_then(Value::as_array) {
+        if let Some(value) = values.first() {
+            return value.clone();
+        }
+    }
+    for key in ["anyOf", "oneOf"] {
+        if let Some(branches) = schema.get(key).and_then(Value::as_array) {
+            for branch in branches {
+                let candidate = sample_from_schema(root, branch, depth + 1);
+                if loom_contract::is_valid(root, schema, &candidate) {
+                    return candidate;
+                }
+            }
+        }
+    }
+    if let Some(branches) = schema.get("allOf").and_then(Value::as_array) {
+        let mut merged = serde_json::Map::new();
+        for branch in branches {
+            let value = sample_from_schema(root, branch, depth + 1);
+            if let Value::Object(object) = value {
+                merged.extend(object);
+            }
+        }
+        return Value::Object(merged);
+    }
+
+    match schema.get("type") {
+        Some(Value::String(kind)) => sample_for_type(root, schema, kind, depth),
+        Some(Value::Array(kinds)) => kinds
+            .iter()
+            .filter_map(Value::as_str)
+            .find_map(|kind| {
+                let candidate = sample_for_type(root, schema, kind, depth);
+                loom_contract::is_valid(root, schema, &candidate).then_some(candidate)
+            })
+            .unwrap_or(Value::Null),
+        _ => Value::Object(serde_json::Map::new()),
+    }
+}
+
+fn sample_for_type(root: &Value, schema: &Value, kind: &str, depth: usize) -> Value {
+    match kind {
+        "object" => {
+            let mut object = serde_json::Map::new();
+            let required = schema
+                .get("required")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str);
+            let properties = schema.get("properties").and_then(Value::as_object);
+            for name in required {
+                if let Some(property) = properties.and_then(|properties| properties.get(name)) {
+                    object.insert(
+                        name.to_string(),
+                        sample_from_schema(root, property, depth + 1),
+                    );
+                }
+            }
+            Value::Object(object)
+        }
+        "array" => {
+            let prefix = schema
+                .get("prefixItems")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            let mut items: Vec<Value> = prefix
+                .iter()
+                .map(|item| sample_from_schema(root, item, depth + 1))
+                .collect();
+            let min_items = schema
+                .get("minItems")
+                .and_then(Value::as_u64)
+                .unwrap_or(items.len() as u64) as usize;
+            if items.len() < min_items {
+                if let Some(item_schema) = schema.get("items") {
+                    while items.len() < min_items {
+                        items.push(sample_from_schema(root, item_schema, depth + 1));
+                    }
+                }
+            }
+            Value::Array(items)
+        }
+        "string" => Value::String("sample".to_string()),
+        "integer" => Value::from(1),
+        "number" => Value::from(1),
+        "boolean" => Value::Bool(false),
+        "null" => Value::Null,
+        _ => Value::Object(serde_json::Map::new()),
+    }
+}
+
+#[test]
+fn every_thread_event_type_has_valid_and_invalid_samples() {
+    let contract = Contract::load();
+    let types = contract.thread_event_types();
+    assert!(
+        types.len() >= 35,
+        "expected the complete ThreadEvent union, found {} types",
+        types.len()
+    );
+    let schemas = contract
+        .thread_event()
+        .pointer("/schemasByType")
+        .and_then(Value::as_object)
+        .expect("ThreadEvent schemasByType");
+    assert_eq!(schemas.len(), types.len());
+
+    for event_type in types {
+        let schema = contract
+            .thread_event_schema(event_type)
+            .expect("every event type has a schema");
+        let sample = sample_from_schema(contract.thread_event(), schema, 0);
+        assert_eq!(sample["type"], event_type);
+        assert!(
+            contract
+                .validate_thread_event_type(event_type, &sample)
+                .is_empty(),
+            "valid sample for {event_type} was rejected: {:?}",
+            contract.validate_thread_event_type(event_type, &sample)
+        );
+
+        let mut missing_required = sample.clone();
+        let removed = missing_required
+            .as_object_mut()
+            .expect("event sample object")
+            .remove("threadId");
+        assert!(removed.is_some(), "{event_type} must require threadId");
+        assert!(
+            !contract
+                .validate_thread_event_type(event_type, &missing_required)
+                .is_empty(),
+            "missing threadId should be rejected for {event_type}"
+        );
+    }
+}
+
+#[test]
+fn rust_serialized_thread_event_conformance_skeleton() {
+    let contract = Contract::load();
+    // Replace this representative JSON with serde_json::to_value of the Rust
+    // event once loom implements the corresponding domain event variant.
+    let serialized = json!({
+        "type": "thread/started",
+        "threadId": "thread_sample",
+        "scope": { "kind": "thread" },
+    });
+    assert!(
+        contract.validate_thread_event(&serialized).is_empty(),
+        "Rust event serialization must stay inside the bb ThreadEvent contract"
+    );
 }
 
 #[test]

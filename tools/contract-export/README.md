@@ -16,6 +16,7 @@ that contract is not a plan, so this tool extracts it and the Rust
 | `client-ws.json` | `packages/domain/src/change-kinds.ts`, `api/terminals.ts` | UI and terminal WebSocket messages, subscription targets, change kinds |
 | `host-daemon.json` | `packages/host-daemon-contract/src/*` | daemon commands, results, WebSocket messages, enrollment/session/event HTTP shapes |
 | `error-codes.json` | `apps/server/src/**` throw sites | error code -> HTTP status inventory |
+| `thread-event.json` | `packages/domain/src/provider-event.ts` | complete `ThreadEvent` union and schemas indexed by `type` |
 | `manifest.json` | — | format version, bb revision, counts, file hashes |
 
 ## How it works
