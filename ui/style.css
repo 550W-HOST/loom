@@ -99,6 +99,29 @@ body {
   height: 26px;
 }
 
+.threads__actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-right: 4px;
+}
+
+.project-select {
+  max-width: 130px;
+  cursor: pointer;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  border-radius: 6px;
+  height: 26px;
+  font: inherit;
+  font-size: 12px;
+}
+
+.project-select:disabled {
+  color: var(--muted);
+}
+
 .thread-list {
   list-style: none;
   margin: 0;

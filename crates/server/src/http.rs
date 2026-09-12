@@ -10,7 +10,8 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use loom_domain::{
     DomainError, DomainEvent, DomainScope, Environment, EnvironmentId, EnvironmentKind,
-    EnvironmentStatus, Host, HostId, MessageRole, ProjectId, Thread, ThreadId,
+    EnvironmentStatus, Host, HostId, MessageRole, Project, ProjectId, ProjectKind, ProjectSourceId,
+    Thread, ThreadId,
 };
 use loom_relay::scope::Scope;
 use serde::{Deserialize, Serialize};
@@ -30,6 +31,17 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/replay", get(replay))
         .route("/api/v1/threads", get(list_threads).post(create_thread))
         .route("/api/v1/threads/{id}/messages", post(post_thread_message))
+        .route("/api/v1/projects", get(list_projects).post(create_project))
+        .route(
+            "/api/v1/projects/{id}",
+            get(get_project).patch(update_project),
+        )
+        .route("/api/v1/projects/{id}/archive", post(archive_project))
+        .route("/api/v1/projects/{id}/sources", post(add_project_source))
+        .route(
+            "/api/v1/projects/{id}/sources/{source_id}",
+            axum::routing::delete(remove_project_source),
+        )
         .route(
             "/api/v1/environments",
             get(list_environments).post(create_environment),
@@ -161,7 +173,9 @@ fn error_response(status: StatusCode, message: String) -> Response {
 /// Body of a create-thread request.
 #[derive(Clone, Debug, Deserialize)]
 pub struct CreateThreadRequest {
-    /// The owning project. Omitted means the server's personal project.
+    /// The owning project. **Required**: a thread must belong to a project, and
+    /// the server no longer defaults to the seeded personal one.
+    #[serde(default)]
     pub project_id: Option<loom_domain::ProjectId>,
     /// Optional display title.
     pub title: Option<String>,
@@ -200,8 +214,9 @@ pub struct CreateThreadResponse {
 
 /// Creates a thread.
 ///
-/// The event goes to the project scope, not the (brand new, unsubscribable)
-/// thread scope: it is the project's thread list that has to learn about it.
+/// `project_id` is required. The event goes to the project scope, not the
+/// (brand new, unsubscribable) thread scope: it is the project's thread list
+/// that has to learn about it.
 async fn create_thread(
     State(state): State<AppState>,
     Json(request): Json<CreateThreadRequest>,
@@ -418,12 +433,300 @@ async fn disconnect_host(
     }
 }
 
+/// Body of a create-project request.
+#[derive(Clone, Debug, Deserialize)]
+pub struct CreateProjectRequest {
+    /// Display name. Must not be blank.
+    pub name: String,
+    /// The repository remote, when the project is backed by one.
+    #[serde(default)]
+    pub git_remote_url: Option<String>,
+}
+
+/// A created project and the event that announced it.
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+pub struct CreateProjectResponse {
+    /// The new project, active and with no sources.
+    pub project: Project,
+    /// The `project_created` event, published to the `global` scope.
+    pub event_id: String,
+}
+
+/// Every known project, active first, in a stable order.
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+pub struct ProjectListResponse {
+    /// Projects the UI can offer as a thread's owner.
+    pub projects: Vec<Project>,
+}
+
+/// Looks up a project and the events a mutation published.
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+pub struct ProjectResponse {
+    /// The project after the change.
+    pub project: Project,
+    /// The `project_updated` event id, or empty when nothing was announced.
+    pub event_id: String,
+}
+
+/// Lists projects.
+///
+/// `project_created` is published to `global`, because the project list is not
+/// scoped to a project a client can already have subscribed to. A client
+/// therefore subscribes to `global` once and follows the list from there.
+async fn list_projects(State(state): State<AppState>) -> Json<ProjectListResponse> {
+    Json(ProjectListResponse {
+        projects: state.registry.projects(),
+    })
+}
+
+/// Creates a project.
+///
+async fn create_project(
+    State(state): State<AppState>,
+    Json(request): Json<CreateProjectRequest>,
+) -> Response {
+    match state.registry.create_project(
+        request.name,
+        ProjectKind::Standard,
+        request.git_remote_url,
+        loom_relay::now_ms(),
+    ) {
+        Ok((project, event)) => match state.publish_domain_event(&event) {
+            Ok(envelope) => Json(CreateProjectResponse {
+                project,
+                event_id: envelope.event_id.to_string(),
+            })
+            .into_response(),
+            Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+        },
+        Err(error) => command_error_response(error),
+    }
+}
+
+/// Fetches one project by id.
+async fn get_project(
+    State(state): State<AppState>,
+    Path(raw_project_id): Path<String>,
+) -> Response {
+    let project_id = match raw_project_id.parse::<ProjectId>() {
+        Ok(project_id) => project_id,
+        Err(error) => return error_response(StatusCode::BAD_REQUEST, error.to_string()),
+    };
+    match state.registry.project(&project_id) {
+        Some(project) => Json(project).into_response(),
+        None => error_response(
+            StatusCode::NOT_FOUND,
+            format!("project {project_id} is not known"),
+        ),
+    }
+}
+
+/// Body of a project update. Both fields are optional; at least one is
+/// required, and an empty `name` is rejected.
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct UpdateProjectRequest {
+    /// A new display name.
+    #[serde(default)]
+    pub name: Option<String>,
+    /// A new repository remote. An empty string clears it.
+    #[serde(default)]
+    pub git_remote_url: Option<String>,
+}
+
+/// Renames a project and/or changes its remote.
+///
+/// The `project_updated` event goes to `project:{id}`, where a client watching
+/// that project's list state sees it.
+async fn update_project(
+    State(state): State<AppState>,
+    Path(raw_project_id): Path<String>,
+    Json(request): Json<UpdateProjectRequest>,
+) -> Response {
+    let project_id = match raw_project_id.parse::<ProjectId>() {
+        Ok(project_id) => project_id,
+        Err(error) => return error_response(StatusCode::BAD_REQUEST, error.to_string()),
+    };
+    if request.name.is_none() && request.git_remote_url.is_none() {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "provide a name or a git_remote_url".into(),
+        );
+    }
+
+    let now = loom_relay::now_ms();
+    let mut events = Vec::new();
+    let mut project = match state.registry.project(&project_id) {
+        Some(project) => project,
+        None => {
+            return error_response(
+                StatusCode::NOT_FOUND,
+                format!("project {project_id} is not known"),
+            )
+        }
+    };
+    if let Some(name) = request.name {
+        match state.registry.rename_project(&project_id, name, now) {
+            Ok((updated, event)) => {
+                project = updated;
+                events.push(event);
+            }
+            Err(error) => return command_error_response(error),
+        }
+    }
+    if let Some(url) = request.git_remote_url {
+        match state
+            .registry
+            .set_project_git_remote(&project_id, Some(url), now)
+        {
+            Ok((updated, event)) => {
+                project = updated;
+                events.push(event);
+            }
+            Err(error) => return command_error_response(error),
+        }
+    }
+
+    match publish_all(&state, &events) {
+        Ok(published) => Json(ProjectResponse {
+            project,
+            event_id: published
+                .last()
+                .map(|event| event.event_id.clone())
+                .unwrap_or_default(),
+        })
+        .into_response(),
+        Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+    }
+}
+
+/// Archives a project.
+///
+/// Refuses a project with a run in flight (`working`/`waiting` thread); idle
+/// threads are not cascaded and keep their project reference. Archiving is
+/// terminal for the record, so a second call is a conflict.
+///
+async fn archive_project(
+    State(state): State<AppState>,
+    Path(raw_project_id): Path<String>,
+) -> Response {
+    let project_id = match raw_project_id.parse::<ProjectId>() {
+        Ok(project_id) => project_id,
+        Err(error) => return error_response(StatusCode::BAD_REQUEST, error.to_string()),
+    };
+    match state
+        .registry
+        .archive_project(&project_id, loom_relay::now_ms())
+    {
+        Ok((project, event)) => match publish_all(&state, &[event]) {
+            Ok(_) => Json(project).into_response(),
+            Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+        },
+        Err(error) => command_error_response(error),
+    }
+}
+
+/// Body of an add-source request.
+#[derive(Clone, Debug, Deserialize)]
+pub struct AddProjectSourceRequest {
+    /// The host the location belongs to. Omitted uses the primary host.
+    #[serde(default)]
+    pub host_id: Option<HostId>,
+    /// Absolute path on that host. May be empty for a remote-only source.
+    #[serde(default)]
+    pub path: Option<String>,
+    /// The git remote this location is a checkout of, when there is one.
+    #[serde(default)]
+    pub git_remote_url: Option<String>,
+}
+
+/// Adds a source to a project.
+///
+/// Declaring a source never clones or fetches: it records where the code is (or
+/// will be) on a host. Materialising a workspace is environment provisioning's
+/// job.
+async fn add_project_source(
+    State(state): State<AppState>,
+    Path(raw_project_id): Path<String>,
+    Json(request): Json<AddProjectSourceRequest>,
+) -> Response {
+    let project_id = match raw_project_id.parse::<ProjectId>() {
+        Ok(project_id) => project_id,
+        Err(error) => return error_response(StatusCode::BAD_REQUEST, error.to_string()),
+    };
+    let host_id = match request.host_id.clone().or_else(|| {
+        state
+            .registry
+            .primary_host(state.local_host_id())
+            .map(|host| host.id)
+    }) {
+        Some(host_id) => host_id,
+        None => {
+            return error_response(
+                StatusCode::CONFLICT,
+                "no host is available for the source; enroll a daemon first".into(),
+            )
+        }
+    };
+    let path = request.path.unwrap_or_default();
+    match state.registry.add_project_source(
+        &project_id,
+        host_id,
+        path,
+        request.git_remote_url,
+        loom_relay::now_ms(),
+    ) {
+        Ok((project, event)) => match state.publish_domain_event(&event) {
+            Ok(envelope) => Json(ProjectResponse {
+                project,
+                event_id: envelope.event_id.to_string(),
+            })
+            .into_response(),
+            Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+        },
+        Err(error) => command_error_response(error),
+    }
+}
+
+/// Removes a source from a project.
+async fn remove_project_source(
+    State(state): State<AppState>,
+    Path((raw_project_id, raw_source_id)): Path<(String, String)>,
+) -> Response {
+    let project_id = match raw_project_id.parse::<ProjectId>() {
+        Ok(project_id) => project_id,
+        Err(error) => return error_response(StatusCode::BAD_REQUEST, error.to_string()),
+    };
+    let source_id = match raw_source_id.parse::<ProjectSourceId>() {
+        Ok(source_id) => source_id,
+        Err(error) => return error_response(StatusCode::BAD_REQUEST, error.to_string()),
+    };
+    match state
+        .registry
+        .remove_project_source(&project_id, &source_id, loom_relay::now_ms())
+    {
+        Ok(Some((project, event))) => match state.publish_domain_event(&event) {
+            Ok(envelope) => Json(ProjectResponse {
+                project,
+                event_id: envelope.event_id.to_string(),
+            })
+            .into_response(),
+            Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+        },
+        Ok(None) => error_response(
+            StatusCode::NOT_FOUND,
+            format!("source {source_id} is not part of project {project_id}"),
+        ),
+        Err(error) => command_error_response(error),
+    }
+}
+
 /// Body of a create-environment request.
 #[derive(Clone, Debug, Deserialize)]
 pub struct CreateEnvironmentRequest {
     /// `managed` (loom creates the directory) or `unmanaged` (an existing one).
     pub kind: EnvironmentKind,
-    /// The owning project. Omitted means the server's personal project.
+    /// The owning project. **Required**: an environment belongs to a project,
+    /// and the server no longer defaults to the seeded personal one.
     #[serde(default)]
     pub project_id: Option<ProjectId>,
     /// The host the workspace lives on. Omitted uses the primary host.
@@ -712,6 +1015,7 @@ fn publish_all(
 fn command_error_response(error: CommandError) -> Response {
     match error {
         CommandError::NotFound(message) => error_response(StatusCode::NOT_FOUND, message),
+        CommandError::Conflict(message) => error_response(StatusCode::CONFLICT, message),
         CommandError::Domain(
             error @ (DomainError::InvalidField { .. } | DomainError::MalformedId { .. }),
         ) => error_response(StatusCode::BAD_REQUEST, error.to_string()),
@@ -878,6 +1182,25 @@ mod tests {
             .unwrap()
     }
 
+    async fn patch(app: &Router, path: &str, body: serde_json::Value) -> Response {
+        app.clone()
+            .oneshot(
+                Request::patch(path)
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+    }
+
+    async fn delete(app: &Router, path: &str) -> Response {
+        app.clone()
+            .oneshot(Request::delete(path).body(Body::empty()).unwrap())
+            .await
+            .unwrap()
+    }
+
     /// Reads back the domain event stored in a scope's last frame.
     fn stored_events(state: &AppState, scope: &Scope) -> Vec<serde_json::Value> {
         state
@@ -970,11 +1293,21 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn creating_a_thread_defaults_to_the_personal_project() {
+    async fn creating_a_thread_requires_a_project_and_the_seeded_one_works() {
         let state = test_state();
         let app = router(state.clone());
+        let project_id = state.registry.personal_project_id().to_string();
 
-        let response = post(&app, "/api/v1/threads", serde_json::json!({})).await;
+        // No project is a bad request, not a silent landing in the seeded one.
+        let missing = post(&app, "/api/v1/threads", serde_json::json!({})).await;
+        assert_eq!(missing.status(), StatusCode::BAD_REQUEST);
+
+        let response = post(
+            &app,
+            "/api/v1/threads",
+            serde_json::json!({ "project_id": project_id }),
+        )
+        .await;
         assert_eq!(response.status(), StatusCode::OK);
         let json = body_json(response).await;
         assert_eq!(json["thread"]["status"], "idle");
@@ -1007,6 +1340,218 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_project_is_created_listed_renamed_and_archived() {
+        let state = test_state();
+        let app = router(state.clone());
+
+        let response = post(
+            &app,
+            "/api/v1/projects",
+            serde_json::json!({ "name": "loom", "git_remote_url": "git@x:y/loom" }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let created = body_json(response).await;
+        let project_id = created["project"]["id"].as_str().unwrap().to_string();
+        assert_eq!(created["project"]["name"], "loom");
+        assert_eq!(created["project"]["git_remote_url"], "git@x:y/loom");
+        assert!(created["project"]["sources"].as_array().unwrap().is_empty());
+        assert!(created["project"]["archived_at_ms"].is_null());
+
+        // `project_created` is published to `global`: the project list is not
+        // scoped to a project a client can already have subscribed to.
+        let events = stored_events(&state, &Scope::Global);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0]["type"], "project_created");
+        assert_eq!(events[0]["project"]["id"], project_id);
+
+        // The seeded project and the new one are both listed, seeded first.
+        let listed = body_json(get(&app, "/api/v1/projects").await).await;
+        let ids: Vec<&str> = listed["projects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|project| project["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids.len(), 2);
+        assert_eq!(ids[0], state.registry.personal_project_id().to_string());
+        assert!(ids.contains(&project_id.as_str()));
+
+        // A rename publishes to the project's own scope.
+        let renamed = body_json(
+            patch(
+                &app,
+                &format!("/api/v1/projects/{project_id}"),
+                serde_json::json!({ "name": "loom-2" }),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(renamed["project"]["name"], "loom-2");
+        let project = Scope::Project(project_id.clone());
+        let events = stored_events(&state, &project);
+        assert_eq!(events.last().unwrap()["type"], "project_updated");
+        assert_eq!(events.last().unwrap()["project"]["name"], "loom-2");
+
+        // Archive is idempotent-rejecting, not idempotent.
+        let archived = post(
+            &app,
+            &format!("/api/v1/projects/{project_id}/archive"),
+            serde_json::json!({}),
+        )
+        .await;
+        assert_eq!(archived.status(), StatusCode::OK);
+        assert!(body_json(archived).await["archived_at_ms"].is_number());
+        let again = post(
+            &app,
+            &format!("/api/v1/projects/{project_id}/archive"),
+            serde_json::json!({}),
+        )
+        .await;
+        assert_eq!(again.status(), StatusCode::CONFLICT);
+
+        state.shutdown();
+    }
+
+    #[tokio::test]
+    async fn project_sources_are_added_and_removed() {
+        let state = test_state();
+        let app = router(state.clone());
+        let host = state
+            .registry
+            .enroll_host(None, "laptop".into(), loom_relay::now_ms())
+            .unwrap()
+            .0;
+        let created = body_json(
+            post(
+                &app,
+                "/api/v1/projects",
+                serde_json::json!({ "name": "loom" }),
+            )
+            .await,
+        )
+        .await;
+        let project_id = created["project"]["id"].as_str().unwrap().to_string();
+
+        let response = post(
+            &app,
+            &format!("/api/v1/projects/{project_id}/sources"),
+            serde_json::json!({
+                "host_id": host.id.to_string(),
+                "path": "/srv/loom",
+                "git_remote_url": "git@x:y/loom",
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let json = body_json(response).await;
+        let source = &json["project"]["sources"][0];
+        assert_eq!(source["path"], "/srv/loom");
+        assert_eq!(source["host_id"], host.id.to_string());
+        assert_eq!(source["git_remote_url"], "git@x:y/loom");
+        assert_eq!(source["is_default"], true);
+        let source_id = source["id"].as_str().unwrap().to_string();
+
+        // The update is in the project's scope, ready for a client replay.
+        let scope = Scope::Project(project_id.clone());
+        let events = stored_events(&state, &scope);
+        assert_eq!(events.last().unwrap()["type"], "project_updated");
+
+        let removed = delete(
+            &app,
+            &format!("/api/v1/projects/{project_id}/sources/{source_id}"),
+        )
+        .await;
+        assert_eq!(removed.status(), StatusCode::OK);
+        assert!(body_json(removed).await["project"]["sources"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+
+        // Removing it again is a not-found, not a silent success.
+        let again = delete(
+            &app,
+            &format!("/api/v1/projects/{project_id}/sources/{source_id}"),
+        )
+        .await;
+        assert_eq!(again.status(), StatusCode::NOT_FOUND);
+
+        state.shutdown();
+    }
+
+    #[tokio::test]
+    async fn archiving_a_project_with_a_run_in_flight_is_a_conflict() {
+        let state = test_state();
+        let app = router(state.clone());
+        let project_id = state.registry.personal_project_id();
+        // A connected host and a bound environment, so the message actually
+        // dispatches a run and leaves the thread `working`.
+        let host = state
+            .registry
+            .enroll_host(None, "laptop".into(), loom_relay::now_ms())
+            .unwrap()
+            .0;
+        let environment = state
+            .registry
+            .create_environment(
+                Some(project_id.clone()),
+                host.id,
+                EnvironmentKind::Unmanaged,
+                Some("/srv/loom".into()),
+                loom_relay::now_ms(),
+            )
+            .unwrap()
+            .0;
+        let created = body_json(
+            post(
+                &app,
+                "/api/v1/threads",
+                serde_json::json!({
+                    "project_id": project_id.to_string(),
+                    "environment_id": environment.id.to_string(),
+                }),
+            )
+            .await,
+        )
+        .await;
+        let thread_id = created["thread"]["id"].as_str().unwrap().to_string();
+        // A user message moves the thread to `working`.
+        post(
+            &app,
+            &format!("/api/v1/threads/{thread_id}/messages"),
+            serde_json::json!({ "content": "hi" }),
+        )
+        .await;
+        assert_eq!(
+            state
+                .registry
+                .thread(&thread_id.parse().unwrap())
+                .unwrap()
+                .status,
+            loom_domain::ThreadStatus::Working
+        );
+
+        let response = post(
+            &app,
+            &format!("/api/v1/projects/{project_id}/archive"),
+            serde_json::json!({}),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+
+        // Refuse, never cascade: the thread keeps its project.
+        assert_eq!(
+            state
+                .registry
+                .thread(&thread_id.parse().unwrap())
+                .unwrap()
+                .project_id,
+            project_id
+        );
+        state.shutdown();
+    }
+
+    #[tokio::test]
     async fn a_user_message_publishes_message_then_status_to_the_thread_scope() {
         let state = test_state();
         // A connected host and a bound environment so the message actually
@@ -1019,7 +1564,7 @@ mod tests {
         let (environment, _) = state
             .registry
             .create_environment(
-                None,
+                Some(state.registry.personal_project_id()),
                 host.id,
                 EnvironmentKind::Unmanaged,
                 Some("/srv/loom".into()),
@@ -1031,7 +1576,10 @@ mod tests {
             post(
                 &app,
                 "/api/v1/threads",
-                serde_json::json!({ "environment_id": environment.id.to_string() }),
+                serde_json::json!({
+                    "project_id": state.registry.personal_project_id().to_string(),
+                    "environment_id": environment.id.to_string(),
+                }),
             )
             .await,
         )
@@ -1078,7 +1626,17 @@ mod tests {
     async fn an_empty_message_is_rejected() {
         let state = test_state();
         let app = router(state.clone());
-        let created = body_json(post(&app, "/api/v1/threads", serde_json::json!({})).await).await;
+        let created = body_json(
+            post(
+                &app,
+                "/api/v1/threads",
+                serde_json::json!({
+                    "project_id": state.registry.personal_project_id().to_string()
+                }),
+            )
+            .await,
+        )
+        .await;
         let thread_id = created["thread"]["id"].as_str().unwrap().to_string();
 
         let response = post(
@@ -1269,12 +1827,17 @@ mod tests {
         let empty = body_json(get(&app, "/api/v1/threads").await).await;
         assert_eq!(empty["threads"].as_array().unwrap().len(), 0);
 
-        let first = body_json(post(&app, "/api/v1/threads", serde_json::json!({})).await).await;
+        let owned =
+            serde_json::json!({ "project_id": state.registry.personal_project_id().to_string() });
+        let first = body_json(post(&app, "/api/v1/threads", owned.clone()).await).await;
         let second = body_json(
             post(
                 &app,
                 "/api/v1/threads",
-                serde_json::json!({ "title": "second" }),
+                serde_json::json!({
+                    "project_id": state.registry.personal_project_id().to_string(),
+                    "title": "second",
+                }),
             )
             .await,
         )
@@ -1306,7 +1869,11 @@ mod tests {
         let response = post(
             &app,
             "/api/v1/environments",
-            serde_json::json!({ "kind": "unmanaged", "path": "/srv/loom" }),
+            serde_json::json!({
+                "kind": "unmanaged",
+                "path": "/srv/loom",
+                "project_id": state.registry.personal_project_id().to_string(),
+            }),
         )
         .await;
         assert_eq!(response.status(), StatusCode::OK);
@@ -1340,7 +1907,10 @@ mod tests {
         let response = post(
             &app,
             "/api/v1/environments",
-            serde_json::json!({ "kind": "managed" }),
+            serde_json::json!({
+                "kind": "managed",
+                "project_id": state.registry.personal_project_id().to_string(),
+            }),
         )
         .await;
         assert_eq!(response.status(), StatusCode::OK);
@@ -1379,7 +1949,10 @@ mod tests {
         let missing = post(
             &app,
             "/api/v1/environments",
-            serde_json::json!({ "kind": "unmanaged" }),
+            serde_json::json!({
+                "kind": "unmanaged",
+                "project_id": state.registry.personal_project_id().to_string(),
+            }),
         )
         .await;
         assert_eq!(missing.status(), StatusCode::BAD_REQUEST);
@@ -1387,7 +1960,11 @@ mod tests {
         let relative = post(
             &app,
             "/api/v1/environments",
-            serde_json::json!({ "kind": "unmanaged", "path": "srv/loom" }),
+            serde_json::json!({
+                "kind": "unmanaged",
+                "path": "srv/loom",
+                "project_id": state.registry.personal_project_id().to_string(),
+            }),
         )
         .await;
         assert_eq!(relative.status(), StatusCode::BAD_REQUEST);
@@ -1401,7 +1978,11 @@ mod tests {
         let response = post(
             &app,
             "/api/v1/environments",
-            serde_json::json!({ "kind": "unmanaged", "path": "/srv/loom" }),
+            serde_json::json!({
+                "kind": "unmanaged",
+                "path": "/srv/loom",
+                "project_id": state.registry.personal_project_id().to_string(),
+            }),
         )
         .await;
         assert_eq!(response.status(), StatusCode::CONFLICT);
@@ -1418,7 +1999,7 @@ mod tests {
         let (environment, _) = state
             .registry
             .create_environment(
-                None,
+                Some(state.registry.personal_project_id()),
                 host.id,
                 EnvironmentKind::Unmanaged,
                 Some("/srv/loom".into()),
@@ -1461,7 +2042,7 @@ mod tests {
         let (environment, _) = state
             .registry
             .create_environment(
-                None,
+                Some(state.registry.personal_project_id()),
                 host.id,
                 EnvironmentKind::Unmanaged,
                 Some("/srv/loom".into()),

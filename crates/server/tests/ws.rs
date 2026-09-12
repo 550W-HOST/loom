@@ -314,6 +314,11 @@ async fn the_host_and_thread_commands_drive_a_real_conversation() {
         "unexpected host: {host}"
     );
 
+    // A project is required for every thread. The seeded personal one is
+    // fetched, not assumed, so the test proves the list is usable.
+    let projects = http_json(&addr, "/api/v1/projects").await;
+    let project_id = projects["projects"][0]["id"].as_str().unwrap().to_string();
+
     // Bind the thread to an environment so its message dispatches a run
     // instead of failing for want of a workspace.
     let environment = http_post_json(
@@ -323,6 +328,7 @@ async fn the_host_and_thread_commands_drive_a_real_conversation() {
             "kind": "unmanaged",
             "host_id": host["host"]["id"],
             "path": "/srv/loom-ws-test",
+            "project_id": project_id,
         }),
     )
     .await;
@@ -334,7 +340,7 @@ async fn the_host_and_thread_commands_drive_a_real_conversation() {
     let created = http_post_json(
         &addr,
         "/api/v1/threads",
-        &json!({ "environment_id": environment_id }),
+        &json!({ "environment_id": environment_id, "project_id": project_id }),
     )
     .await;
     let thread_id = created["thread"]["id"].as_str().unwrap().to_string();

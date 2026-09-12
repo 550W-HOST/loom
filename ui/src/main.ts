@@ -7,6 +7,8 @@ import {
 import { renderThreadList, renderTimeline } from "./render.js";
 import type {
   LoomCreateThreadResponse,
+  LoomProject,
+  LoomProjectsResponse,
   LoomThread,
   LoomThreadsResponse,
   RelayEventFrame,
@@ -20,6 +22,7 @@ const els = {
   composer: document.getElementById("composer") as HTMLFormElement,
   message: document.getElementById("message") as HTMLTextAreaElement,
   newThread: document.getElementById("new-thread") as HTMLButtonElement,
+  project: document.getElementById("project") as HTMLSelectElement,
   threadHeader: document.getElementById("thread-header")!,
   threadList: document.getElementById("thread-list")!,
   timeline: document.getElementById("timeline")!,
@@ -33,6 +36,7 @@ interface ThreadSession {
 }
 
 let threads: LoomThread[] = [];
+let projects: LoomProject[] = [];
 let current: ThreadSession | null = null;
 
 function setConnection(state: ConnectionState, message: string): void {
@@ -166,12 +170,40 @@ async function refreshThreads(): Promise<void> {
   renderSidebar();
 }
 
+/**
+ * Loads the project list and fills the create-thread selector.
+ *
+ * A thread must name a project, so this is not optional chrome: with no active
+ * project the create button stays disabled rather than sending a request the
+ * server would reject.
+ */
+async function refreshProjects(): Promise<void> {
+  const body = await api<LoomProjectsResponse>("/api/v1/projects");
+  projects = (Array.isArray(body.projects) ? body.projects : []).filter(
+    (project) => project.archived_at_ms == null,
+  );
+  els.project.replaceChildren(
+    ...projects.map((project) => {
+      const option = document.createElement("option");
+      option.value = project.id;
+      option.textContent = project.name;
+      return option;
+    }),
+  );
+  els.newThread.disabled = projects.length === 0;
+  els.newThread.title = projects.length === 0
+    ? "Create a project before opening a thread"
+    : "New thread";
+}
+
 els.newThread.addEventListener("click", async () => {
+  const projectId = els.project.value;
+  if (!projectId) return;
   els.newThread.disabled = true;
   try {
     const body = await api<LoomCreateThreadResponse>("/api/v1/threads", {
       method: "POST",
-      body: "{}",
+      body: JSON.stringify({ project_id: projectId }),
     });
     threads = [body.thread, ...threads.filter((thread) => thread.id !== body.thread.id)];
     renderSidebar();
@@ -184,7 +216,7 @@ els.newThread.addEventListener("click", async () => {
       setConnection("offline", error instanceof Error ? error.message : String(error));
     }
   } finally {
-    els.newThread.disabled = false;
+    els.newThread.disabled = projects.length === 0;
   }
 });
 
@@ -211,7 +243,7 @@ els.composer.addEventListener("submit", async (event) => {
 
 async function main(): Promise<void> {
   try {
-    await refreshThreads();
+    await Promise.all([refreshProjects(), refreshThreads()]);
     setConnection("offline", "idle");
     if (threads[0]) await openThread(threads[0].id);
     else renderHeader(null);

@@ -34,6 +34,34 @@ export interface LoomThreadsResponse {
   threads: LoomThread[];
 }
 
+export type LoomProjectKind = "standard" | "personal";
+
+export interface LoomProjectSource {
+  id: string;
+  project_id: string;
+  host_id: string;
+  path: string;
+  git_remote_url?: string;
+  is_default: boolean;
+  created_at_ms: number;
+  updated_at_ms: number;
+}
+
+export interface LoomProject {
+  id: string;
+  kind: LoomProjectKind;
+  name: string;
+  git_remote_url: string | null;
+  sources: LoomProjectSource[];
+  archived_at_ms?: number;
+  created_at_ms: number;
+  updated_at_ms: number;
+}
+
+export interface LoomProjectsResponse {
+  projects: LoomProject[];
+}
+
 export interface LoomCreateThreadResponse {
   thread: LoomThread;
   event_id: string;
