@@ -166,6 +166,78 @@ loom-host-daemon@i.service: Command /usr/local/bin/loom-daemon is not executable
 # parsed; the only finding is the expected pre-install missing binary
 ```
 
+## 4. Installing from a release
+
+The path in [`../deploy/README.md`](../deploy/README.md) § Install from a
+release, run on a machine with neither a Rust toolchain nor a checkout. There is
+no release yet (R1 is separate work), so the assets were staged on a local
+server that serves GitHub's URL and JSON shapes; the parts that are GitHub's
+behaviour rather than ours were then checked against real GitHub, read-only.
+
+| | |
+| --- | --- |
+| Server | the machine that ran the control plane, `127.0.0.1:38911` |
+| Clean machine | `alpine:3.20` amd64 container: no `cargo`/`rustc`, `deploy/` obtained from the release archive |
+| Artifacts | `loom-server-x86_64-unknown-linux-musl` 6.4 MB, `loom-daemon-x86_64-unknown-linux-musl` 2.4 MB (both static), `SHA256SUMS`, `loom-0.1.0-x86_64-unknown-linux-musl.tar.gz` |
+
+```bash
+# on the clean machine: the archive, then one install command
+curl -fsSLO "$RELEASE/v0.1.0/loom-0.1.0-x86_64-unknown-linux-musl.tar.gz"
+tar xzf loom-0.1.0-x86_64-unknown-linux-musl.tar.gz
+cd loom-0.1.0-x86_64-unknown-linux-musl
+deploy/install.sh --release v0.1.0 daemon builder-1 http://127.0.0.1:38911
+```
+
+Recorded output (elisions marked `…`):
+
+```
+-- no Rust toolchain here: cargo/rustc absent
+loom-0.1.0-x86_64-unknown-linux-musl.tar.gz: OK
+  downloading 550W-HOST/loom release v0.1.0 for x86_64-unknown-linux-musl
+  verified loom-server-x86_64-unknown-linux-musl 56a02f89ecacce90ec4725a5c66d15eb31090b9eade56feda67e6fdefc208f4c
+  verified loom-daemon-x86_64-unknown-linux-musl 0ff2d819b243670b643367020b5a36a4b3f0dcbaa2f07828bb453cb6d4463109
+  installed binaries to /usr/local/bin
+  …
+  created /etc/loom/daemon/builder-1.env (server http://127.0.0.1:38911, host name amax)
+  …
+enrolled host id: host_01M29ZJ90WEXJKKCJSY72K5HJG
+server sees:      {"hosts":[{"id":"host_01M29ZJ90WEXJKKCJSY72K5HJG","name":"amax","kind":"persistent","status":"connected",…}]}
+daemon log:       loom-daemon "amax" enrolled as host_01M29ZJ90WEXJKKCJSY72K5HJG with http://127.0.0.1:38911
+```
+
+What this proves, item by item:
+
+- `cargo`/`rustc` absent, and nothing on the machine but the archive: the install
+  needed no toolchain and no checkout, only `deploy/` from the release and the
+  network.
+- The archive's own SHA-256 was checked against the release's `SHA256SUMS`
+  (`…: OK`) before it was unpacked — that step is the operator's, the installer
+  checks the binaries it fetches itself.
+- The installer named the assets it fetched and the digests it checked, then
+  installed `/usr/local/bin/loom-{server,daemon}`; both hashes equal the
+  published ones.
+- The daemon enrolled as `host_01M29Z…`, and the server reported **that** host id
+  `connected` while the container was still running: not just installed, joined.
+
+Failure modes, against the same staged release:
+
+| Scenario | Recorded result |
+| --- | --- |
+| digest does not match | `SHA-256 mismatch for loom-server-…: SHA256SUMS says dead2f89…, the download is 56a02f89…`, non-zero exit, pre-existing `/usr/local/bin/loom-server` byte-identical, daemon never fetched |
+| asset not in the release | `cannot download <url> — set GITHUB_TOKEN if … is private`, nothing installed |
+| unpublished architecture (`armv7l`) | `no release binary for machine type armv7l: …`, no download attempted |
+| non-Linux host | `release binaries are Linux-only`, no download attempted |
+| `curl` absent / `sha256sum` absent / both absent | downloaded with `wget` / verified with `shasum` / `needs curl or wget` |
+| install re-run | environment files and data directories unchanged, binaries re-verified |
+
+GitHub behaviour, checked against real GitHub on a release of another private
+repository: the asset-id lookup against a real release object (the pipeline
+returns the asset id, not the uploader's nested `id`), `releases/latest`, and an
+authenticated `application/octet-stream` download of a private asset verifying
+against that release's `SHA256SUMS`. `github.com/…/releases/download/…` answers
+`404` for a private repository even with a token, which is why `--release` goes
+through the API whenever `GITHUB_TOKEN` is set.
+
 ## What this run does not cover
 
 Honest boundaries, so the next run knows where to start:

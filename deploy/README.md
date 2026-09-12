@@ -33,8 +33,9 @@ only, so it works behind NAT and needs no inbound port.
 - A Linux host with systemd for the server; each execution machine is a Linux
   host with systemd too (macOS and WSL2 can run the binaries directly without
   the units — see [`../docs/process-model.md`](../docs/process-model.md)).
-- The two binaries: `cargo build --release` produces `target/release/loom-server`
-  and `target/release/loom-daemon`.
+- The two binaries, from either a built checkout (`cargo build --release`) or a
+  GitHub Release (`--release <version>`, no toolchain needed — see
+  [§ Install from a release](#install-from-a-release)).
 - root (or sudo) on each machine. The install script creates a dedicated `loom`
   system user and never runs a service as root.
 
@@ -63,6 +64,10 @@ sudo systemctl restart loom-host-daemon@builder-1
 For a single-box deployment, `sudo deploy/install.sh all builder-1 https://loom.example.com`
 installs the server and one daemon on the same machine.
 
+The two `cargo build --release` lines above are what a checkout needs. On a
+machine that has no Rust toolchain, drop them and add `--release <version>` to
+the install command instead — see [§ Install from a release](#install-from-a-release).
+
 The install script is idempotent and never overwrites an existing environment
 file, so re-running it refreshes binaries and units and keeps your edits. Set
 `LOOM_NO_START=1` to install without starting, and `LOOM_SERVICE_MANAGER=0` to
@@ -71,6 +76,66 @@ CI). `deploy/install.sh help` lists every override.
 
 Open the UI at the server URL — the server hosts it on the same origin as the
 API, so "point a client at a URL" is the whole configuration.
+
+## Install from a release
+
+An execution machine usually has no Rust toolchain, so the binaries come from
+the release instead of a build. For tag `v0.1.0` the release publishes, per
+target triple:
+
+| Asset | |
+| --- | --- |
+| `loom-server-<target>` | the server binary |
+| `loom-daemon-<target>` | the daemon binary |
+| `SHA256SUMS` | the SHA-256 of every asset in the release |
+| `loom-0.1.0-<target>.tar.gz` | both binaries, `deploy/` and the README |
+
+`<target>` is `x86_64-unknown-linux-musl` or `aarch64-unknown-linux-musl`. The
+binaries are statically linked, so one artifact runs on any glibc or musl host.
+
+```bash
+# the scripts and units (the archive carries deploy/)
+curl -fsSLO https://github.com/550W-HOST/loom/releases/download/v0.1.0/loom-0.1.0-x86_64-unknown-linux-musl.tar.gz
+tar xzf loom-0.1.0-x86_64-unknown-linux-musl.tar.gz
+cd loom-0.1.0-x86_64-unknown-linux-musl
+
+# the binaries: downloaded from the release and SHA-256 verified by the installer
+sudo deploy/install.sh --release v0.1.0 all builder-1 https://loom.example.com
+```
+
+`--release latest` takes the newest published release, and `v0.1.0` and `0.1.0`
+name the same tag. The installer detects `x86_64` against `aarch64` itself and
+refuses any machine type the release does not publish; `LOOM_TARGET` overrides
+the detection.
+
+What `--release` does, in order: it downloads `SHA256SUMS`,
+`loom-server-<target>` and `loom-daemon-<target>` into a temporary directory,
+checks each binary against its `SHA256SUMS` line, and only then installs from
+that directory — the same install step a local build goes through.
+
+A failed download, a missing asset or a digest that does not match aborts the
+run with a non-zero status and leaves `/usr/local/bin/loom-*` as it was. There is
+deliberately no fallback to the binaries already on the machine: that would turn
+a failed upgrade into a run that looks successful. Downloading uses `curl` (or
+`wget`) and `sha256sum` (or `shasum`) and nothing else. Re-running the same
+`--release` re-downloads and re-verifies; environment files and data directories
+are left alone, as on every other install.
+
+A private repository needs a token, and `--release` then reads the release
+through the GitHub API, because `github.com/.../releases/download/...` answers
+`404` for a private repository even when a token is attached:
+
+```bash
+sudo GITHUB_TOKEN=ghp_… deploy/install.sh --release v0.1.0 daemon builder-1 https://loom.example.com
+```
+
+`GH_TOKEN` works too. `LOOM_RELEASE_REPO` (default `550W-HOST/loom`) selects
+another repository, and `LOOM_RELEASE_BASE_URL` / `LOOM_RELEASE_API_BASE` point
+at a mirror.
+
+The release carries no signature, so `SHA256SUMS` is the root of trust and is
+fetched over the same TLS connection as the binaries: it proves a download is
+the file the release published, not that the release is the one you wanted.
 
 ## Ports
 
