@@ -551,6 +551,21 @@ impl DomainRegistry {
         self.lock().threads.get(thread_id).cloned()
     }
 
+    /// Marks a thread read without publishing a timeline event.
+    pub fn mark_thread_read(
+        &self,
+        thread_id: &ThreadId,
+        now_ms: u64,
+    ) -> Result<Thread, CommandError> {
+        let mut inner = self.lock();
+        let thread = inner
+            .threads
+            .get_mut(thread_id)
+            .ok_or_else(|| CommandError::NotFound(format!("thread {thread_id} is not known")))?;
+        thread.mark_read(now_ms);
+        Ok(thread.clone())
+    }
+
     /// Every known thread, newest first.
     ///
     /// The list a UI renders in its sidebar. Ordering is by creation time and

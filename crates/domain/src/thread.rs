@@ -223,6 +223,9 @@ pub struct Thread {
     pub updated_at_ms: u64,
     /// When the thread was archived, mirroring `status == Archived`.
     pub archived_at_ms: Option<u64>,
+    /// Wall-clock milliseconds when a client last marked the thread read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_read_at_ms: Option<u64>,
     /// The provider run currently advancing this thread, when there is one.
     ///
     /// Set when the control plane dispatches a run and cleared when that run
@@ -249,6 +252,7 @@ impl Thread {
             created_at_ms: now_ms,
             updated_at_ms: now_ms,
             archived_at_ms: None,
+            last_read_at_ms: None,
             active_run_id: None,
         };
         let event = DomainEvent::ThreadCreated {
@@ -297,6 +301,11 @@ impl Thread {
     pub fn clear_run(&mut self, now_ms: u64) {
         self.active_run_id = None;
         self.updated_at_ms = now_ms;
+    }
+
+    /// Records that a client has consumed the thread up to `now_ms`.
+    pub fn mark_read(&mut self, now_ms: u64) {
+        self.last_read_at_ms = Some(now_ms);
     }
 
     /// Appends a message and returns the events the append produces.

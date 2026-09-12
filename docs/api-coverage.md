@@ -11,9 +11,9 @@
 
 - 契约快照：`fa1f44ebe9e5676004b669e48c99b3c7606466b6`，共 **167 条**路由。
 - 已决策不实现：**18 条**（desktopBrowsers 11 条，skill/CLI skill 7 条）。
-- 当前源码包含 **21 个 `.route` 声明、26 个 HTTP 方法入口**；其中只有 11 个匹配 bb 契约，另有 15 个契约外入口。契约当前没有 plugin/marketplace 路由条目。
-- 有效总数：**149 条**；当前已实现 **11 条**，待实现 **138 条**。
-- 当前有效覆盖率：**11/149（7.4%）**。
+- 当前源码包含 **35 个 `.route` 声明、40 个 HTTP 方法入口**；其中只有 25 个匹配 bb 契约，另有 15 个契约外入口。契约当前没有 plugin/marketplace 路由条目。
+- 有效总数：**149 条**；当前已实现 **25 条**，待实现 **124 条**。
+- 当前有效覆盖率：**25/149（16.8%）**。
 - B0 是现有实现基线；B1-B10 是建议的后续交付批次，每批 14、14、14、14、10、14、14、14、17、13 条，均在 10-20 条范围内。
 
 ## threads.send 判定
@@ -22,9 +22,9 @@
 的是 `POST /api/v1/threads/:id/send`（`threads.send`），因此它必须进入兼容实现，已列入 **B1**。
 
 当前 loom 的 `POST /api/v1/threads/{id}/messages` 是契约外的旧版参考 UI
-写入端点，`ui/src/main.ts` 仍在使用它。它不能替代 `threads.send`，也不计入覆盖率；在 B1 完成前，bb UI 调用
-`threads.send` 会得到 404。建议把 B1 的 handler 接到现有线程发送/发布路径，
-后续再决定是否移除或保留参考 UI 的兼容端点，不修改 bb UI 的契约调用。
+写入端点，`ui/src/main.ts` 仍在使用它。它不能替代 `threads.send`，也不计入覆盖率；
+`threads.send` 已接入同一线程发送/发布路径。后续再决定是否移除或保留参考 UI
+的兼容端点，不修改 bb UI 的契约调用。
 
 ## 批次与依赖
 
@@ -33,7 +33,7 @@
 
 | 批次 | 主题 | 路由数 | 依赖 | UI 交付边界 |
 | --- | --- | ---: | --- | --- |
-| B0 | 当前基础覆盖（基线） | 11 | - | 项目/线程基础读写、环境读取和主机列表已存在 |
+| B0 | 当前基础覆盖（基线） | 25 | - | 项目/线程基础读写、环境读取和主机列表已存在 |
 | B1 | 启动、导航与首个 threads 流程 | 14 | B0 | 启动探活、侧栏初始化、项目/线程列表后的线程打开、时间线读取与发送 |
 | B2 | 线程控制与辅助视图 | 14 | B1 | 活动线程的默认执行选项、运行状态、搜索、历史、编辑、停止/重试和压缩 |
 | B3 | 交互、计划与队列发送 | 14 | B1 + B2 | 线程中的交互请求、计划控制和 queued message 的查看/创建/发送 |
@@ -144,7 +144,7 @@
 | `projects.paths` | `GET` | `/api/v1/projects/:id/paths` | 待实现 | - | B7 | - |
 | `projects.promptHistory` | `GET` | `/api/v1/projects/:id/prompt-history` | 待实现 | - | B7 | - |
 | `projects.reorder` | `PATCH` | `/api/v1/projects/:id/order` | 待实现 | - | B7 | - |
-| `projects.sidebarBootstrap` | `GET` | `/api/v1/sidebar-bootstrap` | 待实现 | - | B1 | - |
+| `projects.sidebarBootstrap` | `GET` | `/api/v1/sidebar-bootstrap` | 已实现 | `GET /api/v1/sidebar-bootstrap` | B0 | 契约路径与方法已匹配 |
 | `projects.skillContent` | `GET` | `/api/v1/projects/:id/skills/content` | 不适用（已决策） | - | - | 已决策：skill/CLI skill 不实现 |
 | `projects.skillFiles` | `GET` | `/api/v1/projects/:id/skills/files` | 不适用（已决策） | - | - | 已决策：skill/CLI skill 不实现 |
 | `projects.skills` | `GET` | `/api/v1/projects/:id/skills` | 不适用（已决策） | - | - | 已决策：skill/CLI skill 不实现 |
@@ -156,16 +156,16 @@
 | `system.appearance` | `PUT` | `/api/v1/settings/appearance` | 待实现 | - | B10 | - |
 | `system.attention` | `GET` | `/api/v1/system/attention` | 待实现 | - | B8 | - |
 | `system.cliSkillsStatus` | `GET` | `/api/v1/system/cli-skills` | 不适用（已决策） | - | - | 已决策：skill/CLI skill 不实现 |
-| `system.config` | `GET` | `/api/v1/system/config` | 待实现 | - | B1 | - |
-| `system.environmentProviders` | `GET` | `/api/v1/system/environment-providers` | 待实现 | - | B1 | - |
-| `system.executionOptions` | `GET` | `/api/v1/system/execution-options` | 待实现 | - | B1 | - |
+| `system.config` | `GET` | `/api/v1/system/config` | 已实现 | `GET /api/v1/system/config` | B0 | 契约路径与方法已匹配 |
+| `system.environmentProviders` | `GET` | `/api/v1/system/environment-providers` | 已实现 | `GET /api/v1/system/environment-providers` | B0 | 契约路径与方法已匹配 |
+| `system.executionOptions` | `GET` | `/api/v1/system/execution-options` | 已实现 | `GET /api/v1/system/execution-options` | B0 | 契约路径与方法已匹配 |
 | `system.experiments` | `PUT` | `/api/v1/settings/experiments` | 待实现 | - | B10 | - |
 | `system.generalSettings` | `PUT` | `/api/v1/settings/general` | 待实现 | - | B10 | - |
 | `system.installCliSkills` | `POST` | `/api/v1/system/cli-skills/install` | 不适用（已决策） | - | - | 已决策：skill/CLI skill 不实现 |
 | `system.keyboardSettings` | `PUT` | `/api/v1/settings/keyboard` | 待实现 | - | B10 | - |
 | `system.providerLogo` | `GET` | `/api/v1/system/providers/:id/logo` | 待实现 | - | B10 | - |
-| `system.providers` | `GET` | `/api/v1/system/providers` | 待实现 | - | B1 | - |
-| `system.providerStates` | `GET` | `/api/v1/system/providers/state` | 待实现 | - | B1 | - |
+| `system.providers` | `GET` | `/api/v1/system/providers` | 已实现 | `GET /api/v1/system/providers` | B0 | 契约路径与方法已匹配 |
+| `system.providerStates` | `GET` | `/api/v1/system/providers/state` | 已实现 | `GET /api/v1/system/providers/state` | B0 | 契约路径与方法已匹配 |
 | `system.reloadConfig` | `POST` | `/api/v1/system/config/reload` | 待实现 | - | B10 | - |
 | `system.resetUiPreference` | `DELETE` | `/api/v1/preferences/ui/:key` | 待实现 | - | B10 | - |
 | `system.resolveTheme` | `GET` | `/api/v1/settings/themes/:id` | 待实现 | - | B10 | - |
@@ -173,7 +173,7 @@
 | `system.uiPreferences` | `GET` | `/api/v1/preferences/ui` | 待实现 | - | B10 | - |
 | `system.updateUiPreference` | `PUT` | `/api/v1/preferences/ui/:key` | 待实现 | - | B10 | - |
 | `system.usageLimits` | `GET` | `/api/v1/system/usage-limits` | 待实现 | - | B10 | - |
-| `system.version` | `GET` | `/api/v1/system/version` | 待实现 | - | B1 | - |
+| `system.version` | `GET` | `/api/v1/system/version` | 已实现 | `GET /api/v1/system/version` | B0 | 契约路径与方法已匹配 |
 | `system.voiceTranscription` | `POST` | `/api/v1/system/voice-transcription` | 待实现 | - | B10 | - |
 | `terminals.close` | `POST` | `/api/v1/terminals/:terminalId/close` | 待实现 | - | B9 | - |
 | `terminals.create` | `POST` | `/api/v1/terminals` | 待实现 | - | B9 | - |
@@ -200,23 +200,23 @@
 | `threads.delete` | `DELETE` | `/api/v1/threads/:id` | 待实现 | - | B4 | - |
 | `threads.deleteQueuedMessage` | `DELETE` | `/api/v1/threads/:id/queued-messages/:queuedMessageId` | 待实现 | - | B4 | - |
 | `threads.editMessage` | `POST` | `/api/v1/threads/:id/edit-message` | 待实现 | - | B2 | - |
-| `threads.events` | `GET` | `/api/v1/threads/:id/events` | 待实现 | - | B1 | - |
+| `threads.events` | `GET` | `/api/v1/threads/:id/events` | 已实现 | `GET /api/v1/threads/{id}/events` | B0 | 契约路径与方法已匹配 |
 | `threads.eventWait` | `GET` | `/api/v1/threads/:id/events/wait` | 待实现 | - | B3 | - |
 | `threads.fork` | `POST` | `/api/v1/threads/fork` | 待实现 | - | B4 | - |
-| `threads.get` | `GET` | `/api/v1/threads/:id` | 待实现 | - | B1 | - |
+| `threads.get` | `GET` | `/api/v1/threads/:id` | 已实现 | `GET /api/v1/threads/{id}` | B0 | 契约路径与方法已匹配 |
 | `threads.hostFileContent` | `GET` | `/api/v1/threads/:id/host-files/content` | 待实现 | - | B5 | - |
 | `threads.interaction` | `GET` | `/api/v1/threads/:id/interactions/:interactionId` | 待实现 | - | B3 | - |
 | `threads.interactions` | `GET` | `/api/v1/threads/:id/interactions` | 待实现 | - | B3 | - |
 | `threads.list` | `GET` | `/api/v1/threads` | 已实现 | `GET /api/v1/threads` | B0 | 契约路径与方法已匹配 |
 | `threads.open` | `POST` | `/api/v1/threads/:id/open` | 待实现 | - | B2 | - |
-| `threads.output` | `GET` | `/api/v1/threads/:id/output` | 待实现 | - | B1 | - |
+| `threads.output` | `GET` | `/api/v1/threads/:id/output` | 已实现 | `GET /api/v1/threads/{id}/output` | B0 | 契约路径与方法已匹配 |
 | `threads.paneAction` | `POST` | `/api/v1/threads/:id/pane-action` | 待实现 | - | B5 | - |
 | `threads.pin` | `POST` | `/api/v1/threads/:id/pin` | 待实现 | - | B4 | - |
 | `threads.pinOrder` | `PATCH` | `/api/v1/threads/:id/pin-order` | 待实现 | - | B4 | - |
 | `threads.promptHistory` | `GET` | `/api/v1/threads/:id/prompt-history` | 待实现 | - | B2 | - |
 | `threads.queuedMessages` | `GET` | `/api/v1/threads/:id/queued-messages` | 待实现 | - | B3 | - |
 | `threads.rawFile` | `GET` | `/api/v1/threads/:id/files/raw` | 待实现 | - | B5 | - |
-| `threads.read` | `POST` | `/api/v1/threads/:id/read` | 待实现 | - | B1 | - |
+| `threads.read` | `POST` | `/api/v1/threads/:id/read` | 已实现 | `POST /api/v1/threads/{id}/read` | B0 | 契约路径与方法已匹配 |
 | `threads.reorderQueuedMessage` | `PATCH` | `/api/v1/threads/:id/queued-messages/:queuedMessageId/order` | 待实现 | - | B4 | - |
 | `threads.resolveInteraction` | `POST` | `/api/v1/threads/:id/interactions/:interactionId/resolve` | 待实现 | - | B3 | - |
 | `threads.resolveMentions` | `POST` | `/api/v1/threads/resolve-mentions` | 待实现 | - | B4 | - |
@@ -224,7 +224,7 @@
 | `threads.retry` | `POST` | `/api/v1/threads/:id/retry` | 待实现 | - | B2 | - |
 | `threads.running` | `GET` | `/api/v1/threads/running` | 待实现 | - | B2 | - |
 | `threads.search` | `GET` | `/api/v1/threads/search` | 待实现 | - | B2 | - |
-| `threads.send` | `POST` | `/api/v1/threads/:id/send` | 待实现 | - | B1 | - |
+| `threads.send` | `POST` | `/api/v1/threads/:id/send` | 已实现 | `POST /api/v1/threads/{id}/send` | B0 | 契约路径与方法已匹配 |
 | `threads.sendQueuedMessage` | `POST` | `/api/v1/threads/:id/queued-messages/:queuedMessageId/send` | 待实现 | - | B3 | - |
 | `threads.setQueuedMessageGroupBoundary` | `PATCH` | `/api/v1/threads/:id/queued-messages/group-boundary` | 待实现 | - | B4 | - |
 | `threads.stop` | `POST` | `/api/v1/threads/:id/stop` | 待实现 | - | B2 | - |
@@ -233,8 +233,8 @@
 | `threads.storageFiles` | `GET` | `/api/v1/threads/:id/thread-storage/files` | 待实现 | - | B5 | - |
 | `threads.storageLocation` | `GET` | `/api/v1/threads/:id/thread-storage/location` | 待实现 | - | B5 | - |
 | `threads.storagePaths` | `GET` | `/api/v1/threads/:id/thread-storage/paths` | 待实现 | - | B5 | - |
-| `threads.tabs` | `GET` | `/api/v1/threads/:id/tabs` | 待实现 | - | B1 | - |
-| `threads.timeline` | `GET` | `/api/v1/threads/:id/timeline` | 待实现 | - | B1 | - |
+| `threads.tabs` | `GET` | `/api/v1/threads/:id/tabs` | 已实现 | `GET /api/v1/threads/{id}/tabs` | B0 | 契约路径与方法已匹配 |
+| `threads.timeline` | `GET` | `/api/v1/threads/:id/timeline` | 已实现 | `GET /api/v1/threads/{id}/timeline` | B0 | 契约路径与方法已匹配 |
 | `threads.timelineTurnSummaryDetails` | `GET` | `/api/v1/threads/:id/timeline/turn-summary-details` | 待实现 | - | B3 | - |
 | `threads.unarchive` | `POST` | `/api/v1/threads/:id/unarchive` | 待实现 | - | B4 | - |
 | `threads.unpin` | `POST` | `/api/v1/threads/:id/unpin` | 待实现 | - | B4 | - |

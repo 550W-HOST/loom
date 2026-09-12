@@ -3,21 +3,25 @@
 //! Small on purpose. The interesting surface is the WebSocket; these routes
 //! exist so a server can be probed, identified and fed events.
 
-use axum::extract::{Path, State};
+use axum::body::Body;
+use axum::extract::{Path, Query, Request, State};
 use axum::http::StatusCode;
+use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use http_body_util::BodyExt;
 use loom_domain::{
     DomainError, DomainEvent, DomainScope, Environment, EnvironmentId, EnvironmentKind,
-    EnvironmentStatus, Host, HostId, MessageRole, Project, ProjectId, ProjectKind, ProjectSourceId,
-    Thread, ThreadId,
+    EnvironmentStatus, Host, HostId, HostStatus, MessageRole, Project, ProjectId, ProjectKind,
+    ProjectSourceId, Thread, ThreadId, ThreadStatus,
 };
 use loom_relay::scope::Scope;
 use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
 
 use crate::domain_state::CommandError;
-use crate::state::AppState;
+use crate::state::{domain_event_from_envelope, AppState};
 use crate::ui;
 use crate::ws;
 use crate::PROTOCOL_VERSION;
@@ -27,9 +31,29 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/health", get(health))
         .route("/api/v1/version", get(version))
+        .route("/api/v1/sidebar-bootstrap", get(sidebar_bootstrap))
+        .route("/api/v1/system/config", get(system_config))
+        .route(
+            "/api/v1/system/environment-providers",
+            get(environment_providers),
+        )
+        .route("/api/v1/system/execution-options", get(execution_options))
+        .route("/api/v1/system/providers", get(system_providers))
+        .route(
+            "/api/v1/system/providers/state",
+            get(system_provider_states),
+        )
+        .route("/api/v1/system/version", get(system_version))
         .route("/api/v1/publish", post(publish))
         .route("/api/v1/replay", get(replay))
         .route("/api/v1/threads", get(list_threads).post(create_thread))
+        .route("/api/v1/threads/{id}/events", get(thread_events))
+        .route("/api/v1/threads/{id}", get(get_thread))
+        .route("/api/v1/threads/{id}/output", get(thread_output))
+        .route("/api/v1/threads/{id}/read", post(read_thread))
+        .route("/api/v1/threads/{id}/send", post(send_thread))
+        .route("/api/v1/threads/{id}/tabs", get(thread_tabs))
+        .route("/api/v1/threads/{id}/timeline", get(thread_timeline))
         .route("/api/v1/threads/{id}/messages", post(post_thread_message))
         .route("/api/v1/projects", get(list_projects).post(create_project))
         .route(
@@ -64,7 +88,48 @@ pub fn router(state: AppState) -> Router {
         // Everything else is a client route: the UI shell (or a dev-server
         // proxy). API and socket paths are excluded inside the handler.
         .fallback(ui::serve)
+        .layer(middleware::from_fn(normalize_api_error))
         .with_state(state)
+}
+
+/// Keeps extractor failures on API routes in the same shape as handler errors.
+/// Axum's JSON and query extractors otherwise return a plain-text rejection.
+async fn normalize_api_error(request: Request, next: Next) -> Response {
+    let is_api = request.uri().path().starts_with("/api/");
+    let response = next.run(request).await;
+    if !is_api || (!response.status().is_client_error() && !response.status().is_server_error()) {
+        return response;
+    }
+
+    let status = response.status();
+    let (parts, body) = response.into_parts();
+    let bytes = match body.collect().await {
+        Ok(body) => body.to_bytes(),
+        Err(error) => {
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("failed to read an API error response: {error}"),
+            )
+        }
+    };
+    let already_shaped = serde_json::from_slice::<Value>(&bytes)
+        .ok()
+        .and_then(|value| value.as_object().cloned())
+        .is_some_and(|object| {
+            object.get("code").is_some_and(Value::is_string)
+                && object.get("message").is_some_and(Value::is_string)
+        });
+    if already_shaped {
+        return Response::from_parts(parts, Body::from(bytes));
+    }
+
+    let message = String::from_utf8_lossy(&bytes).trim().to_owned();
+    let message = if message.is_empty() {
+        format!("request failed with status {status}")
+    } else {
+        message
+    };
+    error_response(status, message)
 }
 
 /// Liveness and basic introspection.
@@ -129,6 +194,401 @@ async fn version() -> Json<VersionResponse> {
     })
 }
 
+/// Query fields shared by the provider discovery routes. The current provider
+/// registry is process configuration, so these filters are accepted for wire
+/// compatibility and do not change the single configured provider result.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
+struct ProviderQuery {
+    capability: Option<String>,
+    environment_id: Option<String>,
+    host_id: Option<String>,
+    project_id: Option<String>,
+    provider_id: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+#[allow(dead_code)]
+struct SystemVersionQuery {
+    force: Option<String>,
+}
+
+fn configured_provider_id(state: &AppState) -> String {
+    state.provider_spec().name.clone()
+}
+
+fn configured_provider_info(state: &AppState) -> Value {
+    let provider_id = configured_provider_id(state);
+    json!({
+        "id": provider_id,
+        // `pluginId` remains a required bb field even though loom providers
+        // are first-class and do not use a plugin lifecycle.
+        "pluginId": "loom",
+        "displayName": "Pi",
+        "logoUrl": null,
+        "maintenance": {
+            "health": true,
+            "usage": true,
+            "installation": false
+        },
+        "capabilities": {
+            "supportsThreadArchive": true,
+            "supportsThreadRename": false,
+            "supportsServiceTier": false,
+            "supportsNativeUserQuestion": false,
+            "supportsFork": false,
+            "supportsSessionRewind": false,
+            "permissionModes": ["accept-edits", "auto", "full"],
+            "modelCatalogScope": "workspace"
+        },
+        "composerActions": [],
+        "available": true
+    })
+}
+
+fn configured_model(state: &AppState) -> Value {
+    let provider_id = configured_provider_id(state);
+    json!({
+        "id": format!("{provider_id}/default"),
+        "model": provider_id,
+        "displayName": "Default",
+        "description": "The configured loom provider model",
+        "supportedReasoningEfforts": [{
+            "reasoningEffort": "medium",
+            "description": "Balanced reasoning"
+        }],
+        "defaultReasoningEffort": "medium",
+        "isDefault": true
+    })
+}
+
+fn configured_execution_options(state: &AppState) -> Value {
+    let model = configured_model(state);
+    json!({
+        "providers": [configured_provider_info(state)],
+        "permissionCeiling": "full",
+        "models": [model.clone()],
+        "selectedOnlyModels": [model],
+        "modelLoadError": null
+    })
+}
+
+/// Returns the project/thread data needed to hydrate the sidebar in one call.
+async fn sidebar_bootstrap(State(state): State<AppState>) -> Json<Value> {
+    let projects = state.registry.projects();
+    let personal_id = state.registry.personal_project_id();
+    let personal_project = projects
+        .iter()
+        .find(|project| project.id == personal_id)
+        .map(|project| project_summary_value(&state, project))
+        .unwrap_or_else(|| {
+            json!({
+                "id": personal_id.to_string(),
+                "kind": "personal",
+                "name": "Personal",
+                "gitRemoteUrl": null,
+                "createdAt": 0,
+                "updatedAt": 0,
+                "sources": [],
+                "threads": [],
+                "defaultExecutionOptions": null
+            })
+        });
+    let projects = projects
+        .iter()
+        .map(|project| project_summary_value(&state, project))
+        .collect::<Vec<_>>();
+    Json(json!({
+        "sections": [],
+        "projects": projects,
+        "personalProject": personal_project
+    }))
+}
+
+/// Returns the static configuration surface required by the bb client.
+async fn system_config(State(state): State<AppState>) -> Json<Value> {
+    let provider_id = configured_provider_id(&state);
+    Json(json!({
+        "generalSettings": {
+            "showKeyboardHints": true,
+            "steerActiveThreadOnEnter": true,
+            "showDiagnosticEvents": false,
+            "providerOrder": [provider_id],
+            "defaultProviderId": configured_provider_id(&state),
+            "streamerMode": false,
+            "managedBranchPrefix": ""
+        },
+        "keybindings": [],
+        "defaultKeybindings": [],
+        "keybindingOverrides": [],
+        "experiments": {
+            "changelogPreview": false,
+            "mobileApp": false,
+            "sidebarProgressiveDisclosure": false,
+            "timelineWindowing": true
+        },
+        "appearance": {
+            "themeId": "default",
+            "customCss": null,
+            "faviconColor": "default",
+            "resolvedCodeTheme": {
+                "dark": "",
+                "light": "",
+                "files": {}
+            }
+        },
+        "customThemes": [],
+        "pluginThemes": [],
+        "featureFlags": {
+            "placeholder": false,
+            "timelineWindowEventBudget": 500
+        },
+        "hostDaemonPort": null,
+        "localHelperPorts": [],
+        "serverUrl": "",
+        "primaryHostId": state.local_host_id().map(ToString::to_string),
+        "primaryHostPlatform": null,
+        "voiceTranscriptionEnabled": false,
+        "aiServices": {
+            "inference": "",
+            "inferenceFallback": "",
+            "transcription": "",
+            "services": []
+        },
+        "dataDir": ""
+    }))
+}
+
+/// Environment providers are intentionally empty until the environment
+/// provider domain is introduced. An empty catalog is a valid bb response and
+/// avoids claiming that the execution provider can provision workspaces.
+async fn environment_providers(
+    State(_state): State<AppState>,
+    Query(_query): Query<ProviderQuery>,
+) -> Json<Value> {
+    Json(json!({ "providers": [] }))
+}
+
+async fn execution_options(
+    State(state): State<AppState>,
+    Query(_query): Query<ProviderQuery>,
+) -> Json<Value> {
+    Json(configured_execution_options(&state))
+}
+
+async fn system_providers(
+    State(state): State<AppState>,
+    Query(_query): Query<ProviderQuery>,
+) -> Json<Value> {
+    Json(json!([configured_provider_info(&state)]))
+}
+
+async fn system_provider_states(
+    State(state): State<AppState>,
+    Query(_query): Query<ProviderQuery>,
+) -> Json<Value> {
+    let provider_id = configured_provider_id(&state);
+    Json(json!({
+        "providers": [{
+            "status": "unknown",
+            "statusMessage": null,
+            "accountEmail": null,
+            "planLabel": null,
+            "installedVersion": null,
+            "minimumSupportedVersion": null,
+            "canInstall": false,
+            "canUpdate": false,
+            "loginCommand": null,
+            "providerId": provider_id,
+            "displayName": "Pi"
+        }]
+    }))
+}
+
+async fn system_version(Query(_query): Query<SystemVersionQuery>) -> Json<Value> {
+    Json(json!({
+        "currentVersion": env!("CARGO_PKG_VERSION"),
+        "latestVersion": null,
+        "source": "npm",
+        "updateAvailable": false,
+        "isDevelopment": true,
+        "upgradeCommand": ""
+    }))
+}
+
+fn project_source_value(source: &loom_domain::ProjectSource) -> Value {
+    json!({
+        "id": source.id.to_string(),
+        "projectId": source.project_id.to_string(),
+        "isDefault": source.is_default,
+        "createdAt": source.created_at_ms,
+        "updatedAt": source.updated_at_ms,
+        "type": "local_path",
+        "hostId": source.host_id.to_string(),
+        "path": source.path
+    })
+}
+
+fn project_summary_value(state: &AppState, project: &Project) -> Value {
+    let threads = state
+        .registry
+        .threads()
+        .into_iter()
+        .filter(|thread| thread.project_id == project.id)
+        .map(|thread| thread_list_entry_value(state, &thread))
+        .collect::<Vec<_>>();
+    json!({
+        "id": project.id.to_string(),
+        "kind": project.kind,
+        "name": project.name,
+        "gitRemoteUrl": project.git_remote_url,
+        "createdAt": project.created_at_ms,
+        "updatedAt": project.updated_at_ms,
+        "sources": project.sources.iter().map(project_source_value).collect::<Vec<_>>(),
+        "threads": threads,
+        "defaultExecutionOptions": null
+    })
+}
+
+fn bb_thread_status(status: ThreadStatus) -> &'static str {
+    match status {
+        ThreadStatus::Idle | ThreadStatus::Archived => "idle",
+        ThreadStatus::Working | ThreadStatus::Waiting => "active",
+        ThreadStatus::Error => "error",
+    }
+}
+
+fn runtime_display_status(
+    state: &AppState,
+    thread: &Thread,
+    environment: Option<&Environment>,
+) -> &'static str {
+    match thread.status {
+        ThreadStatus::Idle | ThreadStatus::Archived => "idle",
+        ThreadStatus::Error => "error",
+        ThreadStatus::Waiting => "active",
+        ThreadStatus::Working => match environment {
+            Some(environment) => match state.registry.host(&environment.host_id) {
+                Some(host) if host.status == HostStatus::Connected => "active",
+                Some(_) => "host-reconnecting",
+                None => "waiting-for-host",
+            },
+            None => "waiting-for-host",
+        },
+    }
+}
+
+fn thread_summary_value(state: &AppState, thread: &Thread) -> Value {
+    let environment = thread
+        .environment_id
+        .as_ref()
+        .and_then(|id| state.registry.environment(id));
+    let environment_id = thread.environment_id.as_ref().map(ToString::to_string);
+    json!({
+        "id": thread.id.to_string(),
+        "projectId": thread.project_id.to_string(),
+        "environmentId": environment_id,
+        "providerId": configured_provider_id(state),
+        "title": thread.title,
+        "titleFallback": thread.title,
+        "sectionId": null,
+        "status": bb_thread_status(thread.status),
+        "parentThreadId": thread.parent_thread_id.as_ref().map(ToString::to_string),
+        "sourceThreadId": null,
+        "originKind": null,
+        "originPluginId": null,
+        "visibility": if thread.status == ThreadStatus::Archived { "hidden" } else { "visible" },
+        "archivedAt": thread.archived_at_ms,
+        "pinnedAt": null,
+        "deletedAt": null,
+        "lastReadAt": thread.last_read_at_ms,
+        "latestAttentionAt": thread.updated_at_ms,
+        "createdAt": thread.created_at_ms,
+        "updatedAt": thread.updated_at_ms,
+        "runtime": {
+            "displayStatus": runtime_display_status(state, thread, environment.as_ref()),
+            "hostReconnectGraceExpiresAt": null
+        },
+        "activeBackgroundAgentCount": 0,
+        "canSpawnChild": true,
+        "queuedMessageCount": 0
+    })
+}
+
+fn thread_list_entry_value(state: &AppState, thread: &Thread) -> Value {
+    let summary = thread_summary_value(state, thread);
+    let environment = thread
+        .environment_id
+        .as_ref()
+        .and_then(|id| state.registry.environment(id));
+    let (
+        environment_host_id,
+        environment_name,
+        environment_path,
+        environment_is_worktree,
+        environment_workspace_display_kind,
+    ) = match environment.as_ref() {
+        Some(environment) => (
+            Some(environment.host_id.to_string()),
+            environment.name.clone(),
+            environment.path.clone(),
+            Some(environment.kind == EnvironmentKind::Managed),
+            if environment.kind == EnvironmentKind::Managed {
+                "managed-worktree"
+            } else {
+                "unmanaged-worktree"
+            },
+        ),
+        None => (None, None, None, None, "other"),
+    };
+    let mut value = summary;
+    let object = value.as_object_mut().expect("thread summary is an object");
+    object.insert(
+        "activity".into(),
+        json!({
+            "activeWorkflowCount": 0,
+            "activeBackgroundAgentCount": 0,
+            "activeBackgroundCommandCount": 0,
+            "activePlanModeCount": 0,
+            "activeGoalCount": 0
+        }),
+    );
+    object.insert(
+        "queuedWork".into(),
+        json!(if thread.status == ThreadStatus::Error {
+            "failed"
+        } else {
+            "none"
+        }),
+    );
+    object.insert("pinSortKey".into(), Value::Null);
+    object.insert("hasPendingInteraction".into(), Value::Bool(false));
+    object.insert(
+        "environmentHostId".into(),
+        environment_host_id.map_or(Value::Null, Value::String),
+    );
+    object.insert(
+        "environmentName".into(),
+        environment_name.map_or(Value::Null, Value::String),
+    );
+    object.insert("environmentBranchName".into(), Value::Null);
+    object.insert(
+        "environmentPath".into(),
+        environment_path.map_or(Value::Null, Value::String),
+    );
+    object.insert("environmentProviderId".into(), Value::Null);
+    object.insert(
+        "environmentIsWorktree".into(),
+        environment_is_worktree.map_or(Value::Null, Value::Bool),
+    );
+    object.insert(
+        "environmentWorkspaceDisplayKind".into(),
+        Value::String(environment_workspace_display_kind.into()),
+    );
+    value
+}
+
 /// Body of a publish request.
 #[derive(Clone, Debug, Deserialize)]
 pub struct PublishRequest {
@@ -167,7 +627,24 @@ async fn publish(State(state): State<AppState>, Json(request): Json<PublishReque
 }
 
 fn error_response(status: StatusCode, message: String) -> Response {
-    (status, Json(serde_json::json!({ "error": message }))).into_response()
+    let code = match status {
+        StatusCode::BAD_REQUEST => "invalid_request",
+        StatusCode::UNAUTHORIZED => "unauthorized",
+        StatusCode::FORBIDDEN => "forbidden",
+        StatusCode::NOT_FOUND => "not_found",
+        StatusCode::CONFLICT => "conflict",
+        StatusCode::UNPROCESSABLE_ENTITY => "invalid_request",
+        StatusCode::BAD_GATEWAY => "host_unavailable",
+        StatusCode::SERVICE_UNAVAILABLE => "provider_unavailable",
+        StatusCode::GATEWAY_TIMEOUT => "command_timeout",
+        StatusCode::INTERNAL_SERVER_ERROR => "internal_error",
+        _ => "invalid_request",
+    };
+    error_response_with_code(status, code, message)
+}
+
+fn error_response_with_code(status: StatusCode, code: &'static str, message: String) -> Response {
+    (status, Json(json!({ "code": code, "message": message }))).into_response()
 }
 
 /// Body of a create-thread request.
@@ -201,6 +678,591 @@ async fn list_threads(State(state): State<AppState>) -> Json<ThreadListResponse>
     Json(ThreadListResponse {
         threads: state.registry.threads(),
     })
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
+struct ThreadGetQuery {
+    include: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ThreadEventsQuery {
+    after_seq: Option<String>,
+    before_seq: Option<String>,
+    limit: Option<String>,
+    order: Option<String>,
+    types: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
+struct ThreadTimelineQuery {
+    after_sequence: Option<String>,
+    before_anchor_id: Option<String>,
+    before_anchor_seq: Option<String>,
+    include_nested_rows: Option<String>,
+    segment_limit: Option<String>,
+    summary_only: Option<String>,
+}
+
+#[allow(clippy::result_large_err)]
+fn parse_thread_id(raw: &str) -> Result<ThreadId, Response> {
+    raw.parse::<ThreadId>()
+        .map_err(|error| error_response(StatusCode::BAD_REQUEST, error.to_string()))
+}
+
+#[allow(clippy::result_large_err)]
+fn thread_domain_events(
+    state: &AppState,
+    thread_id: &ThreadId,
+) -> Result<Vec<(String, u64, u64, DomainEvent)>, Response> {
+    let scope = Scope::Thread(thread_id.to_string());
+    let envelopes = state
+        .relay
+        .replay_scope(&scope, usize::MAX)
+        .map_err(|error| error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
+    Ok(envelopes
+        .into_iter()
+        .enumerate()
+        .filter_map(|(index, envelope)| {
+            domain_event_from_envelope(&envelope).map(|event| {
+                (
+                    envelope.event_id.to_string(),
+                    index as u64 + 1,
+                    envelope.created_at_ms,
+                    event,
+                )
+            })
+        })
+        .collect())
+}
+
+#[allow(clippy::result_large_err)]
+fn parse_query_sequence(raw: Option<&String>, field: &str) -> Result<Option<u64>, Response> {
+    raw.filter(|value| !value.is_empty())
+        .map(|value| {
+            value.parse::<u64>().map_err(|error| {
+                error_response(
+                    StatusCode::BAD_REQUEST,
+                    format!("invalid {field} query value {value:?}: {error}"),
+                )
+            })
+        })
+        .transpose()
+}
+
+fn thread_event_row(
+    event_id: String,
+    sequence: u64,
+    created_at_ms: u64,
+    run: &loom_domain::RunEvent,
+) -> Value {
+    let mut data = serde_json::to_value(&run.event.body).expect("ProviderEvent always serializes");
+    if let Value::Object(object) = &mut data {
+        object.remove("type");
+    }
+    json!({
+        "id": event_id,
+        "scope": run.event.scope,
+        "threadId": run.event.thread_id.to_string(),
+        "seq": sequence,
+        "type": run.event.kind(),
+        "data": data,
+        "createdAt": created_at_ms
+    })
+}
+
+/// Returns the provider's contract events from the thread room.
+///
+/// Domain lifecycle and message events deliberately stay out of this route:
+/// bb's `threads.events` is a `ThreadEventRow[]`, projected from the inner
+/// `run.event` of loom's domain wrapper.
+async fn thread_events(
+    State(state): State<AppState>,
+    Path(raw_thread_id): Path<String>,
+    Query(query): Query<ThreadEventsQuery>,
+) -> Response {
+    let thread_id = match parse_thread_id(&raw_thread_id) {
+        Ok(thread_id) => thread_id,
+        Err(response) => return response,
+    };
+    if state.registry.thread(&thread_id).is_none() {
+        return error_response(
+            StatusCode::NOT_FOUND,
+            format!("thread {thread_id} is not known"),
+        );
+    }
+    let after = match parse_query_sequence(query.after_seq.as_ref(), "afterSeq") {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+    let before = match parse_query_sequence(query.before_seq.as_ref(), "beforeSeq") {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+    let limit = match parse_query_sequence(query.limit.as_ref(), "limit") {
+        Ok(Some(value)) => value.min(10_000) as usize,
+        Ok(None) => 100,
+        Err(response) => return response,
+    };
+    let descending = match query.order.as_deref() {
+        None | Some("") | Some("asc") => false,
+        Some("desc") => true,
+        Some(value) => {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                format!("order must be asc or desc, got {value:?}"),
+            )
+        }
+    };
+    let types = query.types.as_deref().map(|value| {
+        value
+            .split(',')
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .collect::<Vec<_>>()
+    });
+
+    let entries = match thread_domain_events(&state, &thread_id) {
+        Ok(entries) => entries,
+        Err(response) => return response,
+    };
+    let mut result = Vec::new();
+    for (event_id, sequence, created_at_ms, event) in entries {
+        let DomainEvent::ThreadRunEvent { run } = event else {
+            continue;
+        };
+        if after.is_some_and(|value| sequence <= value)
+            || before.is_some_and(|value| sequence >= value)
+        {
+            continue;
+        }
+        let event_type = run.event.kind();
+        if types
+            .as_ref()
+            .is_some_and(|allowed| !allowed.contains(&event_type))
+        {
+            continue;
+        }
+        result.push(thread_event_row(event_id, sequence, created_at_ms, &run));
+    }
+    if descending {
+        result.reverse();
+    }
+    result.truncate(limit);
+    Json(result).into_response()
+}
+
+async fn get_thread(
+    State(state): State<AppState>,
+    Path(raw_thread_id): Path<String>,
+    Query(_query): Query<ThreadGetQuery>,
+) -> Response {
+    let thread_id = match parse_thread_id(&raw_thread_id) {
+        Ok(thread_id) => thread_id,
+        Err(response) => return response,
+    };
+    match state.registry.thread(&thread_id) {
+        Some(thread) => Json(thread_summary_value(&state, &thread)).into_response(),
+        None => error_response(
+            StatusCode::NOT_FOUND,
+            format!("thread {thread_id} is not known"),
+        ),
+    }
+}
+
+async fn thread_output(
+    State(state): State<AppState>,
+    Path(raw_thread_id): Path<String>,
+) -> Response {
+    let thread_id = match parse_thread_id(&raw_thread_id) {
+        Ok(thread_id) => thread_id,
+        Err(response) => return response,
+    };
+    if state.registry.thread(&thread_id).is_none() {
+        return error_response(
+            StatusCode::NOT_FOUND,
+            format!("thread {thread_id} is not known"),
+        );
+    }
+
+    let mut delta_output = String::new();
+    let mut saw_delta = false;
+    let entries = match thread_domain_events(&state, &thread_id) {
+        Ok(entries) => entries,
+        Err(response) => return response,
+    };
+    let mut completed_output = None;
+    for (_event_id, _sequence, _created_at_ms, event) in entries {
+        let DomainEvent::ThreadRunEvent { run } = event else {
+            continue;
+        };
+        let value = serde_json::to_value(&run.event).expect("ThreadEvent always serializes");
+        match value.get("type").and_then(Value::as_str) {
+            Some("item/agentMessage/delta") => {
+                if let Some(delta) = value.get("delta").and_then(Value::as_str) {
+                    saw_delta = true;
+                    delta_output.push_str(delta);
+                }
+            }
+            Some("item/completed")
+                if value
+                    .get("item")
+                    .and_then(|item| item.get("type"))
+                    .and_then(Value::as_str)
+                    == Some("agentMessage") =>
+            {
+                completed_output = value
+                    .get("item")
+                    .and_then(|item| item.get("text"))
+                    .and_then(Value::as_str)
+                    .map(str::to_owned);
+            }
+            _ => {}
+        }
+    }
+    let output = if saw_delta {
+        Some(delta_output)
+    } else {
+        completed_output
+    };
+    Json(json!({ "output": output })).into_response()
+}
+
+async fn read_thread(State(state): State<AppState>, Path(raw_thread_id): Path<String>) -> Response {
+    let thread_id = match parse_thread_id(&raw_thread_id) {
+        Ok(thread_id) => thread_id,
+        Err(response) => return response,
+    };
+    match state
+        .registry
+        .mark_thread_read(&thread_id, loom_relay::now_ms())
+    {
+        Ok(thread) => Json(thread_summary_value(&state, &thread)).into_response(),
+        Err(error) => command_error_response(error),
+    }
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SendThreadRequest {
+    input: Option<Vec<Value>>,
+    mode: Option<String>,
+}
+
+fn text_from_send_input(input: &[Value]) -> Option<String> {
+    let mut text = String::new();
+    for item in input {
+        if item.get("type").and_then(Value::as_str) != Some("text") {
+            return None;
+        }
+        let value = item.get("text").and_then(Value::as_str)?;
+        text.push_str(value);
+    }
+    (!text.trim().is_empty()).then_some(text)
+}
+
+/// Sends a bb prompt through the same registry -> publish -> dispatch path as
+/// the compatibility `/messages` endpoint.
+async fn send_thread(
+    State(state): State<AppState>,
+    Path(raw_thread_id): Path<String>,
+    Json(request): Json<SendThreadRequest>,
+) -> Response {
+    let thread_id = match parse_thread_id(&raw_thread_id) {
+        Ok(thread_id) => thread_id,
+        Err(response) => return response,
+    };
+    let valid_mode = matches!(
+        request.mode.as_deref(),
+        Some("queue-if-active")
+            | Some("steer-if-active")
+            | Some("auto")
+            | Some("start")
+            | Some("steer")
+    );
+    if !valid_mode {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "mode must be one of queue-if-active, steer-if-active, auto, start, steer".into(),
+        );
+    }
+    let Some(input) = request.input.as_deref() else {
+        return error_response(StatusCode::BAD_REQUEST, "input is required".into());
+    };
+    let Some(content) = text_from_send_input(input) else {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "loom currently accepts text prompt inputs only".into(),
+        );
+    };
+    match append_thread_message(&state, &thread_id, MessageRole::User, content) {
+        Ok(_) => Json(json!({ "ok": true, "delivery": "sent" })).into_response(),
+        Err(response) => response,
+    }
+}
+
+async fn thread_tabs(State(state): State<AppState>, Path(raw_thread_id): Path<String>) -> Response {
+    let thread_id = match parse_thread_id(&raw_thread_id) {
+        Ok(thread_id) => thread_id,
+        Err(response) => return response,
+    };
+    if state.registry.thread(&thread_id).is_none() {
+        return error_response(
+            StatusCode::NOT_FOUND,
+            format!("thread {thread_id} is not known"),
+        );
+    }
+    Json(json!({ "revision": 0, "tabs": [] })).into_response()
+}
+
+fn timeline_row_base(
+    id: String,
+    thread_id: &ThreadId,
+    turn_id: Option<String>,
+    sequence: u64,
+    created_at_ms: u64,
+) -> Value {
+    json!({
+        "id": id,
+        "threadId": thread_id.to_string(),
+        "turnId": turn_id,
+        "sourceSeqStart": sequence,
+        "sourceSeqEnd": sequence,
+        "startedAt": created_at_ms,
+        "createdAt": created_at_ms
+    })
+}
+
+fn timeline_row_for_event(
+    thread_id: &ThreadId,
+    sequence: u64,
+    created_at_ms: u64,
+    event: &DomainEvent,
+) -> Option<Value> {
+    let mut base = match event {
+        DomainEvent::ThreadMessageAdded { message, .. } => timeline_row_base(
+            message.id.to_string(),
+            thread_id,
+            None,
+            sequence,
+            message.created_at_ms,
+        ),
+        DomainEvent::ThreadStatusChanged { .. } => timeline_row_base(
+            format!("status-{sequence}"),
+            thread_id,
+            None,
+            sequence,
+            created_at_ms,
+        ),
+        DomainEvent::ThreadRunEvent { run } => timeline_row_base(
+            format!("{}-{sequence}", run.run_id),
+            thread_id,
+            Some(run.run_id.to_string()),
+            sequence,
+            run.at_ms,
+        ),
+        _ => return None,
+    };
+    let object = base
+        .as_object_mut()
+        .expect("timeline row base is an object");
+    match event {
+        DomainEvent::ThreadMessageAdded { message, .. } => match message.role {
+            MessageRole::User => {
+                object.extend([
+                    ("kind".into(), json!("conversation")),
+                    ("text".into(), json!(message.content)),
+                    ("attachments".into(), Value::Null),
+                    ("role".into(), json!("user")),
+                    ("initiator".into(), json!("user")),
+                    ("senderThreadId".into(), Value::Null),
+                    ("systemMessageKind".into(), json!("unlabeled")),
+                    ("systemMessageSubject".into(), Value::Null),
+                    (
+                        "turnRequest".into(),
+                        json!({ "isGrouped": false, "kind": "message", "status": "accepted" }),
+                    ),
+                    ("mentions".into(), json!([])),
+                ]);
+            }
+            MessageRole::Assistant => {
+                object.extend([
+                    ("kind".into(), json!("conversation")),
+                    ("text".into(), json!(message.content)),
+                    ("attachments".into(), Value::Null),
+                    ("role".into(), json!("assistant")),
+                    ("turnRequest".into(), Value::Null),
+                ]);
+            }
+            MessageRole::System => {
+                object.extend([
+                    ("kind".into(), json!("system")),
+                    ("title".into(), json!("System message")),
+                    ("detail".into(), json!(message.content)),
+                    ("status".into(), Value::Null),
+                    ("systemKind".into(), json!("debug")),
+                ]);
+            }
+        },
+        DomainEvent::ThreadStatusChanged { from, to, .. } => {
+            object.extend([
+                ("kind".into(), json!("system")),
+                ("title".into(), json!("Thread status changed")),
+                ("detail".into(), json!(format!("{from} -> {to}"))),
+                ("status".into(), Value::Null),
+                ("systemKind".into(), json!("debug")),
+            ]);
+        }
+        DomainEvent::ThreadRunEvent { run } => {
+            let event_value =
+                serde_json::to_value(&run.event).expect("ThreadEvent always serializes");
+            match event_value.get("type").and_then(Value::as_str) {
+                Some("item/agentMessage/delta") => {
+                    object.extend([
+                        ("kind".into(), json!("conversation")),
+                        (
+                            "text".into(),
+                            event_value
+                                .get("delta")
+                                .cloned()
+                                .unwrap_or_else(|| json!("")),
+                        ),
+                        ("attachments".into(), Value::Null),
+                        ("role".into(), json!("assistant")),
+                        ("turnRequest".into(), Value::Null),
+                    ]);
+                }
+                Some("item/completed")
+                    if event_value
+                        .get("item")
+                        .and_then(|item| item.get("type"))
+                        .and_then(Value::as_str)
+                        == Some("agentMessage") =>
+                {
+                    object.extend([
+                        ("kind".into(), json!("conversation")),
+                        (
+                            "text".into(),
+                            event_value
+                                .pointer("/item/text")
+                                .cloned()
+                                .unwrap_or_else(|| json!("")),
+                        ),
+                        ("attachments".into(), Value::Null),
+                        ("role".into(), json!("assistant")),
+                        ("turnRequest".into(), Value::Null),
+                    ]);
+                }
+                _ => return None,
+            }
+        }
+        _ => return None,
+    }
+    Some(base)
+}
+
+async fn thread_timeline(
+    State(state): State<AppState>,
+    Path(raw_thread_id): Path<String>,
+    Query(query): Query<ThreadTimelineQuery>,
+) -> Response {
+    let thread_id = match parse_thread_id(&raw_thread_id) {
+        Ok(thread_id) => thread_id,
+        Err(response) => return response,
+    };
+    if state.registry.thread(&thread_id).is_none() {
+        return error_response(
+            StatusCode::NOT_FOUND,
+            format!("thread {thread_id} is not known"),
+        );
+    }
+    let after = match parse_query_sequence(query.after_sequence.as_ref(), "afterSequence") {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+    let before_sequence =
+        match parse_query_sequence(query.before_anchor_seq.as_ref(), "beforeAnchorSeq") {
+            Ok(value) => value,
+            Err(response) => return response,
+        };
+    let segment_limit = match parse_query_sequence(query.segment_limit.as_ref(), "segmentLimit") {
+        Ok(Some(value)) => value.clamp(1, 1_000) as usize,
+        Ok(None) => 100,
+        Err(response) => return response,
+    };
+
+    let entries = match thread_domain_events(&state, &thread_id) {
+        Ok(entries) => entries,
+        Err(response) => return response,
+    };
+    let all_rows = entries
+        .iter()
+        .filter_map(|(_event_id, sequence, created_at_ms, event)| {
+            timeline_row_for_event(&thread_id, *sequence, *created_at_ms, event)
+        })
+        .collect::<Vec<_>>();
+    let before_id_sequence = query.before_anchor_id.as_ref().and_then(|anchor_id| {
+        all_rows.iter().find_map(|row| {
+            (row.get("id").and_then(Value::as_str) == Some(anchor_id.as_str()))
+                .then(|| row.get("sourceSeqStart").and_then(Value::as_u64))
+                .flatten()
+        })
+    });
+    let before = before_sequence.or(before_id_sequence);
+    let mut candidates = all_rows
+        .into_iter()
+        .filter(|row| {
+            let sequence = row
+                .get("sourceSeqEnd")
+                .and_then(Value::as_u64)
+                .unwrap_or_default();
+            after.map_or(true, |value| sequence > value)
+                && before.map_or(true, |value| sequence < value)
+        })
+        .collect::<Vec<_>>();
+    let has_older_rows = candidates.len() > segment_limit;
+    if candidates.len() > segment_limit {
+        let start = candidates.len() - segment_limit;
+        candidates = candidates.split_off(start);
+    }
+    let older_cursor = has_older_rows.then(|| {
+        let first = candidates
+            .first()
+            .expect("limited timeline has a first row");
+        json!({
+            "anchorSeq": first["sourceSeqStart"],
+            "anchorId": first["id"]
+        })
+    });
+    let max_seq = entries
+        .last()
+        .map(|(_, sequence, _, _)| *sequence)
+        .unwrap_or(0);
+    Json(json!({
+        "rows": candidates,
+        "contextBoundarySeq": null,
+        "activePromptMode": null,
+        "activeThinking": null,
+        "activeWorkflows": [],
+        "activeBackgroundCommands": [],
+        "pendingTodos": null,
+        "goal": null,
+        "modelFallback": null,
+        "timelinePage": {
+            "kind": if before.is_some() { "older" } else { "latest" },
+            "segmentLimit": segment_limit,
+            "returnedSegmentCount": candidates.len(),
+            "hasOlderRows": has_older_rows,
+            "olderCursor": older_cursor
+        },
+        "maxSeq": max_seq
+    }))
+    .into_response()
 }
 
 /// A created thread and the event that announced it.
@@ -284,37 +1346,45 @@ async fn post_thread_message(
         Err(error) => return error_response(StatusCode::BAD_REQUEST, error.to_string()),
     };
     let content = request.content;
-    match state.registry.post_message(
-        &thread_id,
-        request.role,
-        content.clone(),
-        loom_relay::now_ms(),
-    ) {
-        Ok(events) => match publish_all(&state, &events) {
-            Ok(published) => {
-                // A user message into an idle thread moves it to `working`.
-                // That is the trigger for dispatch: find a machine and publish a
-                // run to its scope through the relay. If no machine exists the
-                // dispatcher fails the thread on the spot, so the status change
-                // is never left dangling.
-                if published
-                    .iter()
-                    .any(|event| event.event_type == "thread_status_changed")
-                {
-                    if let Some(thread) = state.registry.thread(&thread_id) {
-                        state.dispatch_thread(&thread, &content);
-                    }
-                }
-                Json(PostMessageResponse {
-                    thread_id,
-                    events: published,
-                })
-                .into_response()
-            }
-            Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
-        },
-        Err(error) => command_error_response(error),
+    match append_thread_message(&state, &thread_id, request.role, content) {
+        Ok(published) => Json(PostMessageResponse {
+            thread_id,
+            events: published,
+        })
+        .into_response(),
+        Err(response) => response,
     }
+}
+
+/// Appends a message, publishes its domain events and dispatches a newly
+/// started user turn through the existing relay path.
+#[allow(clippy::result_large_err)]
+fn append_thread_message(
+    state: &AppState,
+    thread_id: &ThreadId,
+    role: MessageRole,
+    content: String,
+) -> Result<Vec<PublishedEvent>, Response> {
+    let events = state
+        .registry
+        .post_message(thread_id, role, content.clone(), loom_relay::now_ms())
+        .map_err(command_error_response)?;
+    let published = publish_all(state, &events)
+        .map_err(|error| error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
+
+    // A user message into an idle thread moves it to `working`. That is the
+    // trigger for dispatch: find a machine and publish a run to its scope
+    // through the relay. If no machine exists the dispatcher fails the thread
+    // on the spot, so the status change is never left dangling.
+    if published
+        .iter()
+        .any(|event| event.event_type == "thread_status_changed")
+    {
+        if let Some(thread) = state.registry.thread(thread_id) {
+            state.dispatch_thread(&thread, &content);
+        }
+    }
+    Ok(published)
 }
 
 /// Provider runs currently dispatched and not yet terminal.
@@ -1182,6 +2252,42 @@ mod tests {
             .unwrap()
     }
 
+    fn assert_b1_response(
+        contract: &loom_contract::Contract,
+        id: &str,
+        method: &str,
+        body: &serde_json::Value,
+    ) {
+        let route = contract
+            .route_by_id(id)
+            .unwrap_or_else(|| panic!("missing contract route {id}"));
+        assert_eq!(route.method, method, "wrong method in contract for {id}");
+        let violations = contract.validate_response(route, 200, body);
+        assert!(
+            violations.is_empty(),
+            "{id} response does not conform: {violations:?}\n{body}"
+        );
+
+        let violations = contract.validate_response(route, 200, &serde_json::Value::Null);
+        assert!(
+            !violations.is_empty(),
+            "{id} response validator accepted a null counterexample"
+        );
+    }
+
+    async fn assert_b1_get(
+        contract: &loom_contract::Contract,
+        app: &Router,
+        id: &str,
+        path: &str,
+    ) -> serde_json::Value {
+        let response = get(app, path).await;
+        assert_eq!(response.status(), StatusCode::OK, "GET {path}");
+        let body = body_json(response).await;
+        assert_b1_response(contract, id, "GET", &body);
+        body
+    }
+
     async fn patch(app: &Router, path: &str, body: serde_json::Value) -> Response {
         app.clone()
             .oneshot(
@@ -1246,6 +2352,166 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn b1_routes_return_contract_conformant_responses() {
+        let state = test_state();
+        let app = router(state.clone());
+        let contract = loom_contract::Contract::load();
+
+        assert_b1_get(
+            &contract,
+            &app,
+            "projects.sidebarBootstrap",
+            "/api/v1/sidebar-bootstrap",
+        )
+        .await;
+        assert_b1_get(&contract, &app, "system.config", "/api/v1/system/config").await;
+        assert_b1_get(
+            &contract,
+            &app,
+            "system.environmentProviders",
+            "/api/v1/system/environment-providers",
+        )
+        .await;
+        assert_b1_get(
+            &contract,
+            &app,
+            "system.executionOptions",
+            "/api/v1/system/execution-options",
+        )
+        .await;
+        assert_b1_get(
+            &contract,
+            &app,
+            "system.providers",
+            "/api/v1/system/providers",
+        )
+        .await;
+        assert_b1_get(
+            &contract,
+            &app,
+            "system.providerStates",
+            "/api/v1/system/providers/state",
+        )
+        .await;
+        assert_b1_get(&contract, &app, "system.version", "/api/v1/system/version").await;
+
+        let created = body_json(
+            post(
+                &app,
+                "/api/v1/threads",
+                serde_json::json!({
+                    "project_id": state.registry.personal_project_id().to_string()
+                }),
+            )
+            .await,
+        )
+        .await;
+        let thread_id = created["thread"]["id"]
+            .as_str()
+            .expect("created thread id")
+            .to_owned();
+
+        assert_b1_get(
+            &contract,
+            &app,
+            "threads.events",
+            &format!("/api/v1/threads/{thread_id}/events"),
+        )
+        .await;
+        assert_b1_get(
+            &contract,
+            &app,
+            "threads.get",
+            &format!("/api/v1/threads/{thread_id}"),
+        )
+        .await;
+        assert_b1_get(
+            &contract,
+            &app,
+            "threads.output",
+            &format!("/api/v1/threads/{thread_id}/output"),
+        )
+        .await;
+
+        let read_path = format!("/api/v1/threads/{thread_id}/read");
+        let response = post(&app, &read_path, serde_json::json!({})).await;
+        assert_eq!(response.status(), StatusCode::OK, "POST {read_path}");
+        let body = body_json(response).await;
+        assert_b1_response(&contract, "threads.read", "POST", &body);
+
+        let send_path = format!("/api/v1/threads/{thread_id}/send");
+        let response = post(
+            &app,
+            &send_path,
+            serde_json::json!({
+                "input": [{ "type": "text", "text": "hello" }],
+                "mode": "start"
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK, "POST {send_path}");
+        let body = body_json(response).await;
+        assert_b1_response(&contract, "threads.send", "POST", &body);
+
+        let events_path = format!("/api/v1/threads/{thread_id}/events");
+        let events_response = get(&app, &events_path).await;
+        assert_eq!(
+            events_response.status(),
+            StatusCode::OK,
+            "GET {events_path}"
+        );
+        let events = body_json(events_response).await;
+        assert!(
+            !events.as_array().expect("thread events array").is_empty(),
+            "a dispatched send should leave a contract ThreadEvent"
+        );
+        let row = &events[0];
+        assert!(row["id"].is_string());
+        assert!(row["scope"].is_object());
+        assert_eq!(row["threadId"], thread_id);
+        assert!(row["seq"].is_number());
+        assert!(row["createdAt"].is_number());
+        assert!(row["type"].is_string());
+        assert!(row["data"].is_object());
+        assert!(row.get("event").is_none());
+
+        let mut inner = row["data"].clone();
+        let inner_object = inner.as_object_mut().expect("event data object");
+        inner_object.insert("threadId".into(), row["threadId"].clone());
+        inner_object.insert("scope".into(), row["scope"].clone());
+        inner_object.insert("type".into(), row["type"].clone());
+        let violations = contract.validate_thread_event(&inner);
+        assert!(
+            violations.is_empty(),
+            "projected ThreadEvent row data is invalid: {violations:?}\n{inner}"
+        );
+
+        assert_b1_get(
+            &contract,
+            &app,
+            "threads.tabs",
+            &format!("/api/v1/threads/{thread_id}/tabs"),
+        )
+        .await;
+        assert_b1_get(
+            &contract,
+            &app,
+            "threads.timeline",
+            &format!("/api/v1/threads/{thread_id}/timeline"),
+        )
+        .await;
+
+        let malformed = get(&app, "/api/v1/threads/not-a-thread").await;
+        assert_eq!(malformed.status(), StatusCode::BAD_REQUEST);
+        let malformed_body = body_json(malformed).await;
+        assert!(contract.validate_error_body(&malformed_body).is_empty());
+        assert!(malformed_body["code"].is_string());
+        assert!(malformed_body["message"].is_string());
+
+        state.shutdown();
+    }
+
+    #[tokio::test]
     async fn publish_stores_an_event_and_returns_its_id() {
         let state = test_state();
         let app = router(state.clone());
@@ -1290,6 +2556,61 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body = body_json(response).await;
+        let contract = loom_contract::Contract::load();
+        assert!(contract.validate_error_body(&body).is_empty());
+        assert_eq!(body["code"], "invalid_request");
+        assert!(body["message"].is_string());
+    }
+
+    #[tokio::test]
+    async fn extractor_failures_use_the_uniform_api_error_body() {
+        let contract = loom_contract::Contract::load();
+        let state = test_state();
+        let app = router(state.clone());
+
+        let malformed_json = app
+            .clone()
+            .oneshot(
+                Request::post("/api/v1/publish")
+                    .header("content-type", "application/json")
+                    .body(Body::from("{\"scope\":"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(malformed_json.status(), StatusCode::BAD_REQUEST);
+        let malformed_json_body = body_json(malformed_json).await;
+        assert!(contract
+            .validate_error_body(&malformed_json_body)
+            .is_empty());
+        assert_eq!(malformed_json_body["code"], "invalid_request");
+
+        let created = body_json(
+            post(
+                &app,
+                "/api/v1/threads",
+                serde_json::json!({
+                    "project_id": state.registry.personal_project_id().to_string()
+                }),
+            )
+            .await,
+        )
+        .await;
+        let thread_id = created["thread"]["id"].as_str().unwrap();
+        let malformed_query = get(
+            &app,
+            &format!("/api/v1/threads/{thread_id}/events?limit=%ZZ"),
+        )
+        .await;
+        assert_eq!(malformed_query.status(), StatusCode::BAD_REQUEST);
+        let malformed_query_body = body_json(malformed_query).await;
+        assert!(contract
+            .validate_error_body(&malformed_query_body)
+            .is_empty());
+        assert_eq!(malformed_query_body["code"], "invalid_request");
+
+        state.shutdown();
     }
 
     #[tokio::test]

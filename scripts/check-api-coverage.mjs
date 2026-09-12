@@ -367,6 +367,10 @@ function validateBatchAssignments(classified, assignments) {
   for (const routeId of assignments.keys()) {
     const route = byId.get(routeId);
     if (!route) throw new Error(`batch references unknown contract route: ${routeId}`);
+    // A batch remains the historical ownership/dependency grouping after one
+    // of its routes lands. Implemented routes move to B0 in the generated
+    // coverage table, but must not make regeneration fail.
+    if (route.status === "已实现") continue;
     if (route.status !== "待实现") {
       throw new Error(`batch references non-pending route: ${routeId} (${route.status})`);
     }
@@ -453,9 +457,9 @@ function generateDocument(classified, sourceRoutes, assignments, manifest) {
 的是 ${markdownCode("POST /api/v1/threads/:id/send")}（${markdownCode("threads.send")}），因此它必须进入兼容实现，已列入 **B1**。
 
 当前 loom 的 ${markdownCode("POST /api/v1/threads/{id}/messages")} 是契约外的旧版参考 UI
-写入端点，${markdownCode("ui/src/main.ts")} 仍在使用它。它不能替代 ${markdownCode("threads.send")}，也不计入覆盖率；在 B1 完成前，bb UI 调用
-${markdownCode("threads.send")} 会得到 404。建议把 B1 的 handler 接到现有线程发送/发布路径，
-后续再决定是否移除或保留参考 UI 的兼容端点，不修改 bb UI 的契约调用。
+写入端点，${markdownCode("ui/src/main.ts")} 仍在使用它。它不能替代 ${markdownCode("threads.send")}，也不计入覆盖率；
+${markdownCode("threads.send")} 已接入同一线程发送/发布路径。后续再决定是否移除或保留参考 UI
+的兼容端点，不修改 bb UI 的契约调用。
 
 ## 批次与依赖
 

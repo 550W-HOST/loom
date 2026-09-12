@@ -22,6 +22,7 @@ serde_json.workspace = true
 tokio = { workspace = true, features = ["fs", "io-util", "signal"] }
 
 [dev-dependencies]
+loom-contract.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
 tokio-tungstenite.workspace = true
 tower = { version = "0.5", features = ["util"] }
