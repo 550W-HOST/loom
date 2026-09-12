@@ -54,6 +54,29 @@ jobs:
       - name: cargo test --workspace
         run: cargo test --workspace --locked
 
+  # The coverage document claims which contract routes loom implements, and
+  # — since W-554 — that an implemented JSON-body route has a request-side
+  # conformance assertion. That claim is a script, not a review habit: run it
+  # rather than trusting a reader to notice a stale row.
+  api-coverage:
+    name: API coverage document is current
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+
+      # Re-reads the contract and the source routes, refuses a stale row, and
+      # fails when an implemented JSON-body route has no `validate_request*`
+      # assertion. Never `--write`: this job must not edit the tree it checks.
+      - name: node scripts/check-api-coverage.mjs
+        run: node scripts/check-api-coverage.mjs
+
   msrv:
     name: MSRV
     runs-on: ubuntu-24.04
