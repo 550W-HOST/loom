@@ -34,7 +34,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::environment::{Environment, EnvironmentStatus};
 use crate::host::{Host, HostStatus};
-use crate::id::{EnvironmentId, HostId, ProjectId, RunId, ThreadId};
+use crate::id::{EnvironmentId, HostId, ProjectId, ThreadId};
 use crate::project::Project;
 use crate::run::RunEvent;
 use crate::scope::DomainScope;
@@ -44,7 +44,7 @@ use crate::thread::{Thread, ThreadMessage, ThreadStatus};
 ///
 /// The `type` tag is stable and dispatched on by clients; adding a variant is
 /// additive, renaming one is not.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum DomainEvent {
     /// A project now exists.
@@ -84,20 +84,23 @@ pub enum DomainEvent {
     },
     /// Something happened during an in-flight provider run.
     ///
-    /// The stream is ordered and always ends in [`RunEvent::Finished`]. See
-    /// [`crate::run`] for why that terminal invariant matters: it is what
-    /// keeps a thread from being stuck in `working` after a provider crash.
+    /// The stream is ordered and always ends in exactly one
+    /// [`ProviderEvent::TurnCompleted`]. See [`crate::run`] for why that
+    /// terminal invariant matters: it is what keeps a thread from being stuck
+    /// in `working` after a provider crash.
+    ///
+    /// The carried [`RunEvent`] is the run envelope (thread, project, run id,
+    /// timestamp) around a bb-contract [`ThreadEvent`](crate::ThreadEvent), so
+    /// a client's projection layer consumes the inner event unchanged.
+    ///
+    /// [`ProviderEvent::TurnCompleted`]: crate::ProviderEvent::TurnCompleted
     ThreadRunEvent {
-        /// The thread the run belongs to.
-        thread_id: ThreadId,
-        /// Its project, so a consumer need not look it up.
-        project_id: ProjectId,
-        /// The run's identity.
-        run_id: RunId,
-        /// Wall-clock milliseconds of the event.
-        at_ms: u64,
-        /// The run fact.
-        event: RunEvent,
+        /// The run envelope and the contract event it carries.
+        ///
+        /// Boxed because a contract event is far larger than any other
+        /// variant's payload; inlining it would inflate every `DomainEvent`.
+        #[serde(flatten)]
+        run: Box<RunEvent>,
     },
     /// A host registered.
     HostRegistered {
@@ -168,10 +171,10 @@ impl DomainEvent {
                 DomainScope::Project(thread.project_id.clone())
             }
             DomainEvent::ThreadStatusChanged { thread_id, .. }
-            | DomainEvent::ThreadMessageAdded { thread_id, .. }
-            | DomainEvent::ThreadRunEvent { thread_id, .. } => {
+            | DomainEvent::ThreadMessageAdded { thread_id, .. } => {
                 DomainScope::Thread(thread_id.clone())
             }
+            DomainEvent::ThreadRunEvent { run } => DomainScope::Thread(run.thread_id.clone()),
             DomainEvent::HostRegistered { host } => DomainScope::Host(host.id.clone()),
             DomainEvent::HostStatusChanged { host_id, .. } => DomainScope::Host(host_id.clone()),
             DomainEvent::EnvironmentCreated { environment } => {
@@ -328,14 +331,13 @@ mod tests {
         let thread_id = ThreadId::mint();
         let project_id = ProjectId::mint();
         let event = DomainEvent::ThreadRunEvent {
-            thread_id: thread_id.clone(),
-            project_id,
-            run_id: crate::id::RunId::mint(),
-            at_ms: 7,
-            event: crate::run::RunEvent::Finished {
-                outcome: crate::run::RunOutcome::Completed,
-                error: None,
-            },
+            run: Box::new(crate::run::RunEvent::completed(
+                thread_id.clone(),
+                project_id,
+                crate::id::RunId::mint(),
+                7,
+                Some("p".into()),
+            )),
         };
         assert_eq!(event.kind(), "thread_run_event");
         assert_eq!(event.scope(), DomainScope::Thread(thread_id));

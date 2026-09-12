@@ -6,40 +6,30 @@
 //! it. A failed run leaves the thread in `error`, which a retry turns into a
 //! *new* run with a new [`RunId`](crate::RunId).
 //!
-//! Every run produces a stream of [`RunEvent`]s. They are published to the
-//! thread scope in order, so a replaying client reconstructs the same timeline
-//! a live subscriber saw. The stream always ends in exactly one
-//! [`RunEvent::Finished`]: that is the invariant that keeps a thread from being
-//! stuck in `working` forever after a provider crash, a daemon that vanished
-//! or a timeout.
+//! Every run produces a stream of [`RunEvent`]s. Each carries a
+//! [`ThreadEvent`] — bb's contract event — so a client's projection layer can
+//! consume it unchanged. The scope of every event is derived from the run: a
+//! turn-scoped event uses the run id as its `turnId`, which is what makes a
+//! turn survive a server restart.
+//!
+//! The stream always ends in exactly one [`ProviderEvent::TurnCompleted`]:
+//! that is the invariant that keeps a thread from being stuck in `working`
+//! forever after a provider crash, a daemon that vanished or a timeout.
+//!
+//! [`ProviderEvent::TurnCompleted`]: crate::ProviderEvent::TurnCompleted
 
 use serde::{Deserialize, Serialize};
 
-/// Which provider output stream a chunk belongs to.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum OutputStream {
-    /// The provider's user-visible answer text.
-    Assistant,
-    /// The provider's reasoning/thinking text, when it exposes it.
-    Thinking,
-    /// Diagnostics a provider chose to send inside its protocol.
-    Log,
-}
+use crate::id::{ProjectId, RunId, ThreadId};
+use crate::provider_event::{ProviderEvent, ThreadEvent, ThreadEventScope, TurnError, TurnStatus};
 
-/// A phase of the provider's turn loop.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum TurnPhase {
-    /// Freshly spawned, before the first turn.
-    Started,
-    /// A turn (assistant response plus its tool calls) began.
-    Began,
-    /// A turn completed.
-    Ended,
-}
-
-/// How a run ended. Exactly one of these is always produced.
+/// loom's classification of how a run ended.
+///
+/// Distinct from the contract's [`TurnStatus`]: this is the *control plane's*
+/// verdict (which also covers the failure modes a provider never reports:
+/// a deadline, a stale host, a cancellation), and it is what the thread
+/// lifecycle transition is chosen from. It is mapped onto a contract
+/// `turn/completed.status` when the terminal event is built.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RunOutcome {
@@ -61,6 +51,15 @@ impl RunOutcome {
         matches!(self, RunOutcome::Completed)
     }
 
+    /// The contract turn status this outcome maps onto.
+    pub fn turn_status(self) -> TurnStatus {
+        match self {
+            RunOutcome::Completed => TurnStatus::Completed,
+            RunOutcome::Cancelled => TurnStatus::Interrupted,
+            RunOutcome::Failed | RunOutcome::TimedOut | RunOutcome::HostStale => TurnStatus::Failed,
+        }
+    }
+
     /// The stable wire token.
     pub fn as_str(self) -> &'static str {
         match self {
@@ -73,170 +72,301 @@ impl RunOutcome {
     }
 }
 
-/// Severity of a [`RunEvent::Notice`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum NoticeLevel {
-    /// Informational.
-    Info,
-    /// Worth showing, not fatal.
-    Warning,
-    /// Fatal or near-fatal.
-    Error,
-}
-
 /// One fact about an in-flight provider run.
 ///
-/// The variant set is the execution plane's vocabulary. It is intentionally
-/// narrow: anything a provider CLI emits that is not one of these is provider
-/// noise, and the daemon's stdout guard keeps noise out of the stream rather
-/// than inventing an event for it.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum RunEvent {
-    /// The provider process is up and the run has started.
-    Started {
-        /// The provider name, as the control plane asked for it.
-        provider: String,
-    },
-    /// A chunk of streamed provider output.
-    Output {
-        /// Which stream the chunk belongs to.
-        stream: OutputStream,
-        /// The chunk text.
-        text: String,
-    },
-    /// The provider began a tool call.
-    ToolCall {
-        /// Provider-assigned call id, used to match the result.
-        tool_call_id: String,
-        /// Tool name.
-        name: String,
-        /// Tool arguments, opaque to loom.
-        args: serde_json::Value,
-    },
-    /// A tool call finished.
-    ToolResult {
-        /// The call id this result answers.
-        tool_call_id: String,
-        /// Tool name.
-        name: String,
-        /// Whether the tool reported failure.
-        ok: bool,
-        /// The result text.
-        output: String,
-    },
-    /// The provider moved through a turn boundary.
-    Turn {
-        /// Which boundary.
-        phase: TurnPhase,
-    },
-    /// Anything the provider reported that is not output, tool or turn.
-    Notice {
-        /// Severity.
-        level: NoticeLevel,
-        /// The message, verbatim.
-        message: String,
-    },
-    /// The run stopped. Always the last event of a run.
-    Finished {
-        /// How it ended.
-        outcome: RunOutcome,
-        /// A human-readable reason, when the outcome is not `completed`.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        error: Option<String>,
-    },
+/// The payload is a full [`ThreadEvent`] (bb's contract shape): it carries
+/// `threadId`, `scope` and the discriminated body in one flattened object. The
+/// surrounding fields are loom's envelope, adding the identity a consumer
+/// needs without re-deriving it from the log.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct RunEvent {
+    /// The thread the run belongs to.
+    #[serde(rename = "thread_id")]
+    pub thread_id: ThreadId,
+    /// Its project, so a consumer need not look it up.
+    #[serde(rename = "project_id")]
+    pub project_id: ProjectId,
+    /// The run's identity. Also the turn id of every turn-scoped event.
+    #[serde(rename = "run_id")]
+    pub run_id: RunId,
+    /// Wall-clock milliseconds of the event.
+    #[serde(rename = "at_ms")]
+    pub at_ms: u64,
+    /// loom's control-plane verdict, present only on the terminal event.
+    ///
+    /// This is *not* part of bb's contract event: it is loom's own envelope
+    /// field, and it is what distinguishes a deadline, a stale host and a
+    /// cancellation, which the contract folds into a single `turn/completed`
+    /// status. The inner [`ThreadEvent`] stays exactly contract-shaped, so a
+    /// projection consuming `event` is unaffected.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<RunOutcome>,
+    /// The contract event.
+    pub event: ThreadEvent,
 }
 
 impl RunEvent {
-    /// The stable `type` tag, matching the serialized form.
-    pub fn kind(&self) -> &'static str {
-        match self {
-            RunEvent::Started { .. } => "started",
-            RunEvent::Output { .. } => "output",
-            RunEvent::ToolCall { .. } => "tool_call",
-            RunEvent::ToolResult { .. } => "tool_result",
-            RunEvent::Turn { .. } => "turn",
-            RunEvent::Notice { .. } => "notice",
-            RunEvent::Finished { .. } => "finished",
+    /// Builds a run event, choosing the scope from the event type's policy.
+    pub fn new(
+        thread_id: ThreadId,
+        project_id: ProjectId,
+        run_id: RunId,
+        at_ms: u64,
+        event: ProviderEvent,
+    ) -> Self {
+        let scope = match event.kind() {
+            kind if ProviderEvent::is_thread_scoped(kind) => ThreadEventScope::Thread,
+            _ => ThreadEventScope::turn(&run_id),
+        };
+        Self {
+            thread_id: thread_id.clone(),
+            project_id,
+            run_id,
+            at_ms,
+            outcome: None,
+            event: ThreadEvent::new(thread_id, scope, event),
         }
     }
 
+    /// The stable `type` tag of the inner event, matching the serialized form.
+    pub fn kind(&self) -> &'static str {
+        self.event.kind()
+    }
+
     /// Whether this event terminates the run.
+    ///
+    /// The single terminal event is `turn/completed`.
     pub fn is_terminal(&self) -> bool {
-        matches!(self, RunEvent::Finished { .. })
+        self.event.is_terminal()
+    }
+
+    /// The terminal status, when this is the terminal event.
+    pub fn terminal_status(&self) -> Option<TurnStatus> {
+        match &self.event.body {
+            ProviderEvent::TurnCompleted { status, .. } => Some(*status),
+            _ => None,
+        }
+    }
+
+    /// The failure message of a terminal event, when it carries one.
+    pub fn terminal_error(&self) -> Option<&str> {
+        match &self.event.body {
+            ProviderEvent::TurnCompleted { error, .. } => {
+                error.as_ref().map(|e| e.message.as_str())
+            }
+            _ => None,
+        }
+    }
+
+    /// The provider's thread/session id, when the event carries one.
+    pub fn provider_thread_id(&self) -> Option<&str> {
+        self.event.provider_thread_id()
+    }
+
+    /// Builds the terminal `turn/completed` event for a run.
+    pub fn completed(
+        thread_id: ThreadId,
+        project_id: ProjectId,
+        run_id: RunId,
+        at_ms: u64,
+        provider_thread_id: Option<String>,
+    ) -> Self {
+        Self::terminal(
+            thread_id,
+            project_id,
+            run_id,
+            at_ms,
+            RunOutcome::Completed,
+            ProviderEvent::TurnCompleted {
+                provider_thread_id,
+                status: TurnStatus::Completed,
+                error: None,
+                provider_checkpoint_id: None,
+            },
+        )
+    }
+
+    /// Builds a terminal `turn/completed` failure for a run.
+    pub fn failed(
+        thread_id: ThreadId,
+        project_id: ProjectId,
+        run_id: RunId,
+        at_ms: u64,
+        status: TurnStatus,
+        message: impl Into<String>,
+    ) -> Self {
+        let outcome = match status {
+            TurnStatus::Interrupted => RunOutcome::Cancelled,
+            TurnStatus::Failed | TurnStatus::Completed => RunOutcome::Failed,
+        };
+        Self::terminal(
+            thread_id,
+            project_id,
+            run_id,
+            at_ms,
+            outcome,
+            ProviderEvent::TurnCompleted {
+                provider_thread_id: None,
+                status,
+                error: Some(TurnError {
+                    message: message.into(),
+                }),
+                provider_checkpoint_id: None,
+            },
+        )
+    }
+
+    /// Builds a terminal event from an explicit loom outcome.
+    ///
+    /// The outcome and the contract status are derived from each other here,
+    /// so the two can never disagree on the wire.
+    pub fn terminal(
+        thread_id: ThreadId,
+        project_id: ProjectId,
+        run_id: RunId,
+        at_ms: u64,
+        outcome: RunOutcome,
+        event: ProviderEvent,
+    ) -> Self {
+        debug_assert!(event.is_terminal());
+        let mut event = Self::new(thread_id, project_id, run_id, at_ms, event);
+        event.outcome = Some(outcome);
+        event
+    }
+}
+
+impl ProviderEvent {
+    /// Whether `kind` is a thread-scoped contract type.
+    ///
+    /// These are the types whose facts outlive the turn that produced them
+    /// (background tasks, delegations), or are thread metadata rather than
+    /// transcript (identity, name, goal, rate limits, resolved environment).
+    pub fn is_thread_scoped(kind: &str) -> bool {
+        matches!(
+            kind,
+            "thread/started"
+                | "thread/identity"
+                | "thread/name/updated"
+                | "thread/goal/updated"
+                | "thread/goal/cleared"
+                | "item/backgroundTask/progress"
+                | "item/backgroundTask/completed"
+                | "item/delegation/progress"
+                | "item/delegation/completed"
+                | "provider/rateLimits/updated"
+                | "provider.env-resolved"
+                | "thread/extensionState/updated"
+        )
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::provider_event::{ProviderEventType, ThreadEventType};
 
-    #[test]
-    fn every_event_serializes_with_its_type_tag() {
-        let events = [
-            RunEvent::Started {
-                provider: "pi".into(),
-            },
-            RunEvent::Output {
-                stream: OutputStream::Assistant,
-                text: "hi".into(),
-            },
-            RunEvent::ToolCall {
-                tool_call_id: "c1".into(),
-                name: "bash".into(),
-                args: serde_json::json!({"command": "ls"}),
-            },
-            RunEvent::ToolResult {
-                tool_call_id: "c1".into(),
-                name: "bash".into(),
-                ok: true,
-                output: ".".into(),
-            },
-            RunEvent::Turn {
-                phase: TurnPhase::Ended,
-            },
-            RunEvent::Notice {
-                level: NoticeLevel::Warning,
-                message: "heads up".into(),
-            },
-            RunEvent::Finished {
-                outcome: RunOutcome::Completed,
-                error: None,
-            },
-        ];
-        for event in events {
-            assert_eq!(serde_json::to_value(&event).unwrap()["type"], event.kind());
-        }
+    fn ids() -> (ThreadId, ProjectId, RunId) {
+        (ThreadId::mint(), ProjectId::mint(), RunId::mint())
     }
 
     #[test]
-    fn a_terminal_event_is_the_thenable_one() {
-        assert!(!RunEvent::Started {
-            provider: "pi".into()
-        }
-        .is_terminal());
-        assert!(RunEvent::Finished {
-            outcome: RunOutcome::Failed,
-            error: Some("boom".into())
-        }
-        .is_terminal());
+    fn a_turn_scoped_event_uses_the_run_id_as_its_turn() {
+        let (thread_id, project_id, run_id) = ids();
+        let event = RunEvent::new(
+            thread_id.clone(),
+            project_id,
+            run_id.clone(),
+            7,
+            ProviderEvent::TurnStarted {
+                provider_thread_id: "p".into(),
+                parent_tool_call_id: None,
+            },
+        );
+        let value = serde_json::to_value(&event).unwrap();
+        assert_eq!(value["event"]["type"], "turn/started");
+        assert_eq!(value["event"]["scope"]["kind"], "turn");
+        assert_eq!(value["event"]["scope"]["turnId"], run_id.to_string());
+        assert_eq!(value["event"]["threadId"], thread_id.to_string());
+        assert_eq!(value["at_ms"], 7);
     }
 
     #[test]
-    fn an_optional_error_is_omitted_when_absent() {
-        let value = serde_json::to_value(RunEvent::Finished {
-            outcome: RunOutcome::Completed,
-            error: None,
-        })
-        .unwrap();
-        assert!(value.get("error").is_none());
+    fn a_thread_scoped_event_uses_thread_scope() {
+        let (thread_id, project_id, run_id) = ids();
+        let event = RunEvent::new(
+            thread_id,
+            project_id,
+            run_id,
+            7,
+            ProviderEvent::ThreadCompacted {
+                provider_thread_id: "p".into(),
+            },
+        );
+        // `thread/compacted` is turn-scoped in the contract.
+        assert_eq!(
+            serde_json::to_value(&event).unwrap()["event"]["scope"]["kind"],
+            "turn"
+        );
 
-        let value = serde_json::to_value(RunEvent::Finished {
-            outcome: RunOutcome::Failed,
-            error: Some("boom".into()),
-        })
-        .unwrap();
-        assert_eq!(value["error"], "boom");
+        let (thread_id, project_id, run_id) = ids();
+        let background = RunEvent::new(
+            thread_id,
+            project_id,
+            run_id,
+            7,
+            ProviderEvent::ThreadGoalCleared {
+                provider_thread_id: "p".into(),
+            },
+        );
+        assert_eq!(
+            serde_json::to_value(&background).unwrap()["event"]["scope"]["kind"],
+            "thread"
+        );
+    }
+
+    #[test]
+    fn terminal_is_turn_completed_and_carries_the_status() {
+        let (thread_id, project_id, run_id) = ids();
+        let done = RunEvent::completed(
+            thread_id.clone(),
+            project_id.clone(),
+            run_id.clone(),
+            1,
+            Some("p".into()),
+        );
+        assert!(done.is_terminal());
+        assert_eq!(done.terminal_status(), Some(TurnStatus::Completed));
+        assert_eq!(done.terminal_error(), None);
+
+        let failed = RunEvent::failed(
+            thread_id,
+            project_id,
+            run_id,
+            2,
+            TurnStatus::Interrupted,
+            "cancelled",
+        );
+        assert!(failed.is_terminal());
+        assert_eq!(failed.terminal_status(), Some(TurnStatus::Interrupted));
+        assert_eq!(failed.terminal_error(), Some("cancelled"));
+    }
+
+    #[test]
+    fn the_thread_scope_set_matches_the_types_that_need_it() {
+        // Every provider type must be classifiable, and the thread-scoped set
+        // must be a strict subset (turn chronology is the default).
+        let thread_scoped = ProviderEventType::ALL
+            .iter()
+            .filter(|t| ProviderEvent::is_thread_scoped(t.as_str()))
+            .count();
+        assert!(thread_scoped > 0);
+        assert!(thread_scoped < ProviderEventType::ALL.len());
+
+        for event_type in ThreadEventType::ALL {
+            if let ThreadEventType::Provider(provider) = event_type {
+                // Classifying is total over the provider union.
+                let _ = ProviderEvent::is_thread_scoped(provider.as_str());
+            }
+        }
     }
 }

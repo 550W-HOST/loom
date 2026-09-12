@@ -17,8 +17,8 @@ use std::sync::{Mutex, MutexGuard};
 
 use loom_domain::{
     DomainError, DomainEvent, Environment, EnvironmentId, EnvironmentKind, EnvironmentStatus, Host,
-    HostId, MessageRole, NewThread, Project, ProjectId, ProjectKind, RunEvent, RunId, Thread,
-    ThreadId, ThreadStatus, ThreadTrigger,
+    HostId, MessageRole, NewThread, Project, ProjectId, ProjectKind, RunId, Thread, ThreadId,
+    ThreadStatus, ThreadTrigger,
 };
 use serde::{Deserialize, Serialize};
 
@@ -511,19 +511,14 @@ impl DomainRegistry {
             }
             // Messages are the log's business; the registry holds no timeline.
             DomainEvent::ThreadMessageAdded { .. } => {}
-            DomainEvent::ThreadRunEvent {
-                thread_id,
-                run_id,
-                at_ms,
-                event,
-                ..
-            } => {
-                if let Some(thread) = inner.threads.get_mut(thread_id) {
-                    thread.active_run_id = match event {
-                        RunEvent::Finished { .. } => None,
-                        _ => Some(run_id.clone()),
+            DomainEvent::ThreadRunEvent { run } => {
+                if let Some(thread) = inner.threads.get_mut(&run.thread_id) {
+                    thread.active_run_id = if run.event.is_terminal() {
+                        None
+                    } else {
+                        Some(run.run_id.clone())
                     };
-                    thread.updated_at_ms = *at_ms;
+                    thread.updated_at_ms = run.at_ms;
                 }
             }
             DomainEvent::HostRegistered { host } => {

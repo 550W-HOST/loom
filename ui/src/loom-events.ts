@@ -1,5 +1,6 @@
 import {
   encodeClientTurnRequestIdNumber,
+  threadEventSchema,
   threadScope,
   turnScope,
 } from "@bb/domain";
@@ -214,6 +215,39 @@ function addRunCompleted(
   );
 }
 
+function adaptContractEvent(
+  rows: ThreadEventRow[],
+  frame: RelayEventFrame,
+  value: Record<string, unknown>,
+  sequence: { value: number },
+): boolean {
+  const parsed = threadEventSchema.safeParse(value);
+  if (!parsed.success) return false;
+
+  const { type, threadId, scope, ...data } = parsed.data;
+  addRow(
+    rows,
+    frame,
+    threadId,
+    sequence,
+    type,
+    scope,
+    data as Record<string, unknown>,
+    "contract-event",
+  );
+  return true;
+}
+
+const legacyRunEventTypes = new Set([
+  "started",
+  "output",
+  "tool_call",
+  "tool_result",
+  "turn",
+  "notice",
+  "finished",
+]);
+
 function adaptMessage(
   rows: ThreadEventRow[],
   frame: RelayEventFrame,
@@ -308,6 +342,12 @@ function adaptRunEvent(
   const runType = stringField(run, "type");
   if (!runId || !run || !runType) {
     addFallback(rows, frame, threadId, sequence, "thread_run_event", frame.payload);
+    return;
+  }
+
+  if (adaptContractEvent(rows, frame, run, sequence)) return;
+  if (!legacyRunEventTypes.has(runType)) {
+    addFallback(rows, frame, threadId, sequence, runType, frame.payload);
     return;
   }
 

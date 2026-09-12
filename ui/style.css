@@ -390,6 +390,23 @@ body {
   color: var(--muted);
 }
 
+.entry--run,
+.entry--notice {
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.entry--run--assistant .entry__body {
+  background: var(--panel);
+  color: var(--text);
+}
+
+.entry--run--thinking .entry__body {
+  background: transparent;
+  color: var(--muted);
+  font-style: italic;
+}
+
 .entry--status .entry__body,
 .entry--tool .entry__body,
 .entry--notice .entry__body {

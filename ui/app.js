@@ -31889,6 +31889,31 @@ function addRunCompleted(rows, frame, threadId, runId, sequence, status, error62
     "turn-completed"
   );
 }
+function adaptContractEvent(rows, frame, value, sequence) {
+  const parsed = threadEventSchema.safeParse(value);
+  if (!parsed.success) return false;
+  const { type, threadId, scope, ...data } = parsed.data;
+  addRow(
+    rows,
+    frame,
+    threadId,
+    sequence,
+    type,
+    scope,
+    data,
+    "contract-event"
+  );
+  return true;
+}
+var legacyRunEventTypes = /* @__PURE__ */ new Set([
+  "started",
+  "output",
+  "tool_call",
+  "tool_result",
+  "turn",
+  "notice",
+  "finished"
+]);
 function adaptMessage(rows, frame, event, threadId, sequence, state) {
   const message = recordField(event, "message");
   const content = stringField(message, "content");
@@ -31968,6 +31993,11 @@ function adaptRunEvent(rows, frame, event, threadId, sequence, state) {
   const runType = stringField(run, "type");
   if (!runId || !run || !runType) {
     addFallback(rows, frame, threadId, sequence, "thread_run_event", frame.payload);
+    return;
+  }
+  if (adaptContractEvent(rows, frame, run, sequence)) return;
+  if (!legacyRunEventTypes.has(runType)) {
+    addFallback(rows, frame, threadId, sequence, runType, frame.payload);
     return;
   }
   const turnId = runTurnId(runId);

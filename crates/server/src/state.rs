@@ -499,14 +499,14 @@ impl AppState {
             return false;
         }
         let event = DomainEvent::ThreadRunEvent {
-            thread_id: thread_id.clone(),
-            project_id: project_id.clone(),
-            run_id: run_id.clone(),
-            at_ms: now,
-            event: RunEvent::Finished {
-                outcome: loom_domain::RunOutcome::Failed,
-                error: Some("server restarted while the run was in flight".into()),
-            },
+            run: Box::new(RunEvent::failed(
+                thread_id.clone(),
+                project_id.clone(),
+                run_id.clone(),
+                now,
+                loom_domain::RunOutcome::Failed.turn_status(),
+                "server restarted while the run was in flight",
+            )),
         };
         let _ = self.publish_domain_event(&event);
         let _ = self.registry.clear_thread_run(thread_id, now);

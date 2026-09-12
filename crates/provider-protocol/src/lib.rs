@@ -178,14 +178,12 @@ pub struct EnvironmentProvisionReport {
 ///
 /// `host_id` is what lets the server reject a report for a run this connection
 /// is not allowed to speak for; it must match the host the socket enrolled as.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// The [`RunEvent`] already carries the run and thread identity (and the
+/// bb-contract event), so those are not repeated here.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ProviderReport {
     /// The host making the report.
     pub host_id: HostId,
-    /// The run being reported on.
-    pub run_id: RunId,
-    /// The thread, repeated so a mismatched report is detectable.
-    pub thread_id: ThreadId,
     /// What happened.
     pub event: RunEvent,
 }
@@ -231,7 +229,7 @@ pub fn is_protocol_frame(line: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use loom_domain::{NoticeLevel, RunEvent, RunOutcome};
+    use loom_domain::RunEvent;
 
     fn sample_dispatch() -> RunDispatch {
         RunDispatch {
@@ -260,12 +258,18 @@ mod tests {
     fn a_report_round_trips() {
         let report = ProviderReport {
             host_id: HostId::mint(),
-            run_id: RunId::mint(),
-            thread_id: ThreadId::mint(),
-            event: RunEvent::Notice {
-                level: NoticeLevel::Warning,
-                message: "careful".into(),
-            },
+            event: RunEvent::new(
+                ThreadId::mint(),
+                ProjectId::mint(),
+                RunId::mint(),
+                1,
+                loom_domain::ProviderEvent::ProviderWarning {
+                    provider_thread_id: "p".into(),
+                    category: loom_domain::ProviderWarningCategory::General,
+                    summary: Some("careful".into()),
+                    details: None,
+                },
+            ),
         };
         let encoded = serde_json::to_string(&report).unwrap();
         assert_eq!(
@@ -362,15 +366,18 @@ mod tests {
     fn a_finished_report_carries_the_outcome() {
         let report = ProviderReport {
             host_id: HostId::mint(),
-            run_id: RunId::mint(),
-            thread_id: ThreadId::mint(),
-            event: RunEvent::Finished {
-                outcome: RunOutcome::Failed,
-                error: Some("exit 1".into()),
-            },
+            event: RunEvent::failed(
+                ThreadId::mint(),
+                ProjectId::mint(),
+                RunId::mint(),
+                1,
+                loom_domain::TurnStatus::Failed,
+                "exit 1",
+            ),
         };
         let value = serde_json::to_value(&report).unwrap();
-        assert_eq!(value["event"]["type"], "finished");
-        assert_eq!(value["event"]["outcome"], "failed");
+        assert_eq!(value["event"]["event"]["type"], "turn/completed");
+        assert_eq!(value["event"]["event"]["status"], "failed");
+        assert_eq!(value["event"]["event"]["error"]["message"], "exit 1");
     }
 }
