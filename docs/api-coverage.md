@@ -18,7 +18,7 @@
 
 - 契约快照：`fa1f44ebe9e5676004b669e48c99b3c7606466b6`，共 **167 条**路由。
 - 已决策不实现：**18 条**（desktopBrowsers 11 条，skill/CLI skill 7 条）。
-- 当前源码包含 **35 个 `.route` 声明、40 个 HTTP 方法入口**；其中只有 25 个匹配 bb 契约，另有 15 个契约外入口。契约当前没有 plugin/marketplace 路由条目。
+- 当前源码包含 **37 个 `.route` 声明、42 个 HTTP 方法入口**；其中只有 25 个匹配 bb 契约，另有 17 个契约外入口。契约当前没有 plugin/marketplace 路由条目。
 - 有效总数：**149 条**；当前已实现 **25 条**，待实现 **124 条**。
 - 当前有效覆盖率：**25/149（16.8%）**。
 - B0 是现有实现基线；B1-B10 是建议的后续交付批次，每批 14、14、14、14、10、14、14、14、17、13 条，均在 10-20 条范围内。
@@ -92,6 +92,8 @@ bb UI 用契约格式发起写请求时会 422，而 CI 与一致性测试全绿
 - `POST /api/v1/hosts/{id}/heartbeat`
 - `POST /api/v1/hosts/{id}/disconnect`
 - `GET /ws`
+- `GET /install/version`
+- `GET /install/loom-daemon`
 
 其中 `/health`, `/ws`, `/api/v1/publish` 和 `/api/v1/replay` 属于 loom relay/control 面；
 `/api/v1/version` 与契约的 `/api/v1/system/version` 路径不同；其余是当前

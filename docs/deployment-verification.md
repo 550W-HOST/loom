@@ -256,3 +256,11 @@ Honest boundaries, so the next run knows where to start:
 - **The Node execution plane.** bb's `apps/host-daemon` is not checked in yet;
   `loom-daemon` was verified as the reference implementation of the same
   contract.
+- **Daemon self-update.** This run predates it. The acceptance scenario from
+  [`upgrades.md`](upgrades.md) — *protocol mismatch → update → reconnect → the
+  run is handled correctly* — is `crates/daemon/tests/self_update.rs`, which runs
+  a real daemon process against a fake newer-protocol server and then against a
+  real server, and which CI runs as its own `daemon self-update end to end` job
+  ([`ci.md`](ci.md#the-self-update-job)). What is not covered anywhere yet is
+  systemd actually restarting the new binary after the update exits, for the
+  same reason as `systemd itself` above.

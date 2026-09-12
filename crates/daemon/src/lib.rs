@@ -43,6 +43,8 @@
 //! [`RunDispatch`]: loom_provider_protocol::RunDispatch
 
 pub mod provider;
+pub mod session;
+pub mod update;
 
 use std::collections::{HashSet, VecDeque};
 use std::path::{Path, PathBuf};
@@ -100,6 +102,18 @@ pub enum DaemonError {
     WebSocket(String),
     /// The server sent a frame this daemon could not use.
     Protocol(String),
+    /// The server announced a protocol version this build cannot speak.
+    ///
+    /// Kept apart from the general [`DaemonError::Protocol`] because it is the
+    /// one protocol failure with an automatic remedy: the reconnect loop reads
+    /// the version out of it and fetches the matching daemon
+    /// ([`crate::update`]).
+    ProtocolMismatch {
+        /// The version the server announced.
+        server_protocol_version: u32,
+        /// The version this binary speaks.
+        local_protocol_version: u32,
+    },
 }
 
 impl std::fmt::Display for DaemonError {
@@ -107,6 +121,33 @@ impl std::fmt::Display for DaemonError {
         match self {
             DaemonError::WebSocket(message) => write!(f, "websocket: {message}"),
             DaemonError::Protocol(message) => write!(f, "protocol: {message}"),
+            DaemonError::ProtocolMismatch {
+                server_protocol_version,
+                local_protocol_version,
+            } => write!(
+                f,
+                "server speaks protocol version {server_protocol_version}, \
+                 this daemon speaks {local_protocol_version}; this daemon must be updated \
+                 (upgrade server and daemon together, or let the daemon self-update)"
+            ),
+        }
+    }
+}
+
+impl DaemonError {
+    /// The protocol version the peer announced, for a version refusal.
+    ///
+    /// This is the one piece of information the reconnect loop needs out of a
+    /// failed connection: it is what the update is requested against, so the
+    /// binary fetched is for exactly the version the server announced rather
+    /// than for a re-read of it that could have moved.
+    pub fn mismatched_protocol_version(&self) -> Option<u32> {
+        match self {
+            DaemonError::ProtocolMismatch {
+                server_protocol_version,
+                ..
+            } => Some(*server_protocol_version),
+            _ => None,
         }
     }
 }
@@ -131,15 +172,21 @@ impl From<serde_json::Error> for DaemonError {
 /// [`loom_server::PROTOCOL_VERSION`]: it is the wire contract, not a marketing
 /// version. A mixed deployment is rejected here, at the first frame, rather
 /// than misbehaving mid-run. See `docs/upgrades.md`.
+///
+/// A newer server is exactly the case [`crate::update`] handles: the reconnect
+/// loop reads the version out of the error, asks the same server for the
+/// matching binary, installs it and restarts. Keeping the refusal here —
+/// before `enroll`, before a single dispatch — is what makes an update safe to
+/// perform: no run is in flight on a connection that never enrolled.
 pub fn ensure_compatible_protocol(server_protocol_version: u32) -> Result<(), DaemonError> {
     let local = loom_server::PROTOCOL_VERSION;
     if server_protocol_version == local {
         Ok(())
     } else {
-        Err(DaemonError::Protocol(format!(
-            "server speaks protocol version {server_protocol_version}, \
-             this daemon speaks {local}; upgrade server and daemon together"
-        )))
+        Err(DaemonError::ProtocolMismatch {
+            server_protocol_version,
+            local_protocol_version: local,
+        })
     }
 }
 
@@ -174,12 +221,38 @@ pub struct DaemonConfig {
     pub resume_cursor: Option<EventId>,
     /// Maximum frames to request in the reconnect replay.
     pub replay_limit: usize,
+    /// How the daemon reacts to a server whose protocol does not match.
+    ///
+    /// [`crate::update::UpdateConfig`] carries "allowed at all", the install
+    /// path and the backoff schedule. The reconnect loop is the only party that
+    /// uses it, and it is what turns the old hard refusal into "fetch the
+    /// matching binary and restart".
+    pub update: crate::update::UpdateConfig,
 }
 
 impl DaemonConfig {
     /// A configuration with the default heartbeat interval and no provider
     /// override.
+    ///
+    /// The update configuration defaults to "enabled, install over the running
+    /// executable, no persisted state", so a daemon started with no flags at
+    /// all still follows a newer server. `UpdateConfig::for_current_binary`
+    /// reports the one machine-level failure it can have (a running executable
+    /// that cannot be resolved); when it does, self-update is turned off loudly
+    /// rather than left half-configured.
     pub fn new(server_url: impl Into<String>, name: impl Into<String>) -> Self {
+        let update =
+            crate::update::UpdateConfig::for_current_binary(true, None).unwrap_or_else(|error| {
+                eprintln!("loom-daemon: self-update disabled: {error}");
+                crate::update::UpdateConfig {
+                    enabled: false,
+                    install_path: PathBuf::new(),
+                    state_dir: None,
+                    target: loom_server::TARGET.to_owned(),
+                    initial_backoff: crate::update::DEFAULT_INITIAL_BACKOFF,
+                    max_backoff: crate::update::DEFAULT_MAX_BACKOFF,
+                }
+            });
         Self {
             server_url: server_url.into(),
             name: name.into(),
@@ -191,6 +264,7 @@ impl DaemonConfig {
             environment_root: default_environment_root(),
             resume_cursor: None,
             replay_limit: 500,
+            update,
         }
     }
 

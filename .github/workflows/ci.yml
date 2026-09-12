@@ -280,3 +280,40 @@ jobs:
       - name: cargo test -p loom-daemon --test provider_e2e -- --ignored
         if: steps.pi.outputs.configured == 'true'
         run: cargo test -p loom-daemon --test provider_e2e --locked -- --ignored
+
+  # The daemon's self-update, end to end: a real daemon process, a fake server
+  # that speaks a newer protocol, a real install over the running executable,
+  # and the reinstalled binary running a real turn. `#[ignore]`d because it
+  # executes real binaries and binds real sockets; unlike the `pi` job it needs
+  # nothing external — the artifact it serves is the binary this job just built
+  # — so it is allowed to fail the build.
+  #
+  # It needs `ui` for the same reason as `checks`: the daemon depends on
+  # loom-server, so this job embeds the bundle too.
+  self-update:
+    name: daemon self-update end to end
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    needs: ui
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install the toolchain pinned by rust-toolchain.toml
+        run: |
+          rustup toolchain install
+          rustup show active-toolchain
+
+      - name: Cache cargo registry and target
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          prefix-key: self-update
+
+      # `CARGO_BIN_EXE_loom-daemon` is what the test runs, so the binary has to
+      # be built before the ignored test is invoked — `cargo test --test` builds
+      # the test target but not necessarily the binary it points at.
+      - name: cargo build -p loom-daemon -p loom-server
+        run: cargo build -p loom-daemon -p loom-server --locked
+
+      - name: cargo test -p loom-daemon --test self_update
+        run: cargo test -p loom-daemon --test self_update --locked -- --ignored --test-threads=1

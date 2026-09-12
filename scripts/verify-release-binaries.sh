@@ -306,6 +306,54 @@ api() {
 # terminal.
 body() { head -c 400 "$1" | tr -d '\n'; }
 
+# Daemon self-update (docs/upgrades.md). The two `/install/*` routes are what a
+# daemon uses to follow a server whose protocol changed, so a release has to
+# prove them on its own artifacts: the binary served, and the digest served with
+# it, must both be `loom-daemon` from this build directory. The server was
+# started as `$bin_dir/loom-server`, so `$bin_dir` is the artifact directory by
+# default — which is the arrangement `deploy/install.sh` produces and the one
+# this is here to hold true.
+api GET /install/version "$tmp/install-version.json"
+served_protocol="$(jq -r '.protocolVersion' "$tmp/install-version.json")"
+[[ "$served_protocol" == "$release_protocol" ]] ||
+  die "/install/version reports protocol $served_protocol, but --version reports $release_protocol"
+note "/install/version ok (protocol $served_protocol)"
+
+served_digest=""
+curl -fsS -D "$tmp/artifact.headers" -o "$tmp/loom-daemon.served" \
+  "$base/install/loom-daemon?target=$release_target" ||
+  die "GET /install/loom-daemon failed"
+# Header names are case-insensitive; curl writes them as sent, so the lookup is
+# case-folded rather than trusting one spelling.
+served_digest="$(tr -d '\r' <"$tmp/artifact.headers" |
+  sed -n 's/^[Xx]-[Ll]oom-[Aa]rtifact-[Ss]ha256: *//p' | head -n 1)"
+[[ -n "$served_digest" ]] || die "the artifact response has no X-Loom-Artifact-Sha256 header"
+[[ "$served_digest" =~ ^[0-9a-f]{64}$ ]] || die "the served digest is not lowercase hex: $served_digest"
+
+# The digest over the bytes the server actually sent, and the digest of the
+# `loom-daemon` in this build directory: both must equal the served header. The
+# second is the one that matters — it proves the server hosted *this release's*
+# daemon and not some other binary that happened to be in the directory.
+downloaded_digest="$(sha256sum "$tmp/loom-daemon.served" | cut -d ' ' -f 1)"
+[[ "$downloaded_digest" == "$served_digest" ]] ||
+  die "the served artifact does not hash to its own header: header $served_digest, body $downloaded_digest"
+on_disk_digest="$(sha256sum "$daemon" | cut -d ' ' -f 1)"
+[[ "$on_disk_digest" == "$served_digest" ]] ||
+  die "the hosted artifact is not this release's loom-daemon: served $served_digest, $daemon is $on_disk_digest"
+note "GET /install/loom-daemon -> 200, $served_digest (matches the built loom-daemon)"
+
+# The conditional request: a daemon that already has this digest sends it back
+# and must get a 304 with no body, which is what keeps a fleet's reconnects from
+# re-downloading megabytes every time.
+conditional_code="$(curl -sS -o "$tmp/not-modified" -w '%{http_code}' \
+  -H "If-None-Match: \"sha256-$served_digest\"" \
+  "$base/install/loom-daemon?target=$release_target")" ||
+  die "the conditional artifact request could not be reached"
+[[ "$conditional_code" == "304" ]] ||
+  die "a conditional artifact request answered $conditional_code, expected 304"
+[[ ! -s "$tmp/not-modified" ]] || die "a 304 carried a body"
+note "GET /install/loom-daemon (If-None-Match) -> 304"
+
 # The daemon and the server refuse to work together unless their protocol
 # versions match, so an enrolled host is that handshake succeeding on real
 # sockets. It enrols before the project write because `projects.create` takes

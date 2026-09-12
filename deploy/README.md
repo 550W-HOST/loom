@@ -114,6 +114,14 @@ name the same tag. The installer detects `x86_64` against `aarch64` itself and
 refuses any machine type the release does not publish; `LOOM_TARGET` overrides
 the detection.
 
+`--release` is for the **server**, and for a daemon with self-update turned off.
+A daemon in the default configuration never needs it: when the server speaks a
+newer protocol the daemon fetches that server's own `loom-daemon`, verifies it
+and restarts itself ([`../docs/upgrades.md`](../docs/upgrades.md) § Daemon
+self-update). `install.sh` puts both binaries in `/usr/local/bin`, which is also
+how the server knows which daemon to host — they are siblings, so an ordinary
+install hosts its own artifact with nothing to configure.
+
 What `--release` does, in order: it downloads `SHA256SUMS`,
 `loom-server-<target>` and `loom-daemon-<target>` into a temporary directory,
 checks each binary against its `SHA256SUMS` line, and only then installs from
@@ -274,7 +282,10 @@ sudo deploy/uninstall.sh server --purge            # also delete the relay log
 Without `--purge` the relay log, the enrolled host id and the replay cursor are
 left in place, so a reinstall resumes the same identity and window instead of
 minting a new host. Reinstalling the same binaries and environment is the
-rollback path in [`../docs/upgrades.md`](../docs/upgrades.md).
+rollback path in [`../docs/upgrades.md`](../docs/upgrades.md). The daemon's two
+self-update state files live in the same data directory and are safe to delete:
+`host-daemon-update-attempt.json` (the backoff counter) and
+`host-artifact.sha256` (the digest the next fetch is conditional on).
 
 ## Verification
 

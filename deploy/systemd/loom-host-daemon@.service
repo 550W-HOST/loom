@@ -37,7 +37,11 @@ ExecStart=/usr/local/bin/loom-daemon
 WorkingDirectory=/var/lib/loom/machines/%i
 
 # A daemon's whole job is to stay attached. It must come back after a crash, a
-# server restart, a network blip and a clean socket close alike.
+# server restart, a network blip and a clean socket close alike. `Restart=always`
+# also covers the daemon's **self-update**: after a successful install it exits 0
+# and this starts the new file. Without a supervisor the daemon simply exits
+# after an update, which is why the unit is the supported shape
+# (docs/upgrades.md § The supervisor is required).
 Restart=always
 RestartSec=5s
 
