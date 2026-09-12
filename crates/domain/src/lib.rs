@@ -59,8 +59,10 @@ pub mod error;
 pub mod event;
 pub mod host;
 pub mod id;
+pub mod interaction;
 pub mod project;
 pub mod provider_event;
+pub mod queue;
 pub mod run;
 pub mod scope;
 pub mod thread;
@@ -71,8 +73,13 @@ pub use event::DomainEvent;
 pub use host::{select_primary_host, Host, HostKind, HostStatus};
 pub use id::{
     is_turn_request_id, mint_turn_request_id, Entity, EnvironmentId, EnvironmentTag, HostId,
-    HostTag, Id, MessageId, MessageTag, ProjectId, ProjectSourceId, ProjectSourceTag, ProjectTag,
-    RunId, RunTag, ThreadId, ThreadTag, UserId, UserTag,
+    HostTag, Id, InteractionId, InteractionTag, MessageId, MessageTag, ProjectId, ProjectSourceId,
+    ProjectSourceTag, ProjectTag, QueuedMessageId, QueuedMessageTag, RunId, RunTag, ThreadId,
+    ThreadTag, UserId, UserTag,
+};
+pub use interaction::{
+    Interaction, InteractionKind, InteractionOrigin, InteractionPayload, InteractionStatus,
+    NewInteraction, Resolution,
 };
 pub use project::{Project, ProjectKind, ProjectSource};
 pub use provider_event::{
@@ -83,6 +90,10 @@ pub use provider_event::{
     ProviderEventError, ProviderEventType, ProviderWarningCategory, SearchMode, ThreadEvent,
     ThreadEventItem, ThreadEventScope, ThreadEventType, ThreadTokenUsage, TokenUsageBreakdown,
     TurnError, TurnStatus, UserContent,
+};
+pub use queue::{
+    NewQueuedMessage, QueuedMessage, QueuedMessageInitiator, QueuedMessagePayload,
+    QueuedMessageStatus, ServiceTier,
 };
 pub use run::{RunEvent, RunOutcome};
 pub use scope::DomainScope;

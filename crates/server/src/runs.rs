@@ -203,6 +203,8 @@ pub struct ReconcileSummary {
     pub stale_runs: usize,
     /// Runs failed because their deadline passed.
     pub timed_out_runs: usize,
+    /// Queued messages that became due and were delivered.
+    pub sent_queued_messages: usize,
 }
 
 /// What a `threads.stop` request found.
@@ -482,6 +484,12 @@ impl AppState {
             summary.timed_out_runs += 1;
         }
 
+        // 4. Queued messages whose time has come. A scheduled message needs no
+        //    other event to become due, so the sweep is what delivers it; a
+        //    message left queued by a crash between a run's terminal event and
+        //    its drain is picked up by the same pass.
+        summary.sent_queued_messages = self.drain_due_queued_messages();
+
         summary
     }
 
@@ -546,6 +554,12 @@ impl AppState {
         {
             let _ = self.publish_domain_event(&change);
         }
+        // A turn that ended cannot still be waiting on an answer, and a thread
+        // that just became idle is exactly when the queue is worth draining.
+        // Both are ordered after the status change so the thread a subscriber
+        // sees is already out of `working` when the queued turn starts.
+        self.cancel_thread_interactions(&record.thread_id, now);
+        self.drain_thread_queue(&record.thread_id);
     }
 
     /// Fails a thread that never got a run started.

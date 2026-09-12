@@ -87,6 +87,18 @@ entity_marker!(
     "Marker type for provider run identifiers."
 );
 entity_marker!(UserTag, "user", "user", "Marker type for user identifiers.");
+entity_marker!(
+    QueuedMessageTag,
+    "qmsg",
+    "queued message",
+    "Marker type for queued-message identifiers."
+);
+entity_marker!(
+    InteractionTag,
+    "intr",
+    "interaction",
+    "Marker type for interaction identifiers."
+);
 
 /// A project id, `proj_…`.
 pub type ProjectId = Id<ProjectTag>;
@@ -110,6 +122,10 @@ pub type RunId = Id<RunTag>;
 /// A user id, `user_…`. Reserved: there is no user entity yet, only the scope
 /// it names.
 pub type UserId = Id<UserTag>;
+/// A queued-message id, `qmsg_…`.
+pub type QueuedMessageId = Id<QueuedMessageTag>;
+/// An interaction id, `intr_…`.
+pub type InteractionId = Id<InteractionTag>;
 
 /// A prefixed identifier for entity kind `T`.
 ///

@@ -195,12 +195,14 @@ decision, not a test waiver:
   frame (loom's own provider capabilities report `supportsSessionRewind:
   false`). Appending the edited text instead would leave both messages in the
   conversation — a different conversation, not an edit.
-- **A scheduled retry (`sendAt` in the future) answers `501
-  not_configured`.** A deferred turn needs the queued-message surface of B3.
-  Running it immediately would ignore the client's schedule and answering
-  `sent` would be a lie. `turnRequestId` is echoed when the client supplies one,
-  and checked against bb's `pattern` by the handler — the contract's validator
-  deliberately does not enforce patterns.
+- **A scheduled retry (`sendAt` in the future) was deferred to B3.** B2
+  answered `501 not_configured` because a deferred turn needs the queued-message
+  surface; **B3 landed that surface, so the route now answers the contract's
+  `delivery: "queued"` branch** (see the B3 section below). This paragraph is
+  kept as the record of why B2 could not implement it.
+- **`threads.retry` no longer refuses a busy thread.** B2 answered `409
+  conflict` for a run in flight; B3 makes it the queued branch, because the
+  contract declares one and B2's refusal was explicitly a placeholder for it.
 - **`threads.stop` cancels on the control plane only.** The stop shares the run
   lifecycle (`finish_run` with `RunOutcome::Cancelled`), so the thread scope
   receives one terminal event and the thread returns to `idle`. The daemon is
@@ -220,6 +222,189 @@ here, because they are shape-complete and only partially sourced:
 `threads.search` walks the threads it holds (no index) and
 `threads.update`'s `model`/`reasoningLevel` are recorded and reported but not
 yet carried into a dispatch, because `ProviderSpec` has no field for them.
+
+## B3: interactions and the queue
+
+Batch B3 (interactions, plan control and queued sending) added the two entity
+kinds the contract requires and fourteen routes over them. The interesting
+decisions are semantic, and each is recorded here because the route alone does
+not show it.
+
+### Two new domains, both durable
+
+A **queued message** and an **interaction** are entity-view rows, not handler
+state. Both are in `RegistrySnapshot`, both publish a `DomainEvent` to the
+thread scope (`thread_queued_message_changed`, `thread_interaction_changed`)
+and both replays in `DomainRegistry::apply_event`, so a restart does not lose
+anything a client can see. The snapshot's two new fields are `#[serde(default)]`,
+which is what lets a snapshot written by an older build load: it simply has no
+queue and no pending interaction, exactly as that build would have described.
+
+Their state machines are small and total, and both are exercised as legal and
+illegal transitions (`crates/domain/src/queue.rs`, `crates/domain/src/
+interaction.rs`, plus the live-registry test in
+`crates/server/tests/b3_conformance.rs`):
+
+```text
+queued message:  queued ──send──▶ sent        (terminal)
+                    │
+                    └──cancel──▶ cancelled   (terminal)
+
+interaction:     pending ──resolve/respond──▶ resolved     (terminal)
+                    │
+                    └──cancel────────────────▶ interrupted  (terminal)
+```
+
+`resolving` is modelled but not entered today: a resolution settles in one step
+because the provider protocol cannot confirm it (see below). The status exists
+anyway, because a client renders it and inventing its meaning later would be the
+breaking change.
+
+### The three interaction verbs are three different operations
+
+* **`respond`** carries an opaque `value` and is stored as a `request_answer`.
+  It only answers a `generic` (or `plugin`) interaction — one whose body loom
+  does not interpret.
+* **`resolve`** carries a **typed** resolution (a permission decision, a set of
+  question answers, a plugin submission, a `request_answer`) and is validated
+  against the interaction's own kind. A decision cannot answer a question; a
+  question's answers cannot answer an approval. A mismatch is `400
+  invalid_request`, not a stored row nothing will read.
+* **`cancel`** settles the interaction as `interrupted` with **no answer**. It
+  is not a denial: a denial is a decision the provider receives, whereas a
+  cancellation is loom giving up on a question the provider will never get an
+  answer to (because the run was stopped, or the daemon went away).
+
+A settled interaction refuses a second answer with `409
+awaiting_user_interaction`, which is a status the contract declares for that
+code. `finish_run_with` settles every interaction a thread still had open when
+its turn ended, so `hasPendingInteraction` in the thread list cannot be stuck.
+
+**Where interactions come from, and what is still missing.** The control plane's
+producer is `AppState::record_interaction`, which is reached from a provider
+report. No such report exists yet: the daemon sees Pi's blocking dialog
+(`extension_ui_request` with `select`/`confirm`/`input`/`editor`) and
+*declines* it, reporting a `provider/warning` instead
+(`crates/daemon/src/provider.rs::observe`). Holding that dialog open and
+bridging the answer back is a **provider-protocol** change — a new frame in each
+direction — and this batch deliberately does not ship a half of it. What the
+batch does guarantee is that the state such a frame would write is already
+durable, already routed and already rejectable: a provider that never asks
+leaves the interaction routes answering the truth (an empty list), not a shell
+success. Documenting the gap here rather than faking a producer is the same
+choice `threads.clearContext` makes below.
+
+### `threads.clearGoal` publishes an event; `threads.clearContext` refuses
+
+loom has no goal entity. A goal is a projection of the thread's own run log: the
+contract's `thread/goal/updated` and `thread/goal/cleared` events are the only
+record, exactly as the reference client's `extractThreadTimelineGoal` treats
+them. `threads.clearGoal` therefore publishes `thread/goal/cleared` and is
+idempotent — the next `threads.timeline` read reports `goal: null`. Nothing was
+added to the entity view, because a stored goal would be a second source of
+truth that could disagree with the log.
+
+`threads.clearContext` answers `501 not_configured`. Clearing a context means
+emptying the **provider's** session memory, and the session lives in the
+execution plane (Pi is launched with `--session-dir`/`--session-id`). A
+server-side "clear" would drop loom's records while the provider carried on
+with the context it still holds, which is the failure the acceptance criteria
+name. The protocol has no frame for it. When it grows one, this is the route
+that changes.
+
+### `threads.cancelPlan` refuses
+
+A plan is the provider's own working state, reported through
+`turn/plan/updated`. Cancelling means telling the provider to stop pursuing it,
+and `loom_provider_protocol` has dispatch, provision and report and nothing
+else. Publishing a "cancelled" plan would change what a client displays while
+the provider kept executing it — a silently-wrong answer — so the route answers
+`501 not_configured` and names `threads.stop` as the operation that does work.
+
+### `threads.eventWait` is a bounded poll with a null timeout
+
+The cursor is the same one `threads.events` uses: the row's `seq`, derived from
+the thread room's replay order, and `afterSeq` is **exclusive**. The relay has
+no "wait for a new frame" primitive and deliberately cannot have one — a
+producer never learns who is subscribed — so the wait is a bounded poll of the
+log every 25 ms.
+
+`waitMs` defaults to **30 s** and is capped at **60 s**: a long poll with no
+ceiling is a connection leak with a friendly name. A timeout answers **`200`
+with a JSON `null`**, which is the contract's declared second branch, not an
+error: a client tells "nothing yet" from "here is what happened" without an
+error path. A match answers the bare `ThreadEventRow` `threads.events` would
+return.
+
+### `threads.timelineTurnSummaryDetails` reuses the timeline's projection
+
+It is a **filtered view of `threads.timeline`**, not a second projection: rows
+are built by the same `timeline_row_for_event`, so a row returned here is
+byte-identical to the same row in the timeline it came from. What differs is the
+selection (a turn's `[sourceSeqStart, sourceSeqEnd]` range) and the paging
+direction — `beforeCursor` walks **backwards**, because a UI expands a collapsed
+turn from its newest summary row towards its oldest. The filter is on source
+sequence rather than on the event's turn scope, because the user message that
+opened the turn is thread-scoped by construction and is exactly the row a
+summary expansion anchors on. `historySnapshot` is always `null`: loom keeps no
+snapshot of a turn's pre-compaction history, and a fabricated one would be worse
+than the null the contract allows.
+
+### Queued sending has two honest outcomes
+
+`threads.sendQueuedMessage`'s `mode` is honoured, not ignored:
+
+| mode | thread idle | thread busy |
+| --- | --- | --- |
+| `auto` | sent | queued (`waitingOn: thread-busy`) |
+| `steer` | sent | `501 not_configured` |
+
+`steer` is refused while busy because steering means injecting input into the
+**running** turn, and `loom_provider_protocol` has no frame for that. Appending
+the text as a second concurrent turn would be a different operation wearing the
+same name. This is the same class of refusal as `threads.compact`.
+
+A send of a message whose `sendAt` is still in the future answers the queued
+branch too — but a **manual** send is authoritative over the schedule (the
+client is asking for it now), while the **automatic** drain respects it. That is
+the difference between `deliver_queued_message(force = true)` and
+`drain_thread_queue`.
+
+### `threads.send`'s modes and `threads.retry`'s queued branch
+
+B3 completes what B2 deferred. `threads.send` now honours `mode`:
+
+| mode | thread idle | thread busy |
+| --- | --- | --- |
+| `start` | sent | `501 not_configured` |
+| `auto` / `queue-if-active` | sent | queued |
+| `steer` / `steer-if-active` | sent | `501 not_configured` |
+
+A future `sendAt` is always a queue entry, never an immediate turn. A
+`threads.retry` of a busy thread, or one with a future `sendAt`, is likewise a
+queued message with a `retry` payload (`retryOfTurnRequestId`, `attempt`,
+`reason`) — the contract's second response branch — instead of B2's `409`. The
+retry is delivered by the same drain as any queued message, which is what makes
+"retry after the current turn" mean what a client would expect.
+
+`attempt` counts the runs the thread's log already shows. It is derived from
+every entry into `working` — a retry issued from `error` and one issued after a
+`stop` differ in their trigger but not in what the client asked for — plus the
+queued-retry rows that have not started yet, so a second queued retry reports
+`2` rather than `1`.
+
+### The queue drains on a terminal run, and on the reconciler
+
+`finish_run_with` calls `drain_thread_queue` after the thread's status change,
+and `reconcile_runs` calls `drain_due_queued_messages`. The first is what makes
+"queue while busy" work at all; the second is the backstop for a `sendAt` that
+arrives while nothing else happens, and for a message left queued by a crash
+between a run's terminal event and the drain.
+
+The drain stops at the first message it cannot send. The queue is ordered, and
+skipping a blocked message to deliver a later one would reorder the conversation
+against the client's arrangement — so exactly one message follows one finished
+run, which is what a queue means.
 
 ## Known limits
 

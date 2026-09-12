@@ -27,9 +27,11 @@ pub mod domain_state;
 pub mod environments;
 pub mod http;
 pub mod hub_actor;
+pub mod interactions;
 pub mod persistence;
 pub mod protocol;
 pub mod pump;
+pub mod queue;
 pub mod runs;
 pub mod state;
 pub mod transport;
@@ -44,9 +46,11 @@ pub use build_info::{version_line, COMMIT, TARGET, VERSION};
 pub use domain_state::{CommandError, DomainRegistry};
 pub use environments::{EnvironmentReportOutcome, ProvisionOutcome};
 pub use hub_actor::{HubCommand, HubHandle};
+pub use interactions::DeliverOutcome;
 pub use persistence::{DomainSnapshot, SnapshotError, SNAPSHOT_FILE};
 pub use protocol::{ClientCommand, ServerMessage};
 pub use pump::{Pump, PumpConfig};
+pub use queue::{DeliveryOutcome, WaitingOn};
 pub use runs::{
     DispatchOutcome, ReconcileSummary, ReportOutcome, RunRecord, RunRegistry, StopOutcome,
 };

@@ -873,7 +873,7 @@ async fn compact_and_edit_message_refuse_instead_of_pretending() {
 }
 
 #[tokio::test]
-async fn retry_redispatches_the_last_prompt_and_refuses_a_busy_thread() {
+async fn retry_redispatches_the_last_prompt_and_queues_while_busy() {
     let fixture = fixture().await;
     let path = format!("/api/v1/threads/{}/retry", fixture.thread_id);
 
@@ -894,13 +894,6 @@ async fn retry_redispatches_the_last_prompt_and_refuses_a_busy_thread() {
     )
     .await;
     assert_eq!(sent.status, 200, "{}", sent.body);
-
-    // The run dispatched by `send` is still in flight, so a retry would be a
-    // second concurrent turn on one thread (bb's "queued" branch is B3).
-    let busy = request(&fixture.addr, "POST", &path, Some(&json!({}))).await;
-    assert_eq!(busy.status, 409, "{}", busy.body);
-    assert_error(409, &busy.body);
-    assert_eq!(busy.body["code"], "conflict");
 
     // Reap the run the way the server's own reconciler would, then retry: the
     // last user prompt is dispatched again through the existing lifecycle.
@@ -930,8 +923,40 @@ async fn retry_redispatches_the_last_prompt_and_refuses_a_busy_thread() {
     assert_eq!(rows.len(), 1, "{}", running.body);
     assert_eq!(rows[0]["id"], fixture.thread_id);
 
-    // A scheduled retry needs the queue loom does not have yet.
-    fixture.state.stop_thread(&thread_id);
+    // B3: a retry of a thread with a run in flight is no longer a `409`. It is
+    // the contract's second response branch — a durable queued message with a
+    // retry payload — because running it now would be a second concurrent turn
+    // and answering `sent` would claim a turn that did not start.
+    let busy = request(
+        &fixture.addr,
+        "POST",
+        &path,
+        Some(&json!({ "reason": "after the current turn" })),
+    )
+    .await;
+    assert_eq!(busy.status, 200, "{}", busy.body);
+    assert_response("threads.retry", 200, &busy.body);
+    assert_eq!(busy.body["delivery"], "queued");
+    assert_eq!(busy.body["attempt"], 2);
+    assert_eq!(busy.body["waitingOn"]["kind"], "thread-busy");
+    let queued_message_id = busy.body["queuedMessageId"].as_str().unwrap().to_owned();
+    assert!(queued_message_id.starts_with("qmsg_"), "{}", busy.body);
+
+    // The row is a real queue entry with the retry payload, not a placeholder.
+    let queued = fixture
+        .get(&format!(
+            "/api/v1/threads/{}/queued-messages",
+            fixture.thread_id
+        ))
+        .await;
+    assert_response("threads.queuedMessages", 200, &queued.body);
+    let rows = queued.body.as_array().unwrap();
+    assert_eq!(rows.len(), 1, "{}", queued.body);
+    assert_eq!(rows[0]["id"], queued_message_id.as_str());
+    assert_eq!(rows[0]["payload"]["kind"], "retry");
+    assert_eq!(rows[0]["payload"]["attempt"], 2);
+
+    // A scheduled retry is the same queued branch, with the time reason.
     let scheduled = request(
         &fixture.addr,
         "POST",
@@ -939,9 +964,10 @@ async fn retry_redispatches_the_last_prompt_and_refuses_a_busy_thread() {
         Some(&json!({ "sendAt": loom_relay::now_ms() + 60_000 })),
     )
     .await;
-    assert_eq!(scheduled.status, 501, "{}", scheduled.body);
-    assert_error(501, &scheduled.body);
-    assert_eq!(scheduled.body["code"], "not_configured");
+    assert_eq!(scheduled.status, 200, "{}", scheduled.body);
+    assert_response("threads.retry", 200, &scheduled.body);
+    assert_eq!(scheduled.body["delivery"], "queued");
+    assert_eq!(scheduled.body["waitingOn"]["kind"], "time");
     fixture.state.shutdown();
 }
 
