@@ -398,6 +398,7 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
+ "loom-contract",
  "loom-domain",
  "loom-provider-protocol",
  "loom-relay",

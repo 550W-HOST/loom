@@ -564,7 +564,7 @@ impl AppState {
 /// A frame only counts when its payload parses as a [`DomainEvent`] whose own
 /// scope is the frame's scope. Run dispatches and any raw producer payloads
 /// share the log, so "is it JSON object with a `type` tag" is not enough.
-fn domain_event_from_envelope(envelope: &loom_relay::Envelope) -> Option<DomainEvent> {
+pub(crate) fn domain_event_from_envelope(envelope: &loom_relay::Envelope) -> Option<DomainEvent> {
     let message: crate::protocol::ServerMessage = serde_json::from_slice(&envelope.payload).ok()?;
     let crate::protocol::ServerMessage::Event { payload, .. } = message else {
         return None;
