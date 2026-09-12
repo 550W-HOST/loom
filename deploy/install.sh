@@ -11,13 +11,22 @@
 # the machine that runs the control plane (a hostname, not a URL). It names the
 # daemon instance and its data directory.
 #
-# The binaries must already exist: the script copies them, it never builds.
-# Build with `cargo build --release` and pass `--from target/release` (the
-# default) or set LOOM_BIN_SOURCE.
+# The script never builds. The binaries come from one of two places:
+#
+#   --release <version>   download loom-server-<target>, loom-daemon-<target>
+#                         and SHA256SUMS from a GitHub Release, verify them,
+#                         then install them
+#   LOOM_BIN_SOURCE       copy them from a local build (default
+#                         target/release), i.e. `cargo build --release` first
+#
+# So an execution machine with no Rust toolchain is one command away from a
+# release artifact, and a machine with a checkout keeps building locally.
 #
 # Environment overrides: LOOM_INSTALL_PREFIX (/usr/local), LOOM_SYSTEMD_DIR
 # (/etc/systemd/system), LOOM_ETC_DIR (/etc/loom), LOOM_STATE_DIR (/var/lib/loom),
-# LOOM_SERVICE_USER (loom), LOOM_BIN_SOURCE (target/release).
+# LOOM_SERVICE_USER (loom), LOOM_BIN_SOURCE (target/release), LOOM_RELEASE_REPO
+# (550W-HOST/loom), LOOM_RELEASE_BASE_URL, LOOM_RELEASE_API_BASE, LOOM_TARGET,
+# GITHUB_TOKEN (for a private repository).
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -27,15 +36,28 @@ ETC_DIR="${LOOM_ETC_DIR:-/etc/loom}"
 STATE_DIR="${LOOM_STATE_DIR:-/var/lib/loom}"
 SERVICE_USER="${LOOM_SERVICE_USER:-loom}"
 BIN_SOURCE="${LOOM_BIN_SOURCE:-target/release}"
+RELEASE=""                                   # --release <version|latest>
+FROM_FLAG=""                                 # --from was given explicitly
+RELEASE_REPO="${LOOM_RELEASE_REPO:-550W-HOST/loom}"
+RELEASE_BASE="${LOOM_RELEASE_BASE_URL:-https://github.com/$RELEASE_REPO/releases}"
+RELEASE_API="${LOOM_RELEASE_API_BASE:-https://api.github.com}"
+RELEASE_TOKEN="${GITHUB_TOKEN:-${GH_TOKEN:-}}"
+STAGING_DIR=""
+
+API_HEADERS=("Accept: application/vnd.github+json")
+if [ -n "$RELEASE_TOKEN" ]; then
+    API_HEADERS+=("Authorization: Bearer $RELEASE_TOKEN")
+fi
 
 usage() {
     cat <<'EOF'
-Usage: install.sh <command> [arguments]
+Usage: install.sh [options] <command> [arguments]
 
 Commands:
   server
-      Install and start the control plane. Requires an already-built
-      loom-server and (unless LOOM_BIND is edited) leaves it on loopback.
+      Install and start the control plane. The binaries come from a local
+      build (`cargo build --release`) or from `--release <version>`, and the
+      server is left on loopback unless LOOM_BIND is edited.
 
   daemon <server-key> <server-url> [<host-name>]
       Install and start one execution-daemon instance joined to <server-url>.
@@ -48,9 +70,23 @@ Commands:
   help
       Print this text.
 
+Options:
+  --release <version>
+      Take the binaries from the GitHub Release for <version>, which is a tag
+      (`v0.1.0`, `0.1.0`) or `latest`, instead of copying a local build. The
+      release asset for this machine's target is downloaded and its SHA-256 is
+      checked against the release's SHA256SUMS before anything is installed.
+
+  --from <dir>
+      Copy the binaries from <dir> instead of target/release (the same thing as
+      setting LOOM_BIN_SOURCE).
+
 Options (environment variables):
   LOOM_INSTALL_PREFIX  binaries      default /usr/local
   LOOM_BIN_SOURCE      build output  default target/release
+  LOOM_RELEASE_REPO    release repo  default 550W-HOST/loom
+  GITHUB_TOKEN         private repo  token used to read a private release
+  LOOM_TARGET          triple         overrides the detected release asset
   LOOM_ETC_DIR         environment   default /etc/loom
   LOOM_STATE_DIR       data          default /var/lib/loom
   LOOM_SYSTEMD_DIR     unit files    default /etc/systemd/system
@@ -97,14 +133,197 @@ ensure_service_user() {
     useradd --system --home-dir "$STATE_DIR" --shell /usr/sbin/nologin "$SERVICE_USER"
 }
 
-install_binaries() {
-    local source
-    source="$(cd "$SCRIPT_DIR/.." && pwd)/$BIN_SOURCE"
-    [ -d "$source" ] || die "no build output at $source; run 'cargo build --release' or set LOOM_BIN_SOURCE"
-    install -d -m 0755 "$INSTALL_PREFIX/bin"
-    local binary
+# --- release artifacts -------------------------------------------------------
+#
+# A release publishes, per target triple, the two executables plus a
+# `sha256sum`-format SHA256SUMS file:
+#
+#   loom-server-<target>   loom-daemon-<target>   SHA256SUMS
+#
+# so installing from one needs curl (or wget) and sha256sum (or shasum) and
+# nothing else. A public repository is read over plain https URLs; a private one
+# goes through the API with GITHUB_TOKEN, because github.com's
+# /releases/download/... URLs answer 404 for a private repository even when a
+# token is sent.
+
+target_triple() {
+    if [ -n "${LOOM_TARGET:-}" ]; then
+        printf '%s' "$LOOM_TARGET"
+        return
+    fi
+    [ "$(uname -s)" = "Linux" ] ||
+        die "release binaries are Linux-only (this is $(uname -s)); on Windows install under WSL2"
+    case "$(uname -m)" in
+        x86_64 | amd64) printf 'x86_64-unknown-linux-musl' ;;
+        aarch64 | arm64) printf 'aarch64-unknown-linux-musl' ;;
+        *) die "no release binary for machine type $(uname -m): the release publishes x86_64 and aarch64 Linux only (set LOOM_TARGET to override)" ;;
+    esac
+}
+
+# Downloads, or fails. There is deliberately no fallback to whatever binary is
+# already installed: a failed download must fail the install, not look like a
+# successful upgrade.
+fetch() { # <url> <destination> [header ...]
+    local url="$1" destination="$2" header
+    shift 2
+    local headers=()
+    if command -v curl >/dev/null 2>&1; then
+        for header in "$@"; do headers+=(--header "$header"); done
+        curl --fail --silent --show-error --location "${headers[@]}" --output "$destination" "$url"
+    elif command -v wget >/dev/null 2>&1; then
+        for header in "$@"; do headers+=(--header="$header"); done
+        wget --quiet "${headers[@]}" --output-document="$destination" "$url"
+    else
+        die "downloading a release needs curl or wget"
+    fi
+}
+
+sha256_file() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$1" | cut -d ' ' -f 1
+    elif command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 "$1" | cut -d ' ' -f 1
+    else
+        die "verifying a download needs sha256sum or shasum"
+    fi
+}
+
+# The expected digest for <asset>, out of a `sha256sum`-format SHA256SUMS.
+checksum_for() { # <sums file> <asset>
+    sed -n "s/^\([0-9a-fA-F]\{64\}\)[[:space:]]\{1,\}\**$2\$/\1/p" "$1" | head -n 1
+}
+
+# Runs before anything is installed, so a truncated or tampered download leaves
+# the machine with the binaries it already had.
+verify_checksum() { # <dir> <asset>
+    local dir="$1" asset="$2" expected actual
+    [ -f "$dir/SHA256SUMS" ] || die "$dir/SHA256SUMS is missing from the release"
+    expected="$(checksum_for "$dir/SHA256SUMS" "$asset")"
+    [ -n "$expected" ] || die "SHA256SUMS has no entry for $asset"
+    actual="$(sha256_file "$dir/$asset")"
+    if [ "$actual" != "$expected" ]; then
+        rm -f "$dir/$asset"
+        die "SHA-256 mismatch for $asset: SHA256SUMS says $expected, the download is $actual"
+    fi
+    log "verified $asset $expected"
+}
+
+# One JSON field per line, so the extraction below does not depend on whether
+# GitHub pretty-prints the response (it does).
+json_fields() {
+    sed -e 's/[{},]/\n/g'
+}
+
+api_get() { # <path below /repos/<repo>/releases> -> stdout
+    local body
+    body="$(mktemp)"
+    if ! fetch "$RELEASE_API/repos/$RELEASE_REPO/releases/$1" "$body" "${API_HEADERS[@]}"; then
+        rm -f "$body"
+        if [ -n "$RELEASE_TOKEN" ]; then
+            die "cannot read $RELEASE_API/repos/$RELEASE_REPO/releases/$1 (does $RELEASE_REPO have that release?)"
+        fi
+        die "cannot read $RELEASE_API/repos/$RELEASE_REPO/releases/$1 — set GITHUB_TOKEN if $RELEASE_REPO is private"
+    fi
+    cat "$body"
+    rm -f "$body"
+}
+
+api_latest_tag() {
+    api_get latest | json_fields | sed -n 's/^ *"tag_name": *"\([^"]*\)"$/\1/p' | head -n 1
+}
+
+# The API id of <asset>, which is how a private repository's asset is
+# downloaded: /repos/.../releases/assets/<id> with an octet-stream Accept.
+# A release object lists every asset as {url, id, node_id, name, …}, and the
+# scan below takes the id immediately preceding the matching name.
+api_asset_id() { # <tag> <asset>
+    local id
+    id="$(api_get "tags/$1" | json_fields | sed -n \
+        -e "/^ *\"name\": *\"$2\"\$/{x;s/^ *\"id\": *\([0-9]\{1,\}\)\$/\1/p;q;}" \
+        -e '/^ *"id": *[0-9]\{1,\}$/h')"
+    [ -n "$id" ] || die "release $1 has no asset named $2"
+    printf '%s' "$id"
+}
+
+release_tag() {
+    case "$RELEASE" in
+        latest)
+            local tag
+            tag="$(api_latest_tag)"
+            [ -n "$tag" ] || die "cannot resolve the latest release of $RELEASE_REPO"
+            printf '%s' "$tag"
+            ;;
+        v*) printf '%s' "$RELEASE" ;;
+        *) printf 'v%s' "$RELEASE" ;;
+    esac
+}
+
+download() { # <tag> <asset> <dir>
+    local tag="$1" asset="$2" dir="$3"
+    local destination="$dir/$asset"
+    if [ -n "$RELEASE_TOKEN" ]; then
+        local id
+        id="$(api_asset_id "$tag" "$asset")"
+        fetch "$RELEASE_API/repos/$RELEASE_REPO/releases/assets/$id" "$destination" \
+            "Authorization: Bearer $RELEASE_TOKEN" "Accept: application/octet-stream" ||
+            die "cannot download $asset of release $tag (asset $id)"
+    else
+        fetch "$RELEASE_BASE/download/$tag/$asset" "$destination" ||
+            die "cannot download $RELEASE_BASE/download/$tag/$asset — set GITHUB_TOKEN if $RELEASE_REPO is private"
+    fi
+}
+
+# Downloads <asset> and proves it is the file SHA256SUMS describes. SHA256SUMS
+# itself is not a `download_verified` call: it is the root of trust the others
+# are checked against, and it arrives over the same TLS connection.
+download_verified() { # <tag> <asset> <dir>
+    download "$1" "$2" "$3"
+    verify_checksum "$3" "$2"
+}
+
+# Leaves both verified binaries in STAGING_DIR, shaped like a build output
+# directory, so the install step is the same as for a local build.
+fetch_release() {
+    local tag target binary
+    tag="$(release_tag)"
+    target="$(target_triple)"
+    STAGING_DIR="$(mktemp -d)"
+    log "downloading $RELEASE_REPO release $tag for $target"
+    download "$tag" "SHA256SUMS" "$STAGING_DIR"
     for binary in loom-server loom-daemon; do
-        [ -x "$source/$binary" ] || die "$source/$binary is missing; run 'cargo build --release'"
+        download_verified "$tag" "$binary-$target" "$STAGING_DIR"
+        mv "$STAGING_DIR/$binary-$target" "$STAGING_DIR/$binary"
+        chmod 0755 "$STAGING_DIR/$binary"
+    done
+}
+
+cleanup_staging() {
+    if [ -n "$STAGING_DIR" ] && [ -d "$STAGING_DIR" ]; then
+        rm -rf "$STAGING_DIR"
+        STAGING_DIR=""
+    fi
+}
+
+bin_source_dir() {
+    case "$BIN_SOURCE" in
+        /*) printf '%s' "$BIN_SOURCE" ;;
+        *) printf '%s/%s' "$(cd -- "$SCRIPT_DIR/.." && pwd)" "$BIN_SOURCE" ;;
+    esac
+}
+
+install_binaries() {
+    local source binary
+    if [ -n "$RELEASE" ]; then
+        fetch_release
+        source="$STAGING_DIR"
+    else
+        source="$(bin_source_dir)"
+        [ -d "$source" ] ||
+            die "no build output at $source; run 'cargo build --release', set LOOM_BIN_SOURCE, or install from a release with --release <version>"
+    fi
+    install -d -m 0755 "$INSTALL_PREFIX/bin"
+    for binary in loom-server loom-daemon; do
+        [ -f "$source/$binary" ] || die "$source/$binary is missing"
         install -m 0755 "$source/$binary" "$INSTALL_PREFIX/bin/$binary"
     done
     log "installed binaries to $INSTALL_PREFIX/bin"
@@ -189,6 +408,51 @@ install_daemon() {
             "$env_file" "$INSTALL_PREFIX"
     fi
 }
+
+trap cleanup_staging EXIT
+
+args=()
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --release)
+            [ $# -ge 2 ] || die "--release needs a version (for example --release v0.1.0, or --release latest)"
+            RELEASE="$2"
+            shift 2
+            ;;
+        --release=*)
+            RELEASE="${1#--release=}"
+            shift
+            ;;
+        --from)
+            [ $# -ge 2 ] || die "--from needs a directory"
+            BIN_SOURCE="$2"
+            FROM_FLAG=1
+            shift 2
+            ;;
+        --from=*)
+            BIN_SOURCE="${1#--from=}"
+            FROM_FLAG=1
+            shift
+            ;;
+        --)
+            shift
+            while [ $# -gt 0 ]; do
+                args+=("$1")
+                shift
+            done
+            ;;
+        -h | --help)
+            usage
+            exit 0
+            ;;
+        *)
+            args+=("$1")
+            shift
+            ;;
+    esac
+done
+[ -z "$RELEASE" ] || [ -z "$FROM_FLAG" ] || die "--release and --from are mutually exclusive"
+set -- ${args[@]+"${args[@]}"}
 
 command="${1:-help}"
 shift || true

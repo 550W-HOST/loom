@@ -72,24 +72,39 @@ journalctl -u 'loom-host-daemon@builder-1' | grep -i 'protocol version'
 ## Updating
 
 `install.sh` plus a restart is the supported update path. There is no
-in-process self-update.
+in-process self-update. The binaries come from a checkout or from a release:
 
 ```bash
-# 1. build the new release
+# A. from a checkout: build, then install from the build output
 cargo build --release
+sudo deploy/install.sh server
 
-# 2. on the server machine
-sudo deploy/install.sh server          # refreshes binary + unit, keeps env/data
+# B. from a release: no toolchain needed, the installer downloads and verifies
+sudo deploy/install.sh --release v0.2.0 server
+
+# ...then, either way, on the server machine
 sudo systemctl restart loom-server
 
-# 3. on each execution machine (any order when protocol_version is unchanged)
-sudo deploy/install.sh daemon builder-1 https://loom.example.com
+# ...and on each execution machine (any order when protocol_version is unchanged)
+sudo deploy/install.sh --release v0.2.0 daemon builder-1 https://loom.example.com
 sudo systemctl restart loom-host-daemon@builder-1
 ```
 
+`--release <version>` downloads the binaries for this machine's target from the
+GitHub Release, checks each of them against the release's `SHA256SUMS`, and only
+then replaces `/usr/local/bin/loom-*`;
+[`../deploy/README.md`](../deploy/README.md) § Install from a release has the
+details, including `GITHUB_TOKEN` for a private repository. The property that
+matters here is the failure mode: a download that fails, or one whose digest
+does not match, aborts **before** anything is installed and exits non-zero, so a
+fleet upgrade is never half-done by a bad connection. A machine that is
+unreachable stays on its current binary and keeps reconnecting; when it comes
+back it can be upgraded the same way.
+
 `install.sh` never overwrites an existing environment file, so step 2 and 3 are
 safe to re-run and safe to run from a configuration-management tool that
-replaces binaries.
+replaces binaries. Re-running the same `--release` re-downloads and re-verifies
+rather than trusting what is already installed.
 
 ### What a restart does not lose
 
@@ -147,6 +162,14 @@ sudo systemctl restart loom-server
 # a daemon likewise
 sudo install -m 0755 /var/lib/loom/bin/loom-daemon.prev /usr/local/bin/loom-daemon
 sudo systemctl restart loom-host-daemon@builder-1
+```
+
+If the previous binaries were not kept, the previous release is the copy: it
+goes through the same download-and-verify path as an upgrade.
+
+```bash
+sudo deploy/install.sh --release v0.1.0 server
+sudo systemctl restart loom-server
 ```
 
 Rules:
