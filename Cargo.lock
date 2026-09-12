@@ -330,6 +330,7 @@ checksum = "f9f8bd3e56ce4dfc153cf470fffbfa98c7620958b312ca5c3a4b8d5181fd13c6"
 name = "loom-contract"
 version = "0.1.0"
 dependencies = [
+ "loom-domain",
  "serde",
  "serde_json",
 ]
@@ -340,6 +341,7 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "futures-util",
+ "loom-contract",
  "loom-domain",
  "loom-provider-protocol",
  "loom-relay",

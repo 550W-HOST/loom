@@ -60,6 +60,7 @@ pub mod event;
 pub mod host;
 pub mod id;
 pub mod project;
+pub mod provider_event;
 pub mod run;
 pub mod scope;
 pub mod thread;
@@ -74,6 +75,15 @@ pub use id::{
     UserTag,
 };
 pub use project::{Project, ProjectKind, ProjectSource};
-pub use run::{NoticeLevel, OutputStream, RunEvent, RunOutcome, TurnPhase};
+pub use provider_event::{
+    ApprovalStatus, ContextWindowUsage, EnvResolvedEntry, EnvResolvedSource, EnvResolvedValue,
+    FileChange, FileChangeKind, GoalStatus, ItemPresentation, ItemStatus, ModelFallbackReason,
+    PlanStep, PlanStepStatus, PresentationBadge, PresentationIcon, PresentationLabel,
+    PresentationTint, PresentationTone, ProviderErrorCategory, ProviderErrorInfo, ProviderEvent,
+    ProviderEventError, ProviderEventType, ProviderWarningCategory, SearchMode, ThreadEvent,
+    ThreadEventItem, ThreadEventScope, ThreadEventType, ThreadTokenUsage, TokenUsageBreakdown,
+    TurnError, TurnStatus, UserContent,
+};
+pub use run::{RunEvent, RunOutcome};
 pub use scope::DomainScope;
 pub use thread::{MessageRole, NewThread, Thread, ThreadMessage, ThreadStatus, ThreadTrigger};

@@ -32,7 +32,7 @@ use serde::{Deserialize, Serialize};
 /// it displays; a daemon enrolls, then follows its own `host:{id}` room. Both
 /// connect outbound to the same URL, which is what keeps a daemon independent
 /// of the server's process tree.
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ClientCommand {
     /// Start receiving frames for a scope.
@@ -76,9 +76,13 @@ pub enum ClientCommand {
     /// into a `thread_run_event` and publishes it to the thread scope through
     /// the relay, so it is replayable like any other event. The socket only
     /// carries the observation; it never carries the resulting fan-out.
+    ///
+    /// The report is boxed: a contract run event is much larger than the
+    /// transport commands around it, and an unboxed variant would widen every
+    /// `ClientCommand`.
     RunReport {
         /// The run observation.
-        report: ProviderReport,
+        report: Box<ProviderReport>,
     },
     /// A daemon reports the outcome of provisioning a managed environment's
     /// workspace.

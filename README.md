@@ -25,6 +25,7 @@ on it and it can be validated on its own.
 - [x] `loom-domain` — projects, threads, hosts and environments as pure types and invariants
 - [x] Server-only startup and an independently stoppable local daemon (`loom-daemon`)
 - [x] `loom-provider-protocol` — the server↔daemon provider contract, plus a Pi bridge in `loom-daemon`: dispatch through the relay, replayable run events, and a terminal-state guarantee
+- [x] The event model aligned with bb's `ThreadEvent` contract (35 provider event types) — see [`docs/event-model.md`](docs/event-model.md)
 - [ ] Persist domain entities (the domain registry is in-process and lost on restart)
 - [x] `loom-server` hosts the UI from its own origin; a client subscribes to `thread:{id}` through the relay and reconnects by subscribe-then-replay (`docs/ui.md`)
 - [ ] Check in the bb web UI (`apps/app`) and serve its built bundle unchanged via `LOOM_UI_DIR`
@@ -53,6 +54,7 @@ docs/
   architecture.md
   ci.md
   contract.md
+  event-model.md
   domain-persistence.md
   process-model.md
   provider-protocol.md
@@ -141,8 +143,9 @@ curl -X POST localhost:38886/api/v1/threads \
 
 # Message a thread; it appends and, from idle, starts a run. Both events go
 # to thread:{id}, in order. With a daemon connected, a `RunDispatch` is also
-# published to `host:{id}`; the provider's output, tool calls and terminal
-# event come back as `thread_run_event`s on the thread scope.
+# published to `host:{id}`; the provider's events (assistant/reasoning deltas,
+# tool items, and the terminal `turn/completed`) come back as
+# `thread_run_event`s on the thread scope, each carrying a bb `ThreadEvent`.
 curl -X POST localhost:38886/api/v1/threads/thr_.../messages \
   -H 'content-type: application/json' -d '{"content":"hello"}'
 

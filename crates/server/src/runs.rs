@@ -16,8 +16,8 @@
 //!    thread scope, in order. The daemon's socket is not the fan-out path.
 //! 3. **Every run reaches a terminal state.** [`AppState::reconcile_runs`] is
 //!    the backstop: a provider that never reports, a daemon that stops
-//!    heartbeating, and a deadline that passed all end in exactly one
-//!    [`RunEvent::Finished`], which moves the thread out of `working`.
+//!    heartbeating, and a deadline that passed all end in exactly one terminal
+//!    `turn/completed` event, which moves the thread out of `working`.
 //!
 //! Point 3 is the one that cannot be left to the execution plane. A provider
 //! crash, a killed daemon and a network partition are indistinguishable from
@@ -30,8 +30,8 @@ use std::collections::HashMap;
 use std::sync::{Mutex, MutexGuard};
 
 use loom_domain::{
-    DomainEvent, Environment, EnvironmentStatus, HostId, HostStatus, ProjectId, RunEvent, RunId,
-    RunOutcome, Thread, ThreadId, ThreadTrigger,
+    DomainEvent, Environment, EnvironmentStatus, HostId, HostStatus, ProjectId, ProviderEvent,
+    RunEvent, RunId, RunOutcome, Thread, ThreadId, ThreadTrigger, TurnError, TurnStatus,
 };
 use loom_provider_protocol::{ProviderReport, RunDispatch};
 use loom_relay::{now_ms, Scope};
@@ -326,27 +326,44 @@ impl AppState {
     /// A report for an unknown run is dropped: that is what makes a daemon's
     /// post-reconnect redelivery idempotent. A report for a run this host does
     /// not own is rejected, so one machine cannot terminate another's turn.
+    ///
+    /// The event's own identity is checked against the run record as well, so a
+    /// daemon cannot relabel one run's stream as another's.
     pub fn apply_run_report(&self, host_id: &HostId, report: ProviderReport) -> ReportOutcome {
         let now = now_ms();
-        let Some(record) = self.runs.get(&report.run_id) else {
+        let run_id = report.event.run_id.clone();
+        let Some(record) = self.runs.get(&run_id) else {
             return ReportOutcome::Unknown;
         };
         if &record.host_id != host_id {
             return ReportOutcome::Mismatch(format!(
-                "run {} is owned by host {}, not {}",
-                report.run_id, record.host_id, host_id
+                "run {run_id} is owned by host {}, not {host_id}",
+                record.host_id
             ));
         }
-        if record.thread_id != report.thread_id {
+        if record.thread_id != report.event.thread_id {
             return ReportOutcome::Mismatch(format!(
-                "run {} belongs to thread {}, not {}",
-                report.run_id, record.thread_id, report.thread_id
+                "run {run_id} belongs to thread {}, not {}",
+                record.thread_id, report.event.thread_id
             ));
         }
 
-        match report.event {
-            RunEvent::Finished { outcome, error } => self.finish_run(&record, outcome, error, now),
-            other => self.publish_run_event(&record, other, now),
+        let event = report.event;
+        if event.is_terminal() {
+            // The daemon's own verdict travels in `outcome` when it has one;
+            // for a terminal event a producer sent without it, the contract
+            // status is the fallback.
+            let outcome = event.outcome.unwrap_or_else(|| {
+                match event.terminal_status().unwrap_or(TurnStatus::Failed) {
+                    TurnStatus::Completed => RunOutcome::Completed,
+                    TurnStatus::Interrupted => RunOutcome::Cancelled,
+                    TurnStatus::Failed => RunOutcome::Failed,
+                }
+            });
+            let error = event.terminal_error().map(str::to_owned);
+            self.finish_run_with(&record, outcome, error, Some(event), now);
+        } else {
+            self.publish_run_event(&record, event, now);
         }
         ReportOutcome::Applied
     }
@@ -413,11 +430,50 @@ impl AppState {
         summary
     }
 
-    /// Publishes the terminal event, clears the run, and moves the thread out
-    /// of `working`.
+    /// Publishes the server's own terminal event, clears the run, and moves
+    /// the thread out of `working`.
     fn finish_run(&self, record: &RunRecord, outcome: RunOutcome, error: Option<String>, now: u64) {
+        self.finish_run_with(record, outcome, error, None, now);
+    }
+
+    /// Publishes a terminal event, clears the run, and moves the thread out of
+    /// `working`.
+    ///
+    /// `event` is the daemon's own terminal event when it reported one; for a
+    /// server-reaped run (a deadline, a stale host) it is absent and the server
+    /// synthesizes the contract event from the outcome.
+    fn finish_run_with(
+        &self,
+        record: &RunRecord,
+        outcome: RunOutcome,
+        error: Option<String>,
+        event: Option<RunEvent>,
+        now: u64,
+    ) {
         self.runs.remove(&record.run_id);
-        self.publish_run_event(record, RunEvent::Finished { outcome, error }, now);
+        // A reaped run has no daemon event, so the server synthesizes the
+        // contract terminal from its own verdict — carrying the real outcome,
+        // which is what keeps `timed_out` and `host_stale` distinguishable
+        // from a plain `failed`.
+        let terminal = event.unwrap_or_else(|| {
+            let body = ProviderEvent::TurnCompleted {
+                provider_thread_id: None,
+                status: outcome.turn_status(),
+                error: (outcome != RunOutcome::Completed).then(|| TurnError {
+                    message: error.clone().unwrap_or_default(),
+                }),
+                provider_checkpoint_id: None,
+            };
+            RunEvent::terminal(
+                record.thread_id.clone(),
+                record.project_id.clone(),
+                record.run_id.clone(),
+                now,
+                outcome,
+                body,
+            )
+        });
+        self.publish_run_event(record, terminal, now);
 
         let trigger = match outcome {
             RunOutcome::Completed => ThreadTrigger::RunCompleted,
@@ -445,14 +501,14 @@ impl AppState {
     fn fail_thread(&self, thread: &Thread, reason: String, now: u64) -> RunId {
         let run_id = RunId::mint();
         self.publish_domain_event(&DomainEvent::ThreadRunEvent {
-            thread_id: thread.id.clone(),
-            project_id: thread.project_id.clone(),
-            run_id: run_id.clone(),
-            at_ms: now,
-            event: RunEvent::Finished {
-                outcome: RunOutcome::Failed,
-                error: Some(reason),
-            },
+            run: Box::new(RunEvent::failed(
+                thread.id.clone(),
+                thread.project_id.clone(),
+                run_id.clone(),
+                now,
+                RunOutcome::Failed.turn_status(),
+                reason,
+            )),
         })
         .ok();
         let _ = self.registry.clear_thread_run(&thread.id, now);
@@ -466,15 +522,25 @@ impl AppState {
     }
 
     /// Publishes one run event to the thread scope.
+    ///
+    /// `now` is only used when the event's identity needs re-stamping; the
+    /// daemon's event already carries its own timestamp, which is preserved so
+    /// replay is byte-identical to what the daemon sent.
     fn publish_run_event(&self, record: &RunRecord, event: RunEvent, now: u64) {
-        let domain = DomainEvent::ThreadRunEvent {
-            thread_id: record.thread_id.clone(),
-            project_id: record.project_id.clone(),
-            run_id: record.run_id.clone(),
-            at_ms: now,
-            event,
+        let event = if event.thread_id == record.thread_id {
+            event
+        } else {
+            RunEvent::new(
+                record.thread_id.clone(),
+                record.project_id.clone(),
+                record.run_id.clone(),
+                now,
+                event.event.body,
+            )
         };
-        let _ = self.publish_domain_event(&domain);
+        let _ = self.publish_domain_event(&DomainEvent::ThreadRunEvent {
+            run: Box::new(event),
+        });
     }
 }
 
@@ -667,12 +733,13 @@ mod tests {
 
         let report = ProviderReport {
             host_id: host_id.clone(),
-            run_id: run.run_id.clone(),
-            thread_id: thread.id.clone(),
-            event: RunEvent::Finished {
-                outcome: RunOutcome::Completed,
-                error: None,
-            },
+            event: RunEvent::completed(
+                thread.id.clone(),
+                thread.project_id.clone(),
+                run.run_id.clone(),
+                3,
+                None,
+            ),
         };
         assert_eq!(
             state.apply_run_report(&host_id, report),
@@ -705,12 +772,13 @@ mod tests {
 
         let report = ProviderReport {
             host_id: other.clone(),
-            run_id: run.run_id.clone(),
-            thread_id: thread.id.clone(),
-            event: RunEvent::Finished {
-                outcome: RunOutcome::Completed,
-                error: None,
-            },
+            event: RunEvent::completed(
+                thread.id.clone(),
+                thread.project_id.clone(),
+                run.run_id.clone(),
+                3,
+                None,
+            ),
         };
         assert!(matches!(
             state.apply_run_report(&other, report),
