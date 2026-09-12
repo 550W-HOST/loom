@@ -203,7 +203,9 @@ mod tests {
         );
 
         let mut project = project;
-        let updated = project.add_source(HostId::mint(), "/srv/loom", 2).unwrap();
+        let updated = project
+            .add_source(HostId::mint(), "/srv/loom", None, 2)
+            .unwrap();
         assert_eq!(
             serde_json::to_value(&updated).unwrap()["type"],
             "project_updated"

@@ -579,7 +579,7 @@ mod tests {
         let (environment, _) = state
             .registry
             .create_environment(
-                None,
+                Some(state.registry.personal_project_id()),
                 host_id.clone(),
                 EnvironmentKind::Unmanaged,
                 Some(path.into()),
@@ -588,7 +588,12 @@ mod tests {
             .unwrap();
         let (thread, _) = state
             .registry
-            .create_thread(None, Some("t".into()), Some(environment.id), 1)
+            .create_thread(
+                Some(state.registry.personal_project_id()),
+                Some("t".into()),
+                Some(environment.id),
+                1,
+            )
             .unwrap();
         (host_id, thread, path.into())
     }
@@ -644,7 +649,12 @@ mod tests {
         let state = state();
         let (thread, _) = state
             .registry
-            .create_thread(None, Some("t".into()), None, 1)
+            .create_thread(
+                Some(state.registry.personal_project_id()),
+                Some("t".into()),
+                None,
+                1,
+            )
             .unwrap();
         state
             .registry

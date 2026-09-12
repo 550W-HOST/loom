@@ -212,7 +212,7 @@ mod tests {
         let (environment, _) = state
             .registry
             .create_environment(
-                None,
+                Some(state.registry.personal_project_id()),
                 host.id.clone(),
                 EnvironmentKind::Managed,
                 None,
@@ -368,7 +368,7 @@ mod tests {
         let (environment, _) = state
             .registry
             .create_environment(
-                None,
+                Some(state.registry.personal_project_id()),
                 host.id,
                 EnvironmentKind::Unmanaged,
                 Some("/srv/loom".into()),

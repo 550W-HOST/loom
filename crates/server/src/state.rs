@@ -788,7 +788,7 @@ mod tests {
             let (environment, _) = state
                 .registry
                 .create_environment(
-                    None,
+                    Some(state.registry.personal_project_id()),
                     host_id.clone(),
                     EnvironmentKind::Unmanaged,
                     Some("/srv/loom".into()),
@@ -799,7 +799,7 @@ mod tests {
             let (thread, _) = state
                 .registry
                 .create_thread(
-                    None,
+                    Some(state.registry.personal_project_id()),
                     Some("persisted".into()),
                     Some(environment_id.clone()),
                     now_ms(),
@@ -838,7 +838,7 @@ mod tests {
             let (environment, _) = state
                 .registry
                 .create_environment(
-                    None,
+                    Some(state.registry.personal_project_id()),
                     host.id.clone(),
                     EnvironmentKind::Unmanaged,
                     Some("/srv/loom".into()),
@@ -847,7 +847,12 @@ mod tests {
                 .unwrap();
             let (thread, _) = state
                 .registry
-                .create_thread(None, Some("t".into()), Some(environment.id), now_ms())
+                .create_thread(
+                    Some(state.registry.personal_project_id()),
+                    Some("t".into()),
+                    Some(environment.id),
+                    now_ms(),
+                )
                 .unwrap();
             thread_id = thread.id.clone();
             state
@@ -891,7 +896,12 @@ mod tests {
             let state = AppState::build(durable_config(&dir)).unwrap();
             let (thread, created) = state
                 .registry
-                .create_thread(None, Some("t".into()), None, now_ms())
+                .create_thread(
+                    Some(state.registry.personal_project_id()),
+                    Some("t".into()),
+                    None,
+                    now_ms(),
+                )
                 .unwrap();
             thread_id = thread.id.clone();
             // Publishing the creation event is what puts the entity in the log;
@@ -933,7 +943,12 @@ mod tests {
             let state = AppState::build(durable_config(&dir)).unwrap();
             let (thread, created) = state
                 .registry
-                .create_thread(None, Some("t".into()), None, now_ms())
+                .create_thread(
+                    Some(state.registry.personal_project_id()),
+                    Some("t".into()),
+                    None,
+                    now_ms(),
+                )
                 .unwrap();
             thread_id = thread.id.clone();
             state.publish_domain_event(&created).unwrap();

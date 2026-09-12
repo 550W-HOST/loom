@@ -17,17 +17,23 @@ use std::sync::{Mutex, MutexGuard};
 
 use loom_domain::{
     DomainError, DomainEvent, Environment, EnvironmentId, EnvironmentKind, EnvironmentStatus, Host,
-    HostId, MessageRole, NewThread, Project, ProjectId, ProjectKind, RunId, Thread, ThreadId,
-    ThreadStatus, ThreadTrigger,
+    HostId, MessageRole, NewThread, Project, ProjectId, ProjectKind, ProjectSourceId, RunId,
+    Thread, ThreadId, ThreadStatus, ThreadTrigger,
 };
 use serde::{Deserialize, Serialize};
 
 /// A command failed either because the target does not exist or because the
 /// domain rejected the change.
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum CommandError {
     /// The referenced entity is not known to this process.
     NotFound(String),
+    /// The change is well-formed but conflicts with the current state.
+    ///
+    /// Distinct from [`CommandError::Domain`] because the conflict is a
+    /// registry-level rule the domain type cannot see — archiving a project
+    /// that still has a run in flight, for example.
+    Conflict(String),
     /// The domain refused the change.
     Domain(DomainError),
 }
@@ -36,6 +42,7 @@ impl fmt::Display for CommandError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             CommandError::NotFound(message) => f.write_str(message),
+            CommandError::Conflict(message) => f.write_str(message),
             CommandError::Domain(error) => write!(f, "{error}"),
         }
     }
@@ -61,7 +68,7 @@ pub struct DomainRegistry {
 /// [`DomainRegistry::export`] sorts each one by id before returning.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RegistrySnapshot {
-    /// The project threads default to.
+    /// The workspace's seeded project.
     pub personal_project_id: ProjectId,
     /// Every project.
     pub projects: Vec<Project>,
@@ -101,15 +108,173 @@ impl DomainRegistry {
         }
     }
 
-    /// The project a thread belongs to when the caller names none.
+    /// The id of the workspace's seeded project.
+    ///
+    /// It is returned so a client can select it, never as a fallback for a
+    /// missing project: threads and environments must name their project
+    /// explicitly.
     pub fn personal_project_id(&self) -> ProjectId {
         self.lock().personal_project_id.clone()
     }
 
+    /// Creates a project and returns it with its creation event.
+    ///
+    /// `kind` is [`ProjectKind::Standard`] for every project a client creates.
+    /// The seeded project's [`ProjectKind::Personal`] is provenance, not
+    /// privilege, so this accepts it too rather than special-casing it.
+    pub fn create_project(
+        &self,
+        name: String,
+        kind: ProjectKind,
+        git_remote_url: Option<String>,
+        now_ms: u64,
+    ) -> Result<(Project, DomainEvent), CommandError> {
+        let mut inner = self.lock();
+        let (project, event) = Project::create_with_remote(name, kind, git_remote_url, now_ms)?;
+        inner.projects.insert(project.id.clone(), project.clone());
+        Ok((project, event))
+    }
+
+    /// Looks up a project.
+    pub fn project(&self, project_id: &ProjectId) -> Option<Project> {
+        self.lock().projects.get(project_id).cloned()
+    }
+
+    /// Every known project, in a stable order.
+    ///
+    /// Sorted by creation time and then id, so the list is deterministic and
+    /// does not depend on `HashMap` iteration order. Active projects come
+    /// first; archived ones follow, still sorted the same way.
+    pub fn projects(&self) -> Vec<Project> {
+        let mut projects: Vec<Project> = self.lock().projects.values().cloned().collect();
+        projects.sort_by(|left, right| {
+            left.is_archived()
+                .cmp(&right.is_archived())
+                .then_with(|| left.created_at_ms.cmp(&right.created_at_ms))
+                .then_with(|| left.id.cmp(&right.id))
+        });
+        projects
+    }
+
+    /// Renames a project and returns the update event.
+    pub fn rename_project(
+        &self,
+        project_id: &ProjectId,
+        name: String,
+        now_ms: u64,
+    ) -> Result<(Project, DomainEvent), CommandError> {
+        let mut inner = self.lock();
+        let project = inner
+            .projects
+            .get_mut(project_id)
+            .ok_or_else(|| CommandError::NotFound(format!("project {project_id} is not known")))?;
+        let event = project.rename(name, now_ms)?;
+        Ok((project.clone(), event))
+    }
+
+    /// Changes a project's repository remote and returns the update event.
+    ///
+    /// An empty or whitespace-only string clears the remote. The domain's
+    /// [`Project::set_git_remote_url`] normalises it, so a client can send `""`
+    /// rather than a null.
+    pub fn set_project_git_remote(
+        &self,
+        project_id: &ProjectId,
+        url: Option<String>,
+        now_ms: u64,
+    ) -> Result<(Project, DomainEvent), CommandError> {
+        let mut inner = self.lock();
+        let project = inner
+            .projects
+            .get_mut(project_id)
+            .ok_or_else(|| CommandError::NotFound(format!("project {project_id} is not known")))?;
+        let event = project.set_git_remote_url(url, now_ms)?;
+        Ok((project.clone(), event))
+    }
+
+    /// Adds a source to a project and returns the update event.
+    pub fn add_project_source(
+        &self,
+        project_id: &ProjectId,
+        host_id: HostId,
+        path: String,
+        git_remote_url: Option<String>,
+        now_ms: u64,
+    ) -> Result<(Project, DomainEvent), CommandError> {
+        let mut inner = self.lock();
+        if !inner.hosts.contains_key(&host_id) {
+            return Err(CommandError::NotFound(format!(
+                "host {host_id} is not known"
+            )));
+        }
+        let project = inner
+            .projects
+            .get_mut(project_id)
+            .ok_or_else(|| CommandError::NotFound(format!("project {project_id} is not known")))?;
+        let event = project.add_source(host_id, path, git_remote_url, now_ms)?;
+        Ok((project.clone(), event))
+    }
+
+    /// Removes a source from a project, returning the update event or `None`
+    /// when the source is unknown.
+    pub fn remove_project_source(
+        &self,
+        project_id: &ProjectId,
+        source_id: &ProjectSourceId,
+        now_ms: u64,
+    ) -> Result<Option<(Project, DomainEvent)>, CommandError> {
+        let mut inner = self.lock();
+        let project = inner
+            .projects
+            .get_mut(project_id)
+            .ok_or_else(|| CommandError::NotFound(format!("project {project_id} is not known")))?;
+        match project.remove_source(source_id, now_ms)? {
+            Some(event) => Ok(Some((project.clone(), event))),
+            None => Ok(None),
+        }
+    }
+
+    /// Archives a project, refusing one that still has a run in flight.
+    ///
+    /// The rule is **refuse, never cascade**: archiving a project whose threads
+    /// are `working` or `waiting` is a conflict, because those threads have a
+    /// provider running against a workspace inside the project. Idle, errored
+    /// and archived threads do not block the archive and are left untouched —
+    /// they keep their project reference. See `docs/projects.md`.
+    pub fn archive_project(
+        &self,
+        project_id: &ProjectId,
+        now_ms: u64,
+    ) -> Result<(Project, DomainEvent), CommandError> {
+        let mut inner = self.lock();
+        let busy = inner
+            .threads
+            .values()
+            .filter(|thread| &thread.project_id == project_id)
+            .filter(|thread| matches!(thread.status, ThreadStatus::Working | ThreadStatus::Waiting))
+            .count();
+        let project = inner
+            .projects
+            .get_mut(project_id)
+            .ok_or_else(|| CommandError::NotFound(format!("project {project_id} is not known")))?;
+        // Checked even when the project is already archived, so a second
+        // archive reports the lifecycle error rather than a stale busy count.
+        if !project.is_archived() && busy > 0 {
+            return Err(CommandError::Conflict(format!(
+                "project {project_id} has {busy} thread(s) with a run in flight; archive them first"
+            )));
+        }
+        let event = project.archive(now_ms)?;
+        Ok((project.clone(), event))
+    }
+
     /// Creates a thread and returns it with its creation event.
     ///
-    /// An `environment_id` that is unknown is rejected here rather than at
-    /// dispatch: a thread bound to a non-existent environment could never run.
+    /// The project is **required**: `None` is rejected rather than silently
+    /// landing in the seeded personal project. A thread's project is the
+    /// container it is listed under, and guessing it is how every thread ended
+    /// up in one implicit project. An unknown project, an archived project and
+    /// an unknown environment are all rejected here rather than at dispatch.
     pub fn create_thread(
         &self,
         project_id: Option<ProjectId>,
@@ -118,15 +283,22 @@ impl DomainRegistry {
         now_ms: u64,
     ) -> Result<(Thread, DomainEvent), CommandError> {
         let mut inner = self.lock();
-        let project_id = match project_id {
-            Some(id) => {
-                if !inner.projects.contains_key(&id) {
-                    return Err(CommandError::NotFound(format!("project {id} is not known")));
-                }
-                id
-            }
-            None => inner.personal_project_id.clone(),
+        let Some(project_id) = project_id else {
+            return Err(CommandError::Domain(DomainError::InvalidField {
+                field: "project_id",
+                reason: "a thread must belong to a project".into(),
+            }));
         };
+        let Some(project) = inner.projects.get(&project_id) else {
+            return Err(CommandError::NotFound(format!(
+                "project {project_id} is not known"
+            )));
+        };
+        if project.is_archived() {
+            return Err(CommandError::Conflict(format!(
+                "project {project_id} is archived; unarchive it before creating a thread"
+            )));
+        }
         if let Some(id) = &environment_id {
             if !inner.environments.contains_key(id) {
                 return Err(CommandError::NotFound(format!(
@@ -149,10 +321,13 @@ impl DomainRegistry {
 
     /// Creates an environment and returns it with the events it produced.
     ///
-    /// The owning project defaults to the personal project, exactly like a
-    /// thread. An `unmanaged` environment starts `ready` with its path; a
-    /// `managed` one starts `creating` with none, and is provisioned later by
-    /// a daemon.
+    /// The owning project is **required**, exactly like a thread: an
+    /// environment's workspace belongs to a project. An unknown or archived
+    /// project is rejected, and so is the personal default this method no
+    /// longer guesses.
+    ///
+    /// An `unmanaged` environment starts `ready` with its path; a `managed`
+    /// one starts `creating` with none, and is provisioned later by a daemon.
     pub fn create_environment(
         &self,
         project_id: Option<ProjectId>,
@@ -162,15 +337,22 @@ impl DomainRegistry {
         now_ms: u64,
     ) -> Result<(Environment, Vec<DomainEvent>), CommandError> {
         let mut inner = self.lock();
-        let project_id = match project_id {
-            Some(id) => {
-                if !inner.projects.contains_key(&id) {
-                    return Err(CommandError::NotFound(format!("project {id} is not known")));
-                }
-                id
-            }
-            None => inner.personal_project_id.clone(),
+        let Some(project_id) = project_id else {
+            return Err(CommandError::Domain(DomainError::InvalidField {
+                field: "project_id",
+                reason: "an environment must belong to a project".into(),
+            }));
         };
+        let Some(project) = inner.projects.get(&project_id) else {
+            return Err(CommandError::NotFound(format!(
+                "project {project_id} is not known"
+            )));
+        };
+        if project.is_archived() {
+            return Err(CommandError::Conflict(format!(
+                "project {project_id} is archived; unarchive it before creating an environment"
+            )));
+        }
         if !inner.hosts.contains_key(&host_id) {
             return Err(CommandError::NotFound(format!(
                 "host {host_id} is not known"
@@ -589,6 +771,7 @@ impl RegistryInner {
                 name: "Personal".into(),
                 git_remote_url: None,
                 sources: Vec::new(),
+                archived_at_ms: None,
                 created_at_ms: 0,
                 updated_at_ms: 0,
             });
@@ -610,14 +793,31 @@ mod tests {
         DomainRegistry::new(1)
     }
 
+    /// The seeded project's id, the explicit owner every command must name.
+    fn personal(registry: &DomainRegistry) -> ProjectId {
+        registry.personal_project_id()
+    }
+
     #[test]
-    fn a_thread_defaults_to_the_personal_project() {
+    fn a_thread_must_name_a_project_and_the_seeded_one_works() {
         let registry = registry();
         let (thread, _) = registry
-            .create_thread(None, Some("first".into()), None, 2)
+            .create_thread(Some(personal(&registry)), Some("first".into()), None, 2)
             .unwrap();
-        assert_eq!(thread.project_id, registry.personal_project_id());
+        assert_eq!(thread.project_id, personal(&registry));
         assert_eq!(registry.thread(&thread.id).unwrap(), thread);
+    }
+
+    #[test]
+    fn a_thread_with_no_project_is_rejected() {
+        let registry = registry();
+        assert!(matches!(
+            registry.create_thread(None, Some("first".into()), None, 2),
+            Err(CommandError::Domain(DomainError::InvalidField {
+                field: "project_id",
+                ..
+            }))
+        ));
     }
 
     #[test]
@@ -630,10 +830,26 @@ mod tests {
     }
 
     #[test]
+    fn a_thread_cannot_be_created_in_an_archived_project() {
+        let registry = registry();
+        let project = personal(&registry);
+        registry.archive_project(&project, 2).unwrap();
+        assert!(matches!(
+            registry.create_thread(Some(project), None, None, 3),
+            Err(CommandError::Conflict(_))
+        ));
+    }
+
+    #[test]
     fn a_thread_cannot_be_bound_to_an_unknown_environment() {
         let registry = registry();
         assert!(matches!(
-            registry.create_thread(None, None, Some(EnvironmentId::mint()), 2),
+            registry.create_thread(
+                Some(personal(&registry)),
+                None,
+                Some(EnvironmentId::mint()),
+                2
+            ),
             Err(CommandError::NotFound(_))
         ));
     }
@@ -650,7 +866,9 @@ mod tests {
     #[test]
     fn a_user_message_advances_the_stored_thread() {
         let registry = registry();
-        let (thread, _) = registry.create_thread(None, None, None, 2).unwrap();
+        let (thread, _) = registry
+            .create_thread(Some(personal(&registry)), None, None, 2)
+            .unwrap();
         let events = registry
             .post_message(&thread.id, MessageRole::User, "hello".into(), 3)
             .unwrap();
@@ -745,7 +963,7 @@ mod tests {
         let host = enrolled(&registry);
         let (environment, events) = registry
             .create_environment(
-                None,
+                Some(personal(&registry)),
                 host,
                 EnvironmentKind::Unmanaged,
                 Some("/srv/loom".into()),
@@ -762,7 +980,7 @@ mod tests {
             Some(environment.clone())
         );
         assert_eq!(
-            registry.environments_for_project(&registry.personal_project_id()),
+            registry.environments_for_project(&personal(&registry)),
             vec![environment]
         );
     }
@@ -772,7 +990,13 @@ mod tests {
         let registry = registry();
         let host = enrolled(&registry);
         let (environment, _) = registry
-            .create_environment(None, host, EnvironmentKind::Managed, None, 3)
+            .create_environment(
+                Some(personal(&registry)),
+                host,
+                EnvironmentKind::Managed,
+                None,
+                3,
+            )
             .unwrap();
         assert_eq!(environment.status, EnvironmentStatus::Creating);
         assert_eq!(environment.path, None);
@@ -801,7 +1025,13 @@ mod tests {
         let registry = registry();
         let host = enrolled(&registry);
         let (environment, _) = registry
-            .create_environment(None, host, EnvironmentKind::Managed, None, 3)
+            .create_environment(
+                Some(personal(&registry)),
+                host,
+                EnvironmentKind::Managed,
+                None,
+                3,
+            )
             .unwrap();
         registry
             .set_environment_status(&environment.id, EnvironmentStatus::Provisioning, 4)
@@ -823,7 +1053,7 @@ mod tests {
         let host = enrolled(&registry);
         let (environment, _) = registry
             .create_environment(
-                None,
+                Some(personal(&registry)),
                 host,
                 EnvironmentKind::Unmanaged,
                 Some("/srv/loom".into()),
@@ -863,7 +1093,201 @@ mod tests {
                 Some("/srv/loom".into()),
                 3,
             ),
+            Err(CommandError::Domain(DomainError::InvalidField {
+                field: "project_id",
+                ..
+            }))
+        ));
+        assert!(matches!(
+            registry.create_environment(
+                Some(personal(&registry)),
+                HostId::mint(),
+                EnvironmentKind::Unmanaged,
+                Some("/srv/loom".into()),
+                3,
+            ),
             Err(CommandError::NotFound(_))
+        ));
+    }
+
+    #[test]
+    fn a_project_is_created_listed_and_renamed() {
+        let registry = registry();
+        let (project, event) = registry
+            .create_project(
+                "loom".into(),
+                ProjectKind::Standard,
+                Some("git@x:y/loom".into()),
+                2,
+            )
+            .unwrap();
+        assert!(matches!(event, DomainEvent::ProjectCreated { .. }));
+        assert_eq!(project.git_remote_url.as_deref(), Some("git@x:y/loom"));
+        assert_eq!(registry.project(&project.id), Some(project.clone()));
+
+        let (renamed, event) = registry
+            .rename_project(&project.id, "Loom".into(), 3)
+            .unwrap();
+        assert_eq!(renamed.name, "Loom");
+        assert!(matches!(event, DomainEvent::ProjectUpdated { .. }));
+        assert!(matches!(
+            registry.rename_project(&ProjectId::mint(), "x".into(), 4),
+            Err(CommandError::NotFound(_))
+        ));
+    }
+
+    #[test]
+    fn a_project_supports_multiple_sources_on_different_hosts() {
+        let registry = registry();
+        let (first, _) = registry.enroll_host(None, "laptop".into(), 2).unwrap();
+        let (second, _) = registry.enroll_host(None, "desktop".into(), 2).unwrap();
+        let (project, _) = registry
+            .create_project("loom".into(), ProjectKind::Standard, None, 2)
+            .unwrap();
+
+        let (project, _) = registry
+            .add_project_source(&project.id, first.id.clone(), "/srv/loom".into(), None, 3)
+            .unwrap();
+        let (project, _) = registry
+            .add_project_source(
+                &project.id,
+                second.id.clone(),
+                "/home/me/loom".into(),
+                Some("git@x:y/loom".into()),
+                4,
+            )
+            .unwrap();
+
+        assert_eq!(project.sources.len(), 2);
+        assert!(project.sources[0].is_default);
+        assert!(!project.sources[1].is_default);
+        assert_eq!(project.sources[1].host_id, second.id);
+        assert_eq!(
+            project.sources[1].git_remote_url.as_deref(),
+            Some("git@x:y/loom")
+        );
+
+        // A source on an unknown host is rejected before anything is added.
+        assert!(matches!(
+            registry.add_project_source(&project.id, HostId::mint(), "/srv/x".into(), None, 5,),
+            Err(CommandError::NotFound(_))
+        ));
+
+        let source_id = project.sources[0].id.clone();
+        let (project, event) = registry
+            .remove_project_source(&project.id, &source_id, 6)
+            .unwrap()
+            .unwrap();
+        assert!(matches!(event, DomainEvent::ProjectUpdated { .. }));
+        assert_eq!(project.sources.len(), 1);
+        assert!(project.sources[0].is_default);
+        assert!(registry
+            .remove_project_source(&project.id, &source_id, 7)
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn a_project_with_a_thread_in_flight_cannot_be_archived() {
+        let registry = registry();
+        let project = personal(&registry);
+        let (thread, _) = registry
+            .create_thread(Some(project.clone()), None, None, 2)
+            .unwrap();
+        registry
+            .post_message(&thread.id, MessageRole::User, "hi".into(), 3)
+            .unwrap();
+        assert_eq!(
+            registry.thread(&thread.id).unwrap().status,
+            ThreadStatus::Working
+        );
+
+        // Refuse, never cascade: the running thread keeps its project.
+        assert!(matches!(
+            registry.archive_project(&project, 4),
+            Err(CommandError::Conflict(_))
+        ));
+        assert!(!registry.project(&project).unwrap().is_archived());
+        assert_eq!(registry.thread(&thread.id).unwrap().project_id, project);
+    }
+
+    #[test]
+    fn an_idle_thread_does_not_block_archiving_and_keeps_its_project() {
+        let registry = registry();
+        let project = personal(&registry);
+        let (thread, _) = registry
+            .create_thread(Some(project.clone()), None, None, 2)
+            .unwrap();
+        let (archived, event) = registry.archive_project(&project, 3).unwrap();
+        assert!(archived.is_archived());
+        assert!(matches!(event, DomainEvent::ProjectUpdated { .. }));
+        // No cascade: the idle thread still belongs to the project.
+        assert_eq!(registry.thread(&thread.id).unwrap().project_id, project);
+        assert_eq!(
+            registry.archive_project(&project, 4),
+            Err(CommandError::Domain(DomainError::Archived {
+                entity: "project"
+            }))
+        );
+    }
+
+    #[test]
+    fn a_project_list_is_stably_sorted_with_active_first() {
+        let registry = registry();
+        // The seeded personal project is created at t=1.
+        let (second, _) = registry
+            .create_project("b".into(), ProjectKind::Standard, None, 2)
+            .unwrap();
+        let (third, _) = registry
+            .create_project("c".into(), ProjectKind::Standard, None, 2)
+            .unwrap();
+        registry.archive_project(&second.id, 4).unwrap();
+
+        let listed = registry.projects();
+        assert_eq!(listed.len(), 3);
+        // Active projects first — the seeded one (oldest) then `third` — and
+        // the archived one last. `second` and `third` share a millisecond, so
+        // the id is what makes that order deterministic.
+        assert_eq!(listed[0].id, personal(&registry));
+        assert!(!listed[0].is_archived());
+        assert!(!listed[1].is_archived());
+        assert!(listed[2].is_archived());
+        assert_eq!(listed[2].id, second.id);
+        // `third` is the only other active project, so it is second.
+        assert_eq!(listed[1].id, third.id);
+
+        // Every call returns the same order, not a `HashMap` iteration order.
+        let again: Vec<ProjectId> = registry
+            .projects()
+            .into_iter()
+            .map(|project| project.id)
+            .collect();
+        assert_eq!(
+            again,
+            listed.iter().map(|p| p.id.clone()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn a_thread_cannot_be_created_in_an_archived_project_before_archived() {
+        let registry = registry();
+        let (project, _) = registry
+            .create_project("p".into(), ProjectKind::Standard, None, 2)
+            .unwrap();
+        registry.archive_project(&project.id, 3).unwrap();
+        assert!(matches!(
+            registry.create_thread(Some(project.id.clone()), None, None, 4),
+            Err(CommandError::Conflict(_))
+        ));
+        assert!(matches!(
+            registry.create_environment(
+                Some(project.id),
+                enrolled(&registry),
+                EnvironmentKind::Unmanaged,
+                Some("/srv/loom".into()),
+                5,
+            ),
+            Err(CommandError::Conflict(_))
         ));
     }
 
@@ -873,7 +1297,7 @@ mod tests {
         let host = enrolled(&registry);
         let (environment, _) = registry
             .create_environment(
-                None,
+                Some(personal(&registry)),
                 host,
                 EnvironmentKind::Unmanaged,
                 Some("/srv/loom".into()),
@@ -881,7 +1305,12 @@ mod tests {
             )
             .unwrap();
         let (thread, _) = registry
-            .create_thread(None, Some("t".into()), Some(environment.id.clone()), 4)
+            .create_thread(
+                Some(personal(&registry)),
+                Some("t".into()),
+                Some(environment.id.clone()),
+                4,
+            )
             .unwrap();
 
         let snapshot = registry.export();
@@ -930,7 +1359,9 @@ mod tests {
     #[test]
     fn replaying_a_status_change_twice_lands_on_the_same_status() {
         let registry = registry();
-        let (thread, _) = registry.create_thread(None, None, None, 2).unwrap();
+        let (thread, _) = registry
+            .create_thread(Some(personal(&registry)), None, None, 2)
+            .unwrap();
         let event = DomainEvent::ThreadStatusChanged {
             thread_id: thread.id.clone(),
             project_id: thread.project_id.clone(),

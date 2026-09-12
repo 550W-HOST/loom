@@ -83,7 +83,7 @@ fn start_turn(state: &AppState, workspace: &Path, content: &str) -> ThreadId {
     let (environment, _) = state
         .registry
         .create_environment(
-            None,
+            Some(state.registry.personal_project_id()),
             host_id,
             loom_domain::EnvironmentKind::Unmanaged,
             Some(workspace.to_string_lossy().into_owned()),
@@ -93,7 +93,7 @@ fn start_turn(state: &AppState, workspace: &Path, content: &str) -> ThreadId {
     let (thread, created) = state
         .registry
         .create_thread(
-            None,
+            Some(state.registry.personal_project_id()),
             Some("turn".into()),
             Some(environment.id),
             loom_relay::now_ms(),
@@ -660,7 +660,7 @@ async fn a_managed_environment_is_provisioned_by_the_daemon() {
     let (environment, _) = state
         .registry
         .create_environment(
-            None,
+            Some(state.registry.personal_project_id()),
             host_id,
             EnvironmentKind::Managed,
             None,
@@ -719,7 +719,7 @@ async fn a_failing_provision_records_the_daemon_reason() {
     let (environment, _) = state
         .registry
         .create_environment(
-            None,
+            Some(state.registry.personal_project_id()),
             host_id,
             EnvironmentKind::Managed,
             None,

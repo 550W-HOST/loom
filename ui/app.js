@@ -32591,11 +32591,13 @@ var els = {
   composer: document.getElementById("composer"),
   message: document.getElementById("message"),
   newThread: document.getElementById("new-thread"),
+  project: document.getElementById("project"),
   threadHeader: document.getElementById("thread-header"),
   threadList: document.getElementById("thread-list"),
   timeline: document.getElementById("timeline")
 };
 var threads = [];
+var projects = [];
 var current = null;
 function setConnection(state, message) {
   els.connection.className = `status status--${state}`;
@@ -32718,12 +32720,30 @@ async function refreshThreads() {
   threads = Array.isArray(body.threads) ? body.threads : [];
   renderSidebar();
 }
+async function refreshProjects() {
+  const body = await api("/api/v1/projects");
+  projects = (Array.isArray(body.projects) ? body.projects : []).filter(
+    (project) => project.archived_at_ms == null
+  );
+  els.project.replaceChildren(
+    ...projects.map((project) => {
+      const option = document.createElement("option");
+      option.value = project.id;
+      option.textContent = project.name;
+      return option;
+    })
+  );
+  els.newThread.disabled = projects.length === 0;
+  els.newThread.title = projects.length === 0 ? "Create a project before opening a thread" : "New thread";
+}
 els.newThread.addEventListener("click", async () => {
+  const projectId = els.project.value;
+  if (!projectId) return;
   els.newThread.disabled = true;
   try {
     const body = await api("/api/v1/threads", {
       method: "POST",
-      body: "{}"
+      body: JSON.stringify({ project_id: projectId })
     });
     threads = [body.thread, ...threads.filter((thread) => thread.id !== body.thread.id)];
     renderSidebar();
@@ -32736,7 +32756,7 @@ els.newThread.addEventListener("click", async () => {
       setConnection("offline", error62 instanceof Error ? error62.message : String(error62));
     }
   } finally {
-    els.newThread.disabled = false;
+    els.newThread.disabled = projects.length === 0;
   }
 });
 els.composer.addEventListener("submit", async (event) => {
@@ -32761,7 +32781,7 @@ els.composer.addEventListener("submit", async (event) => {
 });
 async function main() {
   try {
-    await refreshThreads();
+    await Promise.all([refreshProjects(), refreshThreads()]);
     setConnection("offline", "idle");
     if (threads[0]) await openThread(threads[0].id);
     else renderHeader(null);

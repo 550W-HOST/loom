@@ -23,6 +23,7 @@ on it and it can be validated on its own.
 - [x] `loom-relay-hub` — rooms, idempotent fan-out, backpressure signal
 - [x] `loom-server` — HTTP + WebSocket surface; publish reaches subscribers through the log
 - [x] `loom-domain` — projects, threads, hosts and environments as pure types and invariants
+- [x] Managed projects: create / list / rename / archive / sources over HTTP, with threads and environments naming their project (`docs/projects.md`)
 - [x] Server-only startup and an independently stoppable local daemon (`loom-daemon`)
 - [x] `loom-provider-protocol` — the server↔daemon provider contract, plus a Pi bridge in `loom-daemon`: dispatch through the relay, replayable run events, and a terminal-state guarantee
 - [x] The event model aligned with bb's `ThreadEvent` contract (35 provider event types) — see [`docs/event-model.md`](docs/event-model.md)
@@ -57,6 +58,7 @@ docs/
   event-model.md
   domain-persistence.md
   process-model.md
+  projects.md
   provider-protocol.md
   redis-backend.md
   ui.md
@@ -137,9 +139,14 @@ publishes a typed `loom-domain` event through the relay:
 curl -X POST localhost:38886/api/v1/hosts \
   -H 'content-type: application/json' -d '{"name":"laptop"}'
 
+# List projects. The server seeds one personal project on first start; it is
+# an ordinary project from then on. A thread must name its project.
+curl localhost:38886/api/v1/projects
+
 # Create a thread; the `thread_created` event goes to the project's scope.
 curl -X POST localhost:38886/api/v1/threads \
-  -H 'content-type: application/json' -d '{}'
+  -H 'content-type: application/json' \
+  -d '{"project_id":"proj_..."}'
 
 # Message a thread; it appends and, from idle, starts a run. Both events go
 # to thread:{id}, in order. With a daemon connected, a `RunDispatch` is also

@@ -255,11 +255,13 @@ cargo run -p loom-server
 cargo run -p loom-daemon -- --server-url http://127.0.0.1:38886 --name laptop
 
 # Create a workspace pointing at an existing project directory, bind a thread
-# to it, then post a message. The provider runs in that directory.
+# to it, then post a message. The provider runs in that directory. Both the
+# environment and the thread name the project they belong to.
+curl localhost:38886/api/v1/projects     # pick a project_id
 curl -X POST localhost:38886/api/v1/environments -H 'content-type: application/json' \
-  -d '{"kind":"unmanaged","path":"/srv/projects/loom"}'
+  -d '{"kind":"unmanaged","path":"/srv/projects/loom","project_id":"proj_…"}'
 curl -X POST localhost:38886/api/v1/threads -H 'content-type: application/json' \
-  -d '{"environment_id":"env_…"}'
+  -d '{"project_id":"proj_…","environment_id":"env_…"}'
 curl -X POST localhost:38886/api/v1/threads/<thread>/messages \
   -H 'content-type: application/json' -d '{"content":"hello"}'
 curl 'localhost:38886/api/v1/runs'
