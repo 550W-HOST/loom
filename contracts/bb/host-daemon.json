@@ -13,7 +13,21 @@
     "d1": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d39"
+        "bridgeLaunch": {
+          "$ref": "#/$defs/d306"
+        },
+        "cwd": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "providerId": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "type": {
+          "const": "provider.usage",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -80,7 +94,25 @@
     "d102": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d151"
+        "command": {
+          "type": "string"
+        },
+        "path": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "query": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "type": {
+          "const": "search",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -93,7 +125,31 @@
     "d103": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d400"
+        "generation": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "instanceId": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "profile": {
+          "$ref": "#/$defs/d288"
+        },
+        "sourceId": {
+          "$ref": "#/$defs/d189"
+        },
+        "sourceProfileDirectory": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "type": "string"
+        },
+        "type": {
+          "const": "desktop.browser.import_cookies",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -108,7 +164,17 @@
     "d104": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d24"
+        "environmentId": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "type": {
+          "const": "workspace.pull_request",
+          "type": "string"
+        },
+        "workspaceContext": {
+          "$ref": "#/$defs/d422"
+        }
       },
       "required": [
         "environmentId",
@@ -120,7 +186,23 @@
     "d105": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d2"
+        "clientRequestId": {
+          "pattern": "^creq_[23456789abcdefghijkmnpqrstuvwxyz]{10}$",
+          "type": "string"
+        },
+        "content": {
+          "$ref": "#/$defs/d318"
+        },
+        "id": {
+          "type": "string"
+        },
+        "parentToolCallId": {
+          "type": "string"
+        },
+        "type": {
+          "const": "userMessage",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -180,7 +262,44 @@
     "d108": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d319"
+        "excludeNames": {
+          "items": {
+            "maxLength": 255,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 100,
+          "type": "array"
+        },
+        "includeDirectories": {
+          "type": "boolean"
+        },
+        "includeFiles": {
+          "type": "boolean"
+        },
+        "includeHidden": {
+          "type": "boolean"
+        },
+        "limit": {
+          "exclusiveMinimum": 0,
+          "maximum": 10000,
+          "type": "integer"
+        },
+        "path": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "query": {
+          "maxLength": 256,
+          "type": "string"
+        },
+        "respectGitIgnore": {
+          "type": "boolean"
+        },
+        "type": {
+          "const": "host.list_paths",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -345,7 +464,30 @@
     "d113": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d276"
+        "generation": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "instanceId": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "tabId": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "threadId": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "type": {
+          "const": "desktop.browser.capture_tab",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -557,7 +699,43 @@
     "d122": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d195"
+        "controllerLabel": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "expiresAt": {
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991,
+          "type": "integer"
+        },
+        "generation": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "instanceId": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "leaseId": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "tabIds": {
+          "$ref": "#/$defs/d230"
+        },
+        "threadId": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "type": {
+          "const": "desktop.browser.acquire_control",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -623,7 +801,21 @@
     "d126": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d377"
+        "path": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "recursive": {
+          "type": "boolean"
+        },
+        "rootPath": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "type": {
+          "const": "host.mkdir",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -711,7 +903,37 @@
     "d13": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d28"
+        "artifact": {
+          "$ref": "#/$defs/d5"
+        },
+        "callId": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "generation": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "input": {
+          "$ref": "#/$defs/d372"
+        },
+        "method": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "pluginId": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "timeoutMs": {
+          "exclusiveMinimum": 0,
+          "maximum": 2147483647,
+          "type": "integer"
+        },
+        "type": {
+          "const": "plugin.host.call",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -760,7 +982,21 @@
     "d132": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d418"
+        "bridgeLaunch": {
+          "$ref": "#/$defs/d306"
+        },
+        "cwd": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "providerId": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "type": {
+          "const": "provider.health",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -772,7 +1008,45 @@
     "d133": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d127"
+        "cwd": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "name": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "rootPath": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "scope": {
+          "enum": [
+            "bb-user",
+            "bb-project",
+            "provider-user",
+            "provider-project"
+          ],
+          "type": "string"
+        },
+        "type": {
+          "const": "host.delete_skill",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -819,7 +1093,13 @@
     "d137": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d30"
+        "skills": {
+          "$ref": "#/$defs/d420"
+        },
+        "type": {
+          "const": "host.install_global_skills",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -1068,7 +1348,61 @@
     "d148": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d376"
+        "description": {
+          "type": "string"
+        },
+        "error": {
+          "type": "string"
+        },
+        "familyId": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "outputFile": {
+          "type": "string"
+        },
+        "parentToolCallId": {
+          "type": "string"
+        },
+        "presentation": {
+          "$ref": "#/$defs/d414"
+        },
+        "skipTranscript": {
+          "type": "boolean"
+        },
+        "status": {
+          "enum": [
+            "pending",
+            "completed",
+            "failed",
+            "interrupted"
+          ],
+          "type": "string"
+        },
+        "summary": {
+          "type": "string"
+        },
+        "taskStatus": {
+          "$ref": "#/$defs/d20"
+        },
+        "taskType": {
+          "type": "string"
+        },
+        "type": {
+          "const": "backgroundTask",
+          "type": "string"
+        },
+        "usage": {
+          "$ref": "#/$defs/d322"
+        },
+        "workflow": {
+          "$ref": "#/$defs/d397"
+        },
+        "workflowName": {
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -1113,7 +1447,22 @@
     "d15": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d280"
+        "id": {
+          "type": "string"
+        },
+        "parentToolCallId": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "presentation": {
+          "$ref": "#/$defs/d414"
+        },
+        "type": {
+          "const": "imageView",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -1206,7 +1555,29 @@
     "d154": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d112"
+        "environmentId": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "method": {
+          "enum": [
+            "merge",
+            "squash",
+            "rebase"
+          ],
+          "type": "string"
+        },
+        "operation": {
+          "const": "merge",
+          "type": "string"
+        },
+        "type": {
+          "const": "workspace.pull_request_action",
+          "type": "string"
+        },
+        "workspaceContext": {
+          "$ref": "#/$defs/d422"
+        }
       },
       "required": [
         "environmentId",
@@ -1235,7 +1606,22 @@
     "d156": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d206"
+        "environmentId": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "expectedTurnId": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "threadId": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "type": {
+          "const": "thread.plan.cancel",
+          "type": "string"
+        }
       },
       "required": [
         "environmentId",
@@ -1355,7 +1741,22 @@
     "d16": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d38"
+        "destinationPath": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "rootPath": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "sourcePath": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "type": {
+          "const": "host.move_path",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -1517,7 +1918,25 @@
     "d167": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d145"
+        "ifNoneMatch": {
+          "$ref": "#/$defs/d234"
+        },
+        "path": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "ref": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "rootPath": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "type": {
+          "const": "host.read_file",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -1544,7 +1963,31 @@
     "d169": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d47"
+        "content": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "id": {
+          "type": "string"
+        },
+        "parentToolCallId": {
+          "type": "string"
+        },
+        "presentation": {
+          "$ref": "#/$defs/d414"
+        },
+        "summary": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "type": {
+          "const": "reasoning",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -1679,7 +2122,25 @@
     "d176": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d381"
+        "dotfiles": {
+          "enum": [
+            "allow",
+            "deny"
+          ],
+          "type": "string"
+        },
+        "path": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "rootPath": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "type": {
+          "const": "host.read_file_relative",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -1890,7 +2351,51 @@
     "d187": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d351"
+        "arguments": {
+          "additionalProperties": {},
+          "propertyNames": {
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "durationMs": {
+          "type": "number"
+        },
+        "error": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "parentToolCallId": {
+          "type": "string"
+        },
+        "presentation": {
+          "$ref": "#/$defs/d414"
+        },
+        "result": {},
+        "server": {
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "pending",
+            "completed",
+            "failed",
+            "interrupted"
+          ],
+          "type": "string"
+        },
+        "tool": {
+          "type": "string"
+        },
+        "truncation": {
+          "$ref": "#/$defs/d51"
+        },
+        "type": {
+          "const": "toolCall",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -2246,7 +2751,25 @@
     "d199": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d131"
+        "bridgeLaunch": {
+          "$ref": "#/$defs/d306"
+        },
+        "cwd": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "providerId": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "requirement": {
+          "const": "thread_rewind",
+          "type": "string"
+        },
+        "type": {
+          "const": "provider.installation.status",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -2445,7 +2968,30 @@
     "d207": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d259"
+        "generation": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "instanceId": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "tabId": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "threadId": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "type": {
+          "const": "desktop.browser.close_tab",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -2459,7 +3005,32 @@
     "d208": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d193"
+        "id": {
+          "type": "string"
+        },
+        "parentToolCallId": {
+          "type": "string"
+        },
+        "presentation": {
+          "$ref": "#/$defs/d414"
+        },
+        "queries": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "resultText": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "type": {
+          "const": "webSearch",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -2490,7 +3061,27 @@
     "d21": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d256"
+        "bridgeLaunch": {
+          "$ref": "#/$defs/d306"
+        },
+        "environmentId": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "options": {
+          "$ref": "#/$defs/d337"
+        },
+        "resumeContext": {
+          "$ref": "#/$defs/d191"
+        },
+        "threadId": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "type": {
+          "const": "thread.goal.clear",
+          "type": "string"
+        }
       },
       "required": [
         "environmentId",
@@ -2583,7 +3174,22 @@
     "d216": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d205"
+        "environmentId": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "leaseId": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "threadId": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "type": {
+          "const": "thread.rewind.discard",
+          "type": "string"
+        }
       },
       "required": [
         "environmentId",
@@ -2596,7 +3202,25 @@
     "d217": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d281"
+        "environmentId": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "intent": {
+          "enum": [
+            "interrupt",
+            "release"
+          ],
+          "type": "string"
+        },
+        "threadId": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "type": {
+          "const": "thread.stop",
+          "type": "string"
+        }
       },
       "required": [
         "environmentId",
@@ -2746,7 +3370,21 @@
     "d225": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d118"
+        "bridgeLaunch": {
+          "$ref": "#/$defs/d306"
+        },
+        "cwd": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "providerId": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "type": {
+          "const": "provider.list_models",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -2955,7 +3593,22 @@
     "d233": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d369"
+        "projectSlug": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "remoteUrl": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "targetPath": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "type": {
+          "const": "project.clone",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -3006,7 +3659,25 @@
     "d236": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d67"
+        "environmentId": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "maxFiles": {
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991,
+          "type": "integer"
+        },
+        "target": {
+          "$ref": "#/$defs/d321"
+        },
+        "type": {
+          "const": "workspace.diffFiles",
+          "type": "string"
+        },
+        "workspaceContext": {
+          "$ref": "#/$defs/d422"
+        }
       },
       "required": [
         "environmentId",
@@ -3090,7 +3761,78 @@
     "d241": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d87"
+        "bridgeLaunch": {
+          "$ref": "#/$defs/d306"
+        },
+        "contributedEnv": {
+          "$ref": "#/$defs/d120"
+        },
+        "disallowedTools": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "dynamicTools": {
+          "$ref": "#/$defs/d174"
+        },
+        "environmentId": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "fork": {
+          "$ref": "#/$defs/d128"
+        },
+        "injectedSkillSources": {
+          "$ref": "#/$defs/d95"
+        },
+        "input": {
+          "$ref": "#/$defs/d247"
+        },
+        "inputGroups": {
+          "$ref": "#/$defs/d379"
+        },
+        "instructionMode": {
+          "enum": [
+            "append",
+            "replace"
+          ],
+          "type": "string"
+        },
+        "instructions": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "options": {
+          "$ref": "#/$defs/d337"
+        },
+        "projectId": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "providerId": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "requestId": {
+          "pattern": "^creq_[23456789abcdefghijkmnpqrstuvwxyz]{10}$",
+          "type": "string"
+        },
+        "threadId": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "threadStoragePath": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "type": {
+          "const": "thread.start",
+          "type": "string"
+        },
+        "workspaceContext": {
+          "$ref": "#/$defs/d422"
+        }
       },
       "required": [
         "environmentId",
@@ -3137,7 +3879,20 @@
     "d244": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d219"
+        "type": {
+          "const": "image",
+          "type": "string"
+        },
+        "url": {
+          "format": "uri",
+          "type": "string"
+        },
+        "visibility": {
+          "enum": [
+            "agent-only"
+          ],
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -3212,7 +3967,41 @@
     "d249": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d152"
+        "background": {
+          "type": "boolean"
+        },
+        "childRef": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "parentToolCallId": {
+          "type": "string"
+        },
+        "presentation": {
+          "$ref": "#/$defs/d414"
+        },
+        "status": {
+          "enum": [
+            "pending",
+            "completed",
+            "failed",
+            "interrupted"
+          ],
+          "type": "string"
+        },
+        "summary": {
+          "type": "string"
+        },
+        "type": {
+          "const": "delegation",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -3470,7 +4259,31 @@
     "d257": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d310"
+        "environmentId": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "maxBytesPerFile": {
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991,
+          "type": "integer"
+        },
+        "paths": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "target": {
+          "$ref": "#/$defs/d321"
+        },
+        "type": {
+          "const": "workspace.diffPatch",
+          "type": "string"
+        },
+        "workspaceContext": {
+          "$ref": "#/$defs/d422"
+        }
       },
       "required": [
         "environmentId",
@@ -3914,7 +4727,38 @@
     "d275": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d329"
+        "excludeNames": {
+          "items": {
+            "maxLength": 255,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 100,
+          "type": "array"
+        },
+        "includeHidden": {
+          "type": "boolean"
+        },
+        "limit": {
+          "exclusiveMinimum": 0,
+          "maximum": 10000,
+          "type": "integer"
+        },
+        "path": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "query": {
+          "maxLength": 256,
+          "type": "string"
+        },
+        "respectGitIgnore": {
+          "type": "boolean"
+        },
+        "type": {
+          "const": "host.list_files",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -4061,7 +4905,45 @@
     "d282": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d110"
+        "cmd": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "mode": {
+          "enum": [
+            "content",
+            "path",
+            "list"
+          ],
+          "type": "string"
+        },
+        "parentToolCallId": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "presentation": {
+          "$ref": "#/$defs/d414"
+        },
+        "query": {
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "pending",
+            "completed",
+            "failed",
+            "interrupted"
+          ],
+          "type": "string"
+        },
+        "type": {
+          "const": "search",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -4157,7 +5039,22 @@
     "d287": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d7"
+        "id": {
+          "type": "string"
+        },
+        "parentToolCallId": {
+          "type": "string"
+        },
+        "presentation": {
+          "$ref": "#/$defs/d414"
+        },
+        "text": {
+          "type": "string"
+        },
+        "type": {
+          "const": "agentMessage",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -4179,7 +5076,30 @@
     "d289": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d313"
+        "generation": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "instanceId": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "tabId": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "threadId": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "type": {
+          "const": "desktop.browser.reveal_tab",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -4193,7 +5113,28 @@
     "d29": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d10"
+        "cwd": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "nativeRoots": {
+          "$ref": "#/$defs/d75"
+        },
+        "providerId": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "type": {
+          "const": "host.list_skills",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -4278,7 +5219,49 @@
     "d291": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d266"
+        "aggregatedOutput": {
+          "type": "string"
+        },
+        "approvalStatus": {
+          "$ref": "#/$defs/d302"
+        },
+        "command": {
+          "type": "string"
+        },
+        "cwd": {
+          "type": "string"
+        },
+        "durationMs": {
+          "type": "number"
+        },
+        "exitCode": {
+          "type": "number"
+        },
+        "id": {
+          "type": "string"
+        },
+        "parentToolCallId": {
+          "type": "string"
+        },
+        "presentation": {
+          "$ref": "#/$defs/d414"
+        },
+        "status": {
+          "enum": [
+            "pending",
+            "completed",
+            "failed",
+            "interrupted"
+          ],
+          "type": "string"
+        },
+        "truncation": {
+          "$ref": "#/$defs/d51"
+        },
+        "type": {
+          "const": "commandExecution",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -4318,7 +5301,34 @@
     "d293": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d421"
+        "approvalStatus": {
+          "$ref": "#/$defs/d302"
+        },
+        "changes": {
+          "$ref": "#/$defs/d388"
+        },
+        "id": {
+          "type": "string"
+        },
+        "parentToolCallId": {
+          "type": "string"
+        },
+        "presentation": {
+          "$ref": "#/$defs/d414"
+        },
+        "status": {
+          "enum": [
+            "pending",
+            "completed",
+            "failed",
+            "interrupted"
+          ],
+          "type": "string"
+        },
+        "type": {
+          "const": "fileChange",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -4428,7 +5438,29 @@
     "d299": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d292"
+        "bridgeLaunch": {
+          "$ref": "#/$defs/d306"
+        },
+        "environmentId": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "providerId": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "providerThreadId": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "threadId": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "type": {
+          "const": "thread.unarchive",
+          "type": "string"
+        }
       },
       "required": [
         "environmentId",
@@ -4534,7 +5566,34 @@
     "d303": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d54"
+        "explanation": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "parentToolCallId": {
+          "type": "string"
+        },
+        "presentation": {
+          "$ref": "#/$defs/d414"
+        },
+        "status": {
+          "enum": [
+            "pending",
+            "completed",
+            "failed",
+            "interrupted"
+          ],
+          "type": "string"
+        },
+        "steps": {
+          "$ref": "#/$defs/d228"
+        },
+        "type": {
+          "const": "planSteps",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -4630,7 +5689,25 @@
     "d307": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d140"
+        "generation": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "instanceId": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "threadId": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "type": {
+          "const": "desktop.browser.list_tabs",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -4750,7 +5827,19 @@
     "d311": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d358"
+        "id": {
+          "type": "string"
+        },
+        "parentToolCallId": {
+          "type": "string"
+        },
+        "presentation": {
+          "$ref": "#/$defs/d414"
+        },
+        "type": {
+          "const": "contextCompaction",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -4761,7 +5850,19 @@
     "d312": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d391"
+        "command": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "type": {
+          "const": "read",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -4800,7 +5901,33 @@
     "d314": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d117"
+        "generation": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "instanceId": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "leaseId": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "tabIds": {
+          "$ref": "#/$defs/d230"
+        },
+        "threadId": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "type": {
+          "const": "desktop.browser.open_connection",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -4823,7 +5950,21 @@
     "d316": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d201"
+        "path": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "remoteRefresh": {
+          "enum": [
+            "background",
+            "blocking"
+          ],
+          "type": "string"
+        },
+        "type": {
+          "const": "host.inspect_git_source",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -5006,7 +6147,21 @@
     "d326": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d188"
+        "environmentId": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "operation": {
+          "const": "ready",
+          "type": "string"
+        },
+        "type": {
+          "const": "workspace.pull_request_action",
+          "type": "string"
+        },
+        "workspaceContext": {
+          "$ref": "#/$defs/d422"
+        }
       },
       "required": [
         "environmentId",
@@ -5083,7 +6238,44 @@
     "d33": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d273"
+        "generation": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "instanceId": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "presentation": {
+          "enum": [
+            "hidden",
+            "reveal"
+          ],
+          "type": "string"
+        },
+        "profile": {
+          "$ref": "#/$defs/d288"
+        },
+        "tabId": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "threadId": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "type": {
+          "const": "desktop.browser.create_tab",
+          "type": "string"
+        },
+        "url": {
+          "maxLength": 32768,
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -5188,7 +6380,28 @@
     "d334": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d37"
+        "cwd": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "nativeRoots": {
+          "$ref": "#/$defs/d75"
+        },
+        "providerId": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "type": {
+          "const": "host.list_commands",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -5289,7 +6502,30 @@
     "d34": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d340"
+        "mimeType": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "sizeBytes": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "type": {
+          "const": "localFile",
+          "type": "string"
+        },
+        "visibility": {
+          "enum": [
+            "agent-only"
+          ],
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -5400,7 +6636,30 @@
     "d346": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d161"
+        "generation": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "instanceId": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "leaseId": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "threadId": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "type": {
+          "const": "desktop.browser.release_control",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -5430,7 +6689,40 @@
     "d348": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d106"
+        "id": {
+          "type": "string"
+        },
+        "parentToolCallId": {
+          "type": "string"
+        },
+        "pattern": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "presentation": {
+          "$ref": "#/$defs/d414"
+        },
+        "prompt": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "resultText": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "type": {
+          "const": "webFetch",
+          "type": "string"
+        },
+        "url": {
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -5558,7 +6850,42 @@
     "d352": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d387"
+        "content": {
+          "type": "string"
+        },
+        "contentEncoding": {
+          "enum": [
+            "utf8",
+            "base64"
+          ],
+          "type": "string"
+        },
+        "createParents": {
+          "type": "boolean"
+        },
+        "expectedSha256": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "mode": {
+          "maximum": 511,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "path": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "rootPath": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "type": {
+          "const": "host.write_file",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -5572,7 +6899,55 @@
     "d353": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d229"
+        "error": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "parentToolCallId": {
+          "type": "string"
+        },
+        "path": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "presentation": {
+          "$ref": "#/$defs/d414"
+        },
+        "prompt": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "result": {
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "pending",
+            "completed",
+            "failed",
+            "interrupted"
+          ],
+          "type": "string"
+        },
+        "transparentBackground": {
+          "type": "boolean"
+        },
+        "truncation": {
+          "$ref": "#/$defs/d51"
+        },
+        "type": {
+          "const": "imageGeneration",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -5690,7 +7065,18 @@
     "d360": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d327"
+        "path": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "rootPath": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "type": {
+          "const": "host.file_metadata",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -5701,7 +7087,22 @@
     "d361": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d209"
+        "mentions": {
+          "$ref": "#/$defs/d98"
+        },
+        "text": {
+          "type": "string"
+        },
+        "type": {
+          "const": "text",
+          "type": "string"
+        },
+        "visibility": {
+          "enum": [
+            "agent-only"
+          ],
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -5759,7 +7160,21 @@
     "d365": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d183"
+        "path": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "recursive": {
+          "type": "boolean"
+        },
+        "rootPath": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "type": {
+          "const": "host.remove_path",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -5786,7 +7201,22 @@
     "d367": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d335"
+        "id": {
+          "type": "string"
+        },
+        "parentToolCallId": {
+          "type": "string"
+        },
+        "presentation": {
+          "$ref": "#/$defs/d414"
+        },
+        "text": {
+          "type": "string"
+        },
+        "type": {
+          "const": "plan",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -6345,7 +7775,32 @@
     "d386": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d170"
+        "bridgeLaunch": {
+          "$ref": "#/$defs/d306"
+        },
+        "environmentId": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "providerId": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "providerThreadId": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "threadId": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "type": {
+          "const": "thread.archive",
+          "type": "string"
+        },
+        "workspaceContext": {
+          "$ref": "#/$defs/d422"
+        }
       },
       "required": [
         "environmentId",
@@ -6781,7 +8236,33 @@
     "d405": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d235"
+        "limit": {
+          "exclusiveMinimum": 0,
+          "maximum": 1000,
+          "type": "integer"
+        },
+        "path": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "query": {
+          "maxLength": 256,
+          "type": "string"
+        },
+        "remoteRefresh": {
+          "enum": [
+            "background",
+            "none"
+          ],
+          "type": "string"
+        },
+        "selectedBranch": {
+          "type": "string"
+        },
+        "type": {
+          "const": "host.list_branch_options",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -7072,7 +8553,37 @@
     "d416": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d63"
+        "environmentId": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "interactionId": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "providerId": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "providerRequestId": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "providerThreadId": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "resolution": {
+          "$ref": "#/$defs/d80"
+        },
+        "threadId": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "type": {
+          "const": "interactive.resolve",
+          "type": "string"
+        }
       },
       "required": [
         "environmentId",
@@ -7216,7 +8727,21 @@
     "d423": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d23"
+        "environmentId": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "message": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "type": {
+          "const": "workspace.commit",
+          "type": "string"
+        },
+        "workspaceContext": {
+          "$ref": "#/$defs/d422"
+        }
       },
       "required": [
         "environmentId",
@@ -7308,7 +8833,20 @@
     "d427": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d390"
+        "generation": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "instanceId": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "type": {
+          "const": "desktop.browser.list_import_sources",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -7357,7 +8895,41 @@
     "d429": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d428"
+        "content": {
+          "maxLength": 1000000,
+          "minLength": 1,
+          "type": "string"
+        },
+        "cwd": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "expectedSha256": {
+          "pattern": "^[a-f0-9]{64}$",
+          "type": "string"
+        },
+        "name": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "scope": {
+          "enum": [
+            "bb-user",
+            "bb-project"
+          ],
+          "type": "string"
+        },
+        "type": {
+          "const": "host.write_skill",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -7526,7 +9098,24 @@
     "d50": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d70"
+        "environmentId": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "initiator": {
+          "$ref": "#/$defs/d196"
+        },
+        "path": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "setupScriptTimeoutMs": {
+          "$ref": "#/$defs/d359"
+        },
+        "type": {
+          "const": "environment.attach",
+          "type": "string"
+        }
       },
       "required": [
         "environmentId",
@@ -7555,7 +9144,73 @@
     "d52": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d407"
+        "bridgeLaunch": {
+          "$ref": "#/$defs/d306"
+        },
+        "contributedEnv": {
+          "$ref": "#/$defs/d120"
+        },
+        "disallowedTools": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "dynamicTools": {
+          "$ref": "#/$defs/d174"
+        },
+        "environmentId": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "injectedSkillSources": {
+          "$ref": "#/$defs/d95"
+        },
+        "instructionMode": {
+          "enum": [
+            "append",
+            "replace"
+          ],
+          "type": "string"
+        },
+        "instructions": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "leaseId": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "options": {
+          "$ref": "#/$defs/d337"
+        },
+        "projectId": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "providerId": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "retainThroughProviderCheckpoint": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "sourceProviderThreadId": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "threadId": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "type": {
+          "const": "thread.rewind.prepare",
+          "type": "string"
+        },
+        "workspaceContext": {
+          "$ref": "#/$defs/d422"
+        }
       },
       "required": [
         "environmentId",
@@ -7580,7 +9235,19 @@
     "d53": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d342"
+        "command": {
+          "type": "string"
+        },
+        "path": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "type": {
+          "const": "listFiles",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -7680,7 +9347,35 @@
     "d57": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d404"
+        "environmentId": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "maxDiffBytes": {
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991,
+          "type": "integer"
+        },
+        "maxFileListBytes": {
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991,
+          "type": "integer"
+        },
+        "maxUntrackedFiles": {
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991,
+          "type": "integer"
+        },
+        "target": {
+          "$ref": "#/$defs/d321"
+        },
+        "type": {
+          "const": "workspace.diff",
+          "type": "string"
+        },
+        "workspaceContext": {
+          "$ref": "#/$defs/d422"
+        }
       },
       "required": [
         "environmentId",
@@ -7708,7 +9403,34 @@
     "d59": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d270"
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "parentToolCallId": {
+          "type": "string"
+        },
+        "payload": {
+          "$ref": "#/$defs/d372"
+        },
+        "presentation": {
+          "$ref": "#/$defs/d414"
+        },
+        "status": {
+          "enum": [
+            "pending",
+            "completed",
+            "failed",
+            "interrupted"
+          ],
+          "type": "string"
+        },
+        "type": {
+          "const": "extension",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -7723,7 +9445,33 @@
     "d6": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d149"
+        "kind": {
+          "enum": [
+            "setup",
+            "teardown"
+          ],
+          "type": "string"
+        },
+        "operationId": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "path": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "resumeOnly": {
+          "type": "boolean"
+        },
+        "timeoutMs": {
+          "exclusiveMinimum": 0,
+          "maximum": 2147483647,
+          "type": "integer"
+        },
+        "type": {
+          "const": "environment.hook.run",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -7847,7 +9595,34 @@
     "d64": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d399"
+        "cmd": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "parentToolCallId": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "presentation": {
+          "$ref": "#/$defs/d414"
+        },
+        "status": {
+          "enum": [
+            "pending",
+            "completed",
+            "failed",
+            "interrupted"
+          ],
+          "type": "string"
+        },
+        "type": {
+          "const": "fileRead",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -7925,7 +9700,18 @@
     "d69": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d36"
+        "generation": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "pluginId": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "type": {
+          "const": "plugin.host.dispose",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -7992,7 +9778,22 @@
     "d72": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d31"
+        "callId": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "generation": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "pluginId": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "type": {
+          "const": "plugin.host.cancel",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -8060,7 +9861,21 @@
     "d76": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d343"
+        "environmentId": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "operation": {
+          "const": "draft",
+          "type": "string"
+        },
+        "type": {
+          "const": "workspace.pull_request_action",
+          "type": "string"
+        },
+        "workspaceContext": {
+          "$ref": "#/$defs/d422"
+        }
       },
       "required": [
         "environmentId",
@@ -8073,7 +9888,40 @@
     "d77": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d56"
+        "bridgeLaunch": {
+          "$ref": "#/$defs/d306"
+        },
+        "environmentId": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "input": {
+          "$ref": "#/$defs/d135"
+        },
+        "inputGroups": {
+          "$ref": "#/$defs/d379"
+        },
+        "options": {
+          "$ref": "#/$defs/d337"
+        },
+        "requestId": {
+          "pattern": "^creq_[23456789abcdefghijkmnpqrstuvwxyz]{10}$",
+          "type": "string"
+        },
+        "resumeContext": {
+          "$ref": "#/$defs/d191"
+        },
+        "target": {
+          "$ref": "#/$defs/d114"
+        },
+        "threadId": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "type": {
+          "const": "turn.submit",
+          "type": "string"
+        }
       },
       "required": [
         "environmentId",
@@ -8185,7 +10033,13 @@
     "d84": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d297"
+        "names": {
+          "$ref": "#/$defs/d411"
+        },
+        "type": {
+          "const": "host.global_skills_status",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -8342,7 +10196,30 @@
     "d88": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d298"
+        "environmentId": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "maxUntrackedLineStatBytes": {
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991,
+          "type": "integer"
+        },
+        "maxUntrackedLineStatFiles": {
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991,
+          "type": "integer"
+        },
+        "mergeBaseBranch": {
+          "type": "string"
+        },
+        "type": {
+          "const": "workspace.status",
+          "type": "string"
+        },
+        "workspaceContext": {
+          "$ref": "#/$defs/d422"
+        }
       },
       "required": [
         "environmentId",
@@ -8430,7 +10307,28 @@
     "d91": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d162"
+        "action": {
+          "enum": [
+            "install",
+            "update"
+          ],
+          "type": "string"
+        },
+        "bridgeLaunch": {
+          "$ref": "#/$defs/d306"
+        },
+        "cwd": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "providerId": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "type": {
+          "const": "provider.installation.run",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -8508,7 +10406,19 @@
     "d96": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d49"
+        "path": {
+          "type": "string"
+        },
+        "type": {
+          "const": "localImage",
+          "type": "string"
+        },
+        "visibility": {
+          "enum": [
+            "agent-only"
+          ],
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -8519,7 +10429,22 @@
     "d97": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d82"
+        "environmentId": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "threadId": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "title": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "type": {
+          "const": "thread.rename",
+          "type": "string"
+        }
       },
       "required": [
         "environmentId",
@@ -9389,7 +11314,18 @@
                 {
                   "additionalProperties": false,
                   "properties": {
-                    "$ref": "#/$defs/d141"
+                    "command": {
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "provider": {
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "type": {
+                      "const": "started",
+                      "type": "string"
+                    }
                   },
                   "required": [
                     "type",
@@ -9401,7 +11337,24 @@
                 {
                   "additionalProperties": false,
                   "properties": {
-                    "$ref": "#/$defs/d46"
+                    "provider": {
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "stream": {
+                      "enum": [
+                        "stdout",
+                        "stderr"
+                      ],
+                      "type": "string"
+                    },
+                    "text": {
+                      "type": "string"
+                    },
+                    "type": {
+                      "const": "output",
+                      "type": "string"
+                    }
                   },
                   "required": [
                     "type",
@@ -9414,7 +11367,31 @@
                 {
                   "additionalProperties": false,
                   "properties": {
-                    "$ref": "#/$defs/d202"
+                    "exitCode": {
+                      "$ref": "#/$defs/d383"
+                    },
+                    "provider": {
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "signal": {
+                      "anyOf": [
+                        {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "success": {
+                      "type": "boolean"
+                    },
+                    "type": {
+                      "const": "completed",
+                      "type": "string"
+                    }
                   },
                   "required": [
                     "type",
@@ -9428,7 +11405,18 @@
                 {
                   "additionalProperties": false,
                   "properties": {
-                    "$ref": "#/$defs/d66"
+                    "message": {
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "provider": {
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "type": {
+                      "const": "error",
+                      "type": "string"
+                    }
                   },
                   "required": [
                     "type",
@@ -16018,7 +18006,18 @@
                                 "oneOf": [
                                   {
                                     "properties": {
-                                      "$ref": "#/$defs/d141"
+                                      "command": {
+                                        "minLength": 1,
+                                        "type": "string"
+                                      },
+                                      "provider": {
+                                        "minLength": 1,
+                                        "type": "string"
+                                      },
+                                      "type": {
+                                        "const": "started",
+                                        "type": "string"
+                                      }
                                     },
                                     "required": [
                                       "type",
@@ -16029,7 +18028,24 @@
                                   },
                                   {
                                     "properties": {
-                                      "$ref": "#/$defs/d46"
+                                      "provider": {
+                                        "minLength": 1,
+                                        "type": "string"
+                                      },
+                                      "stream": {
+                                        "enum": [
+                                          "stdout",
+                                          "stderr"
+                                        ],
+                                        "type": "string"
+                                      },
+                                      "text": {
+                                        "type": "string"
+                                      },
+                                      "type": {
+                                        "const": "output",
+                                        "type": "string"
+                                      }
                                     },
                                     "required": [
                                       "type",
@@ -16041,7 +18057,31 @@
                                   },
                                   {
                                     "properties": {
-                                      "$ref": "#/$defs/d202"
+                                      "exitCode": {
+                                        "$ref": "#/$defs/d383"
+                                      },
+                                      "provider": {
+                                        "minLength": 1,
+                                        "type": "string"
+                                      },
+                                      "signal": {
+                                        "anyOf": [
+                                          {
+                                            "minLength": 1,
+                                            "type": "string"
+                                          },
+                                          {
+                                            "type": "null"
+                                          }
+                                        ]
+                                      },
+                                      "success": {
+                                        "type": "boolean"
+                                      },
+                                      "type": {
+                                        "const": "completed",
+                                        "type": "string"
+                                      }
                                     },
                                     "required": [
                                       "type",
@@ -16054,7 +18094,18 @@
                                   },
                                   {
                                     "properties": {
-                                      "$ref": "#/$defs/d66"
+                                      "message": {
+                                        "minLength": 1,
+                                        "type": "string"
+                                      },
+                                      "provider": {
+                                        "minLength": 1,
+                                        "type": "string"
+                                      },
+                                      "type": {
+                                        "const": "error",
+                                        "type": "string"
+                                      }
                                     },
                                     "required": [
                                       "type",

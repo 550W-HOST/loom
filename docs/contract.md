@@ -105,14 +105,46 @@ validate a complete event with `validate_thread_event`.
 resolve, every JSON route has a response schema, and the validator accepts
 contract-shaped values and rejects malformed ones.
 
+## Request conformance is enforced at runtime
+
+A response can be asserted in a test because the test can see it. A request
+cannot: a handler that silently reshapes its body still returns the right JSON,
+so response assertions stay green while a client sending the contract's shape
+is rejected. That is exactly what happened to B1's write routes (W-554), which
+accepted `{ "project_id": ... }` while `threads.create` requires
+`{ "projectId", "origin", "input", "environment" }`.
+
+Two mechanisms close it:
+
+1. `loom-server` wires `validate_contract_request` as middleware. For every
+   contract route whose `request.source` is `json`, the parsed body is
+   validated before the handler runs, and a mismatch is a `422` in the uniform
+   `{ code, message }` error shape naming the offending field. Contract-external
+   loom routes are untouched. Live matching needs `Contract::match_route`, which
+   treats the contract's `:id` parameters as wildcards.
+2. Every implemented JSON-body route has a `validate_request_by_id` assertion in
+   `crates/contract/tests/conformance.rs`, and
+   `scripts/check-api-coverage.mjs` fails if such a route lacks one. That is the
+   regression guard: the coverage number cannot claim a request conformance the
+   tests do not prove.
+
+`Contract::shared()` returns the process-wide parse so the middleware does not
+re-parse the artifacts per request.
+
 ### Adding a route and keeping both sides consistent
 
 1. Run `scripts/export-bb-contract.sh <bb-checkout>` in the same change that
-   pulls a new bb revision. The artifacts and manifest update together.
-2. Implement the handler in `loom-server`.
+   pulls a new bb revision. The artifacts and manifest update together. The
+   checkout's HEAD must be the revision the manifest records; the manifest
+   stamps `git rev-parse HEAD`, so exporting from a different revision silently
+   changes the pin.
+2. Implement the handler in `loom-server`, taking the contract's request shape
+   directly (camelCase, required fields required). Do not accept a loom-only
+   dialect beside it.
 3. Add a conformance test that captures the handler's actual response and
-   asserts it against the contract route (see the module comment in
-   `crates/contract/tests/conformance.rs` for the exact harness).
+   asserts it against the contract route, and a `validate_request_by_id`
+   assertion for the request shape it accepts and one it must refuse (see the
+   module comment in `crates/contract/tests/conformance.rs`).
 4. If the route cannot conform, that is a **contract change, not a test
    waiver** — decide deliberately, document it here, and if it affects the UI
    surface reconsider the divergence.
@@ -134,3 +166,11 @@ side can never silently conform to a contract that has drifted.
 - **The export is large-ish (~1.2 MB) and generated.** Repeated substructures
   are interned into `$defs` to keep it reviewable; a diff that touches a domain
   shape will still touch several places.
+- **The `properties` key is never interned to a `$ref`.** The intern pass must
+  not treat a property map as a schema; before W-554 it did, turning 87 shapes
+  (the `threads.create`/`projects.create` request bodies among them) into
+  `"properties": { "$ref": ... }`. The Rust validator reads that as an empty
+  property set with a stray key, so every valid instance was reported as a
+  violation. `tools/contract-export/src/intern.ts` handles `properties`
+  specially and the conformance test `every_declared_schema_resolves` would not
+  have caught it.

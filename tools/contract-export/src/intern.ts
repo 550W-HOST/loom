@@ -132,30 +132,58 @@ export function internSubtrees(document: JsonValue): JsonValue {
   const nameOf = new Map<string, string>();
   solid.forEach((hash, position) => nameOf.set(hash, `d${position}`));
 
-  const render = (value: JsonValue, selfHash: string | null): JsonValue => {
+  /**
+   * Render a subtree, substituting interned `$ref`s only where the JSON
+   * Schema grammar allows a schema.
+   *
+   * The `properties` keyword is the reason this is not a plain tree walk: its
+   * value is a map of property names to schemas, not a schema itself. Treating
+   * it as one lets the intern pass replace the whole map with a `$ref` to a
+   * sibling schema it happens to be structurally equal to, producing
+   * `"properties": { "$ref": "..." }` — a shape no validator can read, and
+   * one that silently rejects every valid instance. So a `properties` map is
+   * emitted literally, while each of its values recurses as a schema.
+   */
+  const render = (
+    value: JsonValue,
+    selfHash: string | null,
+    asSchema: boolean,
+  ): JsonValue => {
     if (Array.isArray(value)) {
-      return value.map((item) => render(item, selfHash));
+      return value.map((item) => render(item, selfHash, true));
     }
     if (isContainer(value)) {
       const hash = idx.hashes.get(value as object)!;
-      if (hash !== selfHash && nameOf.has(hash)) {
+      if (asSchema && hash !== selfHash && nameOf.has(hash)) {
         return { $ref: `#/$defs/${nameOf.get(hash)}` } as JsonValue;
       }
       const out: { [key: string]: JsonValue } = {};
       for (const key of Object.keys(value).sort()) {
-        out[key] = render(value[key] as JsonValue, selfHash);
+        const child = value[key] as JsonValue;
+        if (key === "properties" && isContainer(child) && !Array.isArray(child)) {
+          const map: { [key: string]: JsonValue } = {};
+          for (const name of Object.keys(child).sort()) {
+            map[name] = render(child[name] as JsonValue, selfHash, true);
+          }
+          out[key] = map;
+          continue;
+        }
+        out[key] = render(child, selfHash, true);
       }
       return out;
     }
     return value;
   };
 
+  const renderSchema = (value: JsonValue, selfHash: string | null): JsonValue =>
+    render(value, selfHash, true);
+
   const defs: { [key: string]: JsonValue } = {};
   for (const hash of solid) {
-    defs[nameOf.get(hash)!] = render(idx.representative.get(hash)!, hash);
+    defs[nameOf.get(hash)!] = renderSchema(idx.representative.get(hash)!, hash);
   }
 
-  const root = render(document, null) as { [key: string]: JsonValue };
+  const root = renderSchema(document, null) as { [key: string]: JsonValue };
   root.$defs = defs;
   return root;
 }

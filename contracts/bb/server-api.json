@@ -113,7 +113,13 @@
     "d103": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d377"
+        "data": {
+          "$ref": "#/$defs/d34"
+        },
+        "type": {
+          "const": "thread/name/updated",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -140,7 +146,54 @@
     "d106": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d53"
+        "mimeType": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "path": {
+          "type": "string"
+        },
+        "sizeBytes": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "type": {
+          "const": "localFile",
+          "type": "string"
+        },
+        "visibility": {
+          "anyOf": [
+            {
+              "const": "agent-only",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
       },
       "required": [
         "type",
@@ -483,7 +536,13 @@
     "d12": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d573"
+        "data": {
+          "$ref": "#/$defs/d314"
+        },
+        "type": {
+          "const": "system/thread/interrupted",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -854,7 +913,13 @@
     "d140": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d687"
+        "data": {
+          "$ref": "#/$defs/d396"
+        },
+        "type": {
+          "const": "thread/context/cleared",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -1186,7 +1251,29 @@
     "d15": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d380"
+        "id": {
+          "type": "string"
+        },
+        "parentToolCallId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "presentation": {
+          "$ref": "#/$defs/d406"
+        },
+        "text": {
+          "type": "string"
+        },
+        "type": {
+          "const": "agentMessage",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -1537,7 +1624,19 @@
     },
     "d162": {
       "properties": {
-        "$ref": "#/$defs/d69"
+        "path": {
+          "type": "string"
+        },
+        "type": {
+          "const": "localImage",
+          "type": "string"
+        },
+        "visibility": {
+          "enum": [
+            "agent-only"
+          ],
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -1789,7 +1888,13 @@
     "d174": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d413"
+        "data": {
+          "$ref": "#/$defs/d256"
+        },
+        "type": {
+          "const": "provider/error",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -2011,7 +2116,75 @@
     "d190": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d650"
+        "error": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "parentToolCallId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "presentation": {
+          "$ref": "#/$defs/d406"
+        },
+        "prompt": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "result": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "status": {
+          "$ref": "#/$defs/d701"
+        },
+        "transparentBackground": {
+          "type": "boolean"
+        },
+        "truncation": {
+          "$ref": "#/$defs/d619"
+        },
+        "type": {
+          "const": "imageGeneration",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -2253,7 +2426,13 @@
     "d197": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d299"
+        "data": {
+          "$ref": "#/$defs/d534"
+        },
+        "type": {
+          "const": "provider/warning",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -2264,7 +2443,13 @@
     "d198": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d150"
+        "data": {
+          "$ref": "#/$defs/d480"
+        },
+        "type": {
+          "const": "system/operation",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -2584,7 +2769,13 @@
     "d209": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d625"
+        "data": {
+          "$ref": "#/$defs/d468"
+        },
+        "type": {
+          "const": "turn/input/accepted",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -3024,7 +3215,13 @@
     "d223": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d742"
+        "data": {
+          "$ref": "#/$defs/d493"
+        },
+        "type": {
+          "const": "item/reasoning/textDelta",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -3045,7 +3242,55 @@
     "d225": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d151"
+        "cmd": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "mode": {
+          "$ref": "#/$defs/d21"
+        },
+        "parentToolCallId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "presentation": {
+          "$ref": "#/$defs/d406"
+        },
+        "query": {
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/$defs/d701"
+        },
+        "type": {
+          "const": "search",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -3102,7 +3347,39 @@
     "d229": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d173"
+        "key": {
+          "type": "string"
+        },
+        "metadata": {
+          "anyOf": [
+            {
+              "additionalProperties": {},
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "startedAt": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "status": {
+          "$ref": "#/$defs/d626"
+        },
+        "text": {
+          "type": "string"
+        },
+        "type": {
+          "$ref": "#/$defs/d212"
+        }
       },
       "required": [
         "type",
@@ -3281,7 +3558,38 @@
     "d235": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d734"
+        "content": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "id": {
+          "type": "string"
+        },
+        "parentToolCallId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "presentation": {
+          "$ref": "#/$defs/d406"
+        },
+        "summary": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "type": {
+          "const": "reasoning",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -3366,7 +3674,33 @@
     "d24": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d660"
+        "command": {
+          "type": "string"
+        },
+        "path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "query": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "type": {
+          "const": "search",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -3482,7 +3816,20 @@
     },
     "d244": {
       "properties": {
-        "$ref": "#/$defs/d379"
+        "type": {
+          "const": "image",
+          "type": "string"
+        },
+        "url": {
+          "format": "uri",
+          "type": "string"
+        },
+        "visibility": {
+          "enum": [
+            "agent-only"
+          ],
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -3588,7 +3935,36 @@
     "d25": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d257"
+        "clientRequestId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "content": {
+          "$ref": "#/$defs/d340"
+        },
+        "id": {
+          "type": "string"
+        },
+        "parentToolCallId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "type": {
+          "const": "userMessage",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -3738,7 +4114,13 @@
     "d254": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d234"
+        "data": {
+          "$ref": "#/$defs/d281"
+        },
+        "type": {
+          "const": "provider.env-resolved",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -4357,7 +4739,71 @@
     "d277": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d546"
+        "aggregatedOutput": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "approvalStatus": {
+          "$ref": "#/$defs/d425"
+        },
+        "command": {
+          "type": "string"
+        },
+        "cwd": {
+          "type": "string"
+        },
+        "durationMs": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "exitCode": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "parentToolCallId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "presentation": {
+          "$ref": "#/$defs/d406"
+        },
+        "status": {
+          "$ref": "#/$defs/d701"
+        },
+        "truncation": {
+          "$ref": "#/$defs/d619"
+        },
+        "type": {
+          "const": "commandExecution",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -4579,7 +5025,13 @@
     "d283": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d436"
+        "data": {
+          "$ref": "#/$defs/d364"
+        },
+        "type": {
+          "const": "item/toolCall/progress",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -4590,7 +5042,42 @@
     "d284": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d286"
+        "cmd": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "parentToolCallId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "path": {
+          "type": "string"
+        },
+        "presentation": {
+          "$ref": "#/$defs/d406"
+        },
+        "status": {
+          "$ref": "#/$defs/d701"
+        },
+        "type": {
+          "const": "fileRead",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -4876,7 +5363,13 @@
     "d290": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d138"
+        "data": {
+          "$ref": "#/$defs/d165"
+        },
+        "type": {
+          "const": "client/turn/rejected",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -4887,7 +5380,13 @@
     "d291": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d248"
+        "data": {
+          "$ref": "#/$defs/d420"
+        },
+        "type": {
+          "const": "item/completed",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -5120,7 +5619,13 @@
     "d3": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d137"
+        "data": {
+          "$ref": "#/$defs/d493"
+        },
+        "type": {
+          "const": "item/fileChange/outputDelta",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -5277,7 +5782,13 @@
     "d304": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d604"
+        "data": {
+          "$ref": "#/$defs/d420"
+        },
+        "type": {
+          "const": "item/started",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -5288,7 +5799,29 @@
     "d305": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d486"
+        "id": {
+          "type": "string"
+        },
+        "parentToolCallId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "presentation": {
+          "$ref": "#/$defs/d406"
+        },
+        "text": {
+          "type": "string"
+        },
+        "type": {
+          "const": "plan",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -5299,7 +5832,30 @@
     },
     "d306": {
       "properties": {
-        "$ref": "#/$defs/d611"
+        "mimeType": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "sizeBytes": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "type": {
+          "const": "localFile",
+          "type": "string"
+        },
+        "visibility": {
+          "enum": [
+            "agent-only"
+          ],
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -5838,7 +6394,13 @@
     "d321": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d383"
+        "data": {
+          "$ref": "#/$defs/d449"
+        },
+        "type": {
+          "const": "client/turn/requested",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -5934,7 +6496,13 @@
     "d327": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d33"
+        "data": {
+          "$ref": "#/$defs/d404"
+        },
+        "type": {
+          "const": "client/thread/start",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -6347,7 +6915,13 @@
     "d344": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d397"
+        "data": {
+          "$ref": "#/$defs/d278"
+        },
+        "type": {
+          "const": "system/userQuestion/lifecycle",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -6357,7 +6931,17 @@
     },
     "d345": {
       "properties": {
-        "$ref": "#/$defs/d623"
+        "hostId": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "type": {
+          "const": "host",
+          "type": "string"
+        },
+        "workspace": {
+          "$ref": "#/$defs/d41"
+        }
       },
       "required": [
         "type",
@@ -6427,7 +7011,35 @@
     "d349": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d193"
+        "approvalStatus": {
+          "$ref": "#/$defs/d425"
+        },
+        "changes": {
+          "$ref": "#/$defs/d100"
+        },
+        "id": {
+          "type": "string"
+        },
+        "parentToolCallId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "presentation": {
+          "$ref": "#/$defs/d406"
+        },
+        "status": {
+          "$ref": "#/$defs/d701"
+        },
+        "type": {
+          "const": "fileChange",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -7128,7 +7740,97 @@
     "d368": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d214"
+        "description": {
+          "type": "string"
+        },
+        "error": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "familyId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "outputFile": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "parentToolCallId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "presentation": {
+          "$ref": "#/$defs/d406"
+        },
+        "skipTranscript": {
+          "type": "boolean"
+        },
+        "status": {
+          "$ref": "#/$defs/d701"
+        },
+        "summary": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "taskStatus": {
+          "$ref": "#/$defs/d357"
+        },
+        "taskType": {
+          "type": "string"
+        },
+        "type": {
+          "const": "backgroundTask",
+          "type": "string"
+        },
+        "usage": {
+          "$ref": "#/$defs/d673"
+        },
+        "workflow": {
+          "$ref": "#/$defs/d241"
+        },
+        "workflowName": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
       },
       "required": [
         "type",
@@ -7531,7 +8233,20 @@
     },
     "d387": {
       "properties": {
-        "$ref": "#/$defs/d389"
+        "environmentProviderId": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "inputs": {
+          "$ref": "#/$defs/d157"
+        },
+        "machine": {
+          "$ref": "#/$defs/d587"
+        },
+        "type": {
+          "const": "provider",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -7619,7 +8334,84 @@
     "d390": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d92"
+        "callId": {
+          "type": "string"
+        },
+        "completedAt": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "createdAt": {
+          "type": "number"
+        },
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "const": "work",
+          "type": "string"
+        },
+        "pattern": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "presentation": {
+          "$ref": "#/$defs/d406"
+        },
+        "prompt": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "sourceSeqEnd": {
+          "type": "number"
+        },
+        "sourceSeqStart": {
+          "type": "number"
+        },
+        "startedAt": {
+          "type": "number"
+        },
+        "status": {
+          "$ref": "#/$defs/d450"
+        },
+        "threadId": {
+          "type": "string"
+        },
+        "turnId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "url": {
+          "type": "string"
+        },
+        "workKind": {
+          "const": "web-fetch",
+          "type": "string"
+        }
       },
       "required": [
         "id",
@@ -7665,7 +8457,29 @@
     "d393": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d419"
+        "id": {
+          "type": "string"
+        },
+        "parentToolCallId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "path": {
+          "type": "string"
+        },
+        "presentation": {
+          "$ref": "#/$defs/d406"
+        },
+        "type": {
+          "const": "imageView",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -7935,7 +8749,13 @@
     "d4": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d128"
+        "data": {
+          "$ref": "#/$defs/d55"
+        },
+        "type": {
+          "const": "provider/rateLimits/updated",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -7946,7 +8766,13 @@
     "d40": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d208"
+        "data": {
+          "$ref": "#/$defs/d133"
+        },
+        "type": {
+          "const": "provider/unhandled",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -8068,7 +8894,13 @@
     "d405": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d710"
+        "data": {
+          "$ref": "#/$defs/d404"
+        },
+        "type": {
+          "const": "client/turn/start",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -8168,7 +9000,13 @@
     "d411": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d262"
+        "data": {
+          "$ref": "#/$defs/d585"
+        },
+        "type": {
+          "const": "turn/completed",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -8564,7 +9402,13 @@
     "d427": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d442"
+        "data": {
+          "$ref": "#/$defs/d325"
+        },
+        "type": {
+          "const": "item/backgroundTask/progress",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -8659,7 +9503,13 @@
     "d432": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d289"
+        "data": {
+          "$ref": "#/$defs/d63"
+        },
+        "type": {
+          "const": "thread/goal/updated",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -8805,7 +9655,13 @@
     "d441": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d520"
+        "data": {
+          "$ref": "#/$defs/d117"
+        },
+        "type": {
+          "const": "turn/diff/updated",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -8974,7 +9830,24 @@
     },
     "d448": {
       "properties": {
-        "$ref": "#/$defs/d287"
+        "branch": {
+          "$ref": "#/$defs/d247"
+        },
+        "path": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "type": {
+          "const": "unmanaged",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -9186,7 +10059,13 @@
     "d455": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d292"
+        "data": {
+          "$ref": "#/$defs/d195"
+        },
+        "type": {
+          "const": "item/commandExecution/outputDelta",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -9474,7 +10353,13 @@
     "d464": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d136"
+        "data": {
+          "$ref": "#/$defs/d493"
+        },
+        "type": {
+          "const": "item/reasoning/summaryTextDelta",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -9651,7 +10536,13 @@
     "d47": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d628"
+        "data": {
+          "$ref": "#/$defs/d493"
+        },
+        "type": {
+          "const": "item/agentMessage/delta",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -9662,7 +10553,13 @@
     "d470": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d515"
+        "data": {
+          "$ref": "#/$defs/d511"
+        },
+        "type": {
+          "const": "item/delegation/progress",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -9679,7 +10576,18 @@
     "d472": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d218"
+        "hostId": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "path": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "type": {
+          "const": "local_path",
+          "type": "string"
+        }
       },
       "required": [
         "hostId",
@@ -9697,7 +10605,13 @@
     "d474": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d259"
+        "data": {
+          "$ref": "#/$defs/d396"
+        },
+        "type": {
+          "const": "thread/goal/cleared",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -9961,7 +10875,26 @@
     "d489": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d659"
+        "command": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "type": {
+          "const": "read",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -10228,7 +11161,13 @@
     "d499": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d574"
+        "data": {
+          "$ref": "#/$defs/d437"
+        },
+        "type": {
+          "const": "thread/tokenUsage/updated",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -10318,7 +11257,13 @@
     "d50": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d210"
+        "data": {
+          "$ref": "#/$defs/d307"
+        },
+        "type": {
+          "const": "system/thread-provisioning",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -10658,7 +11603,48 @@
     "d516": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d694"
+        "background": {
+          "type": "boolean"
+        },
+        "childRef": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "parentToolCallId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "presentation": {
+          "$ref": "#/$defs/d406"
+        },
+        "status": {
+          "$ref": "#/$defs/d701"
+        },
+        "summary": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "type": {
+          "const": "delegation",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -11506,7 +12492,42 @@
     "d544": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d112"
+        "explanation": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "parentToolCallId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "presentation": {
+          "$ref": "#/$defs/d406"
+        },
+        "status": {
+          "$ref": "#/$defs/d701"
+        },
+        "steps": {
+          "$ref": "#/$defs/d54"
+        },
+        "type": {
+          "const": "planSteps",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -11619,7 +12640,19 @@
     "d548": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d691"
+        "command": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "type": {
+          "const": "read",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -11843,7 +12876,13 @@
     "d554": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d542"
+        "data": {
+          "$ref": "#/$defs/d364"
+        },
+        "type": {
+          "const": "item/mcpToolCall/progress",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -11853,7 +12892,22 @@
     },
     "d555": {
       "properties": {
-        "$ref": "#/$defs/d324"
+        "mentions": {
+          "$ref": "#/$defs/d730"
+        },
+        "text": {
+          "type": "string"
+        },
+        "type": {
+          "const": "text",
+          "type": "string"
+        },
+        "visibility": {
+          "enum": [
+            "agent-only"
+          ],
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -11890,7 +12944,13 @@
     "d558": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d347"
+        "data": {
+          "$ref": "#/$defs/d396"
+        },
+        "type": {
+          "const": "thread/compacted",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -11936,7 +12996,13 @@
     "d560": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d452"
+        "data": {
+          "$ref": "#/$defs/d683"
+        },
+        "type": {
+          "const": "system/error",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -12390,7 +13456,13 @@
     "d580": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d370"
+        "data": {
+          "$ref": "#/$defs/d396"
+        },
+        "type": {
+          "const": "thread/identity",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -12418,7 +13490,48 @@
     "d582": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d8"
+        "createdAt": {
+          "type": "number"
+        },
+        "id": {
+          "type": "string"
+        },
+        "lastRejectedProtocolVersion": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "lastSeenAt": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "maxPermissionMode": {
+          "$ref": "#/$defs/d101"
+        },
+        "name": {
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/$defs/d338"
+        },
+        "type": {
+          "const": "persistent",
+          "type": "string"
+        },
+        "updatedAt": {
+          "type": "number"
+        }
       },
       "required": [
         "id",
@@ -12852,7 +13965,13 @@
     "d606": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d319"
+        "data": {
+          "$ref": "#/$defs/d107"
+        },
+        "type": {
+          "const": "turn/started",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -13093,7 +14212,13 @@
     "d618": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d285"
+        "data": {
+          "$ref": "#/$defs/d511"
+        },
+        "type": {
+          "const": "item/delegation/completed",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -13340,7 +14465,13 @@
     "d630": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d56"
+        "data": {
+          "$ref": "#/$defs/d559"
+        },
+        "type": {
+          "const": "turn/plan/updated",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -13422,7 +14553,23 @@
     "d634": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d540"
+        "command": {
+          "type": "string"
+        },
+        "path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "type": {
+          "const": "listFiles",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -13526,7 +14673,13 @@
     "d638": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d484"
+        "data": {
+          "$ref": "#/$defs/d102"
+        },
+        "type": {
+          "const": "thread/contextWindowUsage/updated",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -13543,7 +14696,42 @@
     "d64": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d607"
+        "id": {
+          "type": "string"
+        },
+        "parentToolCallId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "presentation": {
+          "$ref": "#/$defs/d406"
+        },
+        "queries": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "resultText": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "type": {
+          "const": "webSearch",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -13566,7 +14754,31 @@
     "d641": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d647"
+        "createdAt": {
+          "type": "number"
+        },
+        "hostId": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "isDefault": {
+          "type": "boolean"
+        },
+        "path": {
+          "type": "string"
+        },
+        "projectId": {
+          "type": "string"
+        },
+        "type": {
+          "const": "local_path",
+          "type": "string"
+        },
+        "updatedAt": {
+          "type": "number"
+        }
       },
       "required": [
         "id",
@@ -13637,7 +14849,59 @@
     "d645": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d667"
+        "id": {
+          "type": "string"
+        },
+        "parentToolCallId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "pattern": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "presentation": {
+          "$ref": "#/$defs/d406"
+        },
+        "prompt": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "resultText": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "type": {
+          "const": "webFetch",
+          "type": "string"
+        },
+        "url": {
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -13844,7 +15108,35 @@
     "d654": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d399"
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "parentToolCallId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "payload": {
+          "$ref": "#/$defs/d139"
+        },
+        "presentation": {
+          "$ref": "#/$defs/d22"
+        },
+        "status": {
+          "$ref": "#/$defs/d701"
+        },
+        "type": {
+          "const": "extension",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -14094,7 +15386,13 @@
     "d663": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d0"
+        "data": {
+          "$ref": "#/$defs/d325"
+        },
+        "type": {
+          "const": "item/backgroundTask/completed",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -14439,7 +15737,13 @@
     "d681": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d612"
+        "data": {
+          "$ref": "#/$defs/d528"
+        },
+        "type": {
+          "const": "system/provider-turn-watchdog",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -15195,7 +16499,13 @@
     "d702": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d67"
+        "data": {
+          "$ref": "#/$defs/d488"
+        },
+        "type": {
+          "const": "system/interaction/lifecycle",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -15206,7 +16516,23 @@
     "d703": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d118"
+        "command": {
+          "type": "string"
+        },
+        "path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "type": {
+          "const": "list_files",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -15348,7 +16674,13 @@
     "d711": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d658"
+        "data": {
+          "$ref": "#/$defs/d160"
+        },
+        "type": {
+          "const": "provider/modelFallback",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -15384,7 +16716,24 @@
     "d713": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d523"
+        "path": {
+          "type": "string"
+        },
+        "type": {
+          "const": "localImage",
+          "type": "string"
+        },
+        "visibility": {
+          "anyOf": [
+            {
+              "const": "agent-only",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
       },
       "required": [
         "type",
@@ -15580,7 +16929,13 @@
     "d723": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d187"
+        "data": {
+          "$ref": "#/$defs/d493"
+        },
+        "type": {
+          "const": "item/plan/delta",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -15596,7 +16951,13 @@
     },
     "d725": {
       "properties": {
-        "$ref": "#/$defs/d519"
+        "baseBranch": {
+          "$ref": "#/$defs/d76"
+        },
+        "type": {
+          "const": "managed-worktree",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -15607,7 +16968,13 @@
     "d726": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d576"
+        "data": {
+          "$ref": "#/$defs/d453"
+        },
+        "type": {
+          "const": "system/permissionGrant/lifecycle",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -15901,7 +17268,27 @@
     "d739": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d336"
+        "mentions": {
+          "$ref": "#/$defs/d577"
+        },
+        "text": {
+          "type": "string"
+        },
+        "type": {
+          "const": "text",
+          "type": "string"
+        },
+        "visibility": {
+          "anyOf": [
+            {
+              "const": "agent-only",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
       },
       "required": [
         "type",
@@ -16015,7 +17402,13 @@
     "d744": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d153"
+        "data": {
+          "$ref": "#/$defs/d110"
+        },
+        "type": {
+          "const": "system/manager/user_message",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -16133,7 +17526,13 @@
     "d79": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d27"
+        "data": {
+          "$ref": "#/$defs/d737"
+        },
+        "type": {
+          "const": "thread/extensionState/updated",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -16266,7 +17665,26 @@
     "d83": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d172"
+        "id": {
+          "type": "string"
+        },
+        "parentToolCallId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "presentation": {
+          "$ref": "#/$defs/d406"
+        },
+        "type": {
+          "const": "contextCompaction",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -16573,7 +17991,77 @@
     "d93": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d736"
+        "arguments": {
+          "anyOf": [
+            {
+              "additionalProperties": {},
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "durationMs": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "error": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "parentToolCallId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "presentation": {
+          "$ref": "#/$defs/d406"
+        },
+        "result": {},
+        "server": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "status": {
+          "$ref": "#/$defs/d701"
+        },
+        "tool": {
+          "type": "string"
+        },
+        "truncation": {
+          "$ref": "#/$defs/d619"
+        },
+        "type": {
+          "const": "toolCall",
+          "type": "string"
+        }
       },
       "required": [
         "type",
@@ -16615,7 +18103,24 @@
     "d95": {
       "additionalProperties": false,
       "properties": {
-        "$ref": "#/$defs/d272"
+        "type": {
+          "const": "image",
+          "type": "string"
+        },
+        "url": {
+          "type": "string"
+        },
+        "visibility": {
+          "anyOf": [
+            {
+              "const": "agent-only",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
       },
       "required": [
         "type",

@@ -439,8 +439,15 @@ function generateDocument(classified, sourceRoutes, assignments, manifest) {
 
 这份清单直接读取 \`contracts/bb/server-api.json\` 的 \`routes\`，并以
 \`crates/server/src/http.rs\` 的 Axum \`.route\` 声明校验方法和路径形状。契约参数名
-与 loom 参数名只要位于同一个路径段就视为相同；请求/响应 JSON shape 不在这项路径
-覆盖统计内。
+与 loom 参数名只要位于同一个路径段就视为相同。
+
+**“已实现”现在同时意味着请求与响应都符合契约。** 路径匹配只是必要条件：一条
+路由要计入覆盖率，它的请求体必须落在契约声明的 \`request.schema\` 内，响应体必须
+落在对应状态码的 \`responses[].schema\` 内。请求侧无法只靠读源码证明——一个悄悄
+重塑请求体的 handler 仍然返回正确响应——所以 \`loom-server\` 用
+\`validate_contract_request\` 中间件在运行时对每条契约写路由校验请求，测试则用
+\`validate_request\` / \`validate_response\` 双向断言。任何一侧不一致都会使
+\`cargo test\` 失败，见 \`docs/contract.md\`。
 
 ## 结论
 
@@ -460,6 +467,27 @@ function generateDocument(classified, sourceRoutes, assignments, manifest) {
 写入端点，${markdownCode("ui/src/main.ts")} 仍在使用它。它不能替代 ${markdownCode("threads.send")}，也不计入覆盖率；
 ${markdownCode("threads.send")} 已接入同一线程发送/发布路径。后续再决定是否移除或保留参考 UI
 的兼容端点，不修改 bb UI 的契约调用。
+
+## 请求体兼容性决策（W-554）
+
+**只接受契约形状（camelCase），不保留 snake_case 兼容输入。**
+
+B1 的写路由最初只接受 loom 自造的 snake_case 请求体（${markdownCode("{\"project_id\": \"proj_...\"}")}），
+而契约要求 ${markdownCode("threads.create")} 的 ${markdownCode("projectId/origin/input/environment")}。
+bb UI 用契约格式发起写请求时会 422，而 CI 与一致性测试全绿。现在两条路由都只接受
+契约形状，由 ${markdownCode("validate_contract_request")} 在运行时强制，不一致即 422。
+
+选择“只接受契约形状”而非“两者都收”的理由：
+
+- 契约是 UI 的消费面，bb 客户端无法协商方言。接受一种契约里不存在的形状，等于把
+  loom 方言隐藏在兼容层下，而这正是本 issue 要根除的问题。
+- 双形状会让“请求是否符合契约”这个可证伪的断言变成一个模糊集合，回归测试也就抓
+  不住新的偏离。
+- 代价可控：参考 UI ${markdownCode("ui/src/main.ts")} 只有两个写调用（创建 thread、发消息），
+  已同步改为契约形状并重建 ${markdownCode("ui/app.js")}。
+
+契约外路由（${markdownCode("/api/v1/threads/{id}/messages")}、${markdownCode("/api/v1/publish")}、环境/主机早期端点）不受
+此决策约束：它们不在 bb 契约里，中间件对其不生效，保持各自的 handler 校验。
 
 ## 批次与依赖
 
@@ -484,7 +512,7 @@ ${markdownCode("/api/v1/version")} 与契约的 ${markdownCode("/api/v1/system/v
 
 状态含义：
 
-- **已实现**：源码中存在同 HTTP 方法和同路径形状的 loom route，并附实际路径。
+- **已实现**：源码中存在同 HTTP 方法和同路径形状的 loom route，**且**请求体与响应体都通过 bb 契约校验，附实际路径。
 - **待实现**：契约中的有效路由尚未匹配，附后续批次号。
 - **不适用（已决策）**：skill/CLI skill 或 desktopBrowsers，按项目决策不实现。
 
@@ -526,6 +554,54 @@ function parseDocumentRows(document) {
     });
   }
   return rows;
+}
+
+/**
+ * The regression guard for W-554: an implemented route with a JSON request
+ * body must have request-side conformance coverage.
+ *
+ * The blind spot the issue describes was structural — responses were asserted
+ * and requests never were, so a route could accept a dialect the contract does
+ * not declare and every check stayed green. A route that is counted as
+ * implemented and parses a JSON body must therefore appear in a
+ * `validate_request*` assertion (or be one of the routes whose contract schema
+ * has no required discriminator to assert against); otherwise the coverage
+ * number would claim a conformance the tests do not prove.
+ */
+function validateRequestCoverage(classified) {
+  const httpSource = fs.readFileSync(httpPath, "utf8");
+  if (!/validate_contract_request/.test(httpSource)) {
+    throw new Error(
+      "crates/server/src/http.rs no longer wires validate_contract_request; " +
+        "implemented write routes would stop validating request bodies",
+    );
+  }
+
+  const testSources = [
+    httpPath,
+    ...fs
+      .readdirSync(path.join(repoRoot, "crates/server/tests"))
+      .filter((name) => name.endsWith(".rs"))
+      .map((name) => path.join(repoRoot, "crates/server/tests", name)),
+    ...fs
+      .readdirSync(path.join(repoRoot, "crates/contract/tests"))
+      .filter((name) => name.endsWith(".rs"))
+      .map((name) => path.join(repoRoot, "crates/contract/tests", name)),
+  ]
+    .map((file) => fs.readFileSync(file, "utf8"))
+    .join("\n");
+
+  const missing = classified
+    .filter((route) => route.status === "已实现")
+    .filter((route) => route.request?.source === "json" && route.request.schema)
+    .map((route) => route.id)
+    .filter((id) => !testSources.includes(`validate_request_by_id("${id}"`));
+
+  if (missing.length > 0) {
+    throw new Error(
+      `implemented routes with a JSON request body have no request-conformance assertion: ${missing.join(", ")}`,
+    );
+  }
 }
 
 function validateDocument(classified, assignments) {
@@ -582,6 +658,7 @@ function main() {
     );
   }
   validateDocument(classified, assignments);
+  validateRequestCoverage(classified);
 
   const implemented = classified.filter((route) => route.status === "已实现");
   const pending = classified.filter((route) => route.status === "待实现");

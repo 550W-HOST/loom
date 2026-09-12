@@ -6,7 +6,6 @@ import {
 } from "./relay.js";
 import { renderThreadList, renderTimeline } from "./render.js";
 import type {
-  LoomCreateThreadResponse,
   LoomProject,
   LoomProjectsResponse,
   LoomThread,
@@ -166,7 +165,7 @@ async function openThread(id: string): Promise<void> {
 
 async function refreshThreads(): Promise<void> {
   const body = await api<LoomThreadsResponse>("/api/v1/threads");
-  threads = Array.isArray(body.threads) ? body.threads : [];
+  threads = Array.isArray(body) ? body : [];
   renderSidebar();
 }
 
@@ -179,9 +178,7 @@ async function refreshThreads(): Promise<void> {
  */
 async function refreshProjects(): Promise<void> {
   const body = await api<LoomProjectsResponse>("/api/v1/projects");
-  projects = (Array.isArray(body.projects) ? body.projects : []).filter(
-    (project) => project.archived_at_ms == null,
-  );
+  projects = Array.isArray(body) ? body : [];
   els.project.replaceChildren(
     ...projects.map((project) => {
       const option = document.createElement("option");
@@ -201,13 +198,21 @@ els.newThread.addEventListener("click", async () => {
   if (!projectId) return;
   els.newThread.disabled = true;
   try {
-    const body = await api<LoomCreateThreadResponse>("/api/v1/threads", {
+    // `threads.create` requires the contract shape: `projectId`, `origin`,
+    // `input` and `environment`. A fresh thread has no prompt, so `input` is
+    // empty and the project decides the workspace.
+    const body = await api<LoomThread>("/api/v1/threads", {
       method: "POST",
-      body: JSON.stringify({ project_id: projectId }),
+      body: JSON.stringify({
+        projectId,
+        origin: "app",
+        input: [],
+        environment: { type: "project-default" },
+      }),
     });
-    threads = [body.thread, ...threads.filter((thread) => thread.id !== body.thread.id)];
+    threads = [body, ...threads.filter((thread) => thread.id !== body.id)];
     renderSidebar();
-    await openThread(body.thread.id);
+    await openThread(body.id);
   } catch (error) {
     if (current) {
       current.notices = [...current.notices.slice(-2), error instanceof Error ? error.message : String(error)];

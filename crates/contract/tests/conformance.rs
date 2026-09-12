@@ -459,3 +459,162 @@ fn validator_rejects_unknown_properties() {
         "additionalProperties: false must be enforced"
     );
 }
+
+/// The route matcher used by loom-server's runtime request validation.
+///
+/// Exact lookup cannot see that a live request reached a parameterized route,
+/// so without this the request middleware would never fire on
+/// `/api/v1/threads/:id/send`.
+#[test]
+fn route_matching_tolerates_parameters() {
+    let contract = Contract::load();
+
+    let by_id = contract
+        .match_route("POST", "/api/v1/threads/thr_01M2A5BQ/send")
+        .expect("parameterized path matches");
+    assert_eq!(by_id.id, "threads.send");
+
+    let create = contract
+        .match_route("post", "/api/v1/threads")
+        .expect("relative-free path matches");
+    assert_eq!(create.id, "threads.create");
+
+    let scoped = contract
+        .match_route("PATCH", "/api/v1/projects/proj_1")
+        .expect("project update matches");
+    assert_eq!(scoped.id, "projects.update");
+
+    // A query string is not part of the path.
+    assert_eq!(
+        contract
+            .match_route("GET", "/api/v1/threads?limit=10")
+            .map(|route| route.id.as_str()),
+        Some("threads.list"),
+    );
+
+    // A different method is a different route.
+    assert_eq!(
+        contract
+            .match_route("DELETE", "/api/v1/threads/thr_1")
+            .map(|route| route.id.as_str()),
+        Some("threads.delete")
+    );
+
+    // Extra or missing segments must not match.
+    assert!(contract
+        .match_route("POST", "/api/v1/threads/thr_1/sends")
+        .is_none());
+    assert!(contract.match_route("POST", "/api/v1/nowhere").is_none());
+    assert!(contract
+        .match_route("POST", "/api/v1/threads/thr_1/extra/deep")
+        .is_none());
+}
+
+/// Request validation is the symmetric half of response validation: the exact
+/// shape the issue found loom's `POST /api/v1/threads` rejecting must pass.
+#[test]
+fn request_validation_accepts_contract_shapes() {
+    let contract = Contract::load();
+
+    let create = json!({
+        "projectId": "proj_1",
+        "origin": "app",
+        "input": [{ "type": "text", "text": "hello" }],
+        "environment": { "type": "project-default" },
+    });
+    assert!(
+        contract
+            .validate_request_by_id("threads.create", &create)
+            .is_empty(),
+        "the contract's threads.create shape must be accepted: {:?}",
+        contract.validate_request_by_id("threads.create", &create)
+    );
+
+    let send = json!({
+        "input": [{ "type": "text", "text": "hello" }],
+        "mode": "start",
+    });
+    assert!(contract
+        .validate_request_by_id("threads.send", &send)
+        .is_empty());
+
+    let project = json!({
+        "name": "loom",
+        "source": { "hostId": "host_1", "type": "local_path", "path": "/srv/loom" },
+    });
+    assert!(contract
+        .validate_request_by_id("projects.create", &project)
+        .is_empty());
+
+    let source = json!({
+        "hostId": "host_1",
+        "type": "local_path",
+        "path": "/srv/loom",
+    });
+    assert!(
+        contract
+            .validate_request_by_id("projects.createSource", &source)
+            .is_empty(),
+        "projects.createSource must accept the local_path variant: {:?}",
+        contract.validate_request_by_id("projects.createSource", &source)
+    );
+
+    // The other branch of the discriminated union is also accepted.
+    let clone = json!({ "hostId": "host_1", "type": "clone", "remoteUrl": "git@x:y" });
+    assert!(contract
+        .validate_request_by_id("projects.createSource", &clone)
+        .is_empty());
+
+    assert!(contract
+        .validate_request_by_id("projects.update", &json!({ "name": "loom-2" }))
+        .is_empty());
+}
+
+/// The pre-contract snake_case shape is rejected. This is the regression guard
+/// for the "response looks right, request is wrong" blind spot the issue
+/// describes: loom accepted `{ "project_id": ... }` and the suite stayed green.
+#[test]
+fn request_validation_rejects_the_legacy_shape() {
+    let contract = Contract::load();
+
+    let legacy = json!({ "project_id": "proj_1" });
+    let violations = contract.validate_request_by_id("threads.create", &legacy);
+    assert!(
+        !violations.is_empty(),
+        "snake_case must not satisfy threads.create"
+    );
+    assert!(
+        violations.iter().any(|v| v.message.contains("projectId")),
+        "the missing required camelCase field must be named: {violations:?}"
+    );
+
+    let missing_send_mode = json!({ "input": [{ "type": "text", "text": "hi" }] });
+    assert!(!contract
+        .validate_request_by_id("threads.send", &missing_send_mode)
+        .is_empty());
+
+    // A source without its required `hostId`/`type` is rejected.
+    assert!(!contract
+        .validate_request_by_id("projects.createSource", &json!({ "path": "/srv/x" }))
+        .is_empty());
+
+    // A project update with the wrong type for the only declared field.
+    assert!(!contract
+        .validate_request_by_id("projects.update", &json!({ "name": 7 }))
+        .is_empty());
+
+    let wrong_type = json!({
+        "projectId": 7,
+        "origin": "app",
+        "input": [],
+        "environment": { "type": "project-default" },
+    });
+    assert!(!contract
+        .validate_request_by_id("threads.create", &wrong_type)
+        .is_empty());
+
+    // An unknown route is a violation, never a silent pass.
+    assert!(!contract
+        .validate_request_by_id("threads.not-a-route", &json!({}))
+        .is_empty());
+}

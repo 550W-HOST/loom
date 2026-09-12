@@ -32717,14 +32717,12 @@ async function openThread(id) {
 }
 async function refreshThreads() {
   const body = await api("/api/v1/threads");
-  threads = Array.isArray(body.threads) ? body.threads : [];
+  threads = Array.isArray(body) ? body : [];
   renderSidebar();
 }
 async function refreshProjects() {
   const body = await api("/api/v1/projects");
-  projects = (Array.isArray(body.projects) ? body.projects : []).filter(
-    (project) => project.archived_at_ms == null
-  );
+  projects = Array.isArray(body) ? body : [];
   els.project.replaceChildren(
     ...projects.map((project) => {
       const option = document.createElement("option");
@@ -32743,11 +32741,16 @@ els.newThread.addEventListener("click", async () => {
   try {
     const body = await api("/api/v1/threads", {
       method: "POST",
-      body: JSON.stringify({ project_id: projectId })
+      body: JSON.stringify({
+        projectId,
+        origin: "app",
+        input: [],
+        environment: { type: "project-default" }
+      })
     });
-    threads = [body.thread, ...threads.filter((thread) => thread.id !== body.thread.id)];
+    threads = [body, ...threads.filter((thread) => thread.id !== body.id)];
     renderSidebar();
-    await openThread(body.thread.id);
+    await openThread(body.id);
   } catch (error62) {
     if (current) {
       current.notices = [...current.notices.slice(-2), error62 instanceof Error ? error62.message : String(error62)];
