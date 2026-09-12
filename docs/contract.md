@@ -131,6 +131,25 @@ Two mechanisms close it:
 `Contract::shared()` returns the process-wide parse so the middleware does not
 re-parse the artifacts per request.
 
+### A consumer of a shape is the third side
+
+Conformance proves the server speaks the contract; it says nothing about the
+programs that read the server. `scripts/verify-release-binaries.sh` is one of
+those programs, and by construction its failures cannot show up above: it runs
+only in the `v*` tag pipeline, so a shape change that breaks it stays invisible
+until a release is cut — which is how W-554 shipped, every test green and the
+release failing on `POST /api/v1/projects`.
+
+The script's requests, and the jq expressions it parses responses with, are
+therefore repeated in `crates/server/tests/release_verification.rs` against a
+real listener, on the `cargo test --workspace` path. That is cheaper than
+building a musl pair in CI to run the script itself, and it covers the endpoints
+the script consumes that are shape-sensitive — `/health`, `hosts.list`,
+`projects.create`, `projects.list`; the UI-serving routes it also fetches
+already have in-crate coverage in `crates/server/src/ui.rs`. When the script
+starts parsing something new, add it there: that test is the script's shape
+contract, not the API's.
+
 ### Adding a route and keeping both sides consistent
 
 1. Run `scripts/export-bb-contract.sh <bb-checkout>` in the same change that

@@ -52,12 +52,13 @@ public server surface:
 
 1. **Derive the server from the origin.** `const base = window.location.origin`
    and `ws(s)://location.host/ws`. There is no server-address setting anywhere.
-2. **List projects, then threads over HTTP.** `GET /api/v1/projects` returns
-   `{ "projects": [Project, ...] }` (active first, stable order) and
-   `GET /api/v1/threads` returns `{ "threads": [Thread, ...] }`, newest first.
-   A thread must name a project when it is created, so the project list is what
-   fills the create control; the seeded personal project is listed like any
-   other. See [`projects.md`](projects.md).
+2. **List projects, then threads over HTTP.** `GET /api/v1/projects` and
+   `GET /api/v1/threads` both answer a **bare array** — of `projectSchema`
+   (active first, archived last, stable order) and of `threadListEntrySchema`
+   (newest first) respectively. There is no `{ "projects": … }` envelope, so a
+   client reads the body as the list. A thread must name a project when it is
+   created, so the project list is what fills the create control; the seeded
+   personal project is listed like any other. See [`projects.md`](projects.md).
 3. **Open a thread on the socket.** Connect to `/ws`, then send
    `{"type":"subscribe","scope":{"kind":"thread","id":"<id>"}}`. The same scope
    a producer published to; no handler is involved.

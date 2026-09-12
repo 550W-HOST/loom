@@ -1780,8 +1780,9 @@ async fn create_project(
         Err(error) => return command_error_response(error),
     };
     // The contract pairs creation with its initial location. loom records the
-    // source as a second event rather than guessing a default later; a missing
-    // host is a conflict (the same rule `projects.createSource` uses).
+    // source as a second event rather than guessing a default later; a host
+    // that was never enrolled is a `404` (the same rule `projects.createSource`
+    // uses).
     match state.registry.add_project_source(
         &project.id,
         source.host_id(),
