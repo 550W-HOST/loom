@@ -17,8 +17,10 @@ use std::sync::{Mutex, MutexGuard};
 
 use loom_domain::{
     DomainError, DomainEvent, Environment, EnvironmentId, EnvironmentKind, EnvironmentStatus, Host,
-    HostId, MessageRole, NewThread, Project, ProjectId, ProjectKind, ProjectSourceId, RunId,
-    Thread, ThreadId, ThreadStatus, ThreadTrigger, ThreadUpdate,
+    HostId, Interaction, InteractionId, MessageRole, NewInteraction, NewQueuedMessage, NewThread,
+    Project, ProjectId, ProjectKind, ProjectSourceId, QueuedMessage, QueuedMessageId,
+    QueuedMessageStatus, Resolution, RunId, Thread, ThreadId, ThreadStatus, ThreadTrigger,
+    ThreadUpdate,
 };
 use serde::{Deserialize, Serialize};
 
@@ -56,7 +58,7 @@ impl From<DomainError> for CommandError {
     }
 }
 
-/// Projects, threads and hosts held in memory.
+/// Projects, threads, hosts and environments held in memory.
 #[derive(Debug)]
 pub struct DomainRegistry {
     inner: Mutex<RegistryInner>,
@@ -66,6 +68,11 @@ pub struct DomainRegistry {
 ///
 /// Vectors rather than maps so the serialized form is stable and diffable;
 /// [`DomainRegistry::export`] sorts each one by id before returning.
+///
+/// The two fields added after version 1 — `queued_messages` and
+/// `interactions` — are `#[serde(default)]`, so a snapshot written by an older
+/// build still loads: it simply has no queue and no pending interaction, which
+/// is exactly what that build would have described.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RegistrySnapshot {
     /// The workspace's seeded project.
@@ -78,6 +85,12 @@ pub struct RegistrySnapshot {
     pub hosts: Vec<Host>,
     /// Every environment.
     pub environments: Vec<Environment>,
+    /// Every queued message, in any status.
+    #[serde(default)]
+    pub queued_messages: Vec<QueuedMessage>,
+    /// Every interaction, in any status.
+    #[serde(default)]
+    pub interactions: Vec<Interaction>,
 }
 
 #[derive(Debug)]
@@ -87,6 +100,8 @@ struct RegistryInner {
     threads: HashMap<ThreadId, Thread>,
     hosts: HashMap<HostId, Host>,
     environments: HashMap<EnvironmentId, Environment>,
+    queued_messages: HashMap<QueuedMessageId, QueuedMessage>,
+    interactions: HashMap<InteractionId, Interaction>,
 }
 
 impl DomainRegistry {
@@ -104,6 +119,8 @@ impl DomainRegistry {
                 threads: HashMap::new(),
                 hosts: HashMap::new(),
                 environments: HashMap::new(),
+                queued_messages: HashMap::new(),
+                interactions: HashMap::new(),
             }),
         }
     }
@@ -729,6 +746,314 @@ impl DomainRegistry {
         self.lock().hosts.get(host_id).cloned()
     }
 
+    // --- queued messages ----------------------------------------------------
+
+    /// Queues a message for a thread, refusing an unknown thread.
+    ///
+    /// The thread is looked up first so the caller gets a `NotFound` rather
+    /// than a row pointing at nothing: a queue entry with no thread can never
+    /// be delivered, so it must not be created.
+    pub fn create_queued_message(
+        &self,
+        new: NewQueuedMessage,
+        now_ms: u64,
+    ) -> Result<(QueuedMessage, DomainEvent), CommandError> {
+        let mut inner = self.lock();
+        if !inner.threads.contains_key(&new.thread_id) {
+            return Err(CommandError::NotFound(format!(
+                "thread {} is not known",
+                new.thread_id
+            )));
+        }
+        if let Some(sender) = &new.sender_thread_id {
+            if !inner.threads.contains_key(sender) {
+                return Err(CommandError::NotFound(format!(
+                    "sender thread {sender} is not known"
+                )));
+            }
+        }
+        let message = QueuedMessage::create(new, now_ms)?;
+        inner
+            .queued_messages
+            .insert(message.id.clone(), message.clone());
+        Ok((
+            message.clone(),
+            DomainEvent::ThreadQueuedMessageChanged {
+                queued_message: message,
+            },
+        ))
+    }
+
+    /// Looks up a queued message.
+    pub fn queued_message(&self, id: &QueuedMessageId) -> Option<QueuedMessage> {
+        self.lock().queued_messages.get(id).cloned()
+    }
+
+    /// Every queued message, oldest first.
+    pub fn queued_messages(&self) -> Vec<QueuedMessage> {
+        self.queued_messages_for(None)
+    }
+
+    /// Every queued message for a thread, or for every thread when `thread_id`
+    /// is `None`, oldest first.
+    ///
+    /// Oldest first is the drain order: the queue is a FIFO, and a client
+    /// renders it top-down.
+    pub fn queued_messages_for(&self, thread_id: Option<&ThreadId>) -> Vec<QueuedMessage> {
+        let mut messages: Vec<QueuedMessage> = self
+            .lock()
+            .queued_messages
+            .values()
+            .filter(|message| match thread_id {
+                None => true,
+                Some(id) => &message.thread_id == id,
+            })
+            .cloned()
+            .collect();
+        messages.sort_by(|left, right| {
+            left.created_at_ms
+                .cmp(&right.created_at_ms)
+                .then_with(|| left.id.cmp(&right.id))
+        });
+        messages
+    }
+
+    /// Marks a queued message sent and returns the event.
+    pub fn mark_queued_message_sent(
+        &self,
+        id: &QueuedMessageId,
+        now_ms: u64,
+    ) -> Result<(QueuedMessage, DomainEvent), CommandError> {
+        let mut inner = self.lock();
+        let message = inner
+            .queued_messages
+            .get_mut(id)
+            .ok_or_else(|| CommandError::NotFound(format!("queued message {id} is not known")))?;
+        message.mark_sent(now_ms)?;
+        let message = message.clone();
+        Ok((
+            message.clone(),
+            DomainEvent::ThreadQueuedMessageChanged {
+                queued_message: message,
+            },
+        ))
+    }
+
+    /// Cancels a queued message and returns the event.
+    pub fn cancel_queued_message(
+        &self,
+        id: &QueuedMessageId,
+        now_ms: u64,
+    ) -> Result<(QueuedMessage, DomainEvent), CommandError> {
+        let mut inner = self.lock();
+        let message = inner
+            .queued_messages
+            .get_mut(id)
+            .ok_or_else(|| CommandError::NotFound(format!("queued message {id} is not known")))?;
+        message.cancel(now_ms)?;
+        let message = message.clone();
+        Ok((
+            message.clone(),
+            DomainEvent::ThreadQueuedMessageChanged {
+                queued_message: message,
+            },
+        ))
+    }
+
+    /// Records why a queued message could not be sent, leaving it queued.
+    pub fn record_queued_message_failure(
+        &self,
+        id: &QueuedMessageId,
+        reason: String,
+        now_ms: u64,
+    ) -> Result<(QueuedMessage, DomainEvent), CommandError> {
+        let mut inner = self.lock();
+        let message = inner
+            .queued_messages
+            .get_mut(id)
+            .ok_or_else(|| CommandError::NotFound(format!("queued message {id} is not known")))?;
+        message.record_failure(reason, now_ms);
+        let message = message.clone();
+        Ok((
+            message.clone(),
+            DomainEvent::ThreadQueuedMessageChanged {
+                queued_message: message,
+            },
+        ))
+    }
+
+    /// Clears a recorded send failure so a queued message is deliverable again.
+    pub fn clear_queued_message_failure(
+        &self,
+        id: &QueuedMessageId,
+        now_ms: u64,
+    ) -> Result<(QueuedMessage, DomainEvent), CommandError> {
+        let mut inner = self.lock();
+        let message = inner
+            .queued_messages
+            .get_mut(id)
+            .ok_or_else(|| CommandError::NotFound(format!("queued message {id} is not known")))?;
+        message.clear_failure(now_ms);
+        let message = message.clone();
+        Ok((
+            message.clone(),
+            DomainEvent::ThreadQueuedMessageChanged {
+                queued_message: message,
+            },
+        ))
+    }
+
+    // --- interactions -------------------------------------------------------
+
+    /// Records an interaction for a thread, refusing an unknown thread.
+    ///
+    /// A provider that repeats its request id gets the same row back when the
+    /// caller passes a deterministic [`InteractionId`]: the existing
+    /// interaction is returned unchanged rather than duplicated, which is what
+    /// makes a redelivered provider frame idempotent.
+    pub fn create_interaction(
+        &self,
+        new: NewInteraction,
+        now_ms: u64,
+    ) -> Result<(Interaction, Option<DomainEvent>), CommandError> {
+        let mut inner = self.lock();
+        if !inner.threads.contains_key(&new.thread_id) {
+            return Err(CommandError::NotFound(format!(
+                "thread {} is not known",
+                new.thread_id
+            )));
+        }
+        if let Some(id) = &new.id {
+            if let Some(existing) = inner.interactions.get(id) {
+                return Ok((existing.clone(), None));
+            }
+        }
+        let interaction = Interaction::create(new, now_ms)?;
+        inner
+            .interactions
+            .insert(interaction.id.clone(), interaction.clone());
+        Ok((
+            interaction.clone(),
+            Some(DomainEvent::ThreadInteractionChanged { interaction }),
+        ))
+    }
+
+    /// Looks up an interaction.
+    pub fn interaction(&self, id: &InteractionId) -> Option<Interaction> {
+        self.lock().interactions.get(id).cloned()
+    }
+
+    /// Every interaction, oldest first.
+    pub fn interactions(&self) -> Vec<Interaction> {
+        self.interactions_for(None)
+    }
+
+    /// Every interaction for a thread, or for every thread when `thread_id` is
+    /// `None`, oldest first.
+    pub fn interactions_for(&self, thread_id: Option<&ThreadId>) -> Vec<Interaction> {
+        let mut interactions: Vec<Interaction> = self
+            .lock()
+            .interactions
+            .values()
+            .filter(|interaction| match thread_id {
+                None => true,
+                Some(id) => &interaction.thread_id == id,
+            })
+            .cloned()
+            .collect();
+        interactions.sort_by(|left, right| {
+            left.created_at_ms
+                .cmp(&right.created_at_ms)
+                .then_with(|| left.id.cmp(&right.id))
+        });
+        interactions
+    }
+
+    /// The interactions of a thread that still need an answer.
+    pub fn pending_interactions(&self, thread_id: &ThreadId) -> Vec<Interaction> {
+        self.interactions_for(Some(thread_id))
+            .into_iter()
+            .filter(|interaction| interaction.status.is_open())
+            .collect()
+    }
+
+    /// Answers an interaction and returns the event to publish.
+    ///
+    /// A resolution whose kind does not match the payload is a
+    /// [`CommandError::Domain`] (the domain's own `InvalidField`), so the route
+    /// reports `400 invalid_request` rather than a conflict: the request was
+    /// well-formed, it named the wrong operation for this interaction.
+    pub fn resolve_interaction(
+        &self,
+        id: &InteractionId,
+        resolution: Resolution,
+        now_ms: u64,
+    ) -> Result<(Interaction, DomainEvent), CommandError> {
+        let mut inner = self.lock();
+        let interaction = inner
+            .interactions
+            .get_mut(id)
+            .ok_or_else(|| CommandError::NotFound(format!("interaction {id} is not known")))?;
+        if !interaction.status.is_open() {
+            return Err(CommandError::Conflict(format!(
+                "interaction {id} is already {}",
+                interaction.status
+            )));
+        }
+        interaction.resolve(resolution, now_ms)?;
+        let interaction = interaction.clone();
+        Ok((
+            interaction.clone(),
+            DomainEvent::ThreadInteractionChanged { interaction },
+        ))
+    }
+
+    /// Settles an interaction without an answer.
+    ///
+    /// Cancelling an already-terminal interaction is a conflict, matching
+    /// [`DomainRegistry::resolve_interaction`]: a client that cancels twice is
+    /// racing someone else, and the second cancel must not look like success.
+    pub fn cancel_interaction(
+        &self,
+        id: &InteractionId,
+        reason: Option<String>,
+        now_ms: u64,
+    ) -> Result<(Interaction, DomainEvent), CommandError> {
+        let mut inner = self.lock();
+        let interaction = inner
+            .interactions
+            .get_mut(id)
+            .ok_or_else(|| CommandError::NotFound(format!("interaction {id} is not known")))?;
+        if interaction.status.is_terminal() {
+            return Err(CommandError::Conflict(format!(
+                "interaction {id} is already {}",
+                interaction.status
+            )));
+        }
+        interaction.cancel(reason, now_ms)?;
+        let interaction = interaction.clone();
+        Ok((
+            interaction.clone(),
+            DomainEvent::ThreadInteractionChanged { interaction },
+        ))
+    }
+
+    /// Every open interaction a thread has, for the sidebar's activity flag.
+    pub fn has_pending_interaction(&self, thread_id: &ThreadId) -> bool {
+        !self.pending_interactions(thread_id).is_empty()
+    }
+
+    /// How many queued messages a thread still has to send.
+    pub fn queued_message_count(&self, thread_id: &ThreadId) -> usize {
+        self.lock()
+            .queued_messages
+            .values()
+            .filter(|message| {
+                &message.thread_id == thread_id && message.status == QueuedMessageStatus::Queued
+            })
+            .count()
+    }
+
     fn lock(&self) -> MutexGuard<'_, RegistryInner> {
         self.inner
             .lock()
@@ -749,12 +1074,19 @@ impl DomainRegistry {
         hosts.sort_by(|left, right| left.id.cmp(&right.id));
         let mut environments: Vec<Environment> = inner.environments.values().cloned().collect();
         environments.sort_by(|left, right| left.id.cmp(&right.id));
+        let mut queued_messages: Vec<QueuedMessage> =
+            inner.queued_messages.values().cloned().collect();
+        queued_messages.sort_by(|left, right| left.id.cmp(&right.id));
+        let mut interactions: Vec<Interaction> = inner.interactions.values().cloned().collect();
+        interactions.sort_by(|left, right| left.id.cmp(&right.id));
         RegistrySnapshot {
             personal_project_id: inner.personal_project_id.clone(),
             projects,
             threads,
             hosts,
             environments,
+            queued_messages,
+            interactions,
         }
     }
 
@@ -816,6 +1148,16 @@ impl DomainRegistry {
                     thread.updated_at_ms = run.at_ms;
                 }
             }
+            DomainEvent::ThreadQueuedMessageChanged { queued_message } => {
+                inner
+                    .queued_messages
+                    .insert(queued_message.id.clone(), queued_message.clone());
+            }
+            DomainEvent::ThreadInteractionChanged { interaction } => {
+                inner
+                    .interactions
+                    .insert(interaction.id.clone(), interaction.clone());
+            }
             DomainEvent::HostRegistered { host } => {
                 inner.hosts.insert(host.id.clone(), host.clone());
             }
@@ -872,6 +1214,16 @@ impl RegistryInner {
             .into_iter()
             .map(|environment| (environment.id.clone(), environment))
             .collect();
+        let queued_messages = snapshot
+            .queued_messages
+            .into_iter()
+            .map(|message| (message.id.clone(), message))
+            .collect();
+        let interactions = snapshot
+            .interactions
+            .into_iter()
+            .map(|interaction| (interaction.id.clone(), interaction))
+            .collect();
         let personal_project_id = snapshot.personal_project_id;
         // Defensive: a snapshot that lost its personal project still has to
         // resolve a default, so the id stays stable and a placeholder is
@@ -894,6 +1246,8 @@ impl RegistryInner {
             threads,
             hosts,
             environments,
+            queued_messages,
+            interactions,
         }
     }
 }

@@ -20,6 +20,8 @@
 //! | create a thread | `thread_created` | `project:{project_id}` |
 //! | any lifecycle trigger | `thread_status_changed` | `thread:{id}` |
 //! | post a message | `thread_message_added` | `thread:{id}` |
+//! | queue, send or cancel a queued message | `thread_queued_message_changed` | `thread:{id}` |
+//! | raise, answer or cancel an interaction | `thread_interaction_changed` | `thread:{id}` |
 //! | rename, retitle, refile or retab | `thread_updated` | `project:{project_id}` |
 //! | register a host | `host_registered` | `host:{id}` |
 //! | connect/disconnect a host | `host_status_changed` | `host:{id}` |
@@ -36,7 +38,9 @@ use serde::{Deserialize, Serialize};
 use crate::environment::{Environment, EnvironmentStatus};
 use crate::host::{Host, HostStatus};
 use crate::id::{EnvironmentId, HostId, ProjectId, ThreadId};
+use crate::interaction::Interaction;
 use crate::project::Project;
+use crate::queue::QueuedMessage;
 use crate::run::RunEvent;
 use crate::scope::DomainScope;
 use crate::thread::{Thread, ThreadMessage, ThreadStatus};
@@ -130,6 +134,28 @@ pub enum DomainEvent {
         /// Wall-clock milliseconds of the change.
         at_ms: u64,
     },
+    /// A queued message was created, sent or cancelled.
+    ///
+    /// Carries the whole message after the change, for the same reason
+    /// [`DomainEvent::ThreadUpdated`] carries the whole thread: one event has
+    /// to express three different mutations, and a consumer either applies the
+    /// new value or ignores it.
+    ///
+    /// Published to the **thread** scope, because a queue is part of one
+    /// thread's composer state and a client subscribed to the conversation is
+    /// the only one that renders it.
+    ThreadQueuedMessageChanged {
+        /// The message after the change.
+        queued_message: QueuedMessage,
+    },
+    /// An interaction was raised, answered or cancelled.
+    ///
+    /// Published to the thread scope: an interaction blocks one thread's turn
+    /// and is rendered in that conversation.
+    ThreadInteractionChanged {
+        /// The interaction after the change.
+        interaction: Interaction,
+    },
     /// An environment now exists.
     EnvironmentCreated {
         /// The environment.
@@ -165,6 +191,8 @@ impl DomainEvent {
             DomainEvent::ThreadRunEvent { .. } => "thread_run_event",
             DomainEvent::HostRegistered { .. } => "host_registered",
             DomainEvent::HostStatusChanged { .. } => "host_status_changed",
+            DomainEvent::ThreadQueuedMessageChanged { .. } => "thread_queued_message_changed",
+            DomainEvent::ThreadInteractionChanged { .. } => "thread_interaction_changed",
             DomainEvent::EnvironmentCreated { .. } => "environment_created",
             DomainEvent::EnvironmentStatusChanged { .. } => "environment_status_changed",
         }
@@ -197,6 +225,12 @@ impl DomainEvent {
                 DomainScope::Project(thread.project_id.clone())
             }
             DomainEvent::ThreadRunEvent { run } => DomainScope::Thread(run.thread_id.clone()),
+            DomainEvent::ThreadQueuedMessageChanged { queued_message } => {
+                DomainScope::Thread(queued_message.thread_id.clone())
+            }
+            DomainEvent::ThreadInteractionChanged { interaction } => {
+                DomainScope::Thread(interaction.thread_id.clone())
+            }
             DomainEvent::HostRegistered { host } => DomainScope::Host(host.id.clone()),
             DomainEvent::HostStatusChanged { host_id, .. } => DomainScope::Host(host_id.clone()),
             DomainEvent::EnvironmentCreated { environment } => {

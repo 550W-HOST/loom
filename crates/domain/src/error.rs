@@ -7,6 +7,8 @@
 use std::fmt;
 
 use crate::environment::EnvironmentStatus;
+use crate::interaction::InteractionStatus;
+use crate::queue::QueuedMessageStatus;
 use crate::thread::{ThreadStatus, ThreadTrigger};
 
 /// A rejected domain operation.
@@ -55,6 +57,26 @@ pub enum DomainError {
         /// The revision the thread is actually at.
         current: u64,
     },
+    /// A queued message cannot make the requested transition.
+    ///
+    /// Both `sent` and `cancelled` are terminal, so a second send or cancel is
+    /// a claim race the caller has to see rather than a silent no-op.
+    IllegalQueuedMessageTransition {
+        /// The status the message was in.
+        from: QueuedMessageStatus,
+        /// The status that was requested.
+        to: QueuedMessageStatus,
+    },
+    /// An interaction cannot make the requested transition.
+    ///
+    /// Raised when a settled interaction is answered again, or when a
+    /// cancellation is requested for one that is already terminal.
+    IllegalInteractionTransition {
+        /// The status the interaction was in.
+        from: InteractionStatus,
+        /// The status that was requested.
+        to: InteractionStatus,
+    },
 }
 
 impl fmt::Display for DomainError {
@@ -75,6 +97,12 @@ impl fmt::Display for DomainError {
                 f,
                 "thread tabs are at revision {current}, not the expected {expected}"
             ),
+            DomainError::IllegalQueuedMessageTransition { from, to } => {
+                write!(f, "a queued message in status {from} cannot move to {to}")
+            }
+            DomainError::IllegalInteractionTransition { from, to } => {
+                write!(f, "an interaction in status {from} cannot move to {to}")
+            }
         }
     }
 }

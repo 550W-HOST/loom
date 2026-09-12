@@ -13,14 +13,19 @@ use axum::{Json, Router};
 use http_body_util::BodyExt;
 use loom_domain::{
     DomainError, DomainEvent, DomainScope, Environment, EnvironmentId, EnvironmentKind,
-    EnvironmentStatus, Host, HostId, HostStatus, MessageRole, Project, ProjectId, ProjectKind,
-    ProjectSourceId, ReasoningLevel, Thread, ThreadId, ThreadStatus, ThreadTrigger, ThreadUpdate,
+    EnvironmentStatus, Host, HostId, HostStatus, Interaction, InteractionId, InteractionOrigin,
+    MessageRole, NewQueuedMessage, Project, ProjectId, ProjectKind, ProjectSourceId, QueuedMessage,
+    QueuedMessageId, QueuedMessageInitiator, QueuedMessagePayload, QueuedMessageStatus,
+    ReasoningLevel, Resolution, ServiceTier, Thread, ThreadId, ThreadStatus, ThreadTrigger,
+    ThreadUpdate,
 };
 use loom_relay::scope::Scope;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::domain_state::CommandError;
+use crate::interactions::DeliverOutcome;
+use crate::queue::DeliveryOutcome;
 use crate::state::{domain_event_from_envelope, AppState};
 use crate::ui;
 use crate::ws;
@@ -83,6 +88,46 @@ pub fn router(state: AppState) -> Router {
             get(thread_tabs).put(update_thread_tabs),
         )
         .route("/api/v1/threads/{id}/timeline", get(thread_timeline))
+        .route(
+            "/api/v1/threads/{id}/timeline/turn-summary-details",
+            get(thread_turn_summary_details),
+        )
+        .route("/api/v1/threads/{id}/events/wait", get(thread_event_wait))
+        .route("/api/v1/threads/{id}/goal/clear", post(clear_thread_goal))
+        .route(
+            "/api/v1/threads/{id}/context/clear",
+            post(clear_thread_context),
+        )
+        .route("/api/v1/threads/{id}/plan/cancel", post(cancel_thread_plan))
+        .route(
+            "/api/v1/threads/{id}/interactions",
+            get(thread_interactions),
+        )
+        .route(
+            "/api/v1/threads/{id}/interactions/{interaction_id}",
+            get(thread_interaction),
+        )
+        .route(
+            "/api/v1/threads/{id}/interactions/{interaction_id}/resolve",
+            post(resolve_thread_interaction),
+        )
+        .route(
+            "/api/v1/threads/{id}/interactions/{interaction_id}/respond",
+            post(respond_to_thread_interaction),
+        )
+        .route(
+            "/api/v1/threads/{id}/interactions/{interaction_id}/cancel",
+            post(cancel_thread_interaction),
+        )
+        .route(
+            "/api/v1/threads/{id}/queued-messages",
+            get(thread_queued_messages).post(create_queued_message),
+        )
+        .route(
+            "/api/v1/threads/{id}/queued-messages/{queued_message_id}/send",
+            post(send_queued_message),
+        )
+        .route("/api/v1/queued-messages", get(list_queued_messages))
         .route("/api/v1/threads/{id}/messages", post(post_thread_message))
         .route("/api/v1/projects", get(list_projects).post(create_project))
         .route(
@@ -678,7 +723,10 @@ fn thread_summary_value(state: &AppState, thread: &Thread) -> Value {
         },
         "activeBackgroundAgentCount": 0,
         "canSpawnChild": true,
-        "queuedMessageCount": 0
+        // A real count: a queued message is durable state, and the composer's
+        // "queued" affordance is driven by this number. Reporting `0` while
+        // the queue held rows is the kind of fake the batch forbids.
+        "queuedMessageCount": state.registry.queued_message_count(&thread.id)
     })
 }
 
@@ -716,8 +764,8 @@ fn thread_list_entry_value(state: &AppState, thread: &Thread) -> Value {
             "activeWorkflowCount": 0,
             "activeBackgroundAgentCount": 0,
             "activeBackgroundCommandCount": 0,
-            "activePlanModeCount": 0,
-            "activeGoalCount": 0
+            "activePlanModeCount": usize::from(thread_has_active_plan(state, &thread.id)),
+            "activeGoalCount": usize::from(thread_has_goal(state, &thread.id)),
         }),
     );
     object.insert(
@@ -729,7 +777,10 @@ fn thread_list_entry_value(state: &AppState, thread: &Thread) -> Value {
         }),
     );
     object.insert("pinSortKey".into(), Value::Null);
-    object.insert("hasPendingInteraction".into(), Value::Bool(false));
+    object.insert(
+        "hasPendingInteraction".into(),
+        Value::Bool(state.registry.has_pending_interaction(&thread.id)),
+    );
     object.insert(
         "environmentHostId".into(),
         environment_host_id.map_or(Value::Null, Value::String),
@@ -1052,29 +1103,24 @@ async fn thread_events(
             .collect::<Vec<_>>()
     });
 
-    let entries = match thread_domain_events(&state, &thread_id) {
-        Ok(entries) => entries,
+    let rows = match thread_event_rows(&state, &thread_id) {
+        Ok(rows) => rows,
         Err(response) => return response,
     };
-    let mut result = Vec::new();
-    for (event_id, sequence, created_at_ms, event) in entries {
-        let DomainEvent::ThreadRunEvent { run } = event else {
-            continue;
-        };
-        if after.is_some_and(|value| sequence <= value)
-            || before.is_some_and(|value| sequence >= value)
-        {
-            continue;
-        }
-        let event_type = run.event.kind();
-        if types
-            .as_ref()
-            .is_some_and(|allowed| !allowed.contains(&event_type))
-        {
-            continue;
-        }
-        result.push(thread_event_row(event_id, sequence, created_at_ms, &run));
-    }
+    // The row set and its shape come from [`thread_event_rows`], which
+    // `threads.eventWait` shares: the two routes cannot drift on what a
+    // `ThreadEventRow` is.
+    let mut result = rows
+        .into_iter()
+        .filter(|(sequence, row)| {
+            !after.is_some_and(|value| *sequence <= value)
+                && !before.is_some_and(|value| *sequence >= value)
+                && types.as_ref().map_or(true, |allowed| {
+                    allowed.contains(&row["type"].as_str().unwrap_or_default())
+                })
+        })
+        .map(|(_, row)| row)
+        .collect::<Vec<_>>();
     if descending {
         result.reverse();
     }
@@ -1184,6 +1230,24 @@ async fn read_thread(State(state): State<AppState>, Path(raw_thread_id): Path<St
 struct SendThreadRequest {
     input: Vec<SendInput>,
     mode: SendMode,
+    /// When the client wants the turn to run; a future value becomes a queued
+    /// message instead of a turn.
+    #[serde(default)]
+    send_at: Option<u64>,
+    /// The model, reasoning level, permission mode and service tier the client
+    /// picked. Recorded on the queued row when one is created; a delivered
+    /// turn does not carry them because `ProviderSpec` has no field for them
+    /// yet (see the retry route's note).
+    #[serde(default)]
+    model: Option<String>,
+    #[serde(default)]
+    reasoning_level: Option<ReasoningLevel>,
+    #[serde(default)]
+    permission_mode: Option<String>,
+    #[serde(default)]
+    service_tier: Option<String>,
+    #[serde(default)]
+    sender_thread_id: Option<String>,
 }
 
 /// bb's `sendThreadRequestSchema.mode`.
@@ -1217,7 +1281,25 @@ fn text_from_send_input(input: &[SendInput]) -> Option<String> {
 }
 
 /// Sends a bb prompt through the same registry -> publish -> dispatch path as
-/// the compatibility `/messages` endpoint.
+/// the compatibility `/messages` endpoint, or queues it when the thread cannot
+/// take a turn now.
+///
+/// The contract's `mode` is what decides which, and loom honours the
+/// distinction rather than collapsing it:
+///
+/// | mode | thread idle | thread busy |
+/// | --- | --- | --- |
+/// | `start` | send | `501 not_configured` |
+/// | `auto` | send | queue, answer `delivery: "queued"` |
+/// | `queue-if-active` | send | queue, answer `delivery: "queued"` |
+/// | `steer` | send | `501 not_configured` |
+/// | `steer-if-active` | send | `501 not_configured` |
+///
+/// The two `steer` modes are refused while busy because steering means
+/// injecting input into the running turn, and `loom_provider_protocol` has no
+/// frame for that. Appending the text as a second concurrent turn would be a
+/// different operation under the same name. A future `sendAt` is likewise a
+/// queue entry, never an immediate turn.
 async fn send_thread(
     State(state): State<AppState>,
     Path(raw_thread_id): Path<String>,
@@ -1227,13 +1309,112 @@ async fn send_thread(
         Ok(thread_id) => thread_id,
         Err(response) => return response,
     };
-    let _mode = request.mode;
+    let Some(thread) = state.registry.thread(&thread_id) else {
+        return error_response(
+            StatusCode::NOT_FOUND,
+            format!("thread {thread_id} is not known"),
+        );
+    };
     let Some(content) = text_from_send_input(&request.input) else {
         return error_response(
             StatusCode::BAD_REQUEST,
             "loom currently accepts text prompt inputs only".into(),
         );
     };
+
+    let busy = !matches!(thread.status, ThreadStatus::Idle);
+    let scheduled = request.send_at.is_some_and(|at| at > loom_relay::now_ms());
+    let steers = matches!(request.mode, SendMode::Steer | SendMode::SteerIfActive);
+    let queues_when_busy = matches!(request.mode, SendMode::Auto | SendMode::QueueIfActive);
+
+    if busy && steers {
+        return error_response_with_code(
+            StatusCode::NOT_IMPLEMENTED,
+            "not_configured",
+            format!(
+                "loom's provider protocol cannot steer a running turn; thread {thread_id} is \
+                 {}",
+                thread.status
+            ),
+        );
+    }
+    if busy && !queues_when_busy {
+        // `start` while busy is the one combination with no honest answer: the
+        // mode asked for a turn now, and the protocol cannot run two.
+        return error_response_with_code(
+            StatusCode::NOT_IMPLEMENTED,
+            "not_configured",
+            format!(
+                "thread {thread_id} is {}; a `{}` send needs the queue, which this client did not \
+                 ask for",
+                thread.status,
+                match request.mode {
+                    SendMode::Start => "start",
+                    SendMode::Steer | SendMode::SteerIfActive => "steer",
+                    SendMode::Auto | SendMode::QueueIfActive => unreachable!(),
+                },
+            ),
+        );
+    }
+
+    if busy || scheduled {
+        let service_tier = match request.service_tier.as_deref() {
+            None | Some("default") => ServiceTier::Default,
+            Some("fast") => ServiceTier::Fast,
+            Some(other) => {
+                return error_response_with_code(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_request",
+                    format!("serviceTier must be `fast` or `default`, got {other:?}"),
+                )
+            }
+        };
+        let sender_thread_id = match request.sender_thread_id.as_deref() {
+            None | Some("") => None,
+            Some(raw) => match raw.parse::<ThreadId>() {
+                Ok(thread_id) => Some(thread_id),
+                Err(error) => return error_response(StatusCode::BAD_REQUEST, error.to_string()),
+            },
+        };
+        let now = loom_relay::now_ms();
+        return match state.registry.create_queued_message(
+            NewQueuedMessage {
+                thread_id: thread_id.clone(),
+                sender_thread_id,
+                initiator: QueuedMessageInitiator::User,
+                text: content,
+                model: request.model,
+                reasoning_level: request.reasoning_level,
+                permission_mode: request.permission_mode,
+                service_tier,
+                group_with_next: false,
+                send_at: request.send_at,
+                payload: QueuedMessagePayload::Inline,
+            },
+            now,
+        ) {
+            Ok((message, event)) => {
+                let _ = state.publish_domain_event(&event);
+                let waiting_on = if scheduled {
+                    json!({ "kind": "time" })
+                } else {
+                    json!({ "kind": "thread-busy" })
+                };
+                let mut row = queued_message_row(&state, &message, now);
+                if let Value::Object(object) = &mut row {
+                    object.insert("waitingOn".into(), waiting_on);
+                }
+                Json(json!({
+                    "ok": true,
+                    "delivery": "queued",
+                    "queuedMessage": row,
+                }))
+                .into_response()
+            }
+            Err(error) => command_error_response(error),
+        };
+    }
+
     match append_thread_message(&state, &thread_id, MessageRole::User, content) {
         Ok(_) => Json(json!({ "ok": true, "delivery": "sent" })).into_response(),
         Err(response) => response,
@@ -1973,11 +2154,9 @@ async fn edit_thread_message(
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct RetryThreadRequest {
-    /// A human label for the retry. Accepted and unused: it describes a
-    /// turn-request record, and loom keeps the turn in its log rather than a
-    /// separate request table, so there is nothing to label.
+    /// A human label for the retry, kept on a queued retry's payload so a
+    /// client can show why a repeat was asked for.
     #[serde(default)]
-    #[allow(dead_code)]
     reason: Option<String>,
     /// When the client wants the retry to run; `null` or a past time means now.
     #[serde(default)]
@@ -1988,7 +2167,8 @@ struct RetryThreadRequest {
     turn_request_id: Option<String>,
 }
 
-/// `threads.retry`: dispatches the thread's last user prompt again.
+/// `threads.retry`: dispatches the thread's last user prompt again, or queues
+/// the repeat when the thread cannot run it now.
 ///
 /// This is deliberately the *existing* lifecycle, not a second state machine:
 /// the thread moves to `working` through [`ThreadTrigger`] (`run_started` from
@@ -1996,10 +2176,20 @@ struct RetryThreadRequest {
 /// [`AppState::dispatch_thread`], so reconciliation, deadlines and terminal
 /// events apply exactly as they do to a first attempt.
 ///
-/// Refusals, each for a state the client can see:
+/// A retry the thread cannot take now becomes a **queued message** instead of a
+/// refusal, which is the contract's second response branch and the completion
+/// of what B2 deferred:
 ///
-/// * a run in flight (`working` or `waiting`) — `409 conflict`; the contract's
-///   "queued" delivery branch belongs to B3's queue, which does not exist yet;
+/// * a future `sendAt` — the client asked for a scheduled repeat;
+/// * a run in flight — the client asked for the repeat after the current turn.
+///
+/// Both answer `delivery: "queued"` with the row and the reason it is waiting,
+/// so a client can render it exactly like an inline queued message. Running it
+/// immediately would ignore the schedule, and answering `sent` would claim a
+/// turn that did not start.
+///
+/// Remaining refusals, each for a state the client can see:
+///
 /// * no user turn in the thread — `409 no_failed_turn`;
 /// * an archived thread — `409 thread_not_writable`;
 /// * a dispatch that found no usable environment or host — the same error the
@@ -2030,29 +2220,6 @@ async fn retry_thread(
             format!("thread {thread_id} is archived"),
         );
     }
-    if matches!(thread.status, ThreadStatus::Working | ThreadStatus::Waiting) {
-        return error_response_with_code(
-            StatusCode::CONFLICT,
-            "conflict",
-            format!("thread {thread_id} already has a run in flight; stop it before retrying"),
-        );
-    }
-
-    // A scheduled retry belongs to the queued-message surface B3 introduces.
-    // Answering `sent` for a turn that will not run until later would be a lie,
-    // and running it now would ignore the schedule the client asked for.
-    if let Some(send_at) = request.send_at {
-        if send_at > loom_relay::now_ms() {
-            return error_response_with_code(
-                StatusCode::NOT_IMPLEMENTED,
-                "not_configured",
-                format!(
-                    "scheduled retries need loom's queued-message surface, which does not exist \
-                     yet; retry thread {thread_id} without `sendAt`"
-                ),
-            );
-        }
-    }
 
     // The contract's validator does not enforce `pattern`, so a client-supplied
     // id is checked here, before anything changes: echoing one back outside
@@ -2070,14 +2237,14 @@ async fn retry_thread(
         );
     }
 
-    // The prompt and the retry count come from the thread's own log: it is the
-    // only record of what the turn was, and a retry has to repeat that turn.
+    // The prompt comes from the thread's own log: it is the only record of what
+    // the turn was, and a retry has to repeat that turn.
     let entries = match thread_domain_events(&state, &thread_id) {
         Ok(entries) => entries,
         Err(response) => return response,
     };
     let mut prompt = None;
-    let mut previous_attempts = 0u64;
+    let mut runs_started = 0u64;
     for (_event_id, _sequence, _created_at_ms, event) in &entries {
         match event {
             DomainEvent::ThreadMessageAdded { message, .. }
@@ -2085,14 +2252,30 @@ async fn retry_thread(
             {
                 prompt = Some(message.content.clone());
             }
+            // Every entry into `working` is one run of this thread, whoever
+            // caused it. That is the honest count to derive `attempt` from: a
+            // retry issued from `error` and one issued after a stop differ in
+            // their trigger but not in what the client is asking for, and a
+            // count that only watched `error -> working` reported the second
+            // retry as the first.
             DomainEvent::ThreadStatusChanged {
-                from: ThreadStatus::Error,
                 to: ThreadStatus::Working,
                 ..
-            } => previous_attempts += 1,
+            } => runs_started += 1,
             _ => {}
         }
     }
+    // A retry that was queued — and maybe delivered, cancelled, or still
+    // waiting — is an attempt in its own right: it is what makes "this is the
+    // third attempt" true for a client retrying a busy thread. The runs already
+    // counted include the original turn, which is not a retry, hence the +1.
+    let queued_retries = state
+        .registry
+        .queued_messages_for(Some(&thread_id))
+        .into_iter()
+        .filter(|message| matches!(message.payload, QueuedMessagePayload::Retry { .. }))
+        .count() as u64;
+    let attempt = runs_started.saturating_sub(1) + queued_retries + 1;
     let Some(prompt) = prompt else {
         return error_response_with_code(
             StatusCode::CONFLICT,
@@ -2101,16 +2284,60 @@ async fn retry_thread(
         );
     };
 
+    let now = loom_relay::now_ms();
+    let busy = matches!(thread.status, ThreadStatus::Working | ThreadStatus::Waiting);
+    let scheduled = request.send_at.is_some_and(|send_at| send_at > now);
+    if busy || scheduled {
+        let reason = request.reason.clone().unwrap_or_else(|| "Retry".to_owned());
+        return match state.registry.create_queued_message(
+            NewQueuedMessage {
+                thread_id: thread_id.clone(),
+                sender_thread_id: None,
+                initiator: QueuedMessageInitiator::User,
+                text: prompt,
+                model: thread.model.clone(),
+                reasoning_level: thread.reasoning_level,
+                permission_mode: None,
+                service_tier: ServiceTier::Default,
+                group_with_next: false,
+                send_at: request.send_at,
+                payload: QueuedMessagePayload::Retry {
+                    retry_of_turn_request_id: turn_request_id.clone(),
+                    attempt,
+                    reason,
+                },
+            },
+            now,
+        ) {
+            Ok((message, event)) => {
+                let _ = state.publish_domain_event(&event);
+                let waiting_on = if scheduled {
+                    json!({ "kind": "time" })
+                } else {
+                    json!({ "kind": "thread-busy" })
+                };
+                Json(json!({
+                    "ok": true,
+                    "delivery": "queued",
+                    "turnRequestId": turn_request_id,
+                    "attempt": attempt,
+                    "queuedMessageId": message.id.to_string(),
+                    "waitingOn": waiting_on,
+                    "sendAt": message.send_at,
+                }))
+                .into_response()
+            }
+            Err(error) => command_error_response(error),
+        };
+    }
+
     let trigger = match thread.status {
         ThreadStatus::Idle => ThreadTrigger::RunStarted,
         ThreadStatus::Error => ThreadTrigger::Retry,
-        // Archived, working and waiting were refused above.
+        // Archived, working and waiting were handled above.
         _ => ThreadTrigger::Retry,
     };
-    match state
-        .registry
-        .transition_thread(&thread_id, trigger, loom_relay::now_ms())
-    {
+    match state.registry.transition_thread(&thread_id, trigger, now) {
         Ok(Some(event)) => {
             if let Err(error) = state.publish_domain_event(&event) {
                 return error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string());
@@ -2137,7 +2364,7 @@ async fn retry_thread(
             "ok": true,
             "delivery": "sent",
             "turnRequestId": turn_request_id,
-            "attempt": previous_attempts + 1,
+            "attempt": attempt,
         }))
         .into_response(),
         crate::runs::DispatchOutcome::NoEnvironment { .. } => error_response_with_code(
@@ -2412,7 +2639,7 @@ async fn thread_timeline(
         "activeWorkflows": [],
         "activeBackgroundCommands": [],
         "pendingTodos": null,
-        "goal": null,
+        "goal": goal_value(&state, &thread_id, &entries),
         "modelFallback": null,
         "timelinePage": {
             "kind": if before.is_some() { "older" } else { "latest" },
@@ -2424,6 +2651,1275 @@ async fn thread_timeline(
         "maxSeq": max_seq
     }))
     .into_response()
+}
+
+// --- B3: interactions, plans and the queue --------------------------------
+
+/// The `input` array bb's contract requires for a queued message, projected
+/// from the stored text.
+///
+/// loom stores the prompt as text and rebuilds the contract's content array on
+/// the way out. That round-trip is lossy in one direction only — a block loom
+/// cannot deliver is refused at the route rather than stored and dropped — so a
+/// client always sees back exactly what it may send.
+fn queued_message_content(text: &str) -> Value {
+    json!([{ "type": "text", "text": text, "mentions": [] }])
+}
+
+/// A stored prompt as the text a queued message's `input` carries.
+///
+/// Only the text variant is accepted (see [`text_from_queued_input`]), so the
+/// projection is the concatenation of every text block. A block that is not
+/// text was refused at creation and can never appear here.
+fn text_from_queued_input(input: &Value) -> Result<String, String> {
+    let Some(blocks) = input.as_array() else {
+        return Err("input must be an array".into());
+    };
+    if blocks.is_empty() {
+        return Err("input must contain at least one block".into());
+    }
+    let mut text = String::new();
+    for block in blocks {
+        match block.get("type").and_then(Value::as_str) {
+            Some("text") => {
+                let Some(value) = block.get("text").and_then(Value::as_str) else {
+                    return Err("a text block needs a `text` string".into());
+                };
+                text.push_str(value);
+            }
+            Some(other) => {
+                // An image or a file cannot be delivered: loom's provider
+                // protocol carries a prompt as text. Accepting it and dropping
+                // it would be the silent data loss the batch's acceptance
+                // criteria forbid, so it is refused with the block named.
+                return Err(format!(
+                    "loom's provider protocol delivers prompts as text; the `{other}` input block 
+                     cannot be queued"
+                ));
+            }
+            None => return Err("an input block needs a `type`".into()),
+        }
+    }
+    if text.trim().is_empty() {
+        return Err("input must contain text".into());
+    }
+    Ok(text)
+}
+
+/// Why a queued message is not deliverable yet, when the caller knows.
+///
+/// The contract's `waitingOn` union has seven variants; loom can construct
+/// three of them honestly. `time` and `thread-busy` are the two states the
+/// queue itself has, and `null` is "nothing known is holding it" — which is the
+/// truthful answer for a message that simply has not been drained yet. The
+/// remaining variants describe conditions loom does not model (a plugin
+/// claim, host-offline queueing, provisioning) and are never fabricated.
+fn queued_message_value(state: &AppState, message: &QueuedMessage) -> Value {
+    let model = message
+        .model
+        .clone()
+        .unwrap_or_else(|| configured_provider_id(state));
+    json!({
+        "id": message.id.to_string(),
+        "initiator": message.initiator.as_str(),
+        "senderThreadId": message.sender_thread_id.as_ref().map(ToString::to_string),
+        "threadId": message.thread_id.to_string(),
+        "content": queued_message_content(&message.text),
+        "model": model,
+        "reasoningLevel": message
+            .reasoning_level
+            .map_or(DEFAULT_REASONING_LEVEL, ReasoningLevel::as_str),
+        "permissionMode": message
+            .permission_mode
+            .clone()
+            .unwrap_or_else(|| DEFAULT_PERMISSION_MODE.to_owned()),
+        "serviceTier": message.service_tier.as_str(),
+        "groupWithNext": message.group_with_next,
+        "sendAt": message.send_at,
+        "waitingOn": Value::Null,
+        "failureReason": message.failure_reason,
+        "payload": queued_message_payload_value(message),
+        "editable": message.status.is_open(),
+        "createdAt": message.created_at_ms,
+        "updatedAt": message.updated_at_ms,
+    })
+}
+
+/// A queued message's `payload`, in the contract's discriminated shape.
+fn queued_message_payload_value(message: &QueuedMessage) -> Value {
+    match &message.payload {
+        QueuedMessagePayload::Inline => json!({ "kind": "inline" }),
+        QueuedMessagePayload::Retry {
+            retry_of_turn_request_id,
+            attempt,
+            reason,
+        } => json!({
+            "kind": "retry",
+            "retryOfTurnRequestId": retry_of_turn_request_id,
+            "attempt": attempt,
+            "reason": reason,
+        }),
+    }
+}
+
+/// A queued-message row with its derived `waitingOn`.
+fn queued_message_row(state: &AppState, message: &QueuedMessage, now: u64) -> Value {
+    let mut value = queued_message_value(state, message);
+    let waiting_on = match message.status {
+        QueuedMessageStatus::Queued if !message.is_due(now) => json!({ "kind": "time" }),
+        // A queued message whose thread is busy is exactly `thread-busy`; a
+        // queued message whose thread is idle simply has not been drained yet,
+        // and `null` says that rather than inventing a cause.
+        QueuedMessageStatus::Queued => state
+            .registry
+            .thread(&message.thread_id)
+            .filter(|thread| !thread.status.accepts_work())
+            .map_or(Value::Null, |_| json!({ "kind": "thread-busy" })),
+        _ => Value::Null,
+    };
+    if let Value::Object(object) = &mut value {
+        object.insert("waitingOn".into(), waiting_on);
+    }
+    value
+}
+
+/// Query of a `queue.list` read.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
+struct QueueListQuery {
+    thread_id: Option<String>,
+    /// Accepted for wire compatibility; loom has no plugin queue claim, so it
+    /// does not filter on it.
+    wait_holder: Option<String>,
+}
+
+/// `queue.list`: every queued message still waiting, oldest first.
+///
+/// A bare array, not an envelope. A narrowed read (`threadId`) is the same
+/// array filtered; `waitHolder` is accepted and ignored, because loom has no
+/// plugin claim on a queue and reporting a filtered list would be worse than
+/// reporting the whole one.
+async fn list_queued_messages(
+    State(state): State<AppState>,
+    Query(query): Query<QueueListQuery>,
+) -> Response {
+    let thread_id = match query.thread_id.as_deref() {
+        None | Some("") => None,
+        Some(raw) => match raw.parse::<ThreadId>() {
+            Ok(thread_id) => Some(thread_id),
+            Err(error) => return error_response(StatusCode::BAD_REQUEST, error.to_string()),
+        },
+    };
+    if let Some(thread_id) = &thread_id {
+        if state.registry.thread(thread_id).is_none() {
+            return error_response(
+                StatusCode::NOT_FOUND,
+                format!("thread {thread_id} is not known"),
+            );
+        }
+    }
+    let now = loom_relay::now_ms();
+    Json(
+        state
+            .registry
+            .queued_messages_for(thread_id.as_ref())
+            .into_iter()
+            .filter(|message| message.status == QueuedMessageStatus::Queued)
+            .map(|message| queued_message_row(&state, &message, now))
+            .collect::<Vec<_>>(),
+    )
+    .into_response()
+}
+
+/// `threads.queuedMessages`: the thread's queue, oldest first.
+async fn thread_queued_messages(
+    State(state): State<AppState>,
+    Path(raw_thread_id): Path<String>,
+) -> Response {
+    let thread_id = match parse_thread_id(&raw_thread_id) {
+        Ok(thread_id) => thread_id,
+        Err(response) => return response,
+    };
+    if state.registry.thread(&thread_id).is_none() {
+        return error_response(
+            StatusCode::NOT_FOUND,
+            format!("thread {thread_id} is not known"),
+        );
+    }
+    let now = loom_relay::now_ms();
+    Json(
+        state
+            .registry
+            .queued_messages_for(Some(&thread_id))
+            .into_iter()
+            .filter(|message| message.status == QueuedMessageStatus::Queued)
+            .map(|message| queued_message_row(&state, &message, now))
+            .collect::<Vec<_>>(),
+    )
+    .into_response()
+}
+
+/// Body of a `threads.createQueuedMessage` request.
+///
+/// Every field but `input` is optional in the contract; `input` is lifted to a
+/// [`Value`] so the handler can refuse a non-text block with a message that
+/// names it, rather than a serde error the client cannot act on.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CreateQueuedMessageRequest {
+    input: Value,
+    #[serde(default)]
+    sender_thread_id: Option<String>,
+    #[serde(default)]
+    model: Option<String>,
+    #[serde(default)]
+    reasoning_level: Option<ReasoningLevel>,
+    #[serde(default)]
+    permission_mode: Option<String>,
+    #[serde(default)]
+    service_tier: Option<String>,
+}
+
+/// `threads.createQueuedMessage`: stores a prompt for a busy thread.
+///
+/// The message is durable state, not a held request: the client that created it
+/// may disconnect and the server may restart, and `threads.queuedMessages` is
+/// still expected to answer it. It is delivered by a run reaching a terminal
+/// state (`AppState::drain_thread_queue`) or by `threads.sendQueuedMessage`.
+async fn create_queued_message(
+    State(state): State<AppState>,
+    Path(raw_thread_id): Path<String>,
+    Json(request): Json<CreateQueuedMessageRequest>,
+) -> Response {
+    let thread_id = match parse_thread_id(&raw_thread_id) {
+        Ok(thread_id) => thread_id,
+        Err(response) => return response,
+    };
+    let text = match text_from_queued_input(&request.input) {
+        Ok(text) => text,
+        Err(message) => {
+            return error_response_with_code(StatusCode::BAD_REQUEST, "invalid_request", message)
+        }
+    };
+    let sender_thread_id = match request.sender_thread_id.as_deref() {
+        None | Some("") => None,
+        Some(raw) => match raw.parse::<ThreadId>() {
+            Ok(thread_id) => Some(thread_id),
+            Err(error) => return error_response(StatusCode::BAD_REQUEST, error.to_string()),
+        },
+    };
+    let service_tier = match request.service_tier.as_deref() {
+        None | Some("default") => ServiceTier::Default,
+        Some("fast") => ServiceTier::Fast,
+        Some(other) => {
+            return error_response_with_code(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                format!("serviceTier must be `fast` or `default`, got {other:?}"),
+            )
+        }
+    };
+    let now = loom_relay::now_ms();
+    match state.registry.create_queued_message(
+        NewQueuedMessage {
+            thread_id: thread_id.clone(),
+            sender_thread_id,
+            initiator: QueuedMessageInitiator::User,
+            text,
+            model: request.model,
+            reasoning_level: request.reasoning_level,
+            permission_mode: request.permission_mode,
+            service_tier,
+            group_with_next: false,
+            send_at: None,
+            payload: QueuedMessagePayload::Inline,
+        },
+        now,
+    ) {
+        Ok((message, event)) => {
+            let _ = state.publish_domain_event(&event);
+            (
+                StatusCode::CREATED,
+                Json(queued_message_row(&state, &message, now)),
+            )
+                .into_response()
+        }
+        Err(error) => command_error_response(error),
+    }
+}
+
+/// Body of a `threads.sendQueuedMessage` request.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SendQueuedMessageRequest {
+    mode: SendQueuedMessageMode,
+}
+
+/// bb's `mode` for sending a queued message.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum SendQueuedMessageMode {
+    /// Send as a normal turn, or leave it queued if the thread is busy.
+    Auto,
+    /// Inject into the running turn.
+    Steer,
+}
+
+/// `threads.sendQueuedMessage`: delivers a queued message, or says why not.
+///
+/// The two contract branches are the two honest outcomes:
+///
+/// * `delivery: "sent"` — the message became a turn, now;
+/// * `delivery: "queued"` — it is still in the queue, with a `waitingOn` that
+///   names the reason and a `queuedMessage` the client re-renders.
+///
+/// `steer` is refused with `501 not_configured` rather than downgraded to a
+/// queued send. `loom_provider_protocol` has no frame that injects input into a
+/// running turn, so the only way to honour `steer` would be to append a second
+/// concurrent turn — which is a different operation wearing the same name.
+async fn send_queued_message(
+    State(state): State<AppState>,
+    Path((raw_thread_id, raw_queued_message_id)): Path<(String, String)>,
+    Json(request): Json<SendQueuedMessageRequest>,
+) -> Response {
+    let thread_id = match parse_thread_id(&raw_thread_id) {
+        Ok(thread_id) => thread_id,
+        Err(response) => return response,
+    };
+    if state.registry.thread(&thread_id).is_none() {
+        return error_response(
+            StatusCode::NOT_FOUND,
+            format!("thread {thread_id} is not known"),
+        );
+    }
+    let queued_message_id = match raw_queued_message_id.parse::<QueuedMessageId>() {
+        Ok(id) => id,
+        Err(error) => return error_response(StatusCode::BAD_REQUEST, error.to_string()),
+    };
+    let Some(message) = state.registry.queued_message(&queued_message_id) else {
+        return error_response(
+            StatusCode::NOT_FOUND,
+            format!("queued message {queued_message_id} is not known"),
+        );
+    };
+    if message.thread_id != thread_id {
+        return error_response(
+            StatusCode::NOT_FOUND,
+            format!("queued message {queued_message_id} belongs to another thread"),
+        );
+    }
+    if request.mode == SendQueuedMessageMode::Steer {
+        return error_response_with_code(
+            StatusCode::NOT_IMPLEMENTED,
+            "not_configured",
+            format!(
+                "loom's provider protocol has no frame that injects input into a running turn; \
+                 queued message {queued_message_id} cannot be steered"
+            ),
+        );
+    }
+
+    let now = loom_relay::now_ms();
+    // `force` is what makes a manual send authoritative over `sendAt`: the
+    // client is asking for this message now, which is exactly the schedule it
+    // set. The automatic drain does the opposite, because there the schedule is
+    // the whole point.
+    match state.deliver_queued_message(&queued_message_id, true, now) {
+        DeliveryOutcome::Sent(message) => Json(json!({
+            "ok": true,
+            "delivery": "sent",
+            "queuedMessage": queued_message_row(&state, &message, now),
+        }))
+        .into_response(),
+        DeliveryOutcome::StillQueued {
+            message,
+            waiting_on,
+        } => {
+            let row = queued_message_row(&state, &message, now);
+            let mut row = row;
+            if let Value::Object(object) = &mut row {
+                object.insert("waitingOn".into(), waiting_on.value());
+            }
+            Json(json!({
+                "ok": true,
+                "delivery": "queued",
+                "queuedMessage": row,
+            }))
+            .into_response()
+        }
+        DeliveryOutcome::Failed { message, .. } => {
+            // A failure still leaves the message queued; the contract's queued
+            // branch is the honest answer, with the reason in the row.
+            let row = queued_message_row(&state, &message, now);
+            Json(json!({
+                "ok": true,
+                "delivery": "queued",
+                "queuedMessage": row,
+            }))
+            .into_response()
+        }
+        DeliveryOutcome::Unknown => error_response_with_code(
+            StatusCode::CONFLICT,
+            "queued_message_claim_lost",
+            format!("queued message {queued_message_id} is no longer queued"),
+        ),
+    }
+}
+
+/// An interaction as the contract's interaction union.
+///
+/// The four variants share one row shape and differ in `payload` and
+/// `resolution`; seeing one shape rather than four projections is the point of
+/// the domain's [`InteractionPayload`] and [`Resolution`].
+fn interaction_value(state: &AppState, interaction: &Interaction) -> Value {
+    let origin = match &interaction.origin {
+        InteractionOrigin::Provider {
+            provider_id,
+            provider_request_id,
+        } => json!({
+            "kind": "provider",
+            "providerId": provider_id,
+            "providerThreadId": interaction.thread_id.to_string(),
+            "providerRequestId": provider_request_id,
+        }),
+        InteractionOrigin::Plugin {
+            plugin_id,
+            renderer_id,
+        } => json!({
+            "kind": "plugin",
+            "pluginId": plugin_id,
+            "rendererId": renderer_id,
+        }),
+    };
+    let mut value = json!({
+        "id": interaction.id.to_string(),
+        "threadId": interaction.thread_id.to_string(),
+        "status": interaction.status.as_str(),
+        "statusReason": interaction.status_reason,
+        "createdAt": interaction.created_at_ms,
+        "resolvedAt": interaction.resolved_at_ms,
+        "turnId": interaction.turn_id,
+        "providerId": configured_provider_id(state),
+        "providerThreadId": interaction.thread_id.to_string(),
+        "providerRequestId": match &interaction.origin {
+            InteractionOrigin::Provider { provider_request_id, .. } => provider_request_id.clone(),
+            InteractionOrigin::Plugin { plugin_id, .. } => plugin_id.clone(),
+        },
+        "payload": interaction.payload.value(),
+        "resolution": interaction.resolution.as_ref().map(Resolution::value),
+        "expiresAt": interaction.expires_at_ms,
+        "origin": origin,
+    });
+    // The plugin variant of the union has no provider triple at all, and
+    // `additionalProperties: false` means leaving the fields in rejects the
+    // row. `origin` is what tells a client which union branch it is looking at.
+    if matches!(interaction.origin, InteractionOrigin::Plugin { .. }) {
+        if let Value::Object(object) = &mut value {
+            object.remove("providerId");
+            object.remove("providerThreadId");
+            object.remove("providerRequestId");
+        }
+    }
+    value
+}
+
+/// `threads.interactions`: every interaction a thread has raised, oldest first.
+///
+/// The whole history, not only the pending ones: a client renders answered
+/// questions inline in the timeline, and a settled interaction is what makes a
+/// tool-approval row stay answered after a reload.
+async fn thread_interactions(
+    State(state): State<AppState>,
+    Path(raw_thread_id): Path<String>,
+) -> Response {
+    let thread_id = match parse_thread_id(&raw_thread_id) {
+        Ok(thread_id) => thread_id,
+        Err(response) => return response,
+    };
+    if state.registry.thread(&thread_id).is_none() {
+        return error_response(
+            StatusCode::NOT_FOUND,
+            format!("thread {thread_id} is not known"),
+        );
+    }
+    Json(
+        state
+            .registry
+            .interactions_for(Some(&thread_id))
+            .iter()
+            .map(|interaction| interaction_value(&state, interaction))
+            .collect::<Vec<_>>(),
+    )
+    .into_response()
+}
+
+/// Resolves an interaction by id, refusing one that belongs to another thread.
+#[allow(clippy::result_large_err)]
+fn interaction_in_thread(
+    state: &AppState,
+    thread_id: &ThreadId,
+    raw_interaction_id: &str,
+) -> Result<Interaction, Response> {
+    let interaction_id = raw_interaction_id
+        .parse::<InteractionId>()
+        .map_err(|error| error_response(StatusCode::BAD_REQUEST, error.to_string()))?;
+    let Some(interaction) = state.registry.interaction(&interaction_id) else {
+        return Err(error_response(
+            StatusCode::NOT_FOUND,
+            format!("interaction {interaction_id} is not known"),
+        ));
+    };
+    if &interaction.thread_id != thread_id {
+        return Err(error_response(
+            StatusCode::NOT_FOUND,
+            format!("interaction {interaction_id} belongs to another thread"),
+        ));
+    }
+    Ok(interaction)
+}
+
+/// `threads.interaction`: one interaction by id.
+async fn thread_interaction(
+    State(state): State<AppState>,
+    Path((raw_thread_id, raw_interaction_id)): Path<(String, String)>,
+) -> Response {
+    let thread_id = match parse_thread_id(&raw_thread_id) {
+        Ok(thread_id) => thread_id,
+        Err(response) => return response,
+    };
+    match interaction_in_thread(&state, &thread_id, &raw_interaction_id) {
+        Ok(interaction) => Json(interaction_value(&state, &interaction)).into_response(),
+        Err(response) => response,
+    }
+}
+
+/// Body of a `threads.respondToInteraction` request.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RespondToInteractionRequest {
+    value: Value,
+}
+
+/// `threads.respondToInteraction`: answers with an opaque value.
+///
+/// This is the generic verb: the client supplies a `value` and loom records it
+/// verbatim as a `request_answer`. It is deliberately *not* the same operation
+/// as [`resolve_thread_interaction`] — that one carries a typed resolution and
+/// validates it against the request's kind, so a client cannot answer an
+/// approval with a question's answers. Using `respond` for a typed interaction
+/// is refused here rather than accepted and stored under the wrong shape.
+async fn respond_to_thread_interaction(
+    State(state): State<AppState>,
+    Path((raw_thread_id, raw_interaction_id)): Path<(String, String)>,
+    Json(request): Json<RespondToInteractionRequest>,
+) -> Response {
+    let thread_id = match parse_thread_id(&raw_thread_id) {
+        Ok(thread_id) => thread_id,
+        Err(response) => return response,
+    };
+    let interaction = match interaction_in_thread(&state, &thread_id, &raw_interaction_id) {
+        Ok(interaction) => interaction,
+        Err(response) => return response,
+    };
+    let resolution = Resolution::RequestAnswer {
+        value: request.value,
+    };
+    if !resolution.answers(interaction.kind) {
+        return error_response_with_code(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            format!(
+                "interaction {} is a {} and takes a typed resolution, not an opaque value",
+                interaction.id, interaction.kind
+            ),
+        );
+    }
+    deliver_interaction_response(&state, &interaction, resolution)
+}
+
+/// Body of a `threads.resolveInteraction` request.
+///
+/// The contract's union has four branches and they are not interchangeable, so
+/// the body is parsed into the domain's [`Resolution`] directly: a serde
+/// failure for an unknown branch is the same `422` the contract middleware
+/// would produce, and a *known* branch that does not match the interaction's
+/// kind is a `400` from the handler below.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(untagged)]
+enum ResolveInteractionRequest {
+    /// `{ decision, grantedPermissions? }` — a permission decision.
+    Decision(DecisionRequest),
+    /// `{ kind: "user_answer", answers }`.
+    UserAnswer(UserAnswerRequest),
+    /// `{ kind: "plugin_submitted" }`.
+    PluginSubmitted(PluginSubmittedRequest),
+    /// `{ kind: "request_answer", value }`.
+    RequestAnswer(RequestAnswerRequest),
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DecisionRequest {
+    decision: String,
+    #[serde(default)]
+    granted_permissions: Option<Value>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct UserAnswerRequest {
+    kind: String,
+    answers: Value,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct PluginSubmittedRequest {
+    kind: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct RequestAnswerRequest {
+    kind: String,
+    value: Value,
+}
+
+impl ResolveInteractionRequest {
+    /// The domain resolution this body names.
+    fn resolution(self) -> Resolution {
+        match self {
+            ResolveInteractionRequest::Decision(request) => Resolution::Decision {
+                decision: request.decision,
+                granted_permissions: request.granted_permissions,
+            },
+            ResolveInteractionRequest::UserAnswer(request) => Resolution::UserAnswer {
+                answers: request.answers,
+            },
+            ResolveInteractionRequest::PluginSubmitted(_) => Resolution::PluginSubmitted,
+            ResolveInteractionRequest::RequestAnswer(request) => Resolution::RequestAnswer {
+                value: request.value,
+            },
+        }
+    }
+
+    /// A decision needs `grantedPermissions` unless it is a denial.
+    ///
+    /// The contract requires the field on the two `allow` branches and forbids
+    /// it on `deny`; the request validator enforces the required half, and this
+    /// is the forbidden half, which no schema can express as a plain
+    /// `additionalProperties` rule.
+    fn is_coherent(&self) -> Result<(), String> {
+        match self {
+            ResolveInteractionRequest::Decision(request) => match request.decision.as_str() {
+                "allow_once" | "allow_for_session" => {
+                    if request.granted_permissions.is_none() {
+                        return Err(format!(
+                            "decision `{}` needs `grantedPermissions`",
+                            request.decision
+                        ));
+                    }
+                    Ok(())
+                }
+                "deny" => {
+                    if request.granted_permissions.is_some() {
+                        return Err(
+                            "a `deny` decision must not carry `grantedPermissions`".to_owned()
+                        );
+                    }
+                    Ok(())
+                }
+                other => Err(format!(
+                    "decision must be `allow_once`, `allow_for_session` or `deny`, got {other:?}"
+                )),
+            },
+            ResolveInteractionRequest::UserAnswer(request) => {
+                if request.kind != "user_answer" {
+                    return Err(format!("unknown resolution kind {:?}", request.kind));
+                }
+                Ok(())
+            }
+            ResolveInteractionRequest::PluginSubmitted(request) => {
+                if request.kind != "plugin_submitted" {
+                    return Err(format!("unknown resolution kind {:?}", request.kind));
+                }
+                Ok(())
+            }
+            ResolveInteractionRequest::RequestAnswer(request) => {
+                if request.kind != "request_answer" {
+                    return Err(format!("unknown resolution kind {:?}", request.kind));
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
+/// `threads.resolveInteraction`: answers with a typed resolution.
+///
+/// This is the typed verb. The resolution is validated against the request's
+/// own kind (`Resolution::answers`) so a decision cannot answer a question, and
+/// it is refused rather than stored under a shape nothing will read. The three
+/// interaction verbs are therefore distinct:
+///
+/// * `respond` — an opaque value for an interaction loom does not interpret;
+/// * `resolve` — a typed answer, matched to the request's kind;
+/// * `cancel` — no answer at all, settled as `interrupted`.
+async fn resolve_thread_interaction(
+    State(state): State<AppState>,
+    Path((raw_thread_id, raw_interaction_id)): Path<(String, String)>,
+    Json(request): Json<ResolveInteractionRequest>,
+) -> Response {
+    let thread_id = match parse_thread_id(&raw_thread_id) {
+        Ok(thread_id) => thread_id,
+        Err(response) => return response,
+    };
+    let interaction = match interaction_in_thread(&state, &thread_id, &raw_interaction_id) {
+        Ok(interaction) => interaction,
+        Err(response) => return response,
+    };
+    if let Err(message) = request.is_coherent() {
+        return error_response_with_code(StatusCode::BAD_REQUEST, "invalid_request", message);
+    }
+    let resolution = request.resolution();
+    if !resolution.answers(interaction.kind) {
+        return error_response_with_code(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            format!(
+                "interaction {} is a {}; a {} cannot answer it",
+                interaction.id,
+                interaction.kind,
+                resolution.kind()
+            ),
+        );
+    }
+    deliver_interaction_response(&state, &interaction, resolution)
+}
+
+/// Delivers a validated resolution, mapping the outcome onto the contract.
+fn deliver_interaction_response(
+    state: &AppState,
+    interaction: &Interaction,
+    resolution: Resolution,
+) -> Response {
+    let now = loom_relay::now_ms();
+    match state.deliver_interaction_resolution(&interaction.id, resolution, now) {
+        DeliverOutcome::Delivered(interaction) => {
+            Json(interaction_value(state, &interaction)).into_response()
+        }
+        DeliverOutcome::Settled(interaction) => error_response_with_code(
+            StatusCode::CONFLICT,
+            "awaiting_user_interaction",
+            format!(
+                "interaction {} was already settled as {}",
+                interaction.id, interaction.status
+            ),
+        ),
+        DeliverOutcome::Unknown => error_response(
+            StatusCode::NOT_FOUND,
+            format!("interaction {} is not known", interaction.id),
+        ),
+    }
+}
+
+/// `threads.cancelInteraction`: settles an interaction without an answer.
+///
+/// Cancelling is the verb for "this will never be answered": the run was
+/// stopped, or the provider went away. It is **not** a denial — a denial is a
+/// decision the provider receives, a cancellation is loom giving up on the
+/// question — which is why it does not go through `resolve`. A settled
+/// interaction cannot be cancelled twice: that is a race with whoever answered
+/// it, and reporting success for it would hide the answer.
+async fn cancel_thread_interaction(
+    State(state): State<AppState>,
+    Path((raw_thread_id, raw_interaction_id)): Path<(String, String)>,
+) -> Response {
+    let thread_id = match parse_thread_id(&raw_thread_id) {
+        Ok(thread_id) => thread_id,
+        Err(response) => return response,
+    };
+    let interaction = match interaction_in_thread(&state, &thread_id, &raw_interaction_id) {
+        Ok(interaction) => interaction,
+        Err(response) => return response,
+    };
+    match state.cancel_interaction(
+        &interaction.id,
+        Some("cancelled by a client".into()),
+        loom_relay::now_ms(),
+    ) {
+        Ok(interaction) => Json(interaction_value(&state, &interaction)).into_response(),
+        Err(CommandError::Conflict(_)) => error_response_with_code(
+            StatusCode::CONFLICT,
+            "awaiting_user_interaction",
+            format!(
+                "interaction {} is already {}",
+                interaction.id, interaction.status
+            ),
+        ),
+        Err(error) => command_error_response(error),
+    }
+}
+
+/// Query of a `threads.eventWait` read.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct EventWaitQuery {
+    /// The contract declares `type` required; loom records it and does not
+    /// filter on it, because the polling loop is driven by sequence, not type.
+    #[serde(rename = "type")]
+    #[allow(dead_code)]
+    event_type: Option<String>,
+    after_seq: Option<String>,
+    wait_ms: Option<String>,
+}
+
+/// The longest a `threads.eventWait` may hold a connection open.
+///
+/// A long poll without a ceiling is a connection leak with a friendly name; the
+/// contract's `waitMs` is a request, and this is the bound the server applies
+/// to it. The default is deliberately shorter than the daemon heartbeat window
+/// so a client that reconnects on timeout is never mistaken for a stale one.
+const EVENT_WAIT_DEFAULT_MS: u64 = 30_000;
+/// The hard ceiling on `waitMs`, so one request cannot pin a connection.
+const EVENT_WAIT_MAX_MS: u64 = 60_000;
+/// How often the wait re-reads the log while holding the connection.
+///
+/// The relay has no `wait for a new event` primitive: the log is a store and
+/// the hub is a fan-out to sockets, and a producer deliberately cannot see who
+/// is subscribed. So a long poll is a bounded poll of the log. 25 ms keeps the
+/// latency below what a human notices while costing one shard read per waiting
+/// client per tick — acceptable because a waiting client is one that has
+/// nothing else to do.
+const EVENT_WAIT_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(25);
+
+/// `threads.eventWait`: holds a connection until the thread has a new event.
+///
+/// The cursor is the same one `threads.events` uses: the row's `seq`, derived
+/// from the thread room's replay order, and `afterSeq` is exclusive. That is
+/// what keeps a waiter from re-delivering an event it already applied.
+///
+/// The response is a **bare `ThreadEventRow`** on a match and JSON `null` on
+/// timeout — the contract's declared union — so a client distinguishes "nothing
+/// happened yet" from "here is what happened" without an error path. `200`
+/// carries both, deliberately: a timeout is not a failure.
+async fn thread_event_wait(
+    State(state): State<AppState>,
+    Path(raw_thread_id): Path<String>,
+    Query(query): Query<EventWaitQuery>,
+) -> Response {
+    let thread_id = match parse_thread_id(&raw_thread_id) {
+        Ok(thread_id) => thread_id,
+        Err(response) => return response,
+    };
+    if state.registry.thread(&thread_id).is_none() {
+        return error_response(
+            StatusCode::NOT_FOUND,
+            format!("thread {thread_id} is not known"),
+        );
+    }
+    let after = match parse_query_sequence(query.after_seq.as_ref(), "afterSeq") {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+    let wait_ms = match parse_query_sequence(query.wait_ms.as_ref(), "waitMs") {
+        Ok(Some(value)) => value.min(EVENT_WAIT_MAX_MS),
+        Ok(None) => EVENT_WAIT_DEFAULT_MS,
+        Err(response) => return response,
+    };
+
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(wait_ms);
+    loop {
+        let rows = match thread_event_rows(&state, &thread_id) {
+            Ok(rows) => rows,
+            Err(response) => return response,
+        };
+        if let Some(row) = rows
+            .into_iter()
+            .find(|(sequence, _)| match after {
+                None => true,
+                Some(cursor) => *sequence > cursor,
+            })
+            .map(|(_, row)| row)
+        {
+            return Json(row).into_response();
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Json(Value::Null).into_response();
+        }
+        tokio::time::sleep(EVENT_WAIT_POLL_INTERVAL).await;
+    }
+}
+
+/// Every contract event in a thread's room, in sequence order, with the
+/// sequence a client uses as a cursor.
+#[allow(clippy::result_large_err)]
+fn thread_event_rows(
+    state: &AppState,
+    thread_id: &ThreadId,
+) -> Result<Vec<(u64, Value)>, Response> {
+    let entries = thread_domain_events(state, thread_id)?;
+    Ok(entries
+        .into_iter()
+        .filter_map(|(event_id, sequence, created_at_ms, event)| {
+            let DomainEvent::ThreadRunEvent { run } = event else {
+                return None;
+            };
+            Some((
+                sequence,
+                thread_event_row(event_id, sequence, created_at_ms, &run),
+            ))
+        })
+        .collect())
+}
+
+/// Query of a `threads.timelineTurnSummaryDetails` read.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TurnSummaryDetailsQuery {
+    turn_id: Option<String>,
+    source_seq_start: Option<String>,
+    source_seq_end: Option<String>,
+    before_cursor: Option<String>,
+}
+
+/// `threads.timelineTurnSummaryDetails`: the rows of one turn, newest page
+/// first.
+///
+/// This is a **filtered view of `threads.timeline`, not a second projection**:
+/// the rows are built by the same [`timeline_row_for_event`], so a row this
+/// route answers is byte-identical to the same row in the timeline it came
+/// from. What differs is the selection — the caller names a turn and a source
+/// sequence range — and the paging, which walks *backwards* because the UI
+/// expands a collapsed turn from its newest summary row towards its oldest.
+///
+/// `beforeCursor` is the `rows[].id` of the oldest row the caller already has;
+/// the response carries every matching row strictly before it, capped at the
+/// same segment limit the timeline uses, plus `olderCursor` when more remain.
+/// `historySnapshot` is always `null`: loom has no snapshot of a turn's
+/// pre-compaction history, and answering a fabricated one would be worse than
+/// the null the contract allows.
+async fn thread_turn_summary_details(
+    State(state): State<AppState>,
+    Path(raw_thread_id): Path<String>,
+    Query(query): Query<TurnSummaryDetailsQuery>,
+) -> Response {
+    let thread_id = match parse_thread_id(&raw_thread_id) {
+        Ok(thread_id) => thread_id,
+        Err(response) => return response,
+    };
+    if state.registry.thread(&thread_id).is_none() {
+        return error_response(
+            StatusCode::NOT_FOUND,
+            format!("thread {thread_id} is not known"),
+        );
+    }
+    let source_start = match parse_query_sequence(query.source_seq_start.as_ref(), "sourceSeqStart")
+    {
+        Ok(Some(value)) => value,
+        Ok(None) => {
+            return error_response_with_code(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                "sourceSeqStart is required".to_owned(),
+            )
+        }
+        Err(response) => return response,
+    };
+    let source_end = match parse_query_sequence(query.source_seq_end.as_ref(), "sourceSeqEnd") {
+        Ok(Some(value)) => value,
+        Ok(None) => {
+            return error_response_with_code(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                "sourceSeqEnd is required".to_owned(),
+            )
+        }
+        Err(response) => return response,
+    };
+    if query.turn_id.as_deref().map_or(true, str::is_empty) {
+        return error_response_with_code(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "turnId is required".to_owned(),
+        );
+    }
+
+    let entries = match thread_domain_events(&state, &thread_id) {
+        Ok(entries) => entries,
+        Err(response) => return response,
+    };
+    // The row set is the timeline's, filtered to the turn's range. Filtering on
+    // the event's own turn scope would drop the user message that opened the
+    // turn — it is thread-scoped by construction — which is exactly the row a
+    // summary expansion is anchored on.
+    let mut rows = entries
+        .iter()
+        .filter(|(_, sequence, _, _)| *sequence >= source_start && *sequence <= source_end)
+        .filter_map(|(_event_id, sequence, created_at_ms, event)| {
+            timeline_row_for_event(&thread_id, *sequence, *created_at_ms, event)
+        })
+        .collect::<Vec<_>>();
+
+    let before_cursor = query
+        .before_cursor
+        .as_deref()
+        .filter(|value| !value.is_empty());
+    if let Some(cursor) = before_cursor {
+        // The cursor is a row id from a previous page; the cut is made on the
+        // cursor row's own position so a caller that pages twice cannot skip a
+        // row that shares its sequence.
+        if let Some(cut) = rows
+            .iter()
+            .position(|row| row.get("id").and_then(Value::as_str) == Some(cursor))
+        {
+            rows.truncate(cut);
+        } else {
+            return error_response_with_code(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                format!("beforeCursor {cursor:?} is not a row of turn range {source_start}..{source_end}"),
+            );
+        }
+    }
+
+    // Newest page first: the UI expands from the recent end. `segment_limit`
+    // matches the timeline's cap for the same reason — one page is one render.
+    const TURN_DETAILS_SEGMENT_LIMIT: usize = 100;
+    let has_older = rows.len() > TURN_DETAILS_SEGMENT_LIMIT;
+    if rows.len() > TURN_DETAILS_SEGMENT_LIMIT {
+        let start = rows.len() - TURN_DETAILS_SEGMENT_LIMIT;
+        rows = rows.split_off(start);
+    }
+    let older_cursor = has_older.then(|| {
+        rows.first()
+            .and_then(|row| row.get("id").cloned())
+            .unwrap_or(Value::Null)
+    });
+
+    Json(json!({
+        "rows": rows,
+        "historySnapshot": Value::Null,
+        "olderCursor": older_cursor,
+    }))
+    .into_response()
+}
+
+/// `threads.clearGoal`: clears the goal the thread's log currently shows.
+///
+/// loom has no goal *entity*: a goal arrives as the contract's
+/// `thread/goal/updated` event and is a projection of the thread's run log (the
+/// same way the reference UI's `extractThreadTimelineGoal` reads it). Clearing
+/// it therefore means publishing the pair of events a client projects —
+/// `thread/goal/cleared` — not deleting a row, and that is why this route is
+/// implementable at all while [`clear_thread_context`] is not.
+///
+/// The route is idempotent: clearing a goal that is not set publishes the same
+/// event and is the state the caller asked for.
+async fn clear_thread_goal(
+    State(state): State<AppState>,
+    Path(raw_thread_id): Path<String>,
+) -> Response {
+    let thread_id = match parse_thread_id(&raw_thread_id) {
+        Ok(thread_id) => thread_id,
+        Err(response) => return response,
+    };
+    if state.registry.thread(&thread_id).is_none() {
+        return error_response(
+            StatusCode::NOT_FOUND,
+            format!("thread {thread_id} is not known"),
+        );
+    }
+    let run_id = state
+        .registry
+        .thread(&thread_id)
+        .and_then(|thread| thread.active_run_id)
+        // A goal is thread-level metadata, so it needs no active run. The run
+        // id is only the turn scope on the event; a settled thread scopes the
+        // clearing to the thread, which is what `thread/goal/cleared` means.
+        .unwrap_or_else(loom_domain::RunId::mint);
+    let event = loom_domain::RunEvent::new(
+        thread_id.clone(),
+        state
+            .registry
+            .thread(&thread_id)
+            .map(|thread| thread.project_id)
+            .unwrap_or_else(loom_domain::ProjectId::mint),
+        run_id,
+        loom_relay::now_ms(),
+        loom_domain::ProviderEvent::ThreadGoalCleared {
+            provider_thread_id: thread_id.to_string(),
+        },
+    );
+    if let Err(error) = state.publish_domain_event(&DomainEvent::ThreadRunEvent {
+        run: Box::new(event),
+    }) {
+        return error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string());
+    }
+    Json(json!({ "ok": true })).into_response()
+}
+
+/// `threads.clearContext`: refused, explicitly.
+///
+/// Clearing a context means emptying the provider's own session memory. loom's
+/// provider runs are dispatched statelessly, but the session persists in the
+/// execution plane (Pi's `--session-dir`/`--session-id`), so a server-side
+/// "clear" would drop loom's records while the provider carried on with the
+/// context it still holds — the failure mode the acceptance criteria name.
+/// `loom_provider_protocol` has no frame for it, so the route answers bb's
+/// `not_configured` at the `501` that code declares rather than a `{ok:true}`
+/// for something that did not happen.
+async fn clear_thread_context(
+    State(state): State<AppState>,
+    Path(raw_thread_id): Path<String>,
+) -> Response {
+    let thread_id = match parse_thread_id(&raw_thread_id) {
+        Ok(thread_id) => thread_id,
+        Err(response) => return response,
+    };
+    if state.registry.thread(&thread_id).is_none() {
+        return error_response(
+            StatusCode::NOT_FOUND,
+            format!("thread {thread_id} is not known"),
+        );
+    }
+    error_response_with_code(
+        StatusCode::NOT_IMPLEMENTED,
+        "not_configured",
+        format!(
+            "loom's provider protocol has no frame that clears a provider session's context; \
+             thread {thread_id} keeps its context"
+        ),
+    )
+}
+
+/// `threads.cancelPlan`: refused, explicitly.
+///
+/// A plan is the provider's own working state, reported through
+/// `turn/plan/updated`. Cancelling it means telling the provider to stop
+/// pursuing it, and there is no frame for that — the protocol has dispatch,
+/// provision and report and nothing else. Publishing a `turn/plan/updated` that
+/// says "cancelled" would change what loom's projection displays while the
+/// provider kept executing the plan, which is the silently-wrong answer this
+/// route refuses to give.
+async fn cancel_thread_plan(
+    State(state): State<AppState>,
+    Path(raw_thread_id): Path<String>,
+) -> Response {
+    let thread_id = match parse_thread_id(&raw_thread_id) {
+        Ok(thread_id) => thread_id,
+        Err(response) => return response,
+    };
+    if state.registry.thread(&thread_id).is_none() {
+        return error_response(
+            StatusCode::NOT_FOUND,
+            format!("thread {thread_id} is not known"),
+        );
+    }
+    error_response_with_code(
+        StatusCode::NOT_IMPLEMENTED,
+        "not_configured",
+        format!(
+            "loom's provider protocol cannot cancel a running plan; stop the thread's turn \
+             instead (thread {thread_id})"
+        ),
+    )
+}
+
+/// The thread's current goal, projected from its own run log.
+///
+/// loom has no goal *entity*: a goal is what the contract's
+/// `thread/goal/updated` and `thread/goal/cleared` events say it is, and the
+/// reference UI already projects it the same way
+/// (`ui/packages/thread-view/src/goal-snapshot-extraction.ts`). Reusing that
+/// projection here — rather than adding a stored field — is what makes
+/// `threads.clearGoal` work without a second source of truth: clearing
+/// publishes `thread/goal/cleared` and the next read reflects it.
+///
+/// `updatedAt` and `sourceSeq` come from the event row, so a client can order
+/// the goal against the rest of the timeline.
+fn goal_value(
+    _state: &AppState,
+    _thread_id: &ThreadId,
+    entries: &[(String, u64, u64, DomainEvent)],
+) -> Value {
+    let mut goal: Option<Value> = None;
+    for (_event_id, sequence, created_at_ms, event) in entries {
+        let DomainEvent::ThreadRunEvent { run } = event else {
+            continue;
+        };
+        let value = serde_json::to_value(&run.event).expect("ThreadEvent always serializes");
+        match value.get("type").and_then(Value::as_str) {
+            Some("thread/goal/updated") => {
+                goal = Some(json!({
+                    "sourceSeq": sequence,
+                    "updatedAt": created_at_ms,
+                    "objective": value.get("objective"),
+                    "status": value.get("status"),
+                    "tokenBudget": value.get("tokenBudget"),
+                    "tokensUsed": value.get("tokensUsed"),
+                    "timeUsedSeconds": value.get("timeUsedSeconds"),
+                }));
+            }
+            Some("thread/goal/cleared") => goal = None,
+            _ => {}
+        }
+    }
+    goal.unwrap_or(Value::Null)
+}
+
+/// Whether a thread's log currently shows a goal.
+///
+/// The thread list needs this as a *count* (`activeGoalCount`), and the only
+/// place a goal lives is the thread's own run log, so this replays the room.
+/// That is the same cost [`thread_search_matches`] already pays for every
+/// thread in a list, and it is bounded by the retention window.
+///
+/// A goal in any status counts, because "the thread has a goal" is what drives
+/// the sidebar's goal affordance; the projection a client renders carries the
+/// status itself.
+fn thread_has_goal(state: &AppState, thread_id: &ThreadId) -> bool {
+    let entries = match thread_domain_events(state, thread_id) {
+        Ok(entries) => entries,
+        Err(_) => return false,
+    };
+    let mut active = false;
+    for (_event_id, _sequence, _created_at_ms, event) in &entries {
+        let DomainEvent::ThreadRunEvent { run } = event else {
+            continue;
+        };
+        match run.event.kind() {
+            "thread/goal/updated" => active = true,
+            "thread/goal/cleared" => active = false,
+            _ => {}
+        }
+    }
+    active
+}
+
+/// A thread's count of active plans, for `threads.timeline`'s activity row.
+///
+/// A plan is provider-reported (`turn/plan/updated`) and loom keeps no plan
+/// entity, so the honest count is derived from the log exactly as the goal is.
+/// A plan that has not been removed by a later `plan/removed`/turn end counts
+/// as active.
+fn thread_has_active_plan(state: &AppState, thread_id: &ThreadId) -> bool {
+    let entries = match thread_domain_events(state, thread_id) {
+        Ok(entries) => entries,
+        Err(_) => return false,
+    };
+    let mut active = false;
+    for (_event_id, _sequence, _created_at_ms, event) in &entries {
+        let DomainEvent::ThreadRunEvent { run } = event else {
+            continue;
+        };
+        match run.event.kind() {
+            "turn/plan/updated" => active = true,
+            // A settled turn cannot still be in plan mode: the plan was the
+            // turn's, and the turn is over.
+            "turn/completed" => active = false,
+            _ => {}
+        }
+    }
+    active
 }
 
 /// Creates a thread and returns it in bb's `threadSchema` shape (`$defs/d7`)
