@@ -18,7 +18,7 @@ use std::sync::{Mutex, MutexGuard};
 use loom_domain::{
     DomainError, DomainEvent, Environment, EnvironmentId, EnvironmentKind, EnvironmentStatus, Host,
     HostId, MessageRole, NewThread, Project, ProjectId, ProjectKind, ProjectSourceId, RunId,
-    Thread, ThreadId, ThreadStatus, ThreadTrigger,
+    Thread, ThreadId, ThreadStatus, ThreadTrigger, ThreadUpdate,
 };
 use serde::{Deserialize, Serialize};
 
@@ -566,6 +566,96 @@ impl DomainRegistry {
         Ok(thread.clone())
     }
 
+    /// Applies a client's field changes to a stored thread.
+    ///
+    /// Returns the thread after the change and the event to publish, or no
+    /// event at all when the update changed nothing. Parentage is validated
+    /// here rather than in the domain, because "does this thread exist and is
+    /// it in the same project" needs the other threads.
+    pub fn update_thread(
+        &self,
+        thread_id: &ThreadId,
+        update: &ThreadUpdate,
+        now_ms: u64,
+    ) -> Result<(Thread, Option<DomainEvent>), CommandError> {
+        let mut inner = self.lock();
+        let Some(project_id) = inner
+            .threads
+            .get(thread_id)
+            .map(|thread| thread.project_id.clone())
+        else {
+            return Err(CommandError::NotFound(format!(
+                "thread {thread_id} is not known"
+            )));
+        };
+        if let Some(Some(parent_id)) = &update.parent_thread_id {
+            if parent_id == thread_id {
+                return Err(CommandError::Conflict(format!(
+                    "thread {thread_id} cannot be its own parent"
+                )));
+            }
+            let Some(parent) = inner.threads.get(parent_id) else {
+                return Err(CommandError::NotFound(format!(
+                    "parent thread {parent_id} is not known"
+                )));
+            };
+            if parent.project_id != project_id {
+                return Err(CommandError::Conflict(format!(
+                    "parent thread {parent_id} belongs to a different project"
+                )));
+            }
+        }
+        let thread = inner
+            .threads
+            .get_mut(thread_id)
+            .expect("the thread was just looked up");
+        let event = thread.apply_update(update, now_ms)?;
+        Ok((thread.clone(), event))
+    }
+
+    /// Replaces a thread's tabs under a compare-and-swap revision.
+    ///
+    /// A stale `expected_revision` is [`CommandError::Conflict`], which the
+    /// route reports as bb's `thread_tabs_conflict`.
+    pub fn set_thread_tabs(
+        &self,
+        thread_id: &ThreadId,
+        tabs: Vec<serde_json::Value>,
+        expected_revision: u64,
+        now_ms: u64,
+    ) -> Result<(Thread, DomainEvent), CommandError> {
+        let mut inner = self.lock();
+        let thread = inner
+            .threads
+            .get_mut(thread_id)
+            .ok_or_else(|| CommandError::NotFound(format!("thread {thread_id} is not known")))?;
+        let event = match thread.set_tabs(tabs, expected_revision, now_ms) {
+            Ok(event) => event,
+            // A stale revision is a registry-level conflict: the write was
+            // well-formed and the client's view was not current. Keeping it a
+            // `Conflict` is what lets the route answer bb's
+            // `thread_tabs_conflict` without matching on domain internals.
+            Err(error @ DomainError::TabsConflict { .. }) => {
+                return Err(CommandError::Conflict(error.to_string()))
+            }
+            Err(error) => return Err(CommandError::Domain(error)),
+        };
+        Ok((thread.clone(), event))
+    }
+
+    /// How many threads name `thread_id` as their parent.
+    ///
+    /// bb's `childSummary` counts *non-deleted* children. Loom has no thread
+    /// deletion yet, so every child counts; the day deletion lands, this is
+    /// where the filter goes.
+    pub fn child_count(&self, thread_id: &ThreadId) -> usize {
+        self.lock()
+            .threads
+            .values()
+            .filter(|thread| thread.parent_thread_id.as_ref() == Some(thread_id))
+            .count()
+    }
+
     /// Every known thread, newest first.
     ///
     /// The list a UI renders in its sidebar. Ordering is by creation time and
@@ -708,6 +798,14 @@ impl DomainRegistry {
             }
             // Messages are the log's business; the registry holds no timeline.
             DomainEvent::ThreadMessageAdded { .. } => {}
+            // The event carries the thread after the change, so replay is a
+            // whole-value overwrite; a thread the registry never saw (an event
+            // from a snapshot the process has not loaded) stays unknown.
+            DomainEvent::ThreadUpdated { thread: updated } => {
+                if let Some(thread) = inner.threads.get_mut(&updated.id) {
+                    *thread = updated.clone();
+                }
+            }
             DomainEvent::ThreadRunEvent { run } => {
                 if let Some(thread) = inner.threads.get_mut(&run.thread_id) {
                     thread.active_run_id = if run.event.is_terminal() {

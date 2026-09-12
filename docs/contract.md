@@ -172,6 +172,55 @@ The export fails loudly when a bb export is renamed (`schemaFrom` throws) and
 reports type-only responses under `failures.opaqueResponseTypes`, so the Rust
 side can never silently conform to a contract that has drifted.
 
+## B2: routes that differ from bb on purpose
+
+Batch B2 (thread control and auxiliary views) implemented fourteen routes whose
+success shapes match the contract exactly. Five behaviours inside them are
+deliberate divergences, recorded here because "the route cannot conform" is a
+decision, not a test waiver:
+
+- **`threads.compact` answers `501 not_configured`.** Compaction asks the
+  provider to summarise its own context, and `loom_provider_protocol` has no
+  such frame: a dispatch carries a prompt, nothing more. The daemon only ever
+  *observes* compaction — Pi decides, and the bridge maps `compaction_end` to
+  `thread/compacted` (`docs/event-model.md` row 7) — so there is no direction in
+  which one can be requested. Answering `{ "ok": true }` for a compaction that
+  never happened is the failure the batch's acceptance criteria name, so the
+  refusal is explicit and carries a code from the contract's own list at the
+  status that code declares. The route becomes implementable when the protocol
+  grows a request frame; the report path that would carry the result exists.
+- **`threads.editMessage` answers `501 not_configured`.** Editing a sent
+  message rewrites a turn the provider already executed. loom's conversation is
+  the relay log, which is append-only, and the provider protocol has no rewind
+  frame (loom's own provider capabilities report `supportsSessionRewind:
+  false`). Appending the edited text instead would leave both messages in the
+  conversation — a different conversation, not an edit.
+- **A scheduled retry (`sendAt` in the future) answers `501
+  not_configured`.** A deferred turn needs the queued-message surface of B3.
+  Running it immediately would ignore the client's schedule and answering
+  `sent` would be a lie. `turnRequestId` is echoed when the client supplies one,
+  and checked against bb's `pattern` by the handler — the contract's validator
+  deliberately does not enforce patterns.
+- **`threads.stop` cancels on the control plane only.** The stop shares the run
+  lifecycle (`finish_run` with `RunOutcome::Cancelled`), so the thread scope
+  receives one terminal event and the thread returns to `idle`. The daemon is
+  not told, because the provider protocol has no cancel frame; the provider
+  process runs to its own end and its later reports are dropped as unknown runs,
+  exactly as a superseded run's already are. The route is idempotent: a thread
+  with no run in flight is the state the caller asked for.
+- **`threads.open` publishes into the room and reports local fan-out.** The
+  open request travels the only path the control plane has — the thread's relay
+  room — and `delivered` is the hub's subscriber count for that room. Loom has
+  no ephemeral frame path by design, so an open request is retained and
+  re-delivered on replay; the frame is idempotent for a client that receives it
+  twice.
+
+Two more projections are documented where they are implemented rather than
+here, because they are shape-complete and only partially sourced:
+`threads.search` walks the threads it holds (no index) and
+`threads.update`'s `model`/`reasoningLevel` are recorded and reported but not
+yet carried into a dispatch, because `ProviderSpec` has no field for them.
+
 ## Known limits
 
 - **Error codes are best-effort.** bb's contract package types the error body

@@ -14,7 +14,7 @@ use http_body_util::BodyExt;
 use loom_domain::{
     DomainError, DomainEvent, DomainScope, Environment, EnvironmentId, EnvironmentKind,
     EnvironmentStatus, Host, HostId, HostStatus, MessageRole, Project, ProjectId, ProjectKind,
-    ProjectSourceId, Thread, ThreadId, ThreadStatus,
+    ProjectSourceId, ReasoningLevel, Thread, ThreadId, ThreadStatus, ThreadTrigger, ThreadUpdate,
 };
 use loom_relay::scope::Scope;
 use serde::{Deserialize, Serialize};
@@ -47,18 +47,51 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/publish", post(publish))
         .route("/api/v1/replay", get(replay))
         .route("/api/v1/threads", get(list_threads).post(create_thread))
+        .route("/api/v1/threads/running", get(running_threads))
+        .route("/api/v1/threads/search", get(search_threads))
         .route("/api/v1/threads/{id}/events", get(thread_events))
-        .route("/api/v1/threads/{id}", get(get_thread))
+        .route("/api/v1/threads/{id}", get(get_thread).patch(update_thread))
         .route("/api/v1/threads/{id}/output", get(thread_output))
         .route("/api/v1/threads/{id}/read", post(read_thread))
         .route("/api/v1/threads/{id}/send", post(send_thread))
-        .route("/api/v1/threads/{id}/tabs", get(thread_tabs))
+        .route(
+            "/api/v1/threads/{id}/child-summary",
+            get(thread_child_summary),
+        )
+        .route("/api/v1/threads/{id}/compact", post(compact_thread))
+        .route(
+            "/api/v1/threads/{id}/conversation-outline",
+            get(thread_conversation_outline),
+        )
+        .route(
+            "/api/v1/threads/{id}/default-execution-options",
+            get(thread_default_execution_options),
+        )
+        .route(
+            "/api/v1/threads/{id}/edit-message",
+            post(edit_thread_message),
+        )
+        .route("/api/v1/threads/{id}/open", post(open_thread))
+        .route(
+            "/api/v1/threads/{id}/prompt-history",
+            get(thread_prompt_history),
+        )
+        .route("/api/v1/threads/{id}/retry", post(retry_thread))
+        .route("/api/v1/threads/{id}/stop", post(stop_thread_route))
+        .route(
+            "/api/v1/threads/{id}/tabs",
+            get(thread_tabs).put(update_thread_tabs),
+        )
         .route("/api/v1/threads/{id}/timeline", get(thread_timeline))
         .route("/api/v1/threads/{id}/messages", post(post_thread_message))
         .route("/api/v1/projects", get(list_projects).post(create_project))
         .route(
             "/api/v1/projects/{id}",
             get(get_project).patch(update_project),
+        )
+        .route(
+            "/api/v1/projects/{id}/default-execution-options",
+            get(project_default_execution_options),
         )
         .route("/api/v1/projects/{id}/archive", post(archive_project))
         .route("/api/v1/projects/{id}/sources", post(add_project_source))
@@ -301,7 +334,10 @@ fn configured_provider_info(state: &AppState) -> Value {
         },
         "capabilities": {
             "supportsThreadArchive": true,
-            "supportsThreadRename": false,
+            // `threads.update` now applies a title change, so the client may
+            // offer the affordance. The other flags stay honest about what
+            // loom's provider protocol can do: no service tier, no rewind.
+            "supportsThreadRename": true,
             "supportsServiceTier": false,
             "supportsNativeUserQuestion": false,
             "supportsFork": false,
@@ -619,13 +655,16 @@ fn thread_summary_value(state: &AppState, thread: &Thread) -> Value {
         "providerId": configured_provider_id(state),
         "title": thread.title,
         "titleFallback": thread.title,
-        "sectionId": null,
+        "sectionId": thread.section_id,
         "status": bb_thread_status(thread.status),
         "parentThreadId": thread.parent_thread_id.as_ref().map(ToString::to_string),
         "sourceThreadId": null,
         "originKind": null,
         "originPluginId": null,
-        "visibility": if thread.status == ThreadStatus::Archived { "hidden" } else { "visible" },
+        // A stored field, not a function of `status`: bb's archived and hidden
+        // flags are independent, so archiving a thread does not hide it and
+        // hiding one does not archive it.
+        "visibility": thread.visibility.as_str(),
         "archivedAt": thread.archived_at_ms,
         "pinnedAt": null,
         "deletedAt": null,
@@ -1201,7 +1240,148 @@ async fn send_thread(
     }
 }
 
+/// How many threads a `threads.search` group returns when the client names no
+/// limit.
+const SEARCH_DEFAULT_LIMIT_PER_GROUP: usize = 20;
+/// The hard cap on `limitPerGroup`, so one query cannot ask for every thread.
+const SEARCH_MAX_LIMIT_PER_GROUP: u64 = 100;
+/// How many matches a search reports for one thread before moving on. A result
+/// row is a preview, not the whole conversation.
+const SEARCH_MAX_MATCHES_PER_THREAD: usize = 5;
+/// How much of a matched text a search result carries, in characters.
+const SEARCH_SNIPPET_CHARS: usize = 200;
+/// How much of a message a conversation-outline preview carries, in characters.
+const OUTLINE_PREVIEW_CHARS: usize = 120;
+/// How many prompts a `threads.promptHistory` read returns by default.
+const PROMPT_HISTORY_DEFAULT_LIMIT: usize = 50;
+/// The hard cap on that read.
+const PROMPT_HISTORY_MAX_LIMIT: u64 = 200;
+/// The reasoning level loom runs a provider at when a thread names no other.
+const DEFAULT_REASONING_LEVEL: &str = "medium";
+/// The permission mode loom runs a provider under, and the ceiling every host
+/// advertises.
+const DEFAULT_PERMISSION_MODE: &str = "full";
+/// The service tier loom reports: its provider protocol has no fast tier.
+const DEFAULT_SERVICE_TIER: &str = "default";
+
+/// The thread's tabs (`threads.tabs`) and the revision a write must name.
+///
+/// The revision is a compare-and-swap token, not a timestamp: it starts at `0`
+/// and every accepted `PUT` increments it, so two clients editing the same
+/// thread cannot silently overwrite each other.
 async fn thread_tabs(State(state): State<AppState>, Path(raw_thread_id): Path<String>) -> Response {
+    let thread_id = match parse_thread_id(&raw_thread_id) {
+        Ok(thread_id) => thread_id,
+        Err(response) => return response,
+    };
+    match state.registry.thread(&thread_id) {
+        Some(thread) => Json(json!({
+            "revision": thread.tabs_revision,
+            "tabs": thread.tabs,
+        }))
+        .into_response(),
+        None => error_response(
+            StatusCode::NOT_FOUND,
+            format!("thread {thread_id} is not known"),
+        ),
+    }
+}
+
+/// Body of a `threads.updateTabs` request.
+///
+/// The tab objects are kept as JSON: the shape is bb's `tabsSchema`, which has
+/// ten variants and grows with the client, and loom renders none of them. The
+/// contract middleware validates every write against that schema before the
+/// handler sees it, so an opaque round-trip cannot store a tab bb would reject.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateThreadTabsRequest {
+    expected_revision: u64,
+    tabs: Vec<Value>,
+}
+
+/// Replaces a thread's tabs, refusing a write that named a stale revision.
+///
+/// A revision mismatch is bb's `thread_tabs_conflict` at `409`: the write was
+/// well-formed, the client's view was not current, and re-reading the tabs is
+/// what fixes it. Answering `200` with someone else's tabs would be the lost
+/// update the revision exists to prevent.
+async fn update_thread_tabs(
+    State(state): State<AppState>,
+    Path(raw_thread_id): Path<String>,
+    Json(request): Json<UpdateThreadTabsRequest>,
+) -> Response {
+    let thread_id = match parse_thread_id(&raw_thread_id) {
+        Ok(thread_id) => thread_id,
+        Err(response) => return response,
+    };
+    match state.registry.set_thread_tabs(
+        &thread_id,
+        request.tabs,
+        request.expected_revision,
+        loom_relay::now_ms(),
+    ) {
+        Ok((thread, event)) => match state.publish_domain_event(&event) {
+            Ok(_) => Json(json!({
+                "revision": thread.tabs_revision,
+                "tabs": thread.tabs,
+            }))
+            .into_response(),
+            Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+        },
+        Err(CommandError::Conflict(message)) => {
+            error_response_with_code(StatusCode::CONFLICT, "thread_tabs_conflict", message)
+        }
+        Err(error) => command_error_response(error),
+    }
+}
+
+/// Applies `threads.update`: title, section, parent, visibility and the
+/// thread's execution options.
+///
+/// The response is the whole thread (`threadSchema`), not an acknowledgement,
+/// because the client's next render is the row it just changed. A body that
+/// changes nothing is accepted and answers the unchanged thread: every field in
+/// the contract's request is optional, so "no change" cannot be an error.
+///
+/// `model` and `reasoningLevel` are recorded and reported
+/// (`threads.defaultExecutionOptions`); they are not yet carried into the
+/// dispatch, because the provider protocol's `ProviderSpec` has no field for
+/// them. That divergence is deliberate and documented rather than silently
+/// dropped: the values survive, and the client can read them back.
+async fn update_thread(
+    State(state): State<AppState>,
+    Path(raw_thread_id): Path<String>,
+    Json(update): Json<ThreadUpdate>,
+) -> Response {
+    let thread_id = match parse_thread_id(&raw_thread_id) {
+        Ok(thread_id) => thread_id,
+        Err(response) => return response,
+    };
+    match state
+        .registry
+        .update_thread(&thread_id, &update, loom_relay::now_ms())
+    {
+        Ok((thread, event)) => {
+            if let Some(event) = event {
+                if let Err(error) = state.publish_domain_event(&event) {
+                    return error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string());
+                }
+            }
+            Json(thread_summary_value(&state, &thread)).into_response()
+        }
+        Err(error) => command_error_response(error),
+    }
+}
+
+/// `threads.childSummary`: how many threads were delegated from this one.
+///
+/// The contract counts *non-deleted* children; loom has no thread deletion, so
+/// every child counts until one exists.
+async fn thread_child_summary(
+    State(state): State<AppState>,
+    Path(raw_thread_id): Path<String>,
+) -> Response {
     let thread_id = match parse_thread_id(&raw_thread_id) {
         Ok(thread_id) => thread_id,
         Err(response) => return response,
@@ -1212,7 +1392,793 @@ async fn thread_tabs(State(state): State<AppState>, Path(raw_thread_id): Path<St
             format!("thread {thread_id} is not known"),
         );
     }
-    Json(json!({ "revision": 0, "tabs": [] })).into_response()
+    Json(json!({ "nonDeletedChildCount": state.registry.child_count(&thread_id) })).into_response()
+}
+
+/// `threads.running`: the threads with a provider run in flight.
+///
+/// Read from the run table, which is the authority on what is executing — a
+/// thread's `working` status is the *intent* to run, and a run that failed to
+/// dispatch has already been reconciled out of it.
+async fn running_threads(State(state): State<AppState>) -> Json<Vec<Value>> {
+    let mut in_flight: std::collections::BTreeMap<ThreadId, HostId> =
+        std::collections::BTreeMap::new();
+    for run in state.runs.all() {
+        in_flight
+            .entry(run.thread_id.clone())
+            .or_insert(run.host_id.clone());
+    }
+    Json(
+        in_flight
+            .into_iter()
+            .map(|(thread_id, host_id)| {
+                json!({ "id": thread_id.to_string(), "hostId": host_id.to_string() })
+            })
+            .collect(),
+    )
+}
+
+/// The thread's effective execution options for its next run, or `null`.
+///
+/// `null` is the contract's second branch and loom's honest answer when the
+/// thread records nothing: the effective level would be the *client's*
+/// preference, which only the client knows. Once a client has written options
+/// with `threads.update`, they are reported here as
+/// `client/thread/start` — which is what they are.
+///
+/// `serviceTier` and `permissionMode` are loom's fixed values rather than
+/// stored ones: the provider protocol has no service tier, and every host
+/// advertises `full` as its permission ceiling.
+async fn thread_default_execution_options(
+    State(state): State<AppState>,
+    Path(raw_thread_id): Path<String>,
+) -> Response {
+    let thread_id = match parse_thread_id(&raw_thread_id) {
+        Ok(thread_id) => thread_id,
+        Err(response) => return response,
+    };
+    let Some(thread) = state.registry.thread(&thread_id) else {
+        return error_response(
+            StatusCode::NOT_FOUND,
+            format!("thread {thread_id} is not known"),
+        );
+    };
+    if thread.model.is_none() && thread.reasoning_level.is_none() {
+        return Json(Value::Null).into_response();
+    }
+    Json(json!({
+        "model": thread
+            .model
+            .clone()
+            .unwrap_or_else(|| configured_provider_id(&state)),
+        "serviceTier": DEFAULT_SERVICE_TIER,
+        "reasoningLevel": thread
+            .reasoning_level
+            .map_or(DEFAULT_REASONING_LEVEL, ReasoningLevel::as_str),
+        "permissionMode": DEFAULT_PERMISSION_MODE,
+        "source": "client/thread/start",
+    }))
+    .into_response()
+}
+
+/// The options a thread created in this project would start with.
+///
+/// Loom has no per-project overrides, so this is the server's configured
+/// provider and model — the same values `system.execution-options` reports —
+/// rather than a `null` that would say "unknowable". If no provider is
+/// configured at all, there is nothing to report and the contract's `null`
+/// branch is the answer.
+async fn project_default_execution_options(
+    State(state): State<AppState>,
+    Path(raw_project_id): Path<String>,
+) -> Response {
+    let Ok(project_id) = raw_project_id.parse::<ProjectId>() else {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            format!("{raw_project_id:?} is not a project id"),
+        );
+    };
+    if state.registry.project(&project_id).is_none() {
+        return error_response(
+            StatusCode::NOT_FOUND,
+            format!("project {project_id} is not known"),
+        );
+    }
+    let provider_id = configured_provider_id(&state);
+    if provider_id.is_empty() {
+        return Json(Value::Null).into_response();
+    }
+    // The configured model's `model` field is the provider id today; reading it
+    // from `configured_model` keeps the two in step if that changes.
+    let model = configured_model(&state)
+        .get("model")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .unwrap_or_else(|| provider_id.clone());
+    Json(json!({
+        "providerId": provider_id,
+        "model": model,
+        "serviceTier": DEFAULT_SERVICE_TIER,
+        "reasoningLevel": DEFAULT_REASONING_LEVEL,
+        "permissionMode": DEFAULT_PERMISSION_MODE,
+    }))
+    .into_response()
+}
+
+/// `threads.conversationOutline`: one row per user and assistant message.
+///
+/// Projected from the relay log, which is where messages live — the registry
+/// deliberately holds no timeline. `maxSeq` is the last sequence in the thread,
+/// so a client can tell whether its outline is current.
+async fn thread_conversation_outline(
+    State(state): State<AppState>,
+    Path(raw_thread_id): Path<String>,
+) -> Response {
+    let thread_id = match parse_thread_id(&raw_thread_id) {
+        Ok(thread_id) => thread_id,
+        Err(response) => return response,
+    };
+    if state.registry.thread(&thread_id).is_none() {
+        return error_response(
+            StatusCode::NOT_FOUND,
+            format!("thread {thread_id} is not known"),
+        );
+    }
+    let entries = match thread_domain_events(&state, &thread_id) {
+        Ok(entries) => entries,
+        Err(response) => return response,
+    };
+    let mut items = Vec::new();
+    for (_event_id, _sequence, _created_at_ms, event) in &entries {
+        let DomainEvent::ThreadMessageAdded { message, .. } = event else {
+            continue;
+        };
+        let role = match message.role {
+            MessageRole::User => "user",
+            MessageRole::Assistant => "assistant",
+            MessageRole::System => continue,
+        };
+        items.push(json!({
+            "id": message.id.to_string(),
+            "role": role,
+            "preview": preview_text(&message.content, OUTLINE_PREVIEW_CHARS),
+            // Loom's messages carry no attachments yet; a null summary is the
+            // contract's way of saying so, not a placeholder for one.
+            "attachmentSummary": Value::Null,
+        }));
+    }
+    let max_seq = entries
+        .last()
+        .map(|(_, sequence, _, _)| *sequence)
+        .unwrap_or(0);
+    Json(json!({ "items": items, "maxSeq": max_seq })).into_response()
+}
+
+/// Query fields of a `threads.promptHistory` read.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PromptHistoryQuery {
+    limit: Option<String>,
+}
+
+/// `threads.promptHistory`: the thread's user prompts, newest first.
+///
+/// Newest first because that is the order a prompt-recall affordance walks, and
+/// `limit` is what bounds it. The contract answers a bare array, not an
+/// envelope. Mentions are always empty: loom stores a prompt's text and does
+/// not resolve `@` references yet, so reporting none is the truth rather than a
+/// dropped field.
+async fn thread_prompt_history(
+    State(state): State<AppState>,
+    Path(raw_thread_id): Path<String>,
+    Query(query): Query<PromptHistoryQuery>,
+) -> Response {
+    let thread_id = match parse_thread_id(&raw_thread_id) {
+        Ok(thread_id) => thread_id,
+        Err(response) => return response,
+    };
+    if state.registry.thread(&thread_id).is_none() {
+        return error_response(
+            StatusCode::NOT_FOUND,
+            format!("thread {thread_id} is not known"),
+        );
+    }
+    let limit = match parse_query_sequence(query.limit.as_ref(), "limit") {
+        Ok(Some(limit)) => limit.clamp(1, PROMPT_HISTORY_MAX_LIMIT) as usize,
+        Ok(None) => PROMPT_HISTORY_DEFAULT_LIMIT,
+        Err(response) => return response,
+    };
+    let entries = match thread_domain_events(&state, &thread_id) {
+        Ok(entries) => entries,
+        Err(response) => return response,
+    };
+    let mut prompts = entries
+        .iter()
+        .filter_map(
+            |(_event_id, _sequence, _created_at_ms, event)| match event {
+                DomainEvent::ThreadMessageAdded { message, .. }
+                    if message.role == MessageRole::User =>
+                {
+                    Some(json!({
+                        "id": message.id.to_string(),
+                        "createdAt": message.created_at_ms,
+                        "input": [{
+                            "type": "text",
+                            "text": message.content,
+                            "mentions": [],
+                        }],
+                    }))
+                }
+                _ => None,
+            },
+        )
+        .collect::<Vec<_>>();
+    prompts.reverse();
+    prompts.truncate(limit);
+    Json(prompts).into_response()
+}
+
+/// Query fields of a `threads.search` read.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SearchQuery {
+    query: String,
+    limit_per_group: Option<String>,
+}
+
+/// `threads.search`: a case-insensitive substring search over titles and
+/// messages, split into active and archived groups.
+///
+/// There is no index: the control plane walks the threads it holds and replays
+/// each thread's room, which is why results are also capped. `total` is the
+/// number of matching threads in the group *before* `limitPerGroup`, so a
+/// client can show "20 of 43".
+///
+/// A `title_fallback` match is never produced: loom's `titleFallback` is the
+/// title itself, so the text a client displays is already covered by `title`.
+async fn search_threads(
+    State(state): State<AppState>,
+    Query(query): Query<SearchQuery>,
+) -> Response {
+    if query.query.chars().count() < 2 {
+        // `400` rather than the middleware's `422`: the contract declares
+        // `invalid_request` at 400/403/404/409/413, and a query the server
+        // itself rejects should use the status its own code declares.
+        return error_response_with_code(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "query must be at least 2 characters".to_owned(),
+        );
+    }
+    let limit = match parse_query_sequence(query.limit_per_group.as_ref(), "limitPerGroup") {
+        Ok(Some(limit)) => limit.clamp(1, SEARCH_MAX_LIMIT_PER_GROUP) as usize,
+        Ok(None) => SEARCH_DEFAULT_LIMIT_PER_GROUP,
+        Err(response) => return response,
+    };
+    let needle = query.query.to_lowercase();
+
+    // Two groups, filled in one pass: a group keeps every matching thread's
+    // count but only `limit` rows, which is what makes `total` useful.
+    let mut active = Vec::new();
+    let mut active_total = 0usize;
+    let mut archived = Vec::new();
+    let mut archived_total = 0usize;
+    for thread in state.registry.threads() {
+        let matches = match thread_search_matches(&state, &thread, &needle) {
+            Ok(matches) => matches,
+            Err(response) => return response,
+        };
+        if matches.is_empty() {
+            continue;
+        }
+        let (rows, total) = if thread.status == ThreadStatus::Archived {
+            (&mut archived, &mut archived_total)
+        } else {
+            (&mut active, &mut active_total)
+        };
+        *total += 1;
+        if rows.len() < limit {
+            rows.push(json!({
+                "thread": thread_list_entry_value(&state, &thread),
+                "matches": matches,
+            }));
+        }
+    }
+    Json(json!({
+        "active": { "results": active, "total": active_total },
+        "archived": { "results": archived, "total": archived_total },
+    }))
+    .into_response()
+}
+
+/// Everything a search found in one thread: the title first, then each message
+/// that matches, in log order.
+#[allow(clippy::result_large_err)]
+fn thread_search_matches(
+    state: &AppState,
+    thread: &Thread,
+    needle_lower: &str,
+) -> Result<Vec<Value>, Response> {
+    let mut matches = Vec::new();
+    if let Some(title) = &thread.title {
+        let occurrences = find_occurrences(title, needle_lower);
+        if !occurrences.is_empty() {
+            let (text, highlight_ranges) =
+                snippet_with_highlights(title, &occurrences, SEARCH_SNIPPET_CHARS);
+            matches.push(json!({
+                "sourceKind": "title",
+                "text": text,
+                "highlightRanges": highlight_ranges,
+                "sourceSeq": Value::Null,
+            }));
+        }
+    }
+    for (_event_id, sequence, _created_at_ms, event) in thread_domain_events(state, &thread.id)? {
+        if matches.len() >= SEARCH_MAX_MATCHES_PER_THREAD {
+            break;
+        }
+        let DomainEvent::ThreadMessageAdded { message, .. } = event else {
+            continue;
+        };
+        let occurrences = find_occurrences(&message.content, needle_lower);
+        if occurrences.is_empty() {
+            continue;
+        }
+        let (text, highlight_ranges) =
+            snippet_with_highlights(&message.content, &occurrences, SEARCH_SNIPPET_CHARS);
+        matches.push(json!({
+            "sourceKind": match message.role {
+                MessageRole::User => "user_message",
+                MessageRole::Assistant => "assistant_message",
+                MessageRole::System => "system_message",
+            },
+            "text": text,
+            "highlightRanges": highlight_ranges,
+            "sourceSeq": sequence,
+        }));
+    }
+    Ok(matches)
+}
+
+/// Character ranges of every case-insensitive occurrence of `needle_lower`
+/// (already lowercased) in `text`.
+///
+/// Character indices, not bytes: the caller slices by char to build a snippet,
+/// and bytes would panic in the middle of a multi-byte character.
+fn find_occurrences(text: &str, needle_lower: &str) -> Vec<(usize, usize)> {
+    let haystack: Vec<char> = text.chars().collect();
+    let needle: Vec<char> = needle_lower.chars().collect();
+    if needle.is_empty() {
+        return Vec::new();
+    }
+    let mut found = Vec::new();
+    let mut index = 0;
+    while index + needle.len() <= haystack.len() {
+        let hit =
+            (0..needle.len()).all(|offset| lowercase_eq(haystack[index + offset], needle[offset]));
+        if hit {
+            found.push((index, index + needle.len()));
+            index += needle.len();
+        } else {
+            index += 1;
+        }
+    }
+    found
+}
+
+/// Whether `value` lowercases to exactly `lower`, a single character.
+fn lowercase_eq(value: char, lower: char) -> bool {
+    let mut folded = value.to_lowercase();
+    folded.next() == Some(lower) && folded.next().is_none()
+}
+
+/// A window of `text` around its first match, with the highlight ranges of
+/// every match that stays inside it.
+///
+/// The ranges are UTF-16 code units, like the client-side JavaScript that
+/// renders them; a byte range would highlight the wrong span for any message
+/// containing a non-ASCII character. The window is only applied to text longer
+/// than `limit`, so a short message is returned whole.
+fn snippet_with_highlights(
+    text: &str,
+    occurrences: &[(usize, usize)],
+    limit: usize,
+) -> (String, Vec<Value>) {
+    let chars: Vec<char> = text.chars().collect();
+    let (first_start, first_end) = occurrences[0];
+    let (window_start, window_end) = if chars.len() <= limit {
+        (0, chars.len())
+    } else {
+        let match_len = first_end - first_start;
+        let before = limit.saturating_sub(match_len) / 2;
+        let start = first_start.saturating_sub(before);
+        let end = (start + limit).min(chars.len());
+        (end.saturating_sub(limit), end)
+    };
+    let window = &chars[window_start..window_end];
+    let snippet: String = window.iter().collect();
+
+    // Prefix sums in UTF-16 code units, so a char index in the window becomes
+    // the offset the contract's client measures in.
+    let mut offsets = Vec::with_capacity(window.len() + 1);
+    let mut offset = 0usize;
+    for character in window {
+        offsets.push(offset);
+        offset += character.len_utf16();
+    }
+    offsets.push(offset);
+
+    let highlights = occurrences
+        .iter()
+        .filter(|(start, end)| *start >= window_start && *end <= window_end)
+        .map(|(start, end)| {
+            json!({
+                "start": offsets[start - window_start],
+                "end": offsets[end - window_start],
+            })
+        })
+        .collect();
+    (snippet, highlights)
+}
+
+/// A one-line preview of a message: whitespace collapsed, then truncated.
+fn preview_text(text: &str, limit: usize) -> String {
+    let collapsed = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if collapsed.chars().count() <= limit {
+        return collapsed;
+    }
+    let mut preview: String = collapsed.chars().take(limit).collect();
+    preview.push('…');
+    preview
+}
+
+/// Body of a `threads.open` request.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct OpenThreadFile {
+    source: String,
+    path: String,
+    line_number: Option<u64>,
+}
+
+/// Body of a `threads.open` request: the file to open, or `null` to open the
+/// pane without one, and where the split should go.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OpenThreadRequest {
+    file: Option<OpenThreadFile>,
+    split: Option<String>,
+}
+
+/// `threads.open`: tells every client viewing this thread to open a file.
+///
+/// The request travels the only path the control plane has — into the thread's
+/// relay room — and `delivered` reports how many local subscribers that room
+/// currently has. It is therefore a fan-out count, not an acknowledgement: a
+/// client with no subscriber gets `0` and learns about the open request by
+/// replaying the room, exactly like every other frame.
+///
+/// The cost of that choice is that an open request is retained, so replaying a
+/// thread re-delivers it. Loom has no ephemeral frame path by design; an open
+/// request is idempotent for the client that receives it twice.
+async fn open_thread(
+    State(state): State<AppState>,
+    Path(raw_thread_id): Path<String>,
+    Json(request): Json<OpenThreadRequest>,
+) -> Response {
+    let thread_id = match parse_thread_id(&raw_thread_id) {
+        Ok(thread_id) => thread_id,
+        Err(response) => return response,
+    };
+    if state.registry.thread(&thread_id).is_none() {
+        return error_response(
+            StatusCode::NOT_FOUND,
+            format!("thread {thread_id} is not known"),
+        );
+    }
+    let scope = Scope::Thread(thread_id.to_string());
+    let frame = json!({
+        "type": "thread_open_requested",
+        "threadId": thread_id.to_string(),
+        "file": request.file,
+        "split": request.split,
+        "atMs": loom_relay::now_ms(),
+    });
+    let payload = serde_json::to_vec(&frame).expect("an open request always serializes");
+    if let Err(error) = state.publish(scope.clone(), payload) {
+        return error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string());
+    }
+    match state.hub.subscriber_count(scope).await {
+        Ok(delivered) => Json(json!({ "delivered": delivered })).into_response(),
+        Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+    }
+}
+
+/// `threads.compact`: refused, explicitly.
+///
+/// Compaction is the provider summarising its own context, and loom's provider
+/// protocol cannot ask for it. `loom_provider_protocol` defines dispatch,
+/// provision and report and nothing else, and the daemon only ever *observes*
+/// compaction: Pi decides to compact and the bridge maps its `compaction_end`
+/// to `thread/compacted` (`crates/daemon/src/provider.rs`,
+/// `docs/event-model.md` row 7). There is no frame in either direction that
+/// requests one.
+///
+/// Answering `{ "ok": true }` for a compaction that never happened is the
+/// failure mode the acceptance criteria name, so the route answers bb's
+/// `not_configured` at the `501` that code declares. It becomes implementable
+/// the day the protocol grows a request frame — and the report path that would
+/// carry the result already exists.
+async fn compact_thread(
+    State(state): State<AppState>,
+    Path(raw_thread_id): Path<String>,
+) -> Response {
+    let thread_id = match parse_thread_id(&raw_thread_id) {
+        Ok(thread_id) => thread_id,
+        Err(response) => return response,
+    };
+    if state.registry.thread(&thread_id).is_none() {
+        return error_response(
+            StatusCode::NOT_FOUND,
+            format!("thread {thread_id} is not known"),
+        );
+    }
+    error_response_with_code(
+        StatusCode::NOT_IMPLEMENTED,
+        "not_configured",
+        format!(
+            "loom's provider protocol has no compaction frame; thread {thread_id} cannot be \
+             compacted"
+        ),
+    )
+}
+
+/// `threads.editMessage`: refused, explicitly.
+///
+/// Editing a sent message means rewriting a turn the provider already executed:
+/// the conversation this server owns is an append-only log, and the provider
+/// protocol has no rewind frame (bb's own provider capabilities report
+/// `supportsSessionRewind: false`). An edit that appended a second message and
+/// left the first in place would be a different conversation, not an edit, so
+/// the route refuses with bb's `not_configured` at `501` instead of pretending.
+///
+/// The request body is still validated against the contract by the middleware,
+/// which is what keeps the refusal a statement about loom and not about the
+/// request.
+async fn edit_thread_message(
+    State(state): State<AppState>,
+    Path(raw_thread_id): Path<String>,
+) -> Response {
+    let thread_id = match parse_thread_id(&raw_thread_id) {
+        Ok(thread_id) => thread_id,
+        Err(response) => return response,
+    };
+    if state.registry.thread(&thread_id).is_none() {
+        return error_response(
+            StatusCode::NOT_FOUND,
+            format!("thread {thread_id} is not known"),
+        );
+    }
+    error_response_with_code(
+        StatusCode::NOT_IMPLEMENTED,
+        "not_configured",
+        format!(
+            "loom's provider protocol cannot rewrite a sent turn; message editing is not \
+             available for thread {thread_id}"
+        ),
+    )
+}
+
+/// Body of a `threads.retry` request.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RetryThreadRequest {
+    /// A human label for the retry. Accepted and unused: it describes a
+    /// turn-request record, and loom keeps the turn in its log rather than a
+    /// separate request table, so there is nothing to label.
+    #[serde(default)]
+    #[allow(dead_code)]
+    reason: Option<String>,
+    /// When the client wants the retry to run; `null` or a past time means now.
+    #[serde(default)]
+    send_at: Option<u64>,
+    /// The client's own turn-request id, echoed back so its optimistic row can
+    /// be matched. Loom does not deduplicate retries by it.
+    #[serde(default)]
+    turn_request_id: Option<String>,
+}
+
+/// `threads.retry`: dispatches the thread's last user prompt again.
+///
+/// This is deliberately the *existing* lifecycle, not a second state machine:
+/// the thread moves to `working` through [`ThreadTrigger`] (`run_started` from
+/// `idle`, `retry` from `error`) and the run goes out through
+/// [`AppState::dispatch_thread`], so reconciliation, deadlines and terminal
+/// events apply exactly as they do to a first attempt.
+///
+/// Refusals, each for a state the client can see:
+///
+/// * a run in flight (`working` or `waiting`) — `409 conflict`; the contract's
+///   "queued" delivery branch belongs to B3's queue, which does not exist yet;
+/// * no user turn in the thread — `409 no_failed_turn`;
+/// * an archived thread — `409 thread_not_writable`;
+/// * a dispatch that found no usable environment or host — the same error the
+///   run lifecycle would report, with the terminal event already published to
+///   the thread.
+///
+/// `attempt` counts the retries the thread's log already shows, so the first
+/// retry of a turn is `1`.
+async fn retry_thread(
+    State(state): State<AppState>,
+    Path(raw_thread_id): Path<String>,
+    Json(request): Json<RetryThreadRequest>,
+) -> Response {
+    let thread_id = match parse_thread_id(&raw_thread_id) {
+        Ok(thread_id) => thread_id,
+        Err(response) => return response,
+    };
+    let Some(thread) = state.registry.thread(&thread_id) else {
+        return error_response(
+            StatusCode::NOT_FOUND,
+            format!("thread {thread_id} is not known"),
+        );
+    };
+    if thread.status.is_archived() {
+        return error_response_with_code(
+            StatusCode::CONFLICT,
+            "thread_not_writable",
+            format!("thread {thread_id} is archived"),
+        );
+    }
+    if matches!(thread.status, ThreadStatus::Working | ThreadStatus::Waiting) {
+        return error_response_with_code(
+            StatusCode::CONFLICT,
+            "conflict",
+            format!("thread {thread_id} already has a run in flight; stop it before retrying"),
+        );
+    }
+
+    // A scheduled retry belongs to the queued-message surface B3 introduces.
+    // Answering `sent` for a turn that will not run until later would be a lie,
+    // and running it now would ignore the schedule the client asked for.
+    if let Some(send_at) = request.send_at {
+        if send_at > loom_relay::now_ms() {
+            return error_response_with_code(
+                StatusCode::NOT_IMPLEMENTED,
+                "not_configured",
+                format!(
+                    "scheduled retries need loom's queued-message surface, which does not exist \
+                     yet; retry thread {thread_id} without `sendAt`"
+                ),
+            );
+        }
+    }
+
+    // The contract's validator does not enforce `pattern`, so a client-supplied
+    // id is checked here, before anything changes: echoing one back outside
+    // bb's `creq_` shape would put a value in the response the client cannot
+    // correlate with its own row.
+    let turn_request_id = request
+        .turn_request_id
+        .clone()
+        .unwrap_or_else(loom_domain::id::mint_turn_request_id);
+    if !loom_domain::is_turn_request_id(&turn_request_id) {
+        return error_response_with_code(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            format!("turnRequestId {turn_request_id:?} is not a creq_ id"),
+        );
+    }
+
+    // The prompt and the retry count come from the thread's own log: it is the
+    // only record of what the turn was, and a retry has to repeat that turn.
+    let entries = match thread_domain_events(&state, &thread_id) {
+        Ok(entries) => entries,
+        Err(response) => return response,
+    };
+    let mut prompt = None;
+    let mut previous_attempts = 0u64;
+    for (_event_id, _sequence, _created_at_ms, event) in &entries {
+        match event {
+            DomainEvent::ThreadMessageAdded { message, .. }
+                if message.role == MessageRole::User =>
+            {
+                prompt = Some(message.content.clone());
+            }
+            DomainEvent::ThreadStatusChanged {
+                from: ThreadStatus::Error,
+                to: ThreadStatus::Working,
+                ..
+            } => previous_attempts += 1,
+            _ => {}
+        }
+    }
+    let Some(prompt) = prompt else {
+        return error_response_with_code(
+            StatusCode::CONFLICT,
+            "no_failed_turn",
+            format!("thread {thread_id} has no user turn to retry"),
+        );
+    };
+
+    let trigger = match thread.status {
+        ThreadStatus::Idle => ThreadTrigger::RunStarted,
+        ThreadStatus::Error => ThreadTrigger::Retry,
+        // Archived, working and waiting were refused above.
+        _ => ThreadTrigger::Retry,
+    };
+    match state
+        .registry
+        .transition_thread(&thread_id, trigger, loom_relay::now_ms())
+    {
+        Ok(Some(event)) => {
+            if let Err(error) = state.publish_domain_event(&event) {
+                return error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string());
+            }
+        }
+        Ok(None) => {
+            return error_response_with_code(
+                StatusCode::CONFLICT,
+                "conflict",
+                format!("thread {thread_id} is not in a status a retry applies to"),
+            )
+        }
+        Err(error) => return command_error_response(error),
+    }
+
+    let Some(thread) = state.registry.thread(&thread_id) else {
+        return error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("thread {thread_id} disappeared during its retry"),
+        );
+    };
+    match state.dispatch_thread(&thread, &prompt) {
+        crate::runs::DispatchOutcome::Dispatched(_) => Json(json!({
+            "ok": true,
+            "delivery": "sent",
+            "turnRequestId": turn_request_id,
+            "attempt": previous_attempts + 1,
+        }))
+        .into_response(),
+        crate::runs::DispatchOutcome::NoEnvironment { .. } => error_response_with_code(
+            StatusCode::CONFLICT,
+            "thread_environment_unavailable",
+            format!("thread {thread_id} has no environment that can run a provider"),
+        ),
+        crate::runs::DispatchOutcome::NoHost { .. } => error_response_with_code(
+            StatusCode::BAD_GATEWAY,
+            "host_unavailable",
+            format!("no connected host owns thread {thread_id}'s workspace"),
+        ),
+        crate::runs::DispatchOutcome::PublishFailed { error, .. } => {
+            error_response(StatusCode::INTERNAL_SERVER_ERROR, error)
+        }
+    }
+}
+
+/// `threads.stop`: terminates the thread's in-flight run.
+///
+/// Idempotent on purpose — a thread with no run in flight has nothing to stop,
+/// and answering `{ "ok": true }` says the thread is not running, which is the
+/// state the caller asked for. The cancellation itself is
+/// [`AppState::stop_thread`], which shares the terminal path with every other
+/// run outcome.
+async fn stop_thread_route(
+    State(state): State<AppState>,
+    Path(raw_thread_id): Path<String>,
+) -> Response {
+    let thread_id = match parse_thread_id(&raw_thread_id) {
+        Ok(thread_id) => thread_id,
+        Err(response) => return response,
+    };
+    if state.registry.thread(&thread_id).is_none() {
+        return error_response(
+            StatusCode::NOT_FOUND,
+            format!("thread {thread_id} is not known"),
+        );
+    }
+    state.stop_thread(&thread_id);
+    Json(json!({ "ok": true })).into_response()
 }
 
 fn timeline_row_base(

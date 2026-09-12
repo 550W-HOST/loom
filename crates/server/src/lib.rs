@@ -47,7 +47,9 @@ pub use hub_actor::{HubCommand, HubHandle};
 pub use persistence::{DomainSnapshot, SnapshotError, SNAPSHOT_FILE};
 pub use protocol::{ClientCommand, ServerMessage};
 pub use pump::{Pump, PumpConfig};
-pub use runs::{DispatchOutcome, ReconcileSummary, ReportOutcome, RunRecord, RunRegistry};
+pub use runs::{
+    DispatchOutcome, ReconcileSummary, ReportOutcome, RunRecord, RunRegistry, StopOutcome,
+};
 pub use state::{relay_scope, AppState, BuildStateError};
 pub use transport::ChannelTransport;
 

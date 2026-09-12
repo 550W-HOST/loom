@@ -20,6 +20,7 @@
 //! | create a thread | `thread_created` | `project:{project_id}` |
 //! | any lifecycle trigger | `thread_status_changed` | `thread:{id}` |
 //! | post a message | `thread_message_added` | `thread:{id}` |
+//! | rename, retitle, refile or retab | `thread_updated` | `project:{project_id}` |
 //! | register a host | `host_registered` | `host:{id}` |
 //! | connect/disconnect a host | `host_status_changed` | `host:{id}` |
 //! | create an environment | `environment_created` | `project:{project_id}` |
@@ -81,6 +82,17 @@ pub enum DomainEvent {
         thread_id: ThreadId,
         /// The message.
         message: ThreadMessage,
+    },
+    /// A thread's fields changed outside the lifecycle.
+    ///
+    /// Carries the whole thread after the change, because the change has no
+    /// single field: a `threads.update` may move a title, a section, a parent
+    /// and the execution options at once, and a `tabs` write replaces a list. A
+    /// consumer either applies the new value or ignores the event; there is no
+    /// partial interpretation to get wrong.
+    ThreadUpdated {
+        /// The thread after the change.
+        thread: Thread,
     },
     /// Something happened during an in-flight provider run.
     ///
@@ -149,6 +161,7 @@ impl DomainEvent {
             DomainEvent::ThreadCreated { .. } => "thread_created",
             DomainEvent::ThreadStatusChanged { .. } => "thread_status_changed",
             DomainEvent::ThreadMessageAdded { .. } => "thread_message_added",
+            DomainEvent::ThreadUpdated { .. } => "thread_updated",
             DomainEvent::ThreadRunEvent { .. } => "thread_run_event",
             DomainEvent::HostRegistered { .. } => "host_registered",
             DomainEvent::HostStatusChanged { .. } => "host_status_changed",
@@ -173,6 +186,15 @@ impl DomainEvent {
             DomainEvent::ThreadStatusChanged { thread_id, .. }
             | DomainEvent::ThreadMessageAdded { thread_id, .. } => {
                 DomainScope::Thread(thread_id.clone())
+            }
+            // A thread's identity fields are what a *list* renders — the
+            // sidebar's rows, not the open conversation — and `thread_created`
+            // already goes to the project for the same reason. A client
+            // rendering a thread keeps its project subscribed, so it sees this
+            // too; a client subscribed only to the thread room would miss it,
+            // which is the accepted cost of one scope per event.
+            DomainEvent::ThreadUpdated { thread } => {
+                DomainScope::Project(thread.project_id.clone())
             }
             DomainEvent::ThreadRunEvent { run } => DomainScope::Thread(run.thread_id.clone()),
             DomainEvent::HostRegistered { host } => DomainScope::Host(host.id.clone()),

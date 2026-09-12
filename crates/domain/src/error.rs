@@ -45,6 +45,16 @@ pub enum DomainError {
         /// Why it was rejected.
         reason: String,
     },
+    /// A tab write named a revision the thread is no longer at.
+    ///
+    /// The compare-and-swap failed, so the write was refused rather than
+    /// applied on top of another client's change.
+    TabsConflict {
+        /// The revision the client expected.
+        expected: u64,
+        /// The revision the thread is actually at.
+        current: u64,
+    },
 }
 
 impl fmt::Display for DomainError {
@@ -61,6 +71,10 @@ impl fmt::Display for DomainError {
             }
             DomainError::Archived { entity } => write!(f, "the {entity} is archived"),
             DomainError::InvalidField { field, reason } => write!(f, "field {field}: {reason}"),
+            DomainError::TabsConflict { expected, current } => write!(
+                f,
+                "thread tabs are at revision {current}, not the expected {expected}"
+            ),
         }
     }
 }

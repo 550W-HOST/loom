@@ -78,8 +78,10 @@ public server surface:
 
 A payload is a serialized `loom-domain` `DomainEvent`: dispatch on its `type`
 tag. The events a thread view renders are `thread_message_added`,
-`thread_status_changed` and `thread_run_event` (`crates/domain/src/event.rs`).
-The last of those carries a bb `ThreadEvent` in its `event` field — the
+`thread_status_changed` and `thread_run_event`; a list view also renders
+`thread_updated`, which carries a thread's fields after a rename, a re-file, a
+visibility change or a tabs write (`crates/domain/src/event.rs`).
+`thread_run_event` carries a bb `ThreadEvent` in its `event` field — the
 contract the projection layer dispatches on. See
 [`event-model.md`](event-model.md).
 
