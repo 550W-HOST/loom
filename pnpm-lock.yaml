@@ -25,6 +25,28 @@ importers:
         specifier: ^3.2.4
         version: 3.2.7(@types/node@22.20.2)(tsx@4.23.13)
 
+  ui:
+    dependencies:
+      '@bb/domain':
+        specifier: workspace:*
+        version: link:packages/domain
+      '@bb/thread-view':
+        specifier: workspace:*
+        version: link:packages/thread-view
+    devDependencies:
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.20.2
+      esbuild:
+        specifier: ^0.28.2
+        version: 0.28.2
+      typescript:
+        specifier: ^5.7.3
+        version: 5.9.3
+      vitest:
+        specifier: ^3.2.4
+        version: 3.2.7(@types/node@22.20.2)(tsx@4.23.13)
+
   ui/packages/client-core:
     dependencies:
       '@bb/core-ui':
