@@ -151,6 +151,12 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     needs: build
+    outputs:
+      # What the images job tags its pushes with. It comes from the artifact
+      # rather than from the tag name so that the version in an image reference,
+      # the version in the release notes and the version inside the binary are
+      # one reading of the same file.
+      version: ${{ steps.release.outputs.version }}
     steps:
       - name: Download every target's artifacts
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
@@ -213,6 +219,7 @@ jobs:
           VERSION: ${{ steps.release.outputs.version }}
           PROTOCOL: ${{ steps.release.outputs.protocol }}
           COMMIT: ${{ steps.release.outputs.commit }}
+          REGISTRY: ghcr.io/${{ github.repository_owner }}
         run: |
           set -euo pipefail
           # A quoted heredoc, so nothing in the notes is expanded while it is
@@ -238,6 +245,20 @@ jobs:
           | `loom-server-<target>` | the control plane alone |
           | `loom-daemon-<target>` | the execution daemon alone |
           | `SHA256SUMS` | checksums for every file above |
+
+          ## Container images
+
+          The same two binaries, built from these files and published to GitHub
+          Container Registry for `linux/amd64` and `linux/arm64`, running as
+          uid/gid 1000:1000:
+
+          ```
+          docker pull __REGISTRY__/loom-server:__VERSION__
+          docker pull __REGISTRY__/loom-daemon:__VERSION__
+          ```
+
+          `docs/containers.md` covers the volumes, the port, and the honest
+          limits of a containerised daemon.
 
           ## Install
 
@@ -272,11 +293,17 @@ jobs:
           * both pairs were checked as self-contained artifacts: 64-bit ELF of
             the target machine, no interpreter, no `NEEDED` shared library, and
             the commit above stamped into the file
+          * both container images were built from the checksummed files above,
+            pushed, and the x86_64 pair was pulled back and started: `--version`
+            matched the version in this page
           NOTES
+          # `|` as the delimiter for the registry: a repository path contains
+          # slashes. `${REGISTRY,,}` is the lowercase form GHCR requires.
           sed -i \
             -e "s/__VERSION__/$VERSION/g" \
             -e "s/__PROTOCOL__/$PROTOCOL/g" \
             -e "s/__COMMIT__/$COMMIT/g" \
+            -e "s|__REGISTRY__|${REGISTRY,,}|g" \
             dist/RELEASE_NOTES.md
           cat dist/RELEASE_NOTES.md
 
@@ -287,12 +314,110 @@ jobs:
           path: dist/
           if-no-files-found: error
 
+  # Both images are built from `release-dist` — the checksummed set the release
+  # job publishes, not a second build of the same commit — so the binary inside
+  # a `docker pull` is the binary `sha256sum -c SHA256SUMS` accepted. One
+  # multi-platform invocation per image is enough because neither Dockerfile has
+  # a `RUN`: nothing executes while building, which is what keeps an emulator
+  # out of this pipeline the same way it is kept out of the cargo builds
+  # (docs/releasing.md § Targets, docs/containers.md).
+  images:
+    name: container images
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    needs: assemble
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Download the release page contents
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: release-dist
+          path: dist
+
+      # The builder that ships as the default is the `docker` driver, and it
+      # refuses a multi-platform build outright. A container driver is what
+      # produces a manifest list; `--use` is what makes the script's plain
+      # `docker buildx build` reach it.
+      - name: Set up BuildKit
+        run: docker buildx create --name loom --driver docker-container --bootstrap --use
+
+      # A tag pushes; a manual run builds and loads into the runner's own daemon
+      # instead, so the rehearsal exercises both Dockerfiles without publishing
+      # anything. The `--platform` default is the local daemon's architecture,
+      # which is why the rehearsal is one platform and a release is two.
+      - name: Build the images, and push them on a tag
+        id: images
+        env:
+          VERSION: ${{ needs.assemble.outputs.version }}
+        run: |
+          set -euo pipefail
+          # GHCR wants a lowercase repository path and an owner name may have
+          # capitals; the images job and the release notes have to agree on it.
+          registry="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}"
+          args=(--registry "$registry")
+          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+            echo "${{ github.token }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+            platforms=linux/amd64,linux/arm64
+            # The version, the tag it was cut from, and `latest` for anything
+            # that is not a pre-release — the same `-` rule the release page's
+            # own flag uses.
+            tags="$VERSION,v$VERSION"
+            case "$GITHUB_REF_NAME" in
+              *-*) ;;
+              *) tags="$tags,latest" ;;
+            esac
+            tag="$VERSION"
+            # The only difference from the rehearsal branch: without it the
+            # script loads the images into the runner's daemon instead of
+            # publishing them.
+            args+=(--push)
+          else
+            platforms=linux/amd64
+            tags=rehearsal
+            tag=rehearsal
+          fi
+          {
+            echo "registry=$registry"
+            echo "tag=$tag"
+          } >>"$GITHUB_OUTPUT"
+          scripts/build-container-images.sh "${args[@]}" \
+            --tags "$tags" --platform "$platforms"
+
+      # This runner executes linux/amd64 only, so the amd64 half of each manifest
+      # list is pulled back (or taken from what was loaded) and asked what it is:
+      # a push that carried somebody else's bytes, or an image built from the
+      # wrong architecture's binary, fails here rather than in a user's terminal.
+      # The aarch64 half is a foreign-platform build of the same files and is not
+      # executed anywhere in this pipeline, by the same reasoning as
+      # `verify-release-binaries.sh --elf-only`.
+      - name: Run what was pushed
+        env:
+          VERSION: ${{ needs.assemble.outputs.version }}
+          REGISTRY: ${{ steps.images.outputs.registry }}
+          TAG: ${{ steps.images.outputs.tag }}
+        run: |
+          set -euo pipefail
+          for image in loom-server loom-daemon; do
+            line="$(docker run --rm "$REGISTRY/$image:$TAG" --version)"
+            echo "$line"
+            reported="$(awk '{print $2}' <<<"$line")"
+            [[ "$reported" == "$VERSION" ]] || {
+              echo "$image reports version $reported, not $VERSION" >&2
+              exit 1
+            }
+          done
+
   # The rehearsal path stops here: everything above ran, nothing was published.
   release:
     name: GitHub Release
     runs-on: ubuntu-24.04
     timeout-minutes: 10
-    needs: assemble
+    needs: [assemble, images]
     if: startsWith(github.ref, 'refs/tags/')
     permissions:
       contents: write

@@ -50,10 +50,12 @@ crates/
 contracts/bb/                   generated JSON Schema from bb's contract packages
 tools/contract-export/          the exporter that produces contracts/bb
 ui/             the reference UI client: buildless, served by loom-server
-deploy/         systemd units, environment templates, install/uninstall scripts
+deploy/         systemd units, environment templates, install/uninstall scripts,
+                the container images and a compose example
 docs/
   architecture.md
   ci.md
+  containers.md
   contract.md
   event-model.md
   domain-persistence.md
@@ -177,7 +179,10 @@ stdout guard and the guarantee that a run always ends — is specified in
 
 Deploying the multi-machine shape (server plus execution machines) is
 [`deploy/`](deploy/README.md): two systemd units, environment templates, and an
-idempotent install/uninstall script. Remote access is
+idempotent install/uninstall script. The same two processes are published as
+container images — `docker run`, or a `docker compose` all-in-one —
+[`docs/containers.md`](docs/containers.md), which is also where the limits of a
+containerised execution daemon are written down. Remote access is
 [`docs/remote-access.md`](docs/remote-access.md) (Tailscale Serve in front of a
 loopback bind), phones are
 [`docs/mobile.md`](docs/mobile.md) (installed PWA, no daemon), and upgrades are

@@ -22,6 +22,7 @@ only, so it works behind NAT and needs no inbound port.
 | --- | --- |
 | [systemd/](systemd/) | the two unit files |
 | [env/](env/) | the environment-file templates |
+| [containers/](containers/) | the two Dockerfiles and the `docker compose` example ([`../docs/containers.md`](../docs/containers.md)) |
 | `install.sh` / `uninstall.sh` | the supported install path |
 | [`../docs/remote-access.md`](../docs/remote-access.md) | reaching the server from outside its host |
 | [`../docs/mobile.md`](../docs/mobile.md) | using a phone as a client |
@@ -33,6 +34,9 @@ only, so it works behind NAT and needs no inbound port.
 - A Linux host with systemd for the server; each execution machine is a Linux
   host with systemd too (macOS and WSL2 can run the binaries directly without
   the units — see [`../docs/process-model.md`](../docs/process-model.md)).
+  Where docker is the deployment mechanism instead, both processes are also
+  published as images — same binaries, same environment variables, and a
+  container instead of a unit: [`../docs/containers.md`](../docs/containers.md).
 - The two binaries, from either a built checkout (`cargo build --release`) or a
   GitHub Release (`--release <version>`, no toolchain needed — see
   [§ Install from a release](#install-from-a-release)).

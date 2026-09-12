@@ -1,0 +1,88 @@
+# loom on one machine, as containers: the control plane and one execution
+# daemon. The systemd equivalent is `deploy/install.sh all` (deploy/README.md);
+# this file is for a host that has docker and no reason to install either
+# binary into the host's filesystem.
+#
+#   mkdir -p workspace && sudo chown 1000:1000 workspace
+#   docker compose -f deploy/containers/docker-compose.yml up -d
+#   curl -s http://127.0.0.1:38886/health
+#
+# The images come from the release; to use ones built from a checkout instead,
+# see docs/containers.md § Building an image. Nothing here is loom-specific
+# beyond the two images and their data directories — the server starts no
+# daemon, and the daemon does not depend on the server's process.
+name: loom
+
+services:
+  server:
+    image: ghcr.io/550w-host/loom-server:${LOOM_IMAGE_TAG:-latest}
+    # The container analog of the unit's `Restart=on-failure`.
+    restart: unless-stopped
+    ports:
+      # Loopback on the host side, and that is the point: the API has no
+      # authentication and can drive command execution on every enrolled
+      # machine, so publishing it on every host interface is the one change
+      # that opens everything docs/remote-access.md describes. Reaching it from
+      # another machine means a tailnet or a reverse proxy in front of it, not
+      # a different bind address here. LOOM_PORT moves the host side when 38886
+      # is taken.
+      - "127.0.0.1:${LOOM_PORT:-38886}:38886"
+    volumes:
+      # The relay log and the domain snapshot: what makes a rebuilt container
+      # replay the retained window instead of starting an empty one.
+      - server-data:/var/lib/loom/server
+    environment:
+      # Inside the container this is the container's own interface — the port
+      # would be unreachable from outside the namespace otherwise. The image
+      # already defaults to it; it is spelled out here because it is the value
+      # an operator changes (to 127.0.0.1:38886 when running with
+      # `network_mode: host`, where 0.0.0.0 would mean the host's interfaces).
+      LOOM_BIND: 0.0.0.0:38886
+      # Two server containers must not share this: it is stamped on every
+      # envelope the node produces. The image defaults to the same value.
+      # LOOM_NODE_ID: loom-server
+      # A shared log in place of the volume above, for a restart-transparent
+      # window across more than one node (docs/redis-backend.md). Mutually
+      # exclusive with LOOM_DATA_DIR, which the image sets.
+      # LOOM_REDIS_URL: redis://redis:6379
+
+  daemon:
+    image: ghcr.io/550w-host/loom-daemon:${LOOM_IMAGE_TAG:-latest}
+    # The daemon exits when it loses the server and has no internal reconnect,
+    # so this is what the unit's `Restart=always` turns into. It is also what
+    # makes `depends_on` below sufficient: an attempt that lands before the
+    # server is listening fails and is retried by this policy.
+    restart: unless-stopped
+    depends_on:
+      - server
+    environment:
+      # The server's service name on this network, not a URL a browser would
+      # open. Plain http:// because the binaries carry no TLS client: a
+      # containerised daemon reaches the server over a network that is itself
+      # trusted (this compose network, a tailnet, a VPN), and TLS is terminated
+      # for the browsers by something in front (docs/remote-access.md).
+      LOOM_SERVER_URL: http://server:38886
+      # What the UI shows in the host list. Keep it stable and human-readable.
+      LOOM_HOST_NAME: ${LOOM_HOST_NAME:-loom-daemon}
+      # How to run a dispatched provider, when the default is not it. A `pi`
+      # inside this image needs a derived image (docs/containers.md § Providers).
+      # LOOM_PROVIDER_CMD: /usr/local/bin/pi
+    volumes:
+      # The host identity, the replay cursor and the provider's own
+      # configuration ($HOME/.pi and friends). All three have to survive a
+      # rebuild or the machine changes identity, replays from the beginning, or
+      # asks a provider to log in again.
+      - daemon-state:/var/lib/loom
+      # The only part of the host this daemon can edit. A bind mount, because
+      # the whole point of an execution machine is that its work lands
+      # somewhere its owner can see — and because everything outside these two
+      # mounts is the container's own filesystem, which is what
+      # docs/containers.md § What a containerised daemon cannot do is about.
+      - ${LOOM_WORKSPACE:-./workspace}:/workspace
+      # A provider configuration that already exists on the host, instead of
+      # logging in inside the volume:
+      # - ${HOME}/.pi:/var/lib/loom/.pi:ro
+
+volumes:
+  server-data:
+  daemon-state:

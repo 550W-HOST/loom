@@ -6,7 +6,8 @@ Two workflows, with one responsibility each.
 and ships nothing — that split is deliberate, and [`ci.md`](ci.md) explains it.
 [`release.yml`](../.github/workflows/release.yml) runs on a tag, builds the
 static binaries for two architectures, verifies the artifacts it is about to
-publish, and attaches them to a GitHub Release.
+publish, attaches them to a GitHub Release, and pushes the matching container
+images to GitHub Container Registry.
 
 | You want to | Do this | What you get |
 | --- | --- | --- |
@@ -29,10 +30,12 @@ cannot be labelled with a version its own files do not report.
 | `build` → verify | `scripts/verify-release-binaries.sh` | the x86_64 pair runs, answers `/health`, serves its UI, creates a project and enrols a daemon; the aarch64 pair is a self-contained aarch64 artifact carrying the tag's commit |
 | `build` → package | `scripts/package-release.sh` | the release page's files exist, with the layout `deploy/install.sh` expects |
 | `assemble` | `sha256sum`, version and tag check, `RELEASE_NOTES.md` | one checksum file covering both targets, notes that name the protocol version, and no mislabelled tag |
+| `images` | `docker buildx create --driver docker-container`, `scripts/build-container-images.sh` | both container images build from the checksummed files, are pushed as one manifest list each, and the `linux/amd64` halves run and report the version above |
 | `release` | `sha256sum -c`, `gh release create`/`edit`/`upload` | the checksummed bytes reached the release page (tag runs only) |
 
-`release` is the only job that needs `contents: write`, and it is the only job
-that is skipped on a manual run.
+`release` is the only job that needs `contents: write`, `images` the only one that
+needs `packages: write`, and `release` the only job that is skipped on a manual
+run.
 
 ## Why the bundle is rebuilt before Rust is compiled
 
@@ -122,6 +125,21 @@ sudo LOOM_BIN_SOURCE=. ./deploy/install.sh server
 `SHA256SUMS` names its files without a directory prefix, so `sha256sum -c
 SHA256SUMS` works in whatever directory a downloader put them in.
 
+The same two binaries are also published as container images — one per process,
+for `linux/amd64` and `linux/arm64` — built by the `images` job from the files
+above rather than from a second build of the same commit, so a `docker pull`
+carries what `sha256sum -c SHA256SUMS` accepted:
+
+| Image | What it is |
+| --- | --- |
+| `ghcr.io/550w-host/loom-server:<version>` | the control plane, running as uid/gid 1000, relay log in a volume |
+| `ghcr.io/550w-host/loom-daemon:<version>` | the execution daemon, the same user, no port |
+
+Each is a manifest list covering both platforms, tagged `<version>`, `v<version>`
+and — unless the tag is a pre-release — `latest`. [`containers.md`](containers.md)
+has the volumes, the port publishing, how a provider gets into the daemon image,
+and an honest account of what a containerised daemon cannot do.
+
 ## Verifying an artifact
 
 The pipeline verifies what it publishes; a downloader verifies what they
@@ -197,7 +215,15 @@ scripts/package-release.sh aarch64-unknown-linux-musl
 
 # 5. what the assemble job does
 cd dist && sha256sum -- loom-server-* loom-daemon-* *.tar.gz >SHA256SUMS && sha256sum -c SHA256SUMS
+
+# 6. what the images job does, from the same dist/ (docker with buildx)
+scripts/build-container-images.sh --platform linux/amd64,linux/arm64 \
+  --registry ghcr.io/550w-host --tags 0.1.0,v0.1.0,latest --push
 ```
+
+`--platform linux/amd64 --tags dev` instead builds and loads only the image this
+machine can run — the same Dockerfiles, and enough to `docker run --rm
+loom-server:dev --version`.
 
 `scripts/package-release.sh` reads the version from `cargo metadata`, so it
 names the archive the same way the pipeline does without running anything, and
@@ -273,8 +299,9 @@ The first `v*` tag is what replaces these estimates with runner numbers.
 
 Deliberately, and with the issues that own them:
 
-- container images (R2) and daemon self-update (R3) — this workflow builds and
-  publishes files, and nothing else
+- daemon self-update (R3) — the pipeline publishes a new daemon, but nothing
+  yet tells a running one that it exists, so a protocol bump still means
+  upgrading execution machines by hand
 - signing: `SHA256SUMS` gives integrity against a corrupted download, not
   against a compromised release page. A signature (minisign, sigstore) would be
   the next step if the artifacts ever leave the repository's own releases.
