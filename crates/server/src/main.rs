@@ -14,6 +14,16 @@ use loom_server::state::{AppConfig, AppState};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Before anything else: `--version` has to answer on a machine with nothing
+    // to configure. The server reads every setting from the environment
+    // (`deploy/env/loom-server.env`), so this one flag is its whole command
+    // line surface, and the release verification runs it before it trusts a
+    // downloaded binary.
+    if std::env::args().skip(1).any(|arg| arg == "--version") {
+        println!("{}", loom_server::version_line("loom-server"));
+        return Ok(());
+    }
+
     let bind = std::env::var("LOOM_BIND").unwrap_or_else(|_| "127.0.0.1:38886".into());
     let node_id = std::env::var("LOOM_NODE_ID").unwrap_or_else(|_| "loom-node".into());
     // Without LOOM_DATA_DIR the relay log is in-process and the server needs

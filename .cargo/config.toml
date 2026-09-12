@@ -1,0 +1,21 @@
+# Per-target build settings, so `cargo build --target <triple>` needs no flags.
+#
+# Cross-linking aarch64 needs an aarch64 linker, and the host's `ld` is not one:
+# on an x86_64 machine, `cargo build --target aarch64-unknown-linux-musl` fails
+# with
+#
+#   /usr/bin/ld: unrecognized option '--fix-cortex-a53-843419'
+#
+# because the linker it reached for was the host's, not the target's. Rust
+# ships the linker this needs: `rust-lld` resolves inside the toolchain's own
+# `lib/rustlib/<host>/bin/`, so the cross toolchain is the one
+# `rust-toolchain.toml` already pins — no `aarch64-linux-musl-gcc`, no
+# `cargo-zigbuild`, no `cross` container, and no second version to keep in step
+# with the host toolchain.
+#
+# The x86_64 target is deliberately absent: there the host `cc` is already a
+# linker for the target, which is the recipe measured end to end in
+# `docs/releasing.md`. Adding a `rust-lld` line for it would change a working
+# build for the sake of symmetry.
+[target.aarch64-unknown-linux-musl]
+linker = "rust-lld"

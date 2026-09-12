@@ -92,6 +92,8 @@ target triple:
 
 `<target>` is `x86_64-unknown-linux-musl` or `aarch64-unknown-linux-musl`. The
 binaries are statically linked, so one artifact runs on any glibc or musl host.
+How these artifacts are built and verified before they are attached, and how to
+check a download yourself, is [`../docs/releasing.md`](../docs/releasing.md).
 
 ```bash
 # the scripts and units (the archive carries deploy/)

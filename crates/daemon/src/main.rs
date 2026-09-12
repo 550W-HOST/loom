@@ -26,6 +26,16 @@ use loom_relay::EventId;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Ahead of `Options::parse`, which refuses a command line with no
+    // `--server-url`: `--version` must answer on a machine that has not been
+    // pointed at a server yet. That is also the check a release verification
+    // runs against a downloaded daemon, before it tries to connect it to
+    // anything.
+    if std::env::args().skip(1).any(|arg| arg == "--version") {
+        println!("{}", loom_server::version_line("loom-daemon"));
+        return Ok(());
+    }
+
     let options = match Options::parse(std::env::args().skip(1))? {
         Some(options) => options,
         None => {
@@ -264,6 +274,8 @@ FLAGS:
     --state <PATH>           File to persist the enrolled host id in. A sibling
                              `.cursor` file persists the replay cursor.
                              Env: LOOM_DAEMON_STATE
+    --version                Print the version, target triple, protocol
+                             version and commit, then exit.
     -h, --help               Print this help.
 
 The daemon only makes outbound connections; it needs no local server and is

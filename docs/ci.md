@@ -8,7 +8,9 @@ defects in the relay, both of the kind a test would have caught. Manual
 discipline does not scale to the next one.
 
 Nothing here builds a release, an image or a deployment. That is deliberate:
-CI validates, it does not ship.
+CI validates, it does not ship. Building and publishing is
+[`release.yml`](../.github/workflows/release.yml), which runs on a version tag —
+[`releasing.md`](releasing.md).
 
 Both triggers have been observed green: the `push` run
 [34666491758](https://github.com/550W-HOST/loom/actions/runs/34666491758) and the
