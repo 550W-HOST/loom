@@ -25,7 +25,7 @@
 //! | scope | what lives there |
 //! | --- | --- |
 //! | `global` | the project list; events with no narrower room (`project_created`) |
-//! | `project:{id}` | a project's list-level state: `project_updated`, `thread_created`, `environment_*` |
+//! | `project:{id}` | a project's list-level state: `project_updated`, `thread_created`, `thread_updated`, `environment_*` |
 //! | `thread:{id}` | one conversation: `thread_status_changed`, `thread_message_added` |
 //! | `host:{id}` | one machine's daemon room: `host_registered`, `host_status_changed` |
 //! | `user:{id}` | one user's clients. Reserved; no user entity exists yet |
@@ -70,9 +70,9 @@ pub use error::DomainError;
 pub use event::DomainEvent;
 pub use host::{select_primary_host, Host, HostKind, HostStatus};
 pub use id::{
-    Entity, EnvironmentId, EnvironmentTag, HostId, HostTag, Id, MessageId, MessageTag, ProjectId,
-    ProjectSourceId, ProjectSourceTag, ProjectTag, RunId, RunTag, ThreadId, ThreadTag, UserId,
-    UserTag,
+    is_turn_request_id, mint_turn_request_id, Entity, EnvironmentId, EnvironmentTag, HostId,
+    HostTag, Id, MessageId, MessageTag, ProjectId, ProjectSourceId, ProjectSourceTag, ProjectTag,
+    RunId, RunTag, ThreadId, ThreadTag, UserId, UserTag,
 };
 pub use project::{Project, ProjectKind, ProjectSource};
 pub use provider_event::{
@@ -86,4 +86,7 @@ pub use provider_event::{
 };
 pub use run::{RunEvent, RunOutcome};
 pub use scope::DomainScope;
-pub use thread::{MessageRole, NewThread, Thread, ThreadMessage, ThreadStatus, ThreadTrigger};
+pub use thread::{
+    MessageRole, NewThread, ReasoningLevel, Thread, ThreadMessage, ThreadStatus, ThreadTrigger,
+    ThreadUpdate, ThreadVisibility,
+};

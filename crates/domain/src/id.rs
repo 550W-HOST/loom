@@ -299,6 +299,43 @@ fn encode_base32(value: u128) -> String {
     String::from_utf8(out.to_vec()).expect("base32 alphabet is ASCII")
 }
 
+// --- client turn request ids -------------------------------------------------
+
+/// The alphabet bb's `turnRequestIdSchema` allows below the prefix: the digits
+/// `2`-`9` and the lowercase letters except `l` and `o`.
+const REQUEST_ALPHABET: &[u8; 32] = b"23456789abcdefghijkmnpqrstuvwxyz";
+/// How many characters follow `creq_` in a turn request id.
+const REQUEST_BODY_LEN: usize = 10;
+
+/// Mints a client turn request id, `creq_<10 chars>`.
+///
+/// The shape is bb's (`^creq_[23456789abcdefghijkmnpqrstuvwxyz]{10}$`): shorter
+/// than a ULID and over a narrower alphabet, so it is deliberately not an
+/// [`Id<T>`]. It is the low 50 bits of a fresh ULID, which is what makes two
+/// ids minted in the same millisecond differ — the timestamp lives in the high
+/// bits, and taking those would repeat the whole millisecond.
+pub fn mint_turn_request_id() -> String {
+    let source = mint_ulid();
+    let mut body = String::with_capacity(REQUEST_BODY_LEN);
+    for byte in source.bytes().skip(source.len() - REQUEST_BODY_LEN) {
+        let digit = decode_char(byte).expect("a minted body is base32") as usize;
+        body.push(REQUEST_ALPHABET[digit] as char);
+    }
+    format!("creq_{body}")
+}
+
+/// Whether `value` is shaped like a client turn request id.
+///
+/// The contract's own validator deliberately does not enforce `pattern`
+/// (`loom_contract::schema`), so a route that accepts a client-supplied id
+/// checks it here rather than trusting a check that does not run.
+pub fn is_turn_request_id(value: &str) -> bool {
+    let Some(body) = value.strip_prefix("creq_") else {
+        return false;
+    };
+    body.len() == REQUEST_BODY_LEN && body.bytes().all(|byte| REQUEST_ALPHABET.contains(&byte))
+}
+
 /// 80 bits of process entropy, seeded from the OS via `RandomState`.
 fn random_80() -> u128 {
     use std::collections::hash_map::RandomState;
@@ -414,5 +451,37 @@ mod tests {
 
         // A well-formed string for the wrong kind is rejected at deserialize.
         assert!(serde_json::from_str::<ThreadId>("\"host_01M27Y6Q0J8V4W2C7K5N3P1R9Z\"").is_err());
+    }
+
+    #[test]
+    fn turn_request_ids_match_bb_shape_and_do_not_repeat() {
+        let mut previous = mint_turn_request_id();
+        assert!(is_turn_request_id(&previous));
+        assert_eq!(previous.len(), "creq_".len() + REQUEST_BODY_LEN);
+        for _ in 0..1_000 {
+            let next = mint_turn_request_id();
+            assert!(is_turn_request_id(&next), "{next:?} is outside bb's shape");
+            assert_ne!(next, previous, "a minted id repeated");
+            previous = next;
+        }
+    }
+
+    #[test]
+    fn turn_request_ids_outside_the_pattern_are_rejected() {
+        for value in [
+            "",
+            "creq_",
+            "creq_23456789a",   // 9 characters
+            "creq_23456789abc", // 11 characters
+            "creq_23456789a0",  // `0` is not in the alphabet
+            "creq_23456789a1",  // `1` is not in the alphabet
+            "creq_23456789al",  // `l` is not in the alphabet
+            "creq_23456789ao",  // `o` is not in the alphabet
+            "creq_23456789AB",  // upper case is not the contract's spelling
+            "CREQ_23456789ab",  // wrong prefix
+            "req_23456789ab",   // wrong prefix
+        ] {
+            assert!(!is_turn_request_id(value), "{value:?} must be rejected");
+        }
     }
 }

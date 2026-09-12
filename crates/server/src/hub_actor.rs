@@ -75,6 +75,18 @@ pub enum HubCommand {
         /// The envelope to fan out.
         envelope: Box<Envelope>,
     },
+    /// How many local connections are subscribed to a scope.
+    ///
+    /// A producer that wants to report fan-out (`threads.open` answers how many
+    /// clients an open request reached) needs this, and the answer lives in the
+    /// hub because the hub owns the rooms. The producer still never touches a
+    /// connection: it asks for a count, not for a subscriber.
+    SubscriberCount {
+        /// The scope to count.
+        scope: Scope,
+        /// Receives the number of subscribers.
+        reply: oneshot::Sender<usize>,
+    },
 }
 
 /// A cheap, cloneable handle to the hub actor.
@@ -215,6 +227,16 @@ impl HubHandle {
     pub fn is_running(&self) -> bool {
         !self.sender.is_closed()
     }
+
+    /// How many local connections are subscribed to `scope`.
+    pub async fn subscriber_count(&self, scope: Scope) -> Result<usize, HubUnavailable> {
+        let (reply, answer) = oneshot::channel();
+        self.sender
+            .send(HubCommand::SubscriberCount { scope, reply })
+            .await
+            .map_err(|_| HubUnavailable)?;
+        answer.await.map_err(|_| HubUnavailable)
+    }
 }
 
 /// Result of a non-blocking [`HubHandle::try_deliver`].
@@ -237,6 +259,7 @@ impl std::fmt::Debug for HubCommand {
             HubCommand::Unsubscribe { .. } => "Unsubscribe",
             HubCommand::SendTo { .. } => "SendTo",
             HubCommand::Deliver { .. } => "Deliver",
+            HubCommand::SubscriberCount { .. } => "SubscriberCount",
         };
         f.write_str(name)
     }
@@ -274,6 +297,9 @@ async fn run_hub(mut hub: Hub, mut receiver: mpsc::Receiver<HubCommand>) {
             HubCommand::Deliver { envelope } => {
                 let report = hub.deliver(&envelope);
                 record_delivery(&report);
+            }
+            HubCommand::SubscriberCount { scope, reply } => {
+                let _ = reply.send(hub.subscriber_count(&scope));
             }
         }
     }

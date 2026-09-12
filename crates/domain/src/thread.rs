@@ -113,6 +113,138 @@ impl fmt::Display for ThreadStatus {
     }
 }
 
+/// Whether a thread is shown in the default sidebar (`threads.update`).
+///
+/// Deliberately independent of [`ThreadStatus::Archived`]: archiving is a
+/// lifecycle step a client reacts to, hiding is a display preference the
+/// client applies to the list it renders.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ThreadVisibility {
+    /// Shown in the default sidebar.
+    #[default]
+    Visible,
+    /// Kept out of the default sidebar.
+    Hidden,
+}
+
+impl ThreadVisibility {
+    /// The spelling bb's `threadVisibilitySchema` uses.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ThreadVisibility::Visible => "visible",
+            ThreadVisibility::Hidden => "hidden",
+        }
+    }
+}
+
+impl fmt::Display for ThreadVisibility {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// How much reasoning a provider is asked to spend on a turn.
+///
+/// The set is closed: bb's `reasoningLevelSchema` names exactly these eight,
+/// so an unknown level is rejected at the edge rather than stored and reported.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ReasoningLevel {
+    /// No explicit reasoning pass.
+    None,
+    /// A short reasoning pass.
+    Low,
+    /// The provider's default balance.
+    Medium,
+    /// More reasoning than the default.
+    High,
+    /// Extra-high reasoning.
+    Xhigh,
+    /// The provider's "ultracode" tier.
+    Ultracode,
+    /// The provider's maximum tier.
+    Max,
+    /// The provider's ultra tier.
+    Ultra,
+}
+
+impl ReasoningLevel {
+    /// Every level, in ascending order.
+    pub const ALL: [ReasoningLevel; 8] = [
+        ReasoningLevel::None,
+        ReasoningLevel::Low,
+        ReasoningLevel::Medium,
+        ReasoningLevel::High,
+        ReasoningLevel::Xhigh,
+        ReasoningLevel::Ultracode,
+        ReasoningLevel::Max,
+        ReasoningLevel::Ultra,
+    ];
+
+    /// The spelling the contract uses.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ReasoningLevel::None => "none",
+            ReasoningLevel::Low => "low",
+            ReasoningLevel::Medium => "medium",
+            ReasoningLevel::High => "high",
+            ReasoningLevel::Xhigh => "xhigh",
+            ReasoningLevel::Ultracode => "ultracode",
+            ReasoningLevel::Max => "max",
+            ReasoningLevel::Ultra => "ultra",
+        }
+    }
+}
+
+impl fmt::Display for ReasoningLevel {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// The fields `threads.update` may change on a stored thread.
+///
+/// Every optional field is a double option, because the contract distinguishes
+/// the two kinds of absence: an omitted field keeps its value, an explicit
+/// `null` clears it (`"title": "string | null"`). `visibility` has no null
+/// branch, so it is a plain option — omitted means unchanged.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadUpdate {
+    /// A new display title, or `Some(None)` to clear it.
+    #[serde(default, deserialize_with = "double_option")]
+    pub title: Option<Option<String>>,
+    /// The thread this one is delegated from, or `Some(None)` to detach it.
+    #[serde(default, deserialize_with = "double_option")]
+    pub parent_thread_id: Option<Option<ThreadId>>,
+    /// The sidebar section this thread belongs to, or `Some(None)` for the
+    /// default section.
+    #[serde(default, deserialize_with = "double_option")]
+    pub section_id: Option<Option<String>>,
+    /// The model this thread's next run starts with, or `Some(None)` to fall
+    /// back to the server's configured model.
+    #[serde(default, deserialize_with = "double_option")]
+    pub model: Option<Option<String>>,
+    /// The reasoning level this thread's next run asks for, or `Some(None)`
+    /// for the server's default.
+    #[serde(default, deserialize_with = "double_option")]
+    pub reasoning_level: Option<Option<ReasoningLevel>>,
+    /// Whether the thread is shown in the default sidebar.
+    #[serde(default)]
+    pub visibility: Option<ThreadVisibility>,
+}
+
+/// Deserializes `T` as `Some(T)` even when the JSON value is `null`, so a
+/// field of type `Option<Option<T>>` can tell "omitted" from "null".
+fn double_option<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer).map(Some)
+}
+
 /// Something that happens to a thread and may move its status.
 ///
 /// Triggers are the only input to [`ThreadStatus::transition`]. A trigger that
@@ -234,6 +366,39 @@ pub struct Thread {
     /// in-flight thread from one whose run was reaped.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_run_id: Option<RunId>,
+    /// The sidebar section this thread was filed under, when a client filed it.
+    ///
+    /// Opaque to the domain: sections are a client-side grouping that loom does
+    /// not model yet, so the id is stored and reported rather than resolved.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub section_id: Option<String>,
+    /// Whether the thread is shown in the default sidebar.
+    #[serde(default)]
+    pub visibility: ThreadVisibility,
+    /// The model a new run of this thread starts with, when a client chose one.
+    ///
+    /// Recorded and reported (`threads.defaultExecutionOptions`); the dispatch
+    /// path does not carry it yet, because [`loom_provider_protocol`]'s
+    /// `ProviderSpec` has no model field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// The reasoning level a new run of this thread asks for, when chosen.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_level: Option<ReasoningLevel>,
+    /// The thread's open tabs, exactly as the client sent them.
+    ///
+    /// View state, not domain state: the shape is the client's
+    /// (`tabsSchema`), and loom stores it opaquely so a tab kind it does not
+    /// know still round-trips through a reload. The contract middleware
+    /// validates the shape before it is ever stored.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tabs: Vec<serde_json::Value>,
+    /// The revision a client must name to replace `tabs` (compare-and-swap).
+    ///
+    /// Starts at `0` and increases by one per accepted write, so two clients
+    /// editing the same thread's tabs cannot silently overwrite each other.
+    #[serde(default)]
+    pub tabs_revision: u64,
 }
 
 impl Thread {
@@ -254,6 +419,12 @@ impl Thread {
             archived_at_ms: None,
             last_read_at_ms: None,
             active_run_id: None,
+            section_id: None,
+            visibility: ThreadVisibility::Visible,
+            model: None,
+            reasoning_level: None,
+            tabs: Vec::new(),
+            tabs_revision: 0,
         };
         let event = DomainEvent::ThreadCreated {
             thread: thread.clone(),
@@ -306,6 +477,111 @@ impl Thread {
     /// Records that a client has consumed the thread up to `now_ms`.
     pub fn mark_read(&mut self, now_ms: u64) {
         self.last_read_at_ms = Some(now_ms);
+    }
+
+    /// Applies a client's field changes, returning the event when anything
+    /// actually changed.
+    ///
+    /// `None` means the update was a no-op — every field it named already held
+    /// the requested value, or it named none at all. That is what keeps an idempotent
+    /// `threads.update` from bumping `updated_at_ms` and reordering the sidebar.
+    ///
+    /// The parent is only checked for self-reference here; whether it exists
+    /// and shares this thread's project is the registry's business, because a
+    /// thread cannot see its siblings.
+    pub fn apply_update(
+        &mut self,
+        update: &ThreadUpdate,
+        now_ms: u64,
+    ) -> Result<Option<DomainEvent>, DomainError> {
+        let mut changed = false;
+
+        if let Some(title) = &update.title {
+            let title = title
+                .as_ref()
+                .map(|title| title.trim().to_owned())
+                .filter(|title| !title.is_empty());
+            if title.is_none() && update.title.as_ref().is_some_and(Option::is_some) {
+                return Err(DomainError::InvalidField {
+                    field: "title",
+                    reason: "must not be blank".into(),
+                });
+            }
+            changed |= self.title != title;
+            self.title = title;
+        }
+
+        if let Some(parent) = &update.parent_thread_id {
+            if parent.as_ref() == Some(&self.id) {
+                return Err(DomainError::InvalidField {
+                    field: "parentThreadId",
+                    reason: "a thread cannot be its own parent".into(),
+                });
+            }
+            changed |= &self.parent_thread_id != parent;
+            self.parent_thread_id = parent.clone();
+        }
+
+        if let Some(section) = &update.section_id {
+            let section = section
+                .as_ref()
+                .map(|section| section.trim().to_owned())
+                .filter(|section| !section.is_empty());
+            changed |= self.section_id != section;
+            self.section_id = section;
+        }
+
+        if let Some(model) = &update.model {
+            let model = model
+                .as_ref()
+                .map(|model| model.trim().to_owned())
+                .filter(|model| !model.is_empty());
+            changed |= self.model != model;
+            self.model = model;
+        }
+
+        if let Some(level) = &update.reasoning_level {
+            changed |= self.reasoning_level != *level;
+            self.reasoning_level = *level;
+        }
+
+        if let Some(visibility) = update.visibility {
+            changed |= self.visibility != visibility;
+            self.visibility = visibility;
+        }
+
+        if !changed {
+            return Ok(None);
+        }
+        self.updated_at_ms = now_ms;
+        Ok(Some(DomainEvent::ThreadUpdated {
+            thread: self.clone(),
+        }))
+    }
+
+    /// Replaces the thread's tabs under a compare-and-swap revision.
+    ///
+    /// `expected_revision` must equal [`Thread::tabs_revision`]; a mismatch is
+    /// [`DomainError::TabsConflict`] rather than a lost update, which is the
+    /// only reason the revision exists.
+    pub fn set_tabs(
+        &mut self,
+        tabs: Vec<serde_json::Value>,
+        expected_revision: u64,
+        now_ms: u64,
+    ) -> Result<DomainEvent, DomainError> {
+        if expected_revision != self.tabs_revision {
+            return Err(DomainError::TabsConflict {
+                expected: expected_revision,
+                current: self.tabs_revision,
+            });
+        }
+        self.tabs = tabs;
+        self.tabs_revision = self.tabs_revision.saturating_add(1);
+        self.updated_at_ms = now_ms;
+        Ok(DomainEvent::ThreadUpdated {
+            thread: self.clone(),
+        })
     }
 
     /// Appends a message and returns the events the append produces.
@@ -365,6 +641,7 @@ impl Thread {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     fn thread() -> Thread {
         let (thread, _) = Thread::create(
@@ -543,5 +820,126 @@ mod tests {
             })
         ));
         assert_eq!(thread.status, ThreadStatus::Idle);
+    }
+
+    #[test]
+    fn an_update_that_changes_nothing_produces_no_event() {
+        let mut thread = thread();
+        let before = thread.clone();
+        assert_eq!(
+            thread
+                .apply_update(&ThreadUpdate::default(), 2_000)
+                .unwrap(),
+            None
+        );
+        assert_eq!(thread, before, "an empty update must not touch the thread");
+
+        // Naming the value a field already holds is the same no-op.
+        let same = ThreadUpdate {
+            title: Some(Some("first".into())),
+            visibility: Some(ThreadVisibility::Visible),
+            ..ThreadUpdate::default()
+        };
+        assert_eq!(thread.apply_update(&same, 2_000).unwrap(), None);
+        assert_eq!(thread.updated_at_ms, before.updated_at_ms);
+    }
+
+    #[test]
+    fn an_update_reports_the_thread_it_produced() {
+        let mut thread = thread();
+        let update: ThreadUpdate = serde_json::from_value(json!({
+            "title": "  renamed  ",
+            "sectionId": "sec-1",
+            "visibility": "hidden",
+            "model": "pi",
+            "reasoningLevel": "xhigh",
+        }))
+        .unwrap();
+        let event = thread.apply_update(&update, 2_000).unwrap().unwrap();
+        let DomainEvent::ThreadUpdated { thread: updated } = &event else {
+            panic!("expected a thread_updated event, got {event:?}");
+        };
+        assert_eq!(updated.title.as_deref(), Some("renamed"));
+        assert_eq!(updated.section_id.as_deref(), Some("sec-1"));
+        assert_eq!(updated.visibility, ThreadVisibility::Hidden);
+        assert_eq!(updated.model.as_deref(), Some("pi"));
+        assert_eq!(updated.reasoning_level, Some(ReasoningLevel::Xhigh));
+        assert_eq!(updated.updated_at_ms, 2_000);
+        assert_eq!(updated.tabs_revision, 0, "an update must not move the tabs");
+    }
+
+    #[test]
+    fn an_omitted_field_is_kept_and_an_explicit_null_clears_it() {
+        let mut thread = thread();
+        thread.section_id = Some("sec-1".into());
+        thread.model = Some("pi".into());
+
+        // Omitted: `sectionId` keeps its value while `model` is cleared.
+        let update: ThreadUpdate =
+            serde_json::from_value(json!({ "model": null, "title": "kept" })).unwrap();
+        assert_eq!(update.section_id, None);
+        assert_eq!(update.model, Some(None));
+        thread.apply_update(&update, 2_000).unwrap();
+        assert_eq!(thread.section_id.as_deref(), Some("sec-1"));
+        assert_eq!(thread.model, None);
+        assert_eq!(thread.title.as_deref(), Some("kept"));
+
+        // Explicit null: `sectionId` is cleared.
+        let update: ThreadUpdate = serde_json::from_value(json!({ "sectionId": null })).unwrap();
+        thread.apply_update(&update, 2_001).unwrap();
+        assert_eq!(thread.section_id, None);
+    }
+
+    #[test]
+    fn a_blank_title_is_rejected_rather_than_silently_cleared() {
+        let mut thread = thread();
+        let update = ThreadUpdate {
+            title: Some(Some("   ".into())),
+            ..ThreadUpdate::default()
+        };
+        assert!(matches!(
+            thread.apply_update(&update, 2_000),
+            Err(DomainError::InvalidField { field: "title", .. })
+        ));
+        assert_eq!(thread.title.as_deref(), Some("first"));
+    }
+
+    #[test]
+    fn a_thread_cannot_be_its_own_parent() {
+        let mut thread = thread();
+        let update = ThreadUpdate {
+            parent_thread_id: Some(Some(thread.id.clone())),
+            ..ThreadUpdate::default()
+        };
+        assert!(matches!(
+            thread.apply_update(&update, 2_000),
+            Err(DomainError::InvalidField {
+                field: "parentThreadId",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn tabs_are_written_under_a_compare_and_swap_revision() {
+        let mut thread = thread();
+        let tabs = vec![json!({ "id": "tab-1", "kind": "thread-info" })];
+        let event = thread.set_tabs(tabs.clone(), 0, 2_000).unwrap();
+        let DomainEvent::ThreadUpdated { thread: updated } = &event else {
+            panic!("expected a thread_updated event, got {event:?}");
+        };
+        assert_eq!(updated.tabs_revision, 1);
+        assert_eq!(updated.tabs, tabs);
+
+        // A stale revision loses the write and changes nothing.
+        let before = thread.clone();
+        assert_eq!(
+            thread.set_tabs(vec![], 0, 2_001),
+            Err(DomainError::TabsConflict {
+                expected: 0,
+                current: 1
+            })
+        );
+        assert_eq!(thread, before);
     }
 }

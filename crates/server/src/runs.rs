@@ -108,6 +108,23 @@ impl RunRegistry {
         runs
     }
 
+    /// The in-flight run advancing one thread, when there is one.
+    ///
+    /// A thread has at most one run in flight — dispatch is only reached from a
+    /// status transition — so this is a single lookup, not a list. The lowest
+    /// run id wins if that invariant is ever broken, which keeps the answer
+    /// deterministic instead of arbitrary.
+    pub fn for_thread(&self, thread_id: &ThreadId) -> Option<RunRecord> {
+        let mut runs: Vec<RunRecord> = self
+            .lock()
+            .values()
+            .filter(|run| &run.thread_id == thread_id)
+            .cloned()
+            .collect();
+        runs.sort_by(|left, right| left.run_id.cmp(&right.run_id));
+        runs.into_iter().next()
+    }
+
     /// In-flight runs whose deadline has passed at `now_ms`.
     pub fn expired(&self, now_ms: u64) -> Vec<RunRecord> {
         let mut runs: Vec<RunRecord> = self
@@ -186,6 +203,15 @@ pub struct ReconcileSummary {
     pub stale_runs: usize,
     /// Runs failed because their deadline passed.
     pub timed_out_runs: usize,
+}
+
+/// What a `threads.stop` request found.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StopOutcome {
+    /// A run was in flight and has been terminated.
+    Stopped,
+    /// The thread had no run in flight; there was nothing to terminate.
+    NoRun,
 }
 
 impl AppState {
@@ -293,6 +319,35 @@ impl AppState {
                 }
             }
         }
+    }
+
+    /// Terminates the run advancing a thread, if there is one.
+    ///
+    /// A stop goes through the same terminal path as every other outcome —
+    /// [`AppState::finish_run`] with [`RunOutcome::Cancelled`]: exactly one
+    /// `turn/completed` event with status `interrupted` reaches the thread
+    /// scope, the run leaves the table, and the thread returns to `idle`.
+    /// Inventing a second thread state machine for cancellation is the thing
+    /// this deliberately does not do.
+    ///
+    /// The daemon is **not** told. The provider protocol has no cancel frame,
+    /// so the provider process runs to its own end and its later reports are
+    /// dropped as unknown runs — the same handling a superseded run already
+    /// gets. Teaching the execution plane to abort is a provider-protocol
+    /// change with its own issue; until then a stop is authoritative on the
+    /// control plane and best-effort on the machine.
+    pub fn stop_thread(&self, thread_id: &ThreadId) -> StopOutcome {
+        let now = now_ms();
+        let Some(record) = self.runs.for_thread(thread_id) else {
+            return StopOutcome::NoRun;
+        };
+        self.finish_run(
+            &record,
+            RunOutcome::Cancelled,
+            Some("stopped by a client".to_owned()),
+            now,
+        );
+        StopOutcome::Stopped
     }
 
     /// Resolves the environment a thread must run in.

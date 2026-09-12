@@ -18,9 +18,9 @@
 
 - 契约快照：`fa1f44ebe9e5676004b669e48c99b3c7606466b6`，共 **167 条**路由。
 - 已决策不实现：**18 条**（desktopBrowsers 11 条，skill/CLI skill 7 条）。
-- 当前源码包含 **37 个 `.route` 声明、42 个 HTTP 方法入口**；其中只有 25 个匹配 bb 契约，另有 17 个契约外入口。契约当前没有 plugin/marketplace 路由条目。
-- 有效总数：**149 条**；当前已实现 **25 条**，待实现 **124 条**。
-- 当前有效覆盖率：**25/149（16.8%）**。
+- 当前源码包含 **49 个 `.route` 声明、56 个 HTTP 方法入口**；其中只有 39 个匹配 bb 契约，另有 17 个契约外入口。契约当前没有 plugin/marketplace 路由条目。
+- 有效总数：**149 条**；当前已实现 **39 条**，待实现 **110 条**。
+- 当前有效覆盖率：**39/149（26.2%）**。
 - B0 是现有实现基线；B1-B10 是建议的后续交付批次，每批 14、14、14、14、10、14、14、14、17、13 条，均在 10-20 条范围内。
 
 ## threads.send 判定
@@ -61,7 +61,7 @@ bb UI 用契约格式发起写请求时会 422，而 CI 与一致性测试全绿
 
 | 批次 | 主题 | 路由数 | 依赖 | UI 交付边界 |
 | --- | --- | ---: | --- | --- |
-| B0 | 当前基础覆盖（基线） | 25 | - | 项目/线程基础读写、环境读取和主机列表已存在 |
+| B0 | 当前基础覆盖（基线） | 39 | - | 项目/线程基础读写、环境读取和主机列表已存在 |
 | B1 | 启动、导航与首个 threads 流程 | 14 | B0 | 启动探活、侧栏初始化、项目/线程列表后的线程打开、时间线读取与发送 |
 | B2 | 线程控制与辅助视图 | 14 | B1 | 活动线程的默认执行选项、运行状态、搜索、历史、编辑、停止/重试和压缩 |
 | B3 | 交互、计划与队列发送 | 14 | B1 + B2 | 线程中的交互请求、计划控制和 queued message 的查看/创建/发送 |
@@ -163,7 +163,7 @@ bb UI 用契约格式发起写请求时会 422，而 CI 与一致性测试全绿
 | `projects.copyAttachments` | `POST` | `/api/v1/projects/:id/attachments/copy` | 待实现 | - | B7 | - |
 | `projects.create` | `POST` | `/api/v1/projects` | 已实现 | `POST /api/v1/projects` | B0 | 契约路径与方法已匹配 |
 | `projects.createSource` | `POST` | `/api/v1/projects/:id/sources` | 已实现 | `POST /api/v1/projects/{id}/sources` | B0 | 契约路径与方法已匹配 |
-| `projects.defaultExecutionOptions` | `GET` | `/api/v1/projects/:id/default-execution-options` | 待实现 | - | B2 | - |
+| `projects.defaultExecutionOptions` | `GET` | `/api/v1/projects/:id/default-execution-options` | 已实现 | `GET /api/v1/projects/{id}/default-execution-options` | B0 | 契约路径与方法已匹配 |
 | `projects.delete` | `DELETE` | `/api/v1/projects/:id` | 待实现 | - | B7 | - |
 | `projects.deleteSkill` | `DELETE` | `/api/v1/projects/:id/skills` | 不适用（已决策） | - | - | 已决策：skill/CLI skill 不实现 |
 | `projects.deleteSource` | `DELETE` | `/api/v1/projects/:id/sources/:sourceId` | 已实现 | `DELETE /api/v1/projects/{id}/sources/{source_id}` | B0 | 契约路径与方法已匹配 |
@@ -218,18 +218,18 @@ bb UI 用契约格式发起写请求时会 422，而 CI 与一致性测试全绿
 | `threads.archiveAll` | `POST` | `/api/v1/threads/:id/archive-all` | 待实现 | - | B4 | - |
 | `threads.cancelInteraction` | `POST` | `/api/v1/threads/:id/interactions/:interactionId/cancel` | 待实现 | - | B3 | - |
 | `threads.cancelPlan` | `POST` | `/api/v1/threads/:id/plan/cancel` | 待实现 | - | B3 | - |
-| `threads.childSummary` | `GET` | `/api/v1/threads/:id/child-summary` | 待实现 | - | B2 | - |
+| `threads.childSummary` | `GET` | `/api/v1/threads/:id/child-summary` | 已实现 | `GET /api/v1/threads/{id}/child-summary` | B0 | 契约路径与方法已匹配 |
 | `threads.clearContext` | `POST` | `/api/v1/threads/:id/context/clear` | 待实现 | - | B3 | - |
 | `threads.clearGoal` | `POST` | `/api/v1/threads/:id/goal/clear` | 待实现 | - | B3 | - |
-| `threads.compact` | `POST` | `/api/v1/threads/:id/compact` | 待实现 | - | B2 | - |
-| `threads.conversationOutline` | `GET` | `/api/v1/threads/:id/conversation-outline` | 待实现 | - | B2 | - |
+| `threads.compact` | `POST` | `/api/v1/threads/:id/compact` | 已实现 | `POST /api/v1/threads/{id}/compact` | B0 | 契约路径与方法已匹配 |
+| `threads.conversationOutline` | `GET` | `/api/v1/threads/:id/conversation-outline` | 已实现 | `GET /api/v1/threads/{id}/conversation-outline` | B0 | 契约路径与方法已匹配 |
 | `threads.count` | `GET` | `/api/v1/threads/count` | 待实现 | - | B5 | - |
 | `threads.create` | `POST` | `/api/v1/threads` | 已实现 | `POST /api/v1/threads` | B0 | 契约路径与方法已匹配 |
 | `threads.createQueuedMessage` | `POST` | `/api/v1/threads/:id/queued-messages` | 待实现 | - | B3 | - |
-| `threads.defaultExecutionOptions` | `GET` | `/api/v1/threads/:id/default-execution-options` | 待实现 | - | B2 | - |
+| `threads.defaultExecutionOptions` | `GET` | `/api/v1/threads/:id/default-execution-options` | 已实现 | `GET /api/v1/threads/{id}/default-execution-options` | B0 | 契约路径与方法已匹配 |
 | `threads.delete` | `DELETE` | `/api/v1/threads/:id` | 待实现 | - | B4 | - |
 | `threads.deleteQueuedMessage` | `DELETE` | `/api/v1/threads/:id/queued-messages/:queuedMessageId` | 待实现 | - | B4 | - |
-| `threads.editMessage` | `POST` | `/api/v1/threads/:id/edit-message` | 待实现 | - | B2 | - |
+| `threads.editMessage` | `POST` | `/api/v1/threads/:id/edit-message` | 已实现 | `POST /api/v1/threads/{id}/edit-message` | B0 | 契约路径与方法已匹配 |
 | `threads.events` | `GET` | `/api/v1/threads/:id/events` | 已实现 | `GET /api/v1/threads/{id}/events` | B0 | 契约路径与方法已匹配 |
 | `threads.eventWait` | `GET` | `/api/v1/threads/:id/events/wait` | 待实现 | - | B3 | - |
 | `threads.fork` | `POST` | `/api/v1/threads/fork` | 待实现 | - | B4 | - |
@@ -238,12 +238,12 @@ bb UI 用契约格式发起写请求时会 422，而 CI 与一致性测试全绿
 | `threads.interaction` | `GET` | `/api/v1/threads/:id/interactions/:interactionId` | 待实现 | - | B3 | - |
 | `threads.interactions` | `GET` | `/api/v1/threads/:id/interactions` | 待实现 | - | B3 | - |
 | `threads.list` | `GET` | `/api/v1/threads` | 已实现 | `GET /api/v1/threads` | B0 | 契约路径与方法已匹配 |
-| `threads.open` | `POST` | `/api/v1/threads/:id/open` | 待实现 | - | B2 | - |
+| `threads.open` | `POST` | `/api/v1/threads/:id/open` | 已实现 | `POST /api/v1/threads/{id}/open` | B0 | 契约路径与方法已匹配 |
 | `threads.output` | `GET` | `/api/v1/threads/:id/output` | 已实现 | `GET /api/v1/threads/{id}/output` | B0 | 契约路径与方法已匹配 |
 | `threads.paneAction` | `POST` | `/api/v1/threads/:id/pane-action` | 待实现 | - | B5 | - |
 | `threads.pin` | `POST` | `/api/v1/threads/:id/pin` | 待实现 | - | B4 | - |
 | `threads.pinOrder` | `PATCH` | `/api/v1/threads/:id/pin-order` | 待实现 | - | B4 | - |
-| `threads.promptHistory` | `GET` | `/api/v1/threads/:id/prompt-history` | 待实现 | - | B2 | - |
+| `threads.promptHistory` | `GET` | `/api/v1/threads/:id/prompt-history` | 已实现 | `GET /api/v1/threads/{id}/prompt-history` | B0 | 契约路径与方法已匹配 |
 | `threads.queuedMessages` | `GET` | `/api/v1/threads/:id/queued-messages` | 待实现 | - | B3 | - |
 | `threads.rawFile` | `GET` | `/api/v1/threads/:id/files/raw` | 待实现 | - | B5 | - |
 | `threads.read` | `POST` | `/api/v1/threads/:id/read` | 已实现 | `POST /api/v1/threads/{id}/read` | B0 | 契约路径与方法已匹配 |
@@ -251,13 +251,13 @@ bb UI 用契约格式发起写请求时会 422，而 CI 与一致性测试全绿
 | `threads.resolveInteraction` | `POST` | `/api/v1/threads/:id/interactions/:interactionId/resolve` | 待实现 | - | B3 | - |
 | `threads.resolveMentions` | `POST` | `/api/v1/threads/resolve-mentions` | 待实现 | - | B4 | - |
 | `threads.respondToInteraction` | `POST` | `/api/v1/threads/:id/interactions/:interactionId/respond` | 待实现 | - | B3 | - |
-| `threads.retry` | `POST` | `/api/v1/threads/:id/retry` | 待实现 | - | B2 | - |
-| `threads.running` | `GET` | `/api/v1/threads/running` | 待实现 | - | B2 | - |
-| `threads.search` | `GET` | `/api/v1/threads/search` | 待实现 | - | B2 | - |
+| `threads.retry` | `POST` | `/api/v1/threads/:id/retry` | 已实现 | `POST /api/v1/threads/{id}/retry` | B0 | 契约路径与方法已匹配 |
+| `threads.running` | `GET` | `/api/v1/threads/running` | 已实现 | `GET /api/v1/threads/running` | B0 | 契约路径与方法已匹配 |
+| `threads.search` | `GET` | `/api/v1/threads/search` | 已实现 | `GET /api/v1/threads/search` | B0 | 契约路径与方法已匹配 |
 | `threads.send` | `POST` | `/api/v1/threads/:id/send` | 已实现 | `POST /api/v1/threads/{id}/send` | B0 | 契约路径与方法已匹配 |
 | `threads.sendQueuedMessage` | `POST` | `/api/v1/threads/:id/queued-messages/:queuedMessageId/send` | 待实现 | - | B3 | - |
 | `threads.setQueuedMessageGroupBoundary` | `PATCH` | `/api/v1/threads/:id/queued-messages/group-boundary` | 待实现 | - | B4 | - |
-| `threads.stop` | `POST` | `/api/v1/threads/:id/stop` | 待实现 | - | B2 | - |
+| `threads.stop` | `POST` | `/api/v1/threads/:id/stop` | 已实现 | `POST /api/v1/threads/{id}/stop` | B0 | 契约路径与方法已匹配 |
 | `threads.storageContent` | `GET` | `/api/v1/threads/:id/thread-storage/content` | 待实现 | - | B5 | - |
 | `threads.storageFile` | `GET` | `/api/v1/threads/:id/thread-storage/files/:filePath{.+}` | 待实现 | - | B5 | - |
 | `threads.storageFiles` | `GET` | `/api/v1/threads/:id/thread-storage/files` | 待实现 | - | B5 | - |
@@ -269,9 +269,9 @@ bb UI 用契约格式发起写请求时会 422，而 CI 与一致性测试全绿
 | `threads.unarchive` | `POST` | `/api/v1/threads/:id/unarchive` | 待实现 | - | B4 | - |
 | `threads.unpin` | `POST` | `/api/v1/threads/:id/unpin` | 待实现 | - | B4 | - |
 | `threads.unread` | `POST` | `/api/v1/threads/:id/unread` | 待实现 | - | B4 | - |
-| `threads.update` | `PATCH` | `/api/v1/threads/:id` | 待实现 | - | B2 | - |
+| `threads.update` | `PATCH` | `/api/v1/threads/:id` | 已实现 | `PATCH /api/v1/threads/{id}` | B0 | 契约路径与方法已匹配 |
 | `threads.updateQueuedMessage` | `PATCH` | `/api/v1/threads/:id/queued-messages/:queuedMessageId` | 待实现 | - | B4 | - |
-| `threads.updateTabs` | `PUT` | `/api/v1/threads/:id/tabs` | 待实现 | - | B2 | - |
+| `threads.updateTabs` | `PUT` | `/api/v1/threads/:id/tabs` | 已实现 | `PUT /api/v1/threads/{id}/tabs` | B0 | 契约路径与方法已匹配 |
 | `threads.worktreeFile` | `GET` | `/api/v1/threads/:id/worktree/files/:filePath{.+}` | 待实现 | - | B5 | - |
 | `threadSections.create` | `POST` | `/api/v1/thread-sections` | 待实现 | - | B7 | - |
 | `threadSections.delete` | `DELETE` | `/api/v1/thread-sections` | 待实现 | - | B7 | - |
