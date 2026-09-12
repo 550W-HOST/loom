@@ -1,0 +1,335 @@
+name: Release
+
+# Validation and publication are deliberately split across two workflows. CI
+# (ci.yml) runs on every push and pull request and ships nothing; this one runs
+# on a `v*` tag and publishes, and the only thing it re-checks is what a release
+# has to prove for itself — the committed UI bundle is current, the artifacts
+# run, and the archive is what it claims to be.
+#
+# The manual trigger is the rehearsal: it runs the identical pipeline and stops
+# before the release job, so a pre-release can be built and verified from a
+# branch, or from a tag that is not ready to publish.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+# Least privilege at the top, `contents: write` granted only to the job that
+# creates the release.
+permissions:
+  contents: read
+
+# A newer run does not cancel an older one: a half-published release page is
+# worse than a queued run. Each tag gets its own group anyway.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # `include_bytes!` in crates/server/src/ui.rs embeds `ui/app.js`, so every
+  # Rust job below compiles whichever bundle is committed. A bundle that drifted
+  # from `ui/src` would therefore be compiled into a release and be wrong only
+  # in a browser, which is precisely the failure a release must not have. This
+  # job is ci.yml's `ui` job: rebuild the bundle, then require the tree to be
+  # unchanged. docs/ci.md has the full reasoning.
+  ui:
+    name: UI bundle is current
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: pnpm install --frozen-lockfile
+        run: pnpm install --frozen-lockfile
+
+      - name: pnpm run typecheck
+        run: pnpm run typecheck
+
+      - name: pnpm run test
+        run: pnpm run test
+
+      - name: Rebuild the committed bundle
+        run: pnpm --filter @loom/ui run build
+
+      - name: The committed bundle must match
+        run: |
+          set -euo pipefail
+          git diff --exit-code -- ui/
+          test -z "$(git status --porcelain -- ui/)"
+
+  build:
+    name: ${{ matrix.target }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    needs: ui
+    strategy:
+      # Both targets are wanted even if one fails: the failing log is the point
+      # of the run, and a partial release page is never published because the
+      # jobs after this one need all of them.
+      fail-fast: false
+      matrix:
+        target:
+          - x86_64-unknown-linux-musl
+          - aarch64-unknown-linux-musl
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install the toolchain pinned by rust-toolchain.toml
+        run: |
+          rustup toolchain install
+          rustup show active-toolchain
+          rustc --version
+          cargo --version
+
+      # No linker is installed for the cross target beyond this line: the
+      # aarch64 build links with the `rust-lld` the toolchain already ships, and
+      # `.cargo/config.toml` is where that is wired up. Neither `cargo-zigbuild`
+      # nor a `cross` container is involved.
+      - name: rustup target add ${{ matrix.target }}
+        run: rustup target add "${{ matrix.target }}"
+
+      - name: Cache cargo registry and target
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          # Per target: a `target` directory holds one triple's artifacts, and a
+          # shared key would restore the wrong one.
+          prefix-key: release-${{ matrix.target }}
+
+      - name: cargo build --release --locked --target ${{ matrix.target }}
+        run: cargo build --release --locked --target "${{ matrix.target }}"
+
+      # The x86_64 artifact is started, `/health` answered, the embedded UI
+      # fetched, a project created and a daemon enrolled against it. `GITHUB_SHA`
+      # is the commit the build stamped, so a mismatch fails here.
+      - name: Verify the x86_64 binaries end to end
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: |
+          scripts/verify-release-binaries.sh "target/${{ matrix.target }}/release" \
+            --expect-commit "$GITHUB_SHA" --expect-target "${{ matrix.target }}"
+
+      # The same script without execution: an aarch64 binary needs an arm64
+      # machine or a qemu binfmt registration this runner does not have, and
+      # adding an emulator would put a second, slower implementation into the
+      # release path. Everything a foreign machine can still check is checked —
+      # the ELF machine, the absence of a loader and of shared libraries, and
+      # the commit the build stamped into the file.
+      - name: Verify the aarch64 binaries are self-contained aarch64 artifacts
+        if: matrix.target == 'aarch64-unknown-linux-musl'
+        run: |
+          scripts/verify-release-binaries.sh "target/${{ matrix.target }}/release" \
+            --elf-only --expect-commit "$GITHUB_SHA" --expect-target "${{ matrix.target }}"
+
+      - name: Package this target
+        run: scripts/package-release.sh "${{ matrix.target }}"
+
+      - name: Upload this target's artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dist-${{ matrix.target }}
+          path: dist/
+          if-no-files-found: error
+
+  # One release page, so one job that holds every target's files: `SHA256SUMS`
+  # has to cover both, and the notes have to describe the set rather than one
+  # member of it.
+  assemble:
+    name: SHA256SUMS and release notes
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    needs: build
+    steps:
+      - name: Download every target's artifacts
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          pattern: dist-*
+          merge-multiple: true
+          path: dist
+
+      # The checksum file lists relative names, so `sha256sum -c SHA256SUMS`
+      # works in whatever directory a downloader unpacked it into.
+      - name: SHA256SUMS
+        run: |
+          set -euo pipefail
+          cd dist
+          # `--` first: a file name is not an option, and the glob is left to
+          # expand rather than listed by hand so an asset added above is
+          # covered without touching this line.
+          sha256sum -- loom-server-* loom-daemon-* *.tar.gz >SHA256SUMS
+          sha256sum -c SHA256SUMS
+
+      # The x86_64 binary is the only artifact this runner can execute, and it
+      # is where the version, the protocol version and the commit in the notes
+      # come from — the published artifact's own claim rather than a second
+      # reading of the source.
+      - name: Read the version the artifacts report
+        id: release
+        run: |
+          set -euo pipefail
+          # The executable bit does not survive an artifact round trip, hence
+          # the chmod before asking the binary anything.
+          chmod +x dist/loom-server-x86_64-unknown-linux-musl
+          server_line="$(dist/loom-server-x86_64-unknown-linux-musl --version)"
+          echo "$server_line"
+          version="$(awk '{print $2}' <<<"$server_line")"
+          protocol="$(sed -nE 's/.*protocol ([0-9]+).*/\1/p' <<<"$server_line")"
+          commit="$(sed -nE 's/.*commit ([0-9a-f]+).*/\1/p' <<<"$server_line")"
+          [[ -n "$version" && -n "$protocol" && -n "$commit" ]]
+
+          # A tag that disagrees with the version inside the binary is a release
+          # page whose name lies about its contents. `-rc` and friends are
+          # allowed to hang off the version, but nothing else is.
+          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+            case "$GITHUB_REF_NAME" in
+              "v$version" | "v$version"-*) ;;
+              *)
+                echo "tag $GITHUB_REF_NAME does not match the built version v$version" >&2
+                exit 1
+                ;;
+            esac
+          fi
+
+          {
+            echo "version=$version"
+            echo "protocol=$protocol"
+            echo "commit=$commit"
+          } >>"$GITHUB_OUTPUT"
+
+      - name: Release notes
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+          PROTOCOL: ${{ steps.release.outputs.protocol }}
+          COMMIT: ${{ steps.release.outputs.commit }}
+        run: |
+          set -euo pipefail
+          # A quoted heredoc, so nothing in the notes is expanded while it is
+          # written and the placeholders are the only thing substituted.
+          cat >dist/RELEASE_NOTES.md <<'NOTES'
+          # loom __VERSION__
+
+          Static musl binaries for Linux, x86_64 and aarch64. Both are
+          self-contained: no glibc, no dynamic loader to find, no shared library
+          to install.
+
+          **Protocol version: __PROTOCOL__.** A server and a daemon connect only
+          when their protocol versions are equal, so upgrade them together.
+          Both binaries are version __VERSION__, and the commit they were built
+          from is `__COMMIT__`.
+
+          ## Downloads
+
+          | Asset | What it is |
+          | --- | --- |
+          | `loom-__VERSION__-x86_64-unknown-linux-musl.tar.gz` | server and daemon for x86_64, with `deploy/` |
+          | `loom-__VERSION__-aarch64-unknown-linux-musl.tar.gz` | server and daemon for aarch64, with `deploy/` |
+          | `loom-server-<target>` | the control plane alone |
+          | `loom-daemon-<target>` | the execution daemon alone |
+          | `SHA256SUMS` | checksums for every file above |
+
+          ## Install
+
+          ```
+          tar xzf loom-__VERSION__-<target>.tar.gz
+          cd loom-__VERSION__-<target>
+          sudo LOOM_BIN_SOURCE=. ./deploy/install.sh server
+          sudo LOOM_BIN_SOURCE=. ./deploy/install.sh daemon <server-key> <server-url>
+          ```
+
+          `LOOM_BIN_SOURCE=.` is the extracted directory itself: the archive
+          holds the two binaries unnamed at its top level for exactly that.
+          `deploy/README.md` has the rest.
+
+          ## Verify before you install
+
+          ```
+          sha256sum -c SHA256SUMS
+          ./loom-server --version
+          ```
+
+          The second line prints the version, the target triple, the protocol
+          version and the commit the file was built from.
+
+          ## What was verified before publishing
+
+          * the x86_64 pair was started: `/health` answered, the embedded UI was
+            served from the API's origin, a project was created and read back,
+            and a daemon enrolled against it (`scripts/verify-release-binaries.sh`)
+          * the committed `ui/` bundle was rebuilt and matched the tree that was
+            compiled in, so neither artifact carries a stale UI
+          * both pairs were checked as self-contained artifacts: 64-bit ELF of
+            the target machine, no interpreter, no `NEEDED` shared library, and
+            the commit above stamped into the file
+          NOTES
+          sed -i \
+            -e "s/__VERSION__/$VERSION/g" \
+            -e "s/__PROTOCOL__/$PROTOCOL/g" \
+            -e "s/__COMMIT__/$COMMIT/g" \
+            dist/RELEASE_NOTES.md
+          cat dist/RELEASE_NOTES.md
+
+      - name: Upload the release page contents
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-dist
+          path: dist/
+          if-no-files-found: error
+
+  # The rehearsal path stops here: everything above ran, nothing was published.
+  release:
+    name: GitHub Release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    needs: assemble
+    if: startsWith(github.ref, 'refs/tags/')
+    permissions:
+      contents: write
+    steps:
+      - name: Download the release page contents
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: release-dist
+          path: dist
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          cd dist
+          # The round trip through the artifact store is checked, not assumed:
+          # these are the bytes that are about to be published.
+          sha256sum -c SHA256SUMS
+
+          assets=(loom-server-* loom-daemon-* *.tar.gz SHA256SUMS)
+          # A tag with a suffix is a pre-release by its own naming, which is how
+          # `v0.2.0-rc.1` is published without becoming "the latest release".
+          case "$GITHUB_REF_NAME" in
+            *-*) prerelease=true ;;
+            *) prerelease=false ;;
+          esac
+
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            # Re-running a failed release refreshes it instead of failing on
+            # assets that are already there.
+            gh release edit "$GITHUB_REF_NAME" --notes-file RELEASE_NOTES.md
+            gh release upload "$GITHUB_REF_NAME" "${assets[@]}" --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" "${assets[@]}" \
+              --title "$GITHUB_REF_NAME" \
+              --notes-file RELEASE_NOTES.md \
+              --prerelease="$prerelease"
+          fi
+          gh release view "$GITHUB_REF_NAME" --json url,assets --jq '.url, (.assets[].name)'

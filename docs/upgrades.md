@@ -38,6 +38,19 @@ so a daemon built against a different protocol never enrolls and never receives
 a dispatch it would misread. The reference UI bundle does not yet enforce it,
 so treat the bundle as required to match the server's release as well.
 
+Both binaries answer the same question about the file itself, before either one
+has been started — which is what a download has to be checked with
+([`releasing.md`](releasing.md)):
+
+```bash
+loom-server --version
+# loom-server 0.1.0 (x86_64-unknown-linux-musl, protocol 1, commit 0f1e2d3c…)
+```
+
+The line names the target triple and the commit the file was built from as well
+as the version, so two binaries from different releases are told apart without
+starting either of them.
+
 > **Rule:** every server, every daemon and the UI bundle must be from releases
 > with the same `protocol_version`. Within that, upgrade in any order.
 

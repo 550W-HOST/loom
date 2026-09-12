@@ -21,6 +21,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod build_info;
 pub mod domain_state;
 pub mod environments;
 pub mod http;
@@ -34,6 +35,7 @@ pub mod transport;
 pub mod ui;
 pub mod ws;
 
+pub use build_info::{version_line, COMMIT, TARGET, VERSION};
 pub use domain_state::{CommandError, DomainRegistry};
 pub use environments::{EnvironmentReportOutcome, ProvisionOutcome};
 pub use hub_actor::{HubCommand, HubHandle};

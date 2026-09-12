@@ -34,7 +34,10 @@ only, so it works behind NAT and needs no inbound port.
   host with systemd too (macOS and WSL2 can run the binaries directly without
   the units — see [`../docs/process-model.md`](../docs/process-model.md)).
 - The two binaries: `cargo build --release` produces `target/release/loom-server`
-  and `target/release/loom-daemon`.
+  and `target/release/loom-daemon`. Prebuilt static binaries for x86_64 and
+  aarch64 are attached to every GitHub release, for machines that have no Rust
+  toolchain and should not need one — [`../docs/releasing.md`](../docs/releasing.md)
+  has the download, verify and install steps.
 - root (or sudo) on each machine. The install script creates a dedicated `loom`
   system user and never runs a service as root.
 
