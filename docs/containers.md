@@ -379,10 +379,26 @@ is what makes a restart an upgrade rather than a new machine.
 
 The protocol rule is unchanged and is the thing to plan around: a server and a
 daemon connect only when their protocol versions are **equal**, so server and
-daemon images are upgraded together. A server that moved first leaves every older
-daemon disconnected and retrying until it is updated, which is
-[`upgrades.md`](upgrades.md)'s trap whether the containers or the systemd units
-rolled it out. Pinning both to the same version is the safe shape:
+daemon images are upgraded together. A daemon image that moves second has a
+choice, and it is the same one a bare binary has (see
+[`upgrades.md`](upgrades.md) § Daemon self-update):
+
+- **In-container self-update** works if the server hosts a daemon artifact for
+  this container's architecture. The daemon image already runs the loop, so all
+  that is needed is `LOOM_ARTIFACT_DIR` on the server pointing at a directory
+  holding `loom-daemon-<triple>`, and the container restart policy then starts
+  the new binary exactly as `Restart=always` would. The public images are not
+  laid out for it — `loom-server` is `scratch` and carries no daemon — so this is
+  an explicit choice, not the default path.
+- **Rebuild the image**, which is the container-native equivalent: the
+  replacement arrives as a new image and the runtime's restart policy is the
+  supervisor. Set `LOOM_AUTO_UPDATE=0` in the daemon service's environment so the
+  two mechanisms cannot both act on the same container.
+
+The dispatches that would have run on a daemon while its container was being
+replaced are reaped by the server (`host_stale` or `timed_out`) exactly as for a
+binary restart; the thread leaves `working` and the turn is re-issued.
+Pinning both to the same version is the safe shape:
 
 ```yaml
 image: ghcr.io/550w-host/loom-server:0.1.0
@@ -391,6 +407,9 @@ image: ghcr.io/550w-host/loom-daemon:0.1.0
 
 Rolling back is the same move in reverse: pin the tag that was working and
 recreate. The volumes are not part of the image, so they are not replaced by it.
+Because a daemon never installs an artifact older than the protocol it already
+speaks (§ Failure modes), a rollback is `docker run` with the older tag, never an
+in-container one.
 
 ## What was verified
 

@@ -24,7 +24,7 @@ use crate::domain_state::CommandError;
 use crate::state::{domain_event_from_envelope, AppState};
 use crate::ui;
 use crate::ws;
-use crate::PROTOCOL_VERSION;
+use crate::{artifacts, PROTOCOL_VERSION};
 
 /// Builds the router for a wired-up state.
 pub fn router(state: AppState) -> Router {
@@ -85,6 +85,15 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/hosts/{id}/heartbeat", post(host_heartbeat))
         .route("/api/v1/hosts/{id}/disconnect", post(disconnect_host))
         .route("/ws", get(ws::client_socket))
+        // Daemon self-update: the version to compare against, and the binary
+        // that matches it. Deliberately not behind the `/api` namespace — a
+        // daemon fetching its own replacement is not a domain operation — and
+        // declared here as literals so `scripts/check-api-coverage.mjs` can
+        // parse them and record them as the contract-external entries they are
+        // (`artifacts::INSTALL_VERSION_PATH` and its sibling are what the
+        // handlers and the daemon client use).
+        .route("/install/version", get(artifacts::install_version))
+        .route("/install/loom-daemon", get(artifacts::install_daemon))
         // Everything else is a client route: the UI shell (or a dev-server
         // proxy). API and socket paths are excluded inside the handler.
         .fallback(ui::serve)
@@ -3811,5 +3820,114 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         let body = response.into_body().collect().await.unwrap().to_bytes();
         assert!(String::from_utf8_lossy(&body).contains("<title>loom</title>"));
+    }
+
+    /// A state whose artifact directory holds one real file.
+    fn state_with_artifacts(dir: &std::path::Path) -> AppState {
+        AppState::build(AppConfig {
+            artifact_dir: Some(dir.to_path_buf()),
+            ..AppConfig::default()
+        })
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn the_install_version_route_reports_the_protocol_the_daemon_compares() {
+        let app = router(test_state());
+        let response = get(&app, "/install/version").await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = body_json(response).await;
+        assert_eq!(body["protocolVersion"], PROTOCOL_VERSION);
+        assert_eq!(body["version"], env!("CARGO_PKG_VERSION"));
+    }
+
+    #[tokio::test]
+    async fn the_artifact_route_serves_the_binary_with_its_digest_and_etag() {
+        let dir = tempfile::tempdir().unwrap();
+        let bytes = b"a stand-in for the daemon binary";
+        std::fs::write(dir.path().join("loom-daemon"), bytes).unwrap();
+        let app = router(state_with_artifacts(dir.path()));
+
+        let response = get(&app, "/install/loom-daemon").await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let digest = crate::artifacts::sha256_hex(bytes);
+        assert_eq!(
+            response.headers().get(artifacts::DIGEST_HEADER).unwrap(),
+            digest.as_str()
+        );
+        assert_eq!(
+            response.headers().get(axum::http::header::ETAG).unwrap(),
+            format!("\"sha256-{digest}\"").as_str()
+        );
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(body.as_ref(), bytes);
+    }
+
+    #[tokio::test]
+    async fn a_conditional_artifact_request_for_the_same_digest_is_a_304() {
+        let dir = tempfile::tempdir().unwrap();
+        let bytes = b"an unchanged daemon binary";
+        std::fs::write(dir.path().join("loom-daemon"), bytes).unwrap();
+        let app = router(state_with_artifacts(dir.path()));
+        let digest = crate::artifacts::sha256_hex(bytes);
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::get("/install/loom-daemon")
+                    .header("if-none-match", format!("\"sha256-{digest}\""))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_MODIFIED);
+        // The digest is still reported, so the client can persist what it
+        // proved it already has.
+        assert_eq!(
+            response.headers().get(artifacts::DIGEST_HEADER).unwrap(),
+            digest.as_str()
+        );
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        assert!(body.is_empty(), "a 304 carries no body");
+
+        // A different validator is not the same artifact, so the bytes come.
+        let response = app
+            .oneshot(
+                Request::get("/install/loom-daemon")
+                    .header("if-none-match", format!("\"sha256-{}\"", "0".repeat(64)))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn an_artifact_request_for_another_target_is_a_404_that_names_it() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("loom-daemon"), b"the local binary").unwrap();
+        let app = router(state_with_artifacts(dir.path()));
+
+        // The unnamed binary answers only for this server's own triple.
+        let other = if crate::TARGET == "aarch64-unknown-linux-musl" {
+            "x86_64-unknown-linux-musl"
+        } else {
+            "aarch64-unknown-linux-musl"
+        };
+        let response = get(&app, &format!("/install/loom-daemon?target={other}")).await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let body = body_json(response).await;
+        assert_eq!(body["code"], "not_found");
+        assert!(
+            body["message"].as_str().unwrap().contains(other),
+            "the message should name the target: {body}"
+        );
+
+        // A target that is not a triple at all is the client's mistake.
+        let response = get(&app, "/install/loom-daemon?target=..%2F..%2Fetc%2Fpasswd").await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(body_json(response).await["code"], "invalid_request");
     }
 }

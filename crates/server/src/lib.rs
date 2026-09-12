@@ -21,6 +21,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod artifacts;
 pub mod build_info;
 pub mod domain_state;
 pub mod environments;
@@ -35,6 +36,10 @@ pub mod transport;
 pub mod ui;
 pub mod ws;
 
+pub use artifacts::{
+    ArtifactClient, ArtifactDownload, Artifacts, InstallVersion, DIGEST_HEADER,
+    INSTALL_DAEMON_PATH, INSTALL_VERSION_PATH,
+};
 pub use build_info::{version_line, COMMIT, TARGET, VERSION};
 pub use domain_state::{CommandError, DomainRegistry};
 pub use environments::{EnvironmentReportOutcome, ProvisionOutcome};

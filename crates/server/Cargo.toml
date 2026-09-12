@@ -20,6 +20,12 @@ hyper = { version = "1", features = ["client", "http1"] }
 hyper-util = { version = "0.1", features = ["client-legacy", "http1", "tokio"] }
 serde.workspace = true
 serde_json.workspace = true
+# The artifact host hashes the daemon binary it serves, and the client side of
+# the same module verifies the download. `sha2` is the one addition, and it is
+# what turns "the download completed" into "the download is the file the server
+# published". It is pure Rust with no C dependency, so it does not disturb the
+# static musl build.
+sha2 = "0.10"
 tokio = { workspace = true, features = ["fs", "io-util", "signal"] }
 
 [dev-dependencies]

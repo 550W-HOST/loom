@@ -27,7 +27,7 @@ cannot be labelled with a version its own files do not report.
 | --- | --- | --- |
 | `ui` | `pnpm install --frozen-lockfile`, `typecheck`, `test`, then rebuild the bundle and require the tree to be unchanged | the bundle compiled into both binaries is the one `ui/src` produces |
 | `build` (matrix: x86_64, aarch64) | `cargo build --release --locked --target <triple>` | the binaries compile from the tag with the pinned lockfile |
-| `build` → verify | `scripts/verify-release-binaries.sh` | the x86_64 pair runs, answers `/health`, serves its UI, creates a project and enrols a daemon; the aarch64 pair is a self-contained aarch64 artifact carrying the tag's commit |
+| `build` → verify | `scripts/verify-release-binaries.sh` | the x86_64 pair runs, answers `/health`, serves its UI, hosts its own `loom-daemon` with a matching digest and a `304` for a conditional request, creates a project and enrols a daemon; the aarch64 pair is a self-contained aarch64 artifact carrying the tag's commit |
 | `build` → package | `scripts/package-release.sh` | the release page's files exist, with the layout `deploy/install.sh` expects |
 | `assemble` | `sha256sum`, version and tag check, `RELEASE_NOTES.md` | one checksum file covering both targets, notes that name the protocol version, and no mislabelled tag |
 | `images` | `docker buildx create --driver docker-container`, `scripts/build-container-images.sh` | both container images build from the checksummed files, are pushed as one manifest list each, and the `linux/amd64` halves run and report the version above |
@@ -146,8 +146,8 @@ The pipeline verifies what it publishes; a downloader verifies what they
 received. Neither step is optional, and they are different steps.
 
 **In the pipeline**, `scripts/verify-release-binaries.sh` runs the x86_64 pair
-the way a deployment does — a durable data directory, a real port, real
-sockets:
+the way a deployment does — a durable data directory, a real port, real sockets.
+The recorded output of the pipeline run that published `0e74262f` is:
 
 ```
   loom-server 0.1.0 (x86_64-unknown-linux-musl, protocol 1, commit 0e74262f…)
@@ -167,6 +167,32 @@ follows it, naming the host that daemon enrolled as — `projects.create` takes 
 source — so the claim is that the pair works together, not that each half works
 alone. And the binaries are asked about themselves rather than read from the
 source tree, so what is checked is the file that will be downloaded.
+
+R3 added three lines to that output. They were recorded on a **local rehearsal**
+from a checkout rather than by a tag run, which is why the digests and the
+host/project ids below differ from the block above; the first `v*` tag after this
+change replaces them with runner values:
+
+```
+  /install/version ok (protocol 1)
+  GET /install/loom-daemon -> 200, 4dc62cff848bcede47b495b83c54314996ff8b1fee047949c56b7d2bfc218040 (matches the built loom-daemon)
+  GET /install/loom-daemon (If-None-Match) -> 304
+```
+
+These are the self-update source of truth (`docs/upgrades.md`). The server was
+started from `$bin_dir/loom-server`, so `$bin_dir` is its artifact directory by
+default — the arrangement `deploy/install.sh` produces — and the daemon it hosts
+is compared **against the `loom-daemon` in that same directory**: the served
+digest must equal both the digest of the body that came over the socket and the
+digest of the built binary. A release that hosted the wrong daemon, or served a
+digest that did not match its bytes, fails here rather than on a customer's
+machine. The conditional request is checked in the same breath, because a `304`
+is what keeps a fleet's reconnects from re-downloading every binary.
+
+The two routes also have a shape guard in
+`crates/server/tests/release_verification.rs`, which is the W-554 lesson applied
+here: the script runs only on a `v*` tag, so a response shape that stopped
+matching what it parses would stay invisible until a release.
 
 The aarch64 pair cannot be executed on an x86_64 runner, so it is verified with
 `--elf-only`: the same script, checking everything a foreign machine can — the
@@ -277,7 +303,7 @@ on a fresh runner they are not.
 | rebuild the bundle + the committed-bundle check | 5.3 s |
 | `cargo build --release --locked --target x86_64-unknown-linux-musl` | 26.7 s |
 | `cargo build --release --locked --target aarch64-unknown-linux-musl` | 27.6 s |
-| `verify-release-binaries.sh` (x86_64, executed) | 0.5 s |
+| `verify-release-binaries.sh` (x86_64, executed) | 0.5 s (0.8 s with the install-route checks) |
 | `verify-release-binaries.sh --elf-only` (aarch64) | 0.2 s |
 | `package-release.sh` (one target) | 0.8 s |
 | `SHA256SUMS` + `RELEASE_NOTES.md` (the `assemble` job) | 0.5 s |
@@ -301,12 +327,17 @@ The first `v*` tag is what replaces these estimates with runner numbers.
 
 Deliberately, and with the issues that own them:
 
-- daemon self-update (R3) — the pipeline publishes a new daemon, but nothing
-  yet tells a running one that it exists, so a protocol bump still means
-  upgrading execution machines by hand
-- signing: `SHA256SUMS` gives integrity against a corrupted download, not
-  against a compromised release page. A signature (minisign, sigstore) would be
-  the next step if the artifacts ever leave the repository's own releases.
+- **daemon self-update from the release page**: a running daemon fetches the
+  matching binary from the **server** it is joined to (`/install/loom-daemon`),
+  not from this release page — see [`upgrades.md`](upgrades.md). The release's
+  `SHA256SUMS` is what a human or `deploy/install.sh` verifies a download with;
+  the daemon verifies the server's own digest. Both are integrity checks against
+  transit, not provenance.
+- **signing**: `SHA256SUMS` gives integrity against a corrupted download, not
+  against a compromised release page — and the daemon's digest has the same gap,
+  since the server serves both the binary and its digest. A signature (minisign,
+  sigstore) would move that trust root, and is the next step if artifacts ever
+  come from anywhere other than the server that dispatches the work.
 - `crates.io`, and any target other than the two Linux musl ones. Windows goes
   through WSL2 and uses the x86_64 Linux binary; there is nothing to build for
   it.

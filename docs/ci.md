@@ -27,6 +27,7 @@ with all five jobs succeeding. The durations below are those runs.
 | `contract` | `bb contract is reproducible` | re-exporting bb's contract yields the committed `contracts/bb` byte for byte |
 | `ui` | `UI typecheck, tests and bundle` | `pnpm install --frozen-lockfile`, `pnpm run typecheck` and `pnpm run test` over `ui/` and its seven packages, then a fresh build reproduces the committed `ui/app.js` |
 | `pi` | `real pi provider (allowed to fail)` | the `#[ignore]`d provider test against the real `pi` CLI, skipped unless the runner has a configured `pi` |
+| `self-update` | `daemon self-update end to end` | the `#[ignore]`d self-update tests: a real daemon process, refused by a server that speaks a newer protocol, installing that server's binary over itself, and the reinstalled binary running a real turn |
 
 `cargo clippy` and `cargo test` run with `--locked`, so a build that would need a
 lockfile update fails instead of quietly resolving one. `pnpm install
@@ -133,11 +134,21 @@ run [34666503929](https://github.com/550W-HOST/loom/actions/runs/34666503929):
 | `MSRV` | 23 s | 26 s |
 | `bb contract is reproducible` | 27 s | 32 s |
 | `real pi provider` (skipped) | 30 s | 14 s |
+| `daemon self-update end to end` (not in these runs) | — | — |
 
-`ui` is on the critical path now: `checks`, `msrv` and `pi` start only once it
-has passed, so a run is roughly `ui` plus the slowest Rust job — **2 m 09 s**
-(push) and **2 m 10 s** (PR) end to end, against the 1 m 45 s of the four-job
-runs these replace. All five jobs are `success` in both.
+`ui` is on the critical path now: `checks`, `msrv`, `pi` and `self-update` start
+only once it has passed, so a run is roughly `ui` plus the slowest Rust job —
+**2 m 09 s** (push) and **2 m 10 s** (PR) end to end, against the 1 m 45 s of the
+four-job runs these replace. All six jobs are `success` in both except `pi`,
+which skips on a runner with no configured `pi`.
+
+The `self-update` job was added after those two runs, so it has no runner number
+here. Measured locally, busy otherwise idle: **20.7 s** for all three tests
+(`--ignored --test-threads=1`), of which the acceptance scenario is ~18 s —
+downloading ~2.4 MB, replacing the binary, and running a provider turn — and
+1.8 s is the deliberate wait proving the disabled switch keeps running. It has
+no network dependency, so on a runner it is bounded by the cargo build it shares
+with the other jobs.
 
 Both were the first runs of this workflow revision, so the pnpm store cache was a
 cold miss (`reused 0, downloaded 183`) and the cargo caches were warm from
@@ -366,9 +377,59 @@ The CLI is installed from npm (`npm install -g @earendil-works/pi-coding-agent@0
 about 3 s) rather than expected on the runner, and the version is pinned so a new
 upstream release cannot turn the job red without a commit here.
 
+## The `self-update` job
+
+`crates/daemon/tests/self_update.rs` covers the acceptance scenario from
+[`upgrades.md`](upgrades.md) — *protocol mismatch → update → reconnect → the run
+is handled correctly* — and like the `pi` job it is `#[ignore]`d because it
+executes real processes. Unlike the `pi` job it needs **nothing external**: the
+artifact the fake server serves is the `loom-daemon` this repository just built
+(`CARGO_BIN_EXE_loom-daemon`), so the job is allowed to fail and is a candidate
+for the required set.
+
+What it does, in one process:
+
+1. starts a fake server that answers `welcome` with `PROTOCOL_VERSION + 1` and
+exposes the two `/install/*` routes;
+2. runs the real daemon binary against it — the daemon refuses, fetches the
+artifact, verifies its SHA-256, `rename`s it over its own executable, and exits
+**0**;
+3. asserts the file on disk is now the served bytes (whole-file comparison, not
+a marker), executable, with the digest recorded;
+4. starts the **installed file** against a **real** `loom-server`, dispatches a
+real provider turn through the relay, and asserts the thread reaches `idle` with
+the expected streamed output in the replayable log.
+
+The two companion tests cover the conditional request (a second run against an
+unchanged artifact sends `If-None-Match` and gets a `304`, and still restarts)
+and the operator switch (`--no-auto-update` never fetches, never touches the
+binary, and keeps running).
+
+Two properties of the harness are worth knowing before editing it:
+
+- **The stale binary is a real ELF with a marker appended.** Self-update replaces
+  the running executable, so the test cannot point the daemon at an arbitrary
+  path; it starts the real binary with bytes appended (which the loader ignores)
+  and then compares whole files. A test that only checked for a marker would pass
+  even if the install wrote nothing.
+- **The daemon is spawned by path, never by `PATH` lookup.** `UpdateConfig`
+  installs over `std::env::current_exe()`, so the path the test spawns *is* the
+  path under test; a lookup would silently exercise a different file.
+
+Run it locally with the same commands the job uses:
+
+```bash
+cargo build -p loom-daemon -p loom-server --locked
+cargo test -p loom-daemon --test self_update --locked -- --ignored --test-threads=1
+```
+
+`--test-threads=1` is not required by the logic (each test uses its own
+`tempfile` directory) but keeps the two real-process tests from competing for
+CPU, which makes a failure's timing legible.
+
 ## Branch protection
 
-Protect `main` and require these four checks:
+Protect `main` and require these five checks:
 
 | Required | Reason |
 | --- | --- |
@@ -376,10 +437,17 @@ Protect `main` and require these four checks:
 | `MSRV` | the declared floor keeps compiling |
 | `bb contract is reproducible` | the committed contract is what the exporter produces |
 | `UI typecheck, tests and bundle` | the UI packages type-check and pass their tests, and the committed bundle is what the build produces |
+| `daemon self-update end to end` | a real daemon follows a newer-protocol server: fetch, verify, install over itself, restart, run a turn |
 
-The last three jobs of the workflow are skipped when `ui` fails, which is not a
+The last four jobs of the workflow are skipped when `ui` fails, which is not a
 hole: `ui` is itself required, so a red one blocks the merge and the skipped
 jobs only save runner time.
+
+`daemon self-update end to end` is the one `#[ignore]`d, process-executing job
+that **is** required: it depends on nothing outside this repository (the artifact
+it installs is the binary the job just built) and it is the only automated
+evidence for the upgrade path this repository promises. The `pi` job is not
+required for the opposite reason.
 
 Do **not** require `real pi provider (allowed to fail)`. It is `continue-on-error`
 by design, an upstream CLI must not gate this repository, and on a runner with an

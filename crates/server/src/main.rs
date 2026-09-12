@@ -53,6 +53,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Ok(url) if !url.trim().is_empty() => Some(url),
         _ => None,
     };
+    // Where the daemon binaries this server hosts live. Unset (the default)
+    // falls back to the directory holding this executable, which is exactly
+    // where `deploy/install.sh` puts the matching `loom-daemon`, so a default
+    // deployment hosts its own artifacts with no configuration.
+    let artifact_dir = std::env::var_os("LOOM_ARTIFACT_DIR").map(std::path::PathBuf::from);
 
     let config = AppConfig {
         node_id: node_id.clone(),
@@ -61,6 +66,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         local_host_id: local_host_id.clone(),
         ui_dir,
         ui_proxy,
+        artifact_dir,
         ..AppConfig::default()
     };
     let state = AppState::build(config)?;
@@ -76,6 +82,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ),
     }
     eprintln!("UI served from {} at http://{bind}/", state.ui.describe());
+    eprintln!("self-update {}", state.artifacts.describe());
 
     // A SIGINT/Ctrl-C drains connections, then the process writes a final
     // domain snapshot and stops its background tasks. A hard kill skips the

@@ -19,6 +19,7 @@ use loom_provider_protocol::ProviderSpec;
 use loom_relay::retention::Retention;
 use loom_relay::{now_ms, Relay, Result as RelayResult};
 
+use crate::artifacts::Artifacts;
 use crate::domain_state::DomainRegistry;
 use crate::hub_actor::HubHandle;
 use crate::persistence::{self, DomainSnapshot, SNAPSHOT_VERSION};
@@ -94,6 +95,13 @@ pub struct AppConfig {
     /// A frontend dev server to reverse-proxy unmatched requests to. Mutually
     /// exclusive with [`AppConfig::ui_dir`].
     pub ui_proxy: Option<String>,
+    /// Where daemon binaries are hosted for self-update.
+    ///
+    /// `None` falls back to the directory holding the running `loom-server`,
+    /// which is where `install.sh` puts the matching `loom-daemon`. Set it when
+    /// the two binaries are not side by side (a container, or a server that
+    /// hosts another machine's artifacts).
+    pub artifact_dir: Option<PathBuf>,
 }
 
 impl Default for AppConfig {
@@ -114,6 +122,7 @@ impl Default for AppConfig {
             provider_spec: ProviderSpec::pi(),
             ui_dir: None,
             ui_proxy: None,
+            artifact_dir: None,
         }
     }
 }
@@ -155,6 +164,8 @@ pub struct AppState {
     pub runs: Arc<RunRegistry>,
     /// The static UI source the fallback route serves.
     pub ui: Ui,
+    /// The daemon binaries this server hosts for self-update.
+    pub artifacts: Arc<Artifacts>,
     local_host_id: Option<HostId>,
     run_timeout_ms: u64,
     host_stale_after_ms: u64,
@@ -179,6 +190,7 @@ impl AppState {
 
         let ui = Ui::from_config(config.ui_dir.clone(), config.ui_proxy.clone())
             .map_err(|message| BuildStateError { message })?;
+        let artifacts = Arc::new(Artifacts::from_config(config.artifact_dir.clone()));
 
         let backend: loom_relay::SharedBackend = match (&config.backend_redis, &config.backend_path)
         {
@@ -217,6 +229,7 @@ impl AppState {
             registry: Arc::new(DomainRegistry::new(started_at_ms)),
             runs: Arc::new(RunRegistry::new()),
             ui,
+            artifacts,
             local_host_id: config.local_host_id,
             run_timeout_ms: config.run_timeout.as_millis().min(u128::from(u64::MAX)) as u64,
             host_stale_after_ms: config

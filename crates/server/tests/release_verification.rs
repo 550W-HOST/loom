@@ -179,3 +179,170 @@ async fn the_release_script_parses_the_shapes_the_server_answers() {
 
     state.shutdown();
 }
+
+/// One request whose response is read as raw bytes and headers.
+///
+/// The install routes are not JSON on the success path (`application/octet-stream`
+/// with the digest in a header), so the JSON helper above cannot express them.
+/// This is deliberately as dumb as `curl -D`/`-o` in the script: status line,
+/// headers, body, nothing interpreted.
+struct RawResponse {
+    status: u16,
+    headers: Vec<(String, String)>,
+    body: Vec<u8>,
+}
+
+impl RawResponse {
+    fn header(&self, name: &str) -> Option<&str> {
+        let name = name.to_ascii_lowercase();
+        self.headers
+            .iter()
+            .find(|(key, _)| key.to_ascii_lowercase() == name)
+            .map(|(_, value)| value.as_str())
+    }
+}
+
+async fn raw_request(addr: &str, path: &str, extra_headers: &[(&str, &str)]) -> RawResponse {
+    let mut stream = TcpStream::connect(addr).await.unwrap();
+    let mut head = format!("GET {path} HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n");
+    for (name, value) in extra_headers {
+        head.push_str(&format!("{name}: {value}\r\n"));
+    }
+    head.push_str("\r\n");
+    stream.write_all(head.as_bytes()).await.unwrap();
+    stream.flush().await.unwrap();
+
+    let mut raw = Vec::new();
+    tokio::time::timeout(TIMEOUT, stream.read_to_end(&mut raw))
+        .await
+        .expect("HTTP response timed out")
+        .unwrap();
+
+    let separator = raw
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .expect("response had no header separator");
+    let head = String::from_utf8(raw[..separator].to_vec()).unwrap();
+    let body = raw[separator + 4..].to_vec();
+    let mut lines = head.split("\r\n");
+    let status = lines
+        .next()
+        .and_then(|line| line.split(' ').nth(1))
+        .and_then(|code| code.parse().ok())
+        .expect("no HTTP status line");
+    let headers = lines
+        .filter_map(|line| line.split_once(':'))
+        .map(|(key, value)| (key.trim().to_owned(), value.trim().to_owned()))
+        .collect();
+    RawResponse {
+        status,
+        headers,
+        body,
+    }
+}
+
+/// The install routes, consumed exactly as `scripts/verify-release-binaries.sh`
+/// consumes them.
+///
+/// This is the W-554 guard applied to self-update: the script runs only on a
+/// `v*` tag, so a shape change here would stay invisible until a release. The
+/// server in this test is wired to a directory holding a stand-in artifact, so
+/// what is asserted is the response contract — the two digests' relationship,
+/// the header name, the `304` — not the identity of a binary.
+#[tokio::test]
+async fn the_release_script_parses_the_install_routes_the_server_answers() {
+    let artifacts = tempfile::tempdir().unwrap();
+    // A stand-in with real length, so the digest is over more than an empty
+    // file and the body comparison means something.
+    let bytes = b"a stand-in for the released loom-daemon binary\n".repeat(64);
+    std::fs::write(artifacts.path().join("loom-daemon"), &bytes).unwrap();
+
+    let state = AppState::build(AppConfig {
+        artifact_dir: Some(artifacts.path().to_path_buf()),
+        ..AppConfig::default()
+    })
+    .unwrap();
+    let app = router(state.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+    let addr = format!("{}:{}", addr.ip(), addr.port());
+
+    // `GET /install/version`: the script reads `.protocolVersion` and compares
+    // it with the `--version` protocol of the binaries. `install_version` uses
+    // `camelCase`, which is what makes that `jq` expression non-null.
+    let version = raw_request(&addr, "/install/version", &[]).await;
+    assert_eq!(
+        version.status, 200,
+        "/install/version -> {}",
+        version.status
+    );
+    let version: Value = serde_json::from_slice(&version.body).unwrap();
+    assert_eq!(
+        version["protocolVersion"].as_u64(),
+        Some(u64::from(loom_server::PROTOCOL_VERSION)),
+        "/install/version no longer reports `protocolVersion`: {version}"
+    );
+    assert!(
+        version["version"].is_string(),
+        "/install/version no longer reports `version`: {version}"
+    );
+
+    // `GET /install/loom-daemon`: the header the script extracts with `sed`,
+    // and the body it hashes. The header must be the digest of the bytes, or a
+    // downloading daemon would refuse a good artifact.
+    let artifact = raw_request(
+        &addr,
+        &format!("/install/loom-daemon?target={}", loom_server::TARGET),
+        &[],
+    )
+    .await;
+    assert_eq!(
+        artifact.status, 200,
+        "/install/loom-daemon -> {}",
+        artifact.status
+    );
+    let digest = artifact
+        .header("x-loom-artifact-sha256")
+        .unwrap_or_else(|| {
+            panic!(
+                "the script's `sed -n 's/^X-Loom-Artifact-Sha256: *//p'` finds nothing in {:?}",
+                artifact.headers
+            )
+        })
+        .to_owned();
+    assert!(
+        digest.len() == 64
+            && digest
+                .bytes()
+                .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()),
+        "the served digest is not lowercase hex: {digest:?}"
+    );
+    assert_eq!(artifact.body, bytes, "the served body is not the artifact");
+    assert_eq!(
+        loom_server::artifacts::sha256_hex(&artifact.body),
+        digest,
+        "the served body does not hash to the served header"
+    );
+
+    // The conditional request: the script sends the digest back and requires a
+    // `304` with no body, which is what makes a fleet's reconnects cheap.
+    let conditional = raw_request(
+        &addr,
+        &format!("/install/loom-daemon?target={}", loom_server::TARGET),
+        &[("If-None-Match", &format!("\"sha256-{digest}\"")[..])],
+    )
+    .await;
+    assert_eq!(
+        conditional.status,
+        304,
+        "a conditional artifact request answered {}: {:?}",
+        conditional.status,
+        String::from_utf8_lossy(&conditional.body)
+    );
+    assert!(conditional.body.is_empty(), "a 304 carried a body");
+
+    state.shutdown();
+}

@@ -51,7 +51,9 @@ services:
     # The daemon exits when it loses the server and has no internal reconnect,
     # so this is what the unit's `Restart=always` turns into. It is also what
     # makes `depends_on` below sufficient: an attempt that lands before the
-    # server is listening fails and is retried by this policy.
+    # server is listening fails and is retried by this policy. And it is what
+    # starts a daemon's self-updated binary after the update exits 0
+    # (docs/upgrades.md § Daemon self-update).
     restart: unless-stopped
     depends_on:
       - server
@@ -67,6 +69,14 @@ services:
       # How to run a dispatched provider, when the default is not it. A `pi`
       # inside this image needs a derived image (docs/containers.md § Providers).
       # LOOM_PROVIDER_CMD: /usr/local/bin/pi
+      #
+      # Self-update is on by default. Here the artifact it would fetch must come
+      # from a server that hosts one; the image is `scratch`-free only on the
+      # daemon side, and a containerised server carries no daemon binary. Set
+      # LOOM_ARTIFACT_DIR on the server, or leave this off and rebuild the image,
+      # which is the same "replace the file, restart the process" with the
+      # container runtime as the supervisor (docs/upgrades.md).
+      # LOOM_AUTO_UPDATE: "0"
     volumes:
       # The host identity, the replay cursor and the provider's own
       # configuration ($HOME/.pi and friends). All three have to survive a
