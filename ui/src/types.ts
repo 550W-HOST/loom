@@ -18,54 +18,50 @@ export interface ReplayPage {
 
 export type LoomThreadStatus = "idle" | "working" | "waiting" | "error" | "archived";
 
+/**
+ * A thread as bb's contract types it (`threadResponseSchema` / the list row
+ * variant). The server projects the domain record into this shape, so the UI
+ * reads camelCase exactly like any other bb client.
+ */
 export interface LoomThread {
   id: string;
-  project_id: string;
-  environment_id: string | null;
-  parent_thread_id: string | null;
+  projectId: string;
+  environmentId: string | null;
+  parentThreadId: string | null;
   title: string | null;
   status: LoomThreadStatus;
-  created_at_ms: number;
-  updated_at_ms: number;
-  active_run_id?: string;
+  createdAt: number;
+  updatedAt: number;
 }
 
-export interface LoomThreadsResponse {
-  threads: LoomThread[];
-}
+/** `GET /api/v1/threads` returns a bare array of list rows. */
+export type LoomThreadsResponse = LoomThread[];
 
 export type LoomProjectKind = "standard" | "personal";
 
 export interface LoomProjectSource {
   id: string;
-  project_id: string;
-  host_id: string;
+  projectId: string;
+  hostId: string;
   path: string;
-  git_remote_url?: string;
-  is_default: boolean;
-  created_at_ms: number;
-  updated_at_ms: number;
+  isDefault: boolean;
+  createdAt: number;
+  updatedAt: number;
+  type: string;
 }
 
 export interface LoomProject {
   id: string;
   kind: LoomProjectKind;
   name: string;
-  git_remote_url: string | null;
+  gitRemoteUrl: string | null;
   sources: LoomProjectSource[];
-  archived_at_ms?: number;
-  created_at_ms: number;
-  updated_at_ms: number;
+  createdAt: number;
+  updatedAt: number;
 }
 
-export interface LoomProjectsResponse {
-  projects: LoomProject[];
-}
-
-export interface LoomCreateThreadResponse {
-  thread: LoomThread;
-  event_id: string;
-}
+/** `GET /api/v1/projects` returns a bare array of `projectSchema`. */
+export type LoomProjectsResponse = LoomProject[];
 
 export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);

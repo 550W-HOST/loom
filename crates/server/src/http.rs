@@ -88,8 +88,66 @@ pub fn router(state: AppState) -> Router {
         // Everything else is a client route: the UI shell (or a dev-server
         // proxy). API and socket paths are excluded inside the handler.
         .fallback(ui::serve)
+        .layer(middleware::from_fn(validate_contract_request))
         .layer(middleware::from_fn(normalize_api_error))
         .with_state(state)
+}
+
+/// Rejects a request whose JSON body does not match the bb contract.
+///
+/// The response half of conformance is asserted by tests; the request half
+/// cannot be, because a handler that silently reshapes its body still returns
+/// the right JSON. This middleware closes that gap at runtime: for every
+/// implemented bb route with a JSON request schema, the parsed body is
+/// validated before the handler sees it, and a mismatch is a `422` in the same
+/// uniform error shape.
+///
+/// It is deliberately a no-op for everything else — contract-external loom
+/// routes, non-JSON bodies, malformed JSON (the extractor reports that) — so
+/// it can only reject a request that reached a contract route.
+async fn validate_contract_request(request: Request, next: Next) -> Response {
+    let Some(route) =
+        loom_contract::shared().match_route(request.method().as_str(), request.uri().path())
+    else {
+        return next.run(request).await;
+    };
+    if route.request.source != "json" || route.request.schema.is_none() {
+        return next.run(request).await;
+    }
+    let (parts, body) = request.into_parts();
+    let bytes = match body.collect().await {
+        Ok(body) => body.to_bytes(),
+        Err(error) => {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                format!("failed to read the request body: {error}"),
+            )
+        }
+    };
+    // A body the JSON extractor will reject anyway gets its own message from
+    // `normalize_api_error`; re-running the handler preserves that behaviour.
+    let instance: Value = match serde_json::from_slice(&bytes) {
+        Ok(instance) => instance,
+        Err(_) => {
+            return next
+                .run(Request::from_parts(parts, Body::from(bytes)))
+                .await;
+        }
+    };
+    let violations = loom_contract::shared().validate_request(route, &instance);
+    if !violations.is_empty() {
+        return error_response_with_code(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "invalid_request",
+            format!(
+                "request body does not match the `{}` contract: {}",
+                route.id,
+                loom_contract::describe(&violations)
+            ),
+        );
+    }
+    next.run(Request::from_parts(parts, Body::from(bytes)))
+        .await
 }
 
 /// Keeps extractor failures on API routes in the same shape as handler errors.
@@ -281,7 +339,7 @@ async fn sidebar_bootstrap(State(state): State<AppState>) -> Json<Value> {
     let personal_project = projects
         .iter()
         .find(|project| project.id == personal_id)
-        .map(|project| project_summary_value(&state, project))
+        .map(|project| project_detail_value(&state, project))
         .unwrap_or_else(|| {
             json!({
                 "id": personal_id.to_string(),
@@ -297,7 +355,7 @@ async fn sidebar_bootstrap(State(state): State<AppState>) -> Json<Value> {
         });
     let projects = projects
         .iter()
-        .map(|project| project_summary_value(&state, project))
+        .map(|project| project_detail_value(&state, project))
         .collect::<Vec<_>>();
     Json(json!({
         "sections": [],
@@ -430,14 +488,12 @@ fn project_source_value(source: &loom_domain::ProjectSource) -> Value {
     })
 }
 
-fn project_summary_value(state: &AppState, project: &Project) -> Value {
-    let threads = state
-        .registry
-        .threads()
-        .into_iter()
-        .filter(|thread| thread.project_id == project.id)
-        .map(|thread| thread_list_entry_value(state, &thread))
-        .collect::<Vec<_>>();
+/// A project in bb's `projectSchema` shape (`$defs/d627`).
+///
+/// The contract names the fields in camelCase and omits loom's
+/// `archived_at_ms`; archiving is carried by `projects.list`'s own filter, so
+/// this projection is the whole representation.
+fn project_value(project: &Project) -> Value {
     json!({
         "id": project.id.to_string(),
         "kind": project.kind,
@@ -446,8 +502,70 @@ fn project_summary_value(state: &AppState, project: &Project) -> Value {
         "createdAt": project.created_at_ms,
         "updatedAt": project.updated_at_ms,
         "sources": project.sources.iter().map(project_source_value).collect::<Vec<_>>(),
-        "threads": threads,
-        "defaultExecutionOptions": null
+    })
+}
+
+/// A project with its threads, for the sidebar bootstrap (`$defs/d526`).
+fn project_detail_value(state: &AppState, project: &Project) -> Value {
+    let threads = state
+        .registry
+        .threads()
+        .into_iter()
+        .filter(|thread| thread.project_id == project.id)
+        .map(|thread| thread_list_entry_value(state, &thread))
+        .collect::<Vec<_>>();
+    let mut value = project_value(project);
+    let object = value.as_object_mut().expect("project is an object");
+    object.insert("threads".into(), Value::Array(threads));
+    object.insert("defaultExecutionOptions".into(), Value::Null);
+    value
+}
+
+/// An environment in bb's `environmentSchema` shape (`$defs/d52`).
+///
+/// Fields bb computes from git state that loom does not track yet are `null`
+/// rather than omitted: the contract requires them, and a client reads `null`
+/// as "unknown", which is the truth.
+fn environment_value(environment: &Environment) -> Value {
+    json!({
+        "id": environment.id.to_string(),
+        "name": environment.name,
+        "projectId": environment.project_id.to_string(),
+        "hostId": environment.host_id.to_string(),
+        "path": environment.path,
+        "isGitRepo": false,
+        "isWorktree": environment.kind == EnvironmentKind::Managed,
+        "branchName": null,
+        "baseBranch": null,
+        "defaultBranch": null,
+        "mergeBaseBranch": null,
+        "status": environment.status,
+        "environmentProviderId": null,
+        "lifecycle": { "phase": "active", "retireAt": null, "teardown": null },
+        "environmentProviderSelection": null,
+        "environmentProviderInstanceKey": null,
+        "managed": environment.kind == EnvironmentKind::Managed,
+        "workspaceProvisionType": match environment.kind {
+            EnvironmentKind::Managed => "managed-worktree",
+            EnvironmentKind::Unmanaged => "unmanaged",
+        },
+        "createdAt": environment.created_at_ms,
+        "updatedAt": environment.updated_at_ms,
+    })
+}
+
+/// A host in bb's `hostSchema` shape (`$defs/d582`).
+fn host_value(host: &Host) -> Value {
+    json!({
+        "id": host.id.to_string(),
+        "name": host.name,
+        "type": "persistent",
+        "status": host.status,
+        "maxPermissionMode": "full",
+        "lastSeenAt": host.last_seen_at_ms,
+        "lastRejectedProtocolVersion": null,
+        "createdAt": host.created_at_ms,
+        "updatedAt": host.updated_at_ms,
     })
 }
 
@@ -586,6 +704,17 @@ fn thread_list_entry_value(state: &AppState, thread: &Thread) -> Value {
         "environmentWorkspaceDisplayKind".into(),
         Value::String(environment_workspace_display_kind.into()),
     );
+    // `threadListEntrySchema` is a narrower superset of `threadSchema`: the
+    // list row has the environment/activity columns instead of the three
+    // single-thread counters, and `additionalProperties: false` means
+    // leaving them in rejects the whole row.
+    for key in [
+        "activeBackgroundAgentCount",
+        "canSpawnChild",
+        "queuedMessageCount",
+    ] {
+        object.remove(key);
+    }
     value
 }
 
@@ -648,36 +777,84 @@ fn error_response_with_code(status: StatusCode, code: &'static str, message: Str
 }
 
 /// Body of a create-thread request.
-#[derive(Clone, Debug, Deserialize)]
-pub struct CreateThreadRequest {
-    /// The owning project. **Required**: a thread must belong to a project, and
-    /// the server no longer defaults to the seeded personal one.
-    #[serde(default)]
-    pub project_id: Option<loom_domain::ProjectId>,
-    /// Optional display title.
-    pub title: Option<String>,
-    /// The execution context to bind. Omitted leaves the thread unbound, and a
-    /// dispatch of an unbound thread is refused rather than run in the daemon's
-    /// own cwd.
-    #[serde(default)]
-    pub environment_id: Option<EnvironmentId>,
-}
-
-/// Every known thread, newest first.
-#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
-pub struct ThreadListResponse {
-    /// Threads the UI can open.
-    pub threads: Vec<Thread>,
-}
-
-/// Lists threads.
 ///
-/// The UI begins here: fetch the list, then open one thread and subscribe to
-/// its scope on the socket for the conversation itself.
-async fn list_threads(State(state): State<AppState>) -> Json<ThreadListResponse> {
-    Json(ThreadListResponse {
-        threads: state.registry.threads(),
-    })
+/// The wire shape is bb's `createThreadRequestSchema`: camelCase, with
+/// `projectId`, `origin`, `input` and `environment` required. `environment`
+/// names where the workspace comes from, exactly as bb's UI sends it.
+///
+/// There is no snake_case fallback. W-554 decided loom accepts only the
+/// contract shape, and `ui/src/main.ts` was updated in the same change; see
+/// `docs/api-coverage.md` for why accepting both was rejected.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateThreadRequest {
+    /// The owning project. **Required**: a thread must belong to a project.
+    pub project_id: loom_domain::ProjectId,
+    /// Where the thread came from. Required by the contract; loom records it
+    /// on the thread-created event but does not otherwise branch on it yet.
+    pub origin: CreateThreadOrigin,
+    /// The initial prompt rows. bb requires the field; an empty list is how a
+    /// client opens an empty thread.
+    #[serde(default)]
+    pub input: Vec<Value>,
+    /// The execution context to bind, as bb's discriminated union. `reuse`
+    /// binds an existing environment; `project-default` leaves the thread
+    /// unbound (loom resolves a workspace at dispatch time).
+    pub environment: CreateThreadEnvironment,
+    /// Optional display title.
+    #[serde(default)]
+    pub title: Option<String>,
+}
+
+/// bb's `createThreadRequestSchema.origin`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CreateThreadOrigin {
+    App,
+    Cli,
+    Sdk,
+    Plugin,
+}
+
+/// bb's `createThreadRequestSchema.environment` discriminated union, narrowed
+/// to the two variants loom can honour today.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(tag = "type", rename_all = "kebab-case")]
+pub enum CreateThreadEnvironment {
+    /// Reuse an existing environment.
+    Reuse {
+        #[serde(rename = "environmentId")]
+        environment_id: EnvironmentId,
+    },
+    /// Let the project decide. loom leaves the thread unbound and resolves a
+    /// workspace when the first turn dispatches.
+    ProjectDefault,
+}
+
+impl CreateThreadRequest {
+    /// The environment the thread should bind, if any.
+    fn environment_id(&self) -> Option<EnvironmentId> {
+        match &self.environment {
+            CreateThreadEnvironment::Reuse { environment_id } => Some(environment_id.clone()),
+            CreateThreadEnvironment::ProjectDefault => None,
+        }
+    }
+}
+
+/// Every known thread, projected into bb's `threadListEntrySchema` shape
+/// (`$defs/d317`). The contract types list rows differently from the single
+/// thread response, so the projection — not the domain type — is the payload.
+///
+/// The route returns a bare array (`$defs/d130`), not `{ threads }`.
+async fn list_threads(State(state): State<AppState>) -> Json<Vec<Value>> {
+    Json(
+        state
+            .registry
+            .threads()
+            .iter()
+            .map(|thread| thread_list_entry_value(&state, thread))
+            .collect(),
+    )
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -947,20 +1124,45 @@ async fn read_thread(State(state): State<AppState>, Path(raw_thread_id): Path<St
     }
 }
 
-#[derive(Clone, Debug, Default, Deserialize)]
+/// Body of a `threads.send` request.
+///
+/// The contract (`threads.send`) requires both fields, so they are not
+/// `Option` here: a missing or wrongly-typed field is a serde rejection, which
+/// `normalize_api_error` turns into the uniform API error body. `input` is
+/// narrowed to bb's text variant because loom's execution plane has no other
+/// prompt kind yet.
+#[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct SendThreadRequest {
-    input: Option<Vec<Value>>,
-    mode: Option<String>,
+    input: Vec<SendInput>,
+    mode: SendMode,
 }
 
-fn text_from_send_input(input: &[Value]) -> Option<String> {
+/// bb's `sendThreadRequestSchema.mode`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+enum SendMode {
+    QueueIfActive,
+    SteerIfActive,
+    Auto,
+    Start,
+    Steer,
+}
+
+/// One row of bb's `sendThreadRequestSchema.input` (`$defs/d662`). loom reads
+/// the text variant and refuses the rest, instead of silently dropping an
+/// attachment it cannot deliver.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+enum SendInput {
+    /// A plain text prompt.
+    Text { text: String },
+}
+
+fn text_from_send_input(input: &[SendInput]) -> Option<String> {
     let mut text = String::new();
     for item in input {
-        if item.get("type").and_then(Value::as_str) != Some("text") {
-            return None;
-        }
-        let value = item.get("text").and_then(Value::as_str)?;
+        let SendInput::Text { text: value } = item;
         text.push_str(value);
     }
     (!text.trim().is_empty()).then_some(text)
@@ -977,24 +1179,8 @@ async fn send_thread(
         Ok(thread_id) => thread_id,
         Err(response) => return response,
     };
-    let valid_mode = matches!(
-        request.mode.as_deref(),
-        Some("queue-if-active")
-            | Some("steer-if-active")
-            | Some("auto")
-            | Some("start")
-            | Some("steer")
-    );
-    if !valid_mode {
-        return error_response(
-            StatusCode::BAD_REQUEST,
-            "mode must be one of queue-if-active, steer-if-active, auto, start, steer".into(),
-        );
-    }
-    let Some(input) = request.input.as_deref() else {
-        return error_response(StatusCode::BAD_REQUEST, "input is required".into());
-    };
-    let Some(content) = text_from_send_input(input) else {
+    let _mode = request.mode;
+    let Some(content) = text_from_send_input(&request.input) else {
         return error_response(
             StatusCode::BAD_REQUEST,
             "loom currently accepts text prompt inputs only".into(),
@@ -1265,36 +1451,30 @@ async fn thread_timeline(
     .into_response()
 }
 
-/// A created thread and the event that announced it.
-#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
-pub struct CreateThreadResponse {
-    /// The new thread, in status `idle`.
-    pub thread: Thread,
-    /// The `thread_created` event, published to `project:{project_id}`.
-    pub event_id: String,
-}
-
-/// Creates a thread.
+/// Creates a thread and returns it in bb's `threadSchema` shape (`$defs/d7`)
+/// with the contract's `201`.
 ///
-/// `project_id` is required. The event goes to the project scope, not the
+/// `projectId` is required. The event goes to the project scope, not the
 /// (brand new, unsubscribable) thread scope: it is the project's thread list
-/// that has to learn about it.
+/// that has to learn about it. The event id is not repeated in the body — the
+/// contract does not type it, and a subscriber learns about the event on the
+/// project scope — so the response is exactly the created thread.
 async fn create_thread(
     State(state): State<AppState>,
     Json(request): Json<CreateThreadRequest>,
 ) -> Response {
     match state.registry.create_thread(
-        request.project_id,
-        request.title,
-        request.environment_id,
+        Some(request.project_id.clone()),
+        request.title.clone(),
+        request.environment_id(),
         loom_relay::now_ms(),
     ) {
         Ok((thread, event)) => match state.publish_domain_event(&event) {
-            Ok(envelope) => Json(CreateThreadResponse {
-                thread,
-                event_id: envelope.event_id.to_string(),
-            })
-            .into_response(),
+            Ok(_) => (
+                StatusCode::CREATED,
+                Json(thread_summary_value(&state, &thread)),
+            )
+                .into_response(),
             Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
         },
         Err(error) => command_error_response(error),
@@ -1450,17 +1630,8 @@ async fn register_host(
     }
 }
 
-/// Every host the server knows, in id order.
-#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
-pub struct HostListResponse {
-    /// Known hosts, connected or not.
-    pub hosts: Vec<Host>,
-}
-
-async fn list_hosts(State(state): State<AppState>) -> Json<HostListResponse> {
-    Json(HostListResponse {
-        hosts: state.registry.hosts(),
-    })
+async fn list_hosts(State(state): State<AppState>) -> Json<Vec<Value>> {
+    Json(state.registry.hosts().iter().map(host_value).collect())
 }
 
 /// Records a daemon heartbeat. Heartbeats are high frequency and deliberately
@@ -1503,39 +1674,75 @@ async fn disconnect_host(
     }
 }
 
-/// Body of a create-project request.
+/// Body of a create-project request, in bb's `createProjectRequestSchema`
+/// shape: a name plus where the code lives (`source`).
 #[derive(Clone, Debug, Deserialize)]
 pub struct CreateProjectRequest {
     /// Display name. Must not be blank.
     pub name: String,
-    /// The repository remote, when the project is backed by one.
-    #[serde(default)]
-    pub git_remote_url: Option<String>,
+    /// Where the project's code lives. Required by the contract; loom records
+    /// it as the project's first source.
+    pub source: CreateProjectSource,
 }
 
-/// A created project and the event that announced it.
-#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
-pub struct CreateProjectResponse {
-    /// The new project, active and with no sources.
-    pub project: Project,
-    /// The `project_created` event, published to the `global` scope.
-    pub event_id: String,
+/// bb's project-source discriminated union, narrowed to the variants loom can
+/// honour today. `local_path` is a plain location; `clone` records a remote
+/// before any checkout exists.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum CreateProjectSource {
+    /// An existing directory on a host.
+    LocalPath {
+        #[serde(rename = "hostId")]
+        host_id: HostId,
+        path: String,
+    },
+    /// A repository to clone. loom records the remote; it never clones here.
+    Clone {
+        #[serde(rename = "hostId")]
+        host_id: HostId,
+        #[serde(default, rename = "remoteUrl")]
+        remote_url: Option<String>,
+        #[serde(default, rename = "targetPath")]
+        target_path: Option<String>,
+    },
 }
 
-/// Every known project, active first, in a stable order.
-#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
-pub struct ProjectListResponse {
-    /// Projects the UI can offer as a thread's owner.
-    pub projects: Vec<Project>,
+impl CreateProjectSource {
+    /// The host the source lives on.
+    fn host_id(&self) -> HostId {
+        match self {
+            Self::LocalPath { host_id, .. } | Self::Clone { host_id, .. } => host_id.clone(),
+        }
+    }
+
+    /// The absolute path, empty for a remote-only clone.
+    fn path(&self) -> String {
+        match self {
+            Self::LocalPath { path, .. } => path.clone(),
+            Self::Clone { target_path, .. } => target_path.clone().unwrap_or_default(),
+        }
+    }
+
+    /// The git remote, when the source is a checkout.
+    fn remote_url(&self) -> Option<String> {
+        match self {
+            Self::LocalPath { .. } => None,
+            Self::Clone { remote_url, .. } => remote_url.clone(),
+        }
+    }
 }
 
-/// Looks up a project and the events a mutation published.
+/// A project after a mutation, in bb's `projectSchema` shape (`$defs/d627`).
+///
+/// A single project, not an envelope: the contract types the response body as
+/// the project and `additionalProperties: false` means an `event_id` beside it
+/// is a rejection. A client that wants the event id subscribes to the scope;
+/// that is what the relay is for.
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 pub struct ProjectResponse {
     /// The project after the change.
-    pub project: Project,
-    /// The `project_updated` event id, or empty when nothing was announced.
-    pub event_id: String,
+    pub project: Value,
 }
 
 /// Lists projects.
@@ -1543,30 +1750,47 @@ pub struct ProjectResponse {
 /// `project_created` is published to `global`, because the project list is not
 /// scoped to a project a client can already have subscribed to. A client
 /// therefore subscribes to `global` once and follows the list from there.
-async fn list_projects(State(state): State<AppState>) -> Json<ProjectListResponse> {
-    Json(ProjectListResponse {
-        projects: state.registry.projects(),
-    })
+///
+/// The contract returns a bare array of `projectSchema` (`$defs/d471`).
+async fn list_projects(State(state): State<AppState>) -> Json<Vec<Value>> {
+    Json(
+        state
+            .registry
+            .projects()
+            .iter()
+            .map(project_value)
+            .collect(),
+    )
 }
 
-/// Creates a project.
+/// Creates a project and its first source.
 ///
 async fn create_project(
     State(state): State<AppState>,
     Json(request): Json<CreateProjectRequest>,
 ) -> Response {
-    match state.registry.create_project(
+    let source = request.source;
+    let (project, event) = match state.registry.create_project(
         request.name,
         ProjectKind::Standard,
-        request.git_remote_url,
+        source.remote_url(),
         loom_relay::now_ms(),
     ) {
-        Ok((project, event)) => match state.publish_domain_event(&event) {
-            Ok(envelope) => Json(CreateProjectResponse {
-                project,
-                event_id: envelope.event_id.to_string(),
-            })
-            .into_response(),
+        Ok(result) => result,
+        Err(error) => return command_error_response(error),
+    };
+    // The contract pairs creation with its initial location. loom records the
+    // source as a second event rather than guessing a default later; a missing
+    // host is a conflict (the same rule `projects.createSource` uses).
+    match state.registry.add_project_source(
+        &project.id,
+        source.host_id(),
+        source.path(),
+        source.remote_url(),
+        loom_relay::now_ms(),
+    ) {
+        Ok((project, _)) => match state.publish_domain_event(&event) {
+            Ok(_) => (StatusCode::CREATED, Json(project_value(&project))).into_response(),
             Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
         },
         Err(error) => command_error_response(error),
@@ -1583,7 +1807,7 @@ async fn get_project(
         Err(error) => return error_response(StatusCode::BAD_REQUEST, error.to_string()),
     };
     match state.registry.project(&project_id) {
-        Some(project) => Json(project).into_response(),
+        Some(project) => Json(project_value(&project)).into_response(),
         None => error_response(
             StatusCode::NOT_FOUND,
             format!("project {project_id} is not known"),
@@ -1591,16 +1815,15 @@ async fn get_project(
     }
 }
 
-/// Body of a project update. Both fields are optional; at least one is
-/// required, and an empty `name` is rejected.
+/// Body of a project update, in bb's `updateProjectRequestSchema` shape: an
+/// optional new name. At least one field is required, which for loom means
+/// `name` must be present.
 #[derive(Clone, Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct UpdateProjectRequest {
     /// A new display name.
     #[serde(default)]
     pub name: Option<String>,
-    /// A new repository remote. An empty string clears it.
-    #[serde(default)]
-    pub git_remote_url: Option<String>,
 }
 
 /// Renames a project and/or changes its remote.
@@ -1616,11 +1839,8 @@ async fn update_project(
         Ok(project_id) => project_id,
         Err(error) => return error_response(StatusCode::BAD_REQUEST, error.to_string()),
     };
-    if request.name.is_none() && request.git_remote_url.is_none() {
-        return error_response(
-            StatusCode::BAD_REQUEST,
-            "provide a name or a git_remote_url".into(),
-        );
+    if request.name.is_none() {
+        return error_response(StatusCode::BAD_REQUEST, "provide a name".into());
     }
 
     let now = loom_relay::now_ms();
@@ -1643,28 +1863,12 @@ async fn update_project(
             Err(error) => return command_error_response(error),
         }
     }
-    if let Some(url) = request.git_remote_url {
-        match state
-            .registry
-            .set_project_git_remote(&project_id, Some(url), now)
-        {
-            Ok((updated, event)) => {
-                project = updated;
-                events.push(event);
-            }
-            Err(error) => return command_error_response(error),
-        }
-    }
 
     match publish_all(&state, &events) {
-        Ok(published) => Json(ProjectResponse {
-            project,
-            event_id: published
-                .last()
-                .map(|event| event.event_id.clone())
-                .unwrap_or_default(),
-        })
-        .into_response(),
+        Ok(published) => {
+            let _ = published;
+            Json(project_value(&project)).into_response()
+        }
         Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
     }
 }
@@ -1695,19 +1899,10 @@ async fn archive_project(
     }
 }
 
-/// Body of an add-source request.
-#[derive(Clone, Debug, Deserialize)]
-pub struct AddProjectSourceRequest {
-    /// The host the location belongs to. Omitted uses the primary host.
-    #[serde(default)]
-    pub host_id: Option<HostId>,
-    /// Absolute path on that host. May be empty for a remote-only source.
-    #[serde(default)]
-    pub path: Option<String>,
-    /// The git remote this location is a checkout of, when there is one.
-    #[serde(default)]
-    pub git_remote_url: Option<String>,
-}
+/// Body of an add-source request, in bb's `createProjectSourceRequestSchema`
+/// shape. `hostId` and `type` are required by the contract; the host is never
+/// defaulted, so a source is never written against a guess.
+pub use CreateProjectSource as AddProjectSourceRequest;
 
 /// Adds a source to a project.
 ///
@@ -1723,36 +1918,27 @@ async fn add_project_source(
         Ok(project_id) => project_id,
         Err(error) => return error_response(StatusCode::BAD_REQUEST, error.to_string()),
     };
-    let host_id = match request.host_id.clone().or_else(|| {
-        state
-            .registry
-            .primary_host(state.local_host_id())
-            .map(|host| host.id)
-    }) {
-        Some(host_id) => host_id,
-        None => {
-            return error_response(
-                StatusCode::CONFLICT,
-                "no host is available for the source; enroll a daemon first".into(),
-            )
-        }
-    };
-    let path = request.path.unwrap_or_default();
+    let host_id = request.host_id();
+    let path = request.path();
+    let remote_url = request.remote_url();
     match state.registry.add_project_source(
         &project_id,
         host_id,
         path,
-        request.git_remote_url,
+        remote_url,
         loom_relay::now_ms(),
     ) {
-        Ok((project, event)) => match state.publish_domain_event(&event) {
-            Ok(envelope) => Json(ProjectResponse {
-                project,
-                event_id: envelope.event_id.to_string(),
-            })
-            .into_response(),
-            Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
-        },
+        Ok((project, event)) => {
+            let source = project
+                .sources
+                .last()
+                .cloned()
+                .expect("add_source always appends one");
+            match state.publish_domain_event(&event) {
+                Ok(_) => (StatusCode::CREATED, Json(project_source_value(&source))).into_response(),
+                Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+            }
+        }
         Err(error) => command_error_response(error),
     }
 }
@@ -1774,12 +1960,8 @@ async fn remove_project_source(
         .registry
         .remove_project_source(&project_id, &source_id, loom_relay::now_ms())
     {
-        Ok(Some((project, event))) => match state.publish_domain_event(&event) {
-            Ok(envelope) => Json(ProjectResponse {
-                project,
-                event_id: envelope.event_id.to_string(),
-            })
-            .into_response(),
+        Ok(Some((_project, event))) => match state.publish_domain_event(&event) {
+            Ok(_) => Json(json!({ "ok": true })).into_response(),
             Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
         },
         Ok(None) => error_response(
@@ -1822,8 +2004,8 @@ pub struct CreateEnvironmentResponse {
 /// Every known environment, optionally filtered to one project.
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 pub struct EnvironmentListResponse {
-    /// Environments, oldest first.
-    pub environments: Vec<Environment>,
+    /// Environments, oldest first, in bb's `environmentSchema` shape.
+    pub environments: Vec<Value>,
 }
 
 /// Query for [`list_environments`].
@@ -1932,7 +2114,15 @@ async fn list_environments(
             Err(error) => return error_response(StatusCode::BAD_REQUEST, error.to_string()),
         },
     };
-    Json(EnvironmentListResponse { environments }).into_response()
+    // The contract returns a bare array of `environmentSchema` (`$defs/d52`),
+    // and `projects.list`'s filter plus the CLI mean the envelope buys nothing.
+    Json(
+        environments
+            .iter()
+            .map(environment_value)
+            .collect::<Vec<_>>(),
+    )
+    .into_response()
 }
 
 /// Fetches one environment by id.
@@ -1945,7 +2135,7 @@ async fn get_environment(
         Err(error) => return error_response(StatusCode::BAD_REQUEST, error.to_string()),
     };
     match state.registry.environment(&environment_id) {
-        Some(environment) => Json(environment).into_response(),
+        Some(environment) => Json(environment_value(&environment)).into_response(),
         None => error_response(
             StatusCode::NOT_FOUND,
             format!("environment {environment_id} is not known"),
@@ -2258,17 +2448,27 @@ mod tests {
         method: &str,
         body: &serde_json::Value,
     ) {
+        assert_b1_response_status(contract, id, method, 200, body)
+    }
+
+    fn assert_b1_response_status(
+        contract: &loom_contract::Contract,
+        id: &str,
+        method: &str,
+        status: u16,
+        body: &serde_json::Value,
+    ) {
         let route = contract
             .route_by_id(id)
             .unwrap_or_else(|| panic!("missing contract route {id}"));
         assert_eq!(route.method, method, "wrong method in contract for {id}");
-        let violations = contract.validate_response(route, 200, body);
+        let violations = contract.validate_response(route, status, body);
         assert!(
             violations.is_empty(),
-            "{id} response does not conform: {violations:?}\n{body}"
+            "{id} response does not conform at {status}: {violations:?}\n{body}"
         );
 
-        let violations = contract.validate_response(route, 200, &serde_json::Value::Null);
+        let violations = contract.validate_response(route, status, &serde_json::Value::Null);
         assert!(
             !violations.is_empty(),
             "{id} response validator accepted a null counterexample"
@@ -2400,13 +2600,16 @@ mod tests {
                 &app,
                 "/api/v1/threads",
                 serde_json::json!({
-                    "project_id": state.registry.personal_project_id().to_string()
+                    "projectId": state.registry.personal_project_id().to_string(),
+                    "origin": "app",
+                    "input": [],
+                    "environment": { "type": "project-default" }
                 }),
             )
             .await,
         )
         .await;
-        let thread_id = created["thread"]["id"]
+        let thread_id = created["id"]
             .as_str()
             .expect("created thread id")
             .to_owned();
@@ -2511,6 +2714,176 @@ mod tests {
         state.shutdown();
     }
 
+    /// The request half of conformance, the gap W-554 found: B1's responses
+    /// conformed while its request bodies did not, and no test could see it.
+    ///
+    /// Every write route that carries a JSON body is exercised twice — once
+    /// with the shape the contract declares, which must be accepted, and once
+    /// with a body that violates it, which must be a `422` in the uniform
+    /// error shape. `validate_contract_request` is what makes the second half
+    /// true at runtime.
+    #[tokio::test]
+    async fn write_routes_accept_and_reject_by_contract() {
+        let state = test_state();
+        let app = router(state.clone());
+        let contract = loom_contract::Contract::load();
+        let host = state
+            .registry
+            .enroll_host(None, "laptop".into(), loom_relay::now_ms())
+            .unwrap()
+            .0;
+        let project_id = state.registry.personal_project_id().to_string();
+
+        // Valid contract shape passes and is validated against the contract.
+        let create = serde_json::json!({
+            "projectId": project_id,
+            "origin": "app",
+            "input": [{ "type": "text", "text": "hello" }],
+            "environment": { "type": "project-default" }
+        });
+        assert!(
+            contract
+                .validate_request_by_id("threads.create", &create)
+                .is_empty(),
+            "the test body itself must be contract-shaped"
+        );
+        let response = post(&app, "/api/v1/threads", create).await;
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let created = body_json(response).await;
+        assert_b1_response_status(&contract, "threads.create", "POST", 201, &created);
+        let thread_id = created["id"].as_str().unwrap().to_string();
+
+        // The pre-contract snake_case body the issue found being accepted is
+        // now rejected before the handler runs.
+        let response = post(
+            &app,
+            "/api/v1/threads",
+            serde_json::json!({ "project_id": project_id }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body = body_json(response).await;
+        assert!(contract.validate_error_body(&body).is_empty());
+        assert_eq!(body["code"], "invalid_request");
+        assert!(
+            body["message"].as_str().unwrap().contains("projectId"),
+            "the rejection names the missing field: {body}"
+        );
+
+        // `threads.send`: missing `mode`, then a mode outside the enum.
+        let send_path = format!("/api/v1/threads/{thread_id}/send");
+        let response = post(
+            &app,
+            &send_path,
+            serde_json::json!({ "input": [{ "type": "text", "text": "hi" }] }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let response = post(
+            &app,
+            &send_path,
+            serde_json::json!({
+                "input": [{ "type": "text", "text": "hi" }],
+                "mode": "not-a-mode"
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+        // A valid send still works after the rejections.
+        let response = post(
+            &app,
+            &send_path,
+            serde_json::json!({
+                "input": [{ "type": "text", "text": "hello" }],
+                "mode": "start"
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+
+        // `projects.create`: a missing `source` is rejected; the contract
+        // shape creates the project and its first source.
+        let response = post(
+            &app,
+            "/api/v1/projects",
+            serde_json::json!({ "name": "loom" }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+        let response = post(
+            &app,
+            "/api/v1/projects",
+            serde_json::json!({
+                "name": "loom",
+                "source": { "hostId": host.id.to_string(), "type": "local_path", "path": "/srv/loom" }
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let project = body_json(response).await;
+        assert_b1_response_status(&contract, "projects.create", "POST", 201, &project);
+        let new_project_id = project["id"].as_str().unwrap().to_string();
+
+        // `projects.createSource`: `hostId` and `type` are required.
+        let response = post(
+            &app,
+            &format!("/api/v1/projects/{new_project_id}/sources"),
+            serde_json::json!({ "path": "/srv/other" }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+        let response = post(
+            &app,
+            &format!("/api/v1/projects/{new_project_id}/sources"),
+            serde_json::json!({
+                "hostId": host.id.to_string(),
+                "type": "local_path",
+                "path": "/srv/other"
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let source = body_json(response).await;
+        assert_b1_response_status(&contract, "projects.createSource", "POST", 201, &source);
+
+        // `projects.update` is a `PATCH`; an unknown field is rejected and an
+        // empty body is rejected by the handler's own "at least one field".
+        let response = patch(
+            &app,
+            &format!("/api/v1/projects/{new_project_id}"),
+            serde_json::json!({ "name": "loom-2" }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let renamed = body_json(response).await;
+        assert_b1_response(&contract, "projects.update", "PATCH", &renamed);
+
+        state.shutdown();
+    }
+
+    /// A contract-external loom route must not be caught by the request
+    /// middleware; it keeps its own handler-level validation.
+    #[tokio::test]
+    async fn contract_external_routes_are_not_request_validated() {
+        let state = test_state();
+        let app = router(state.clone());
+        // `/messages` is loom's reference-UI compatibility endpoint. Its body
+        // is snake_case and is not in the bb contract, so a handler status —
+        // not a 422 from the middleware — is the proof it was not swallowed
+        // by contract validation.
+        let response = post(
+            &app,
+            "/api/v1/threads/not-a-thread/messages",
+            serde_json::json!({ "content": "hi" }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        state.shutdown();
+    }
+
     #[tokio::test]
     async fn publish_stores_an_event_and_returns_its_id() {
         let state = test_state();
@@ -2591,13 +2964,16 @@ mod tests {
                 &app,
                 "/api/v1/threads",
                 serde_json::json!({
-                    "project_id": state.registry.personal_project_id().to_string()
+                    "projectId": state.registry.personal_project_id().to_string(),
+                    "origin": "app",
+                    "input": [],
+                    "environment": { "type": "project-default" }
                 }),
             )
             .await,
         )
         .await;
-        let thread_id = created["thread"]["id"].as_str().unwrap();
+        let thread_id = created["id"].as_str().unwrap();
         let malformed_query = get(
             &app,
             &format!("/api/v1/threads/{thread_id}/events?limit=%ZZ"),
@@ -2619,24 +2995,32 @@ mod tests {
         let app = router(state.clone());
         let project_id = state.registry.personal_project_id().to_string();
 
-        // No project is a bad request, not a silent landing in the seeded one.
+        // No project is a schema rejection, not a silent landing in the seeded
+        // one. The contract requires `projectId`/`origin`/`input`/`environment`,
+        // so the body never reaches the handler.
         let missing = post(&app, "/api/v1/threads", serde_json::json!({})).await;
-        assert_eq!(missing.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(missing.status(), StatusCode::UNPROCESSABLE_ENTITY);
 
         let response = post(
             &app,
             "/api/v1/threads",
-            serde_json::json!({ "project_id": project_id }),
+            serde_json::json!({
+                "projectId": project_id,
+                "origin": "app",
+                "input": [],
+                "environment": { "type": "project-default" }
+            }),
         )
         .await;
-        assert_eq!(response.status(), StatusCode::OK);
+        // The contract declares 201 for a created thread.
+        assert_eq!(response.status(), StatusCode::CREATED);
         let json = body_json(response).await;
-        assert_eq!(json["thread"]["status"], "idle");
+        assert_eq!(json["status"], "idle");
         assert_eq!(
-            json["thread"]["project_id"],
+            json["projectId"],
             state.registry.personal_project_id().to_string()
         );
-        assert_eq!(json["event_id"].as_str().unwrap().len(), 26);
+        assert!(json["id"].as_str().unwrap().starts_with("thr_"));
 
         // `thread_created` lands in the project scope, not the thread scope:
         // it is the project's thread list that has to learn about it.
@@ -2654,7 +3038,12 @@ mod tests {
         let response = post(
             &app,
             "/api/v1/threads",
-            serde_json::json!({ "project_id": loom_domain::ProjectId::mint().to_string() }),
+            serde_json::json!({
+                "projectId": loom_domain::ProjectId::mint().to_string(),
+                "origin": "app",
+                "input": [],
+                "environment": { "type": "project-default" }
+            }),
         )
         .await;
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
@@ -2664,20 +3053,28 @@ mod tests {
     async fn a_project_is_created_listed_renamed_and_archived() {
         let state = test_state();
         let app = router(state.clone());
+        // A source names a host, so one has to exist before the project can.
+        let host = state
+            .registry
+            .enroll_host(None, "laptop".into(), loom_relay::now_ms())
+            .unwrap()
+            .0;
 
         let response = post(
             &app,
             "/api/v1/projects",
-            serde_json::json!({ "name": "loom", "git_remote_url": "git@x:y/loom" }),
+            serde_json::json!({
+                "name": "loom",
+                "source": { "hostId": host.id.to_string(), "type": "local_path", "path": "/srv/loom" }
+            }),
         )
         .await;
-        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.status(), StatusCode::CREATED);
         let created = body_json(response).await;
-        let project_id = created["project"]["id"].as_str().unwrap().to_string();
-        assert_eq!(created["project"]["name"], "loom");
-        assert_eq!(created["project"]["git_remote_url"], "git@x:y/loom");
-        assert!(created["project"]["sources"].as_array().unwrap().is_empty());
-        assert!(created["project"]["archived_at_ms"].is_null());
+        let project_id = created["id"].as_str().unwrap().to_string();
+        assert_eq!(created["name"], "loom");
+        // The contract pairs creation with its source, so there is one here.
+        assert_eq!(created["sources"][0]["path"], "/srv/loom");
 
         // `project_created` is published to `global`: the project list is not
         // scoped to a project a client can already have subscribed to.
@@ -2688,7 +3085,7 @@ mod tests {
 
         // The seeded project and the new one are both listed, seeded first.
         let listed = body_json(get(&app, "/api/v1/projects").await).await;
-        let ids: Vec<&str> = listed["projects"]
+        let ids: Vec<&str> = listed
             .as_array()
             .unwrap()
             .iter()
@@ -2708,7 +3105,7 @@ mod tests {
             .await,
         )
         .await;
-        assert_eq!(renamed["project"]["name"], "loom-2");
+        assert_eq!(renamed["name"], "loom-2");
         let project = Scope::Project(project_id.clone());
         let events = stored_events(&state, &project);
         assert_eq!(events.last().unwrap()["type"], "project_updated");
@@ -2747,30 +3144,33 @@ mod tests {
             post(
                 &app,
                 "/api/v1/projects",
-                serde_json::json!({ "name": "loom" }),
+                serde_json::json!({
+                "name": "loom",
+                "source": { "hostId": host.id.to_string(), "type": "local_path", "path": "/srv/loom" }
+            }),
             )
             .await,
         )
         .await;
-        let project_id = created["project"]["id"].as_str().unwrap().to_string();
+        let project_id = created["id"].as_str().unwrap().to_string();
 
         let response = post(
             &app,
             &format!("/api/v1/projects/{project_id}/sources"),
             serde_json::json!({
-                "host_id": host.id.to_string(),
-                "path": "/srv/loom",
-                "git_remote_url": "git@x:y/loom",
+                "hostId": host.id.to_string(),
+                "type": "local_path",
+                "path": "/srv/loom-2",
             }),
         )
         .await;
-        assert_eq!(response.status(), StatusCode::OK);
-        let json = body_json(response).await;
-        let source = &json["project"]["sources"][0];
-        assert_eq!(source["path"], "/srv/loom");
-        assert_eq!(source["host_id"], host.id.to_string());
-        assert_eq!(source["git_remote_url"], "git@x:y/loom");
-        assert_eq!(source["is_default"], true);
+        assert_eq!(response.status(), StatusCode::CREATED);
+        // `projects.createSource` returns the created source, not the project.
+        let source = body_json(response).await;
+        assert_eq!(source["path"], "/srv/loom-2");
+        assert_eq!(source["hostId"], host.id.to_string());
+        assert_eq!(source["isDefault"], false);
+        assert_eq!(source["type"], "local_path");
         let source_id = source["id"].as_str().unwrap().to_string();
 
         // The update is in the project's scope, ready for a client replay.
@@ -2784,10 +3184,7 @@ mod tests {
         )
         .await;
         assert_eq!(removed.status(), StatusCode::OK);
-        assert!(body_json(removed).await["project"]["sources"]
-            .as_array()
-            .unwrap()
-            .is_empty());
+        assert_eq!(body_json(removed).await["ok"], true);
 
         // Removing it again is a not-found, not a silent success.
         let again = delete(
@@ -2828,14 +3225,16 @@ mod tests {
                 &app,
                 "/api/v1/threads",
                 serde_json::json!({
-                    "project_id": project_id.to_string(),
-                    "environment_id": environment.id.to_string(),
+                    "projectId": project_id.to_string(),
+                    "origin": "app",
+                    "input": [],
+                    "environment": { "type": "reuse", "environmentId": environment.id.to_string() }
                 }),
             )
             .await,
         )
         .await;
-        let thread_id = created["thread"]["id"].as_str().unwrap().to_string();
+        let thread_id = created["id"].as_str().unwrap().to_string();
         // A user message moves the thread to `working`.
         post(
             &app,
@@ -2898,14 +3297,16 @@ mod tests {
                 &app,
                 "/api/v1/threads",
                 serde_json::json!({
-                    "project_id": state.registry.personal_project_id().to_string(),
-                    "environment_id": environment.id.to_string(),
+                    "projectId": state.registry.personal_project_id().to_string(),
+                    "origin": "app",
+                    "input": [],
+                    "environment": { "type": "reuse", "environmentId": environment.id.to_string() }
                 }),
             )
             .await,
         )
         .await;
-        let thread_id = created["thread"]["id"].as_str().unwrap().to_string();
+        let thread_id = created["id"].as_str().unwrap().to_string();
 
         let response = post(
             &app,
@@ -2952,13 +3353,16 @@ mod tests {
                 &app,
                 "/api/v1/threads",
                 serde_json::json!({
-                    "project_id": state.registry.personal_project_id().to_string()
+                    "projectId": state.registry.personal_project_id().to_string(),
+                    "origin": "app",
+                    "input": [],
+                    "environment": { "type": "project-default" }
                 }),
             )
             .await,
         )
         .await;
-        let thread_id = created["thread"]["id"].as_str().unwrap().to_string();
+        let thread_id = created["id"].as_str().unwrap().to_string();
 
         let response = post(
             &app,
@@ -3024,7 +3428,7 @@ mod tests {
         assert_eq!(json["source"], "no_host");
 
         let hosts = body_json(get(&app, "/api/v1/hosts").await).await;
-        assert_eq!(hosts["hosts"].as_array().unwrap().len(), 0);
+        assert_eq!(hosts.as_array().unwrap().len(), 0);
 
         state.shutdown();
     }
@@ -3071,7 +3475,7 @@ mod tests {
         assert_eq!(again["event_id"], "", "a no-op reconnect publishes nothing");
 
         let hosts = body_json(get(&app, "/api/v1/hosts").await).await;
-        assert_eq!(hosts["hosts"].as_array().unwrap().len(), 1);
+        assert_eq!(hosts.as_array().unwrap().len(), 1);
 
         state.shutdown();
     }
@@ -3111,7 +3515,7 @@ mod tests {
         assert_eq!(primary["source"], "no_host");
 
         let hosts = body_json(get(&app, "/api/v1/hosts").await).await;
-        assert_eq!(hosts["hosts"][0]["status"], "disconnected");
+        assert_eq!(hosts[0]["status"], "disconnected");
 
         state.shutdown();
     }
@@ -3146,17 +3550,24 @@ mod tests {
 
         // Empty to begin with, and an empty list is not an error.
         let empty = body_json(get(&app, "/api/v1/threads").await).await;
-        assert_eq!(empty["threads"].as_array().unwrap().len(), 0);
+        assert_eq!(empty.as_array().unwrap().len(), 0);
 
-        let owned =
-            serde_json::json!({ "project_id": state.registry.personal_project_id().to_string() });
+        let owned = serde_json::json!({
+            "projectId": state.registry.personal_project_id().to_string(),
+            "origin": "app",
+            "input": [],
+            "environment": { "type": "project-default" }
+        });
         let first = body_json(post(&app, "/api/v1/threads", owned.clone()).await).await;
         let second = body_json(
             post(
                 &app,
                 "/api/v1/threads",
                 serde_json::json!({
-                    "project_id": state.registry.personal_project_id().to_string(),
+                    "projectId": state.registry.personal_project_id().to_string(),
+                    "origin": "app",
+                    "input": [],
+                    "environment": { "type": "project-default" },
                     "title": "second",
                 }),
             )
@@ -3165,15 +3576,15 @@ mod tests {
         .await;
 
         let listed = body_json(get(&app, "/api/v1/threads").await).await;
-        let ids: Vec<&str> = listed["threads"]
+        let ids: Vec<&str> = listed
             .as_array()
             .unwrap()
             .iter()
             .map(|thread| thread["id"].as_str().unwrap())
             .collect();
         assert_eq!(ids.len(), 2);
-        assert!(ids.contains(&first["thread"]["id"].as_str().unwrap()));
-        assert!(ids.contains(&second["thread"]["id"].as_str().unwrap()));
+        assert!(ids.contains(&first["id"].as_str().unwrap()));
+        assert!(ids.contains(&second["id"].as_str().unwrap()));
 
         state.shutdown();
     }
@@ -3338,7 +3749,7 @@ mod tests {
             .await,
         )
         .await;
-        assert_eq!(listed["environments"].as_array().unwrap().len(), 1);
+        assert_eq!(listed.as_array().unwrap().len(), 1);
 
         let by_id = get(&app, &format!("/api/v1/environments/{}", environment.id)).await;
         assert_eq!(by_id.status(), StatusCode::OK);

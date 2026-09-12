@@ -117,6 +117,23 @@ impl Contract {
             .find(|route| route.method == method && (route.full_path == path || route.path == path))
     }
 
+    /// Look a route up by method and a concrete request path, treating path
+    /// parameters as wildcards.
+    ///
+    /// The contract writes a parameter as `:id`; a live request carries the
+    /// value. Exact lookup cannot see that a request reached a route, so a
+    /// middleware that wants to validate a request body needs this. Segments
+    /// are compared positionally and a parameter segment matches any single,
+    /// non-empty segment; a trailing `{.+}` catch-all is matched as one.
+    pub fn match_route(&self, method: &str, path: &str) -> Option<&HttpRoute> {
+        let method = method.to_ascii_uppercase();
+        let request_segments: Vec<&str> = split_path(path);
+        self.routes
+            .iter()
+            .filter(|route| route.method == method)
+            .find(|route| segments_match(&split_path(&route.full_path), &request_segments))
+    }
+
     /// Find a route by its dotted id.
     pub fn route_by_id(&self, id: &str) -> Option<&HttpRoute> {
         self.routes.iter().find(|route| route.id == id)
@@ -176,6 +193,21 @@ impl Contract {
         match &route.request.schema {
             Some(schema) => validate(&self.server_api, schema, instance),
             None => Vec::new(),
+        }
+    }
+
+    /// Validate a parsed request body for a route id, the symmetric counterpart
+    /// of [`Contract::route_by_id`] + [`Contract::validate_request`].
+    ///
+    /// An unknown id is a violation rather than an empty pass: a typo in a test
+    /// or handler must not silently disable the check.
+    pub fn validate_request_by_id(&self, id: &str, instance: &Value) -> Vec<Violation> {
+        match self.route_by_id(id) {
+            Some(route) => self.validate_request(route, instance),
+            None => vec![Violation {
+                path: "$".to_string(),
+                message: format!("unknown contract route `{id}`"),
+            }],
         }
     }
 
@@ -328,8 +360,67 @@ fn unknown_protocol(protocol: &str) -> Vec<Violation> {
     }]
 }
 
+/// Split a path into non-empty segments, ignoring the leading slash and a
+/// possible query string.
+fn split_path(path: &str) -> Vec<&str> {
+    path.split('?')
+        .next()
+        .unwrap_or(path)
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .collect()
+}
+
+/// True when `pattern` segments accept `request` segments.
+fn segments_match(pattern: &[&str], request: &[&str]) -> bool {
+    let mut pattern_index = 0;
+    let mut request_index = 0;
+    while pattern_index < pattern.len() {
+        let segment = pattern[pattern_index];
+        // A trailing `{.+}` capture (`:filePath{.+}`) consumes every remaining
+        // segment, including separators; nothing may follow it.
+        if segment.contains("{.+}") {
+            return request_index < request.len() && pattern_index + 1 == pattern.len();
+        }
+        // `:id` is a parameter and `{id}` a wildcard capture; both consume
+        // exactly one live segment.
+        let is_parameter = segment.starts_with(':') || segment.starts_with('{');
+        if !is_parameter {
+            if request.get(request_index) != Some(&segment) {
+                return false;
+            }
+        } else if request.get(request_index).is_none() {
+            return false;
+        }
+        pattern_index += 1;
+        request_index += 1;
+    }
+    request_index == request.len()
+}
+
 impl Default for Contract {
     fn default() -> Self {
         Self::load()
     }
+}
+
+static SHARED: std::sync::OnceLock<Contract> = std::sync::OnceLock::new();
+
+/// The process-wide contract, parsed once on first use.
+///
+/// `Contract::load` parses several megabytes of embedded JSON Schema, which is
+/// fine in a test but wasteful on a request path. A server validating live
+/// requests uses this; a test that wants a local value can still call
+/// [`Contract::load`].
+pub fn shared() -> &'static Contract {
+    SHARED.get_or_init(Contract::load)
+}
+
+/// Violations rendered as one line, for a uniform API error message.
+pub fn describe(violations: &[Violation]) -> String {
+    violations
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("; ")
 }

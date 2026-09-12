@@ -22,12 +22,12 @@
       "sha256": "7b06a64be067c816e0fcf461bf73ad72fe8c53a6586125d9983d0848601f5eb2"
     },
     "host-daemon.json": {
-      "bytes": 493649,
-      "sha256": "742713c6c33f85e3634c836a63ffe404f95ddf8c33929a9b08cd0039d5fca76c"
+      "bytes": 540552,
+      "sha256": "bdb438dc84e874df36b7ccd397e3c8e51ffd0d9fe23fbd81fd19538bf1cc7381"
     },
     "server-api.json": {
-      "bytes": 627802,
-      "sha256": "13177238a8a6c27d55eb962ed89d144f3419c2fad1d683f62d358c241f1c2077"
+      "bytes": 657648,
+      "sha256": "b3da9e9a43e52ba923fc1e0a2eb01570d4f97f9d74440111a817860f494b99a3"
     },
     "thread-event.json": {
       "bytes": 893785,

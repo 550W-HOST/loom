@@ -317,7 +317,7 @@ async fn the_host_and_thread_commands_drive_a_real_conversation() {
     // A project is required for every thread. The seeded personal one is
     // fetched, not assumed, so the test proves the list is usable.
     let projects = http_json(&addr, "/api/v1/projects").await;
-    let project_id = projects["projects"][0]["id"].as_str().unwrap().to_string();
+    let project_id = projects[0]["id"].as_str().unwrap().to_string();
 
     // Bind the thread to an environment so its message dispatches a run
     // instead of failing for want of a workspace.
@@ -340,15 +340,18 @@ async fn the_host_and_thread_commands_drive_a_real_conversation() {
     let created = http_post_json(
         &addr,
         "/api/v1/threads",
-        &json!({ "environment_id": environment_id, "project_id": project_id }),
+        &json!({
+            "projectId": project_id,
+            "origin": "app",
+            "input": [],
+            "environment": { "type": "reuse", "environmentId": environment_id },
+        }),
     )
     .await;
-    let thread_id = created["thread"]["id"].as_str().unwrap().to_string();
-    let project_id = created["thread"]["project_id"]
-        .as_str()
-        .unwrap()
-        .to_string();
-    assert_eq!(created["thread"]["status"], "idle");
+    // `threads.create` returns the thread itself with 201.
+    let thread_id = created["id"].as_str().unwrap().to_string();
+    let project_id = created["projectId"].as_str().unwrap().to_string();
+    assert_eq!(created["status"], "idle");
 
     // Subscribe to the conversation scope, then send a message through the
     // HTTP command API. The message and the status change it causes both
