@@ -6,10 +6,10 @@
 #
 #   1. the binary runs on the machine it targets at all — a static musl build is
 #      where a glibc assumption surfaces, and it surfaces at run time
-#   2. `loom-server` answers `/health`, serves its embedded UI from the same
-#      origin, and creates a project
-#   3. `loom-daemon` enrols against that server, which is the protocol handshake
-#      a mismatched pair of artifacts would refuse
+#   2. `loom-daemon` enrols against `loom-server`, which is the protocol
+#      handshake a mismatched pair of artifacts would refuse
+#   3. the two together accept a contract-shaped write: the server creates a
+#      project on the enrolled host and reads it back from the list
 #
 # The pipeline runs this on the x86_64 artifacts, and a maintainer can run it
 # against a downloaded release. The aarch64 artifacts cannot be executed on an
@@ -279,28 +279,45 @@ asset() {
 asset "/app.js" "text/javascript; charset=utf-8"
 asset "/style.css" "text/css; charset=utf-8"
 
-project_id="$(
-  curl -fsS -X POST -H 'content-type: application/json' -d '{"name":"release-verification"}' \
-    "$base/api/v1/projects" | jq -r '.project.id // empty'
-)" || die "POST /api/v1/projects failed"
-[[ -n "$project_id" ]] || die "POST /api/v1/projects returned no project id"
-# Read it back: the write echoing an id proves the handler ran, the list proves
-# the state it published is what a client sees.
-curl -fsS "$base/api/v1/projects" |
-  jq -e --arg id "$project_id" '.projects[] | select(.id == $id)' >/dev/null ||
-  die "project $project_id was created but is not in the project list"
-note "created project $project_id and read it back from the list"
+# A JSON response is captured in a file before it is parsed, and the body is
+# printed when the request fails. `curl -f` alone throws the body away, and on
+# a contract route the body is the whole diagnosis: a 422 names the field the
+# request was missing, which is what a shape regression looks like from here.
+api() {
+  local method="$1" path="$2" out="$3" data="${4:-}" code
+  if [[ -n "$data" ]]; then
+    code="$(curl -sS -o "$out" -w '%{http_code}' -X "$method" \
+      -H 'content-type: application/json' -d "$data" "$base$path")" ||
+      die "$method $path could not be reached"
+  else
+    code="$(curl -sS -o "$out" -w '%{http_code}' -X "$method" "$base$path")" ||
+      die "$method $path could not be reached"
+  fi
+  if [[ "$code" != 2?? ]]; then
+    printf -- '--- %s %s -> %s\n' "$method" "$path" "$code" >&2
+    cat "$out" >&2
+    printf '\n' >&2
+    die "$method $path answered $code"
+  fi
+}
+
+# The response body as far as it diagnoses anything: a shape mismatch is read
+# off what the server actually answered, and an unbounded body is not worth the
+# terminal.
+body() { head -c 400 "$1" | tr -d '\n'; }
 
 # The daemon and the server refuse to work together unless their protocol
 # versions match, so an enrolled host is that handshake succeeding on real
-# sockets.
+# sockets. It enrols before the project write because `projects.create` takes
+# the contract's body — a name plus the source the project starts with — and the
+# only host on this machine is the daemon's.
 "$daemon" --server-url "$base" --name "release-verification" \
   --state "$tmp/host-id" --session-dir "$tmp/sessions" >"$tmp/daemon.log" 2>&1 &
 daemon_pid=$!
 enrolled=""
 for _ in $(seq 1 150); do
   curl -fsS "$base/api/v1/hosts" 2>/dev/null |
-    jq -e '.hosts[] | select(.status == "connected")' >/dev/null && {
+    jq -e '.[] | select(.status == "connected")' >/dev/null && {
     enrolled=yes
     break
   }
@@ -311,8 +328,33 @@ if [[ -z "$enrolled" ]]; then
   logs
   die "loom-daemon did not enrol against the server"
 fi
-host_id="$(curl -fsS "$base/api/v1/hosts" | jq -r '.hosts[0].id')"
+# A bare array, like every list route: the shapes here are `projects.list`'s and
+# `hosts.list`'s. Each value is read only after the shape it is read from is
+# asserted, so a shape change is reported as one instead of as a missing field.
+api GET /api/v1/hosts "$tmp/hosts.json"
+jq -e 'type == "array"' "$tmp/hosts.json" >/dev/null ||
+  die "GET /api/v1/hosts did not answer an array: $(body "$tmp/hosts.json")"
+host_id="$(jq -r '[.[] | select(.status == "connected")][0].id // empty' "$tmp/hosts.json")"
+[[ -n "$host_id" ]] || die "no connected host in $(body "$tmp/hosts.json")"
 note "daemon enrolled as $host_id"
+
+# `projects.create` takes `{ name, source }` and answers 201 with the project
+# itself. Both halves of the old assumption are gone: the request carried no
+# source, and the response is no longer wrapped in `{ "project": … }`.
+api POST /api/v1/projects "$tmp/project.json" \
+  "$(jq -cn --arg host "$host_id" --arg path "$tmp/workspace" \
+    '{name: "release-verification", source: {type: "local_path", hostId: $host, path: $path}}')"
+jq -e 'type == "object" and (.id | type == "string")' "$tmp/project.json" >/dev/null ||
+  die "POST /api/v1/projects did not answer a project object: $(body "$tmp/project.json")"
+project_id="$(jq -r '.id' "$tmp/project.json")"
+# Read it back: the write echoing an id proves the handler ran, the list proves
+# the state it published is what a client sees.
+api GET /api/v1/projects "$tmp/projects.json"
+jq -e 'type == "array"' "$tmp/projects.json" >/dev/null ||
+  die "GET /api/v1/projects did not answer an array: $(body "$tmp/projects.json")"
+jq -e --arg id "$project_id" '.[] | select(.id == $id)' "$tmp/projects.json" >/dev/null ||
+  die "project $project_id was created but is not in the project list"
+note "created project $project_id and read it back from the list"
 
 printf 'verified loom %s (%s, protocol %s, commit %s)\n' \
   "$release_version" "$release_target" "$release_protocol" "$release_commit"

@@ -156,15 +156,17 @@ sockets:
   GET / -> 200 text/html, 1476 bytes
   GET /app.js -> 200 text/javascript; charset=utf-8, 1191514 bytes
   GET /style.css -> 200 text/css; charset=utf-8, 8801 bytes
-  created project proj_01M29YZ0QT1G3S055KX08W6N4A and read it back from the list
   daemon enrolled as host_01M29YZ0TA2KCGQ399DA1RW47K
+  created project proj_01M29YZ0QT1G3S055KX08W6N4A and read it back from the list
 ```
 
-Three things there are worth naming. The artifacts are *executed*, which is the
+Four things there are worth naming. The artifacts are *executed*, which is the
 only way a musl/glibc difference appears. The daemon *enrols*, which is the
-protocol handshake a mismatched pair of artifacts would refuse. And the
-binaries are asked about themselves rather than read from the source tree, so
-what is checked is the file that will be downloaded.
+protocol handshake a mismatched pair of artifacts would refuse. The project write
+follows it, naming the host that daemon enrolled as — `projects.create` takes a
+source — so the claim is that the pair works together, not that each half works
+alone. And the binaries are asked about themselves rather than read from the
+source tree, so what is checked is the file that will be downloaded.
 
 The aarch64 pair cannot be executed on an x86_64 runner, so it is verified with
 `--elf-only`: the same script, checking everything a foreign machine can — the

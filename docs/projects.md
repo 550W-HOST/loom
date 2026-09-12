@@ -19,10 +19,11 @@ Concretely:
 - **`kind` is provenance, not privilege.** Nothing in the command API behaves
   differently for it. A client renders it however it likes — the reference UI
   simply lists it with the rest;
-- a thread and an environment must **name** their project. `project_id` is
-  required on both create calls, and omitting it is a `400`, not a silent
-  landing in the personal project. That is what removes the "one implicit
-  project" failure mode this change exists to fix.
+- a thread and an environment must **name** their project. The thread route
+  takes the contract's `projectId` (absent is a `422` from the request
+  validator), the environment route its own `project_id` (absent is a `400`);
+  neither lands silently in the personal project. That is what removes the "one
+  implicit project" failure mode this change exists to fix.
 
 The seeded project's creation is deliberately **not** published as a
 `project_created` event. It is part of the registry's construction, and like
@@ -34,31 +35,31 @@ replay window, for as long as that stretches).
 
 ## Sources
 
-`Project.sources` is a list of `ProjectSource`, one entry per host:
+`Project.sources` is a list of `ProjectSource`, one entry per host. On the wire
+it is bb's `projectSourceSchema`, camelCase and `type`-tagged:
 
 ```json
 {
   "id": "src_…",
-  "project_id": "proj_…",
-  "host_id": "host_…",
+  "projectId": "proj_…",
+  "hostId": "host_…",
+  "type": "local_path",
   "path": "/srv/loom",
-  "git_remote_url": "git@github.com:550W-HOST/loom.git",
-  "is_default": true,
-  "created_at_ms": 1789120438372,
-  "updated_at_ms": 1789120438372
+  "isDefault": true,
+  "createdAt": 1789120438372,
+  "updatedAt": 1789120438372
 }
 ```
 
-- **`host_id` is required.** A source says where the code lives *on a
-  machine*. Two sources for the same project on two machines is the normal
-  multi-machine shape.
+- **`hostId` is required.** A source says where the code lives *on a machine*.
+  Two sources for the same project on two machines is the normal multi-machine
+  shape; a source naming a host that was never enrolled is a `404`.
 - **`path` may be empty** for a source that only declares a repository before
-  any checkout exists. A source with neither a path nor a `git_remote_url` is
-  rejected.
-- **`git_remote_url` is a declaration, not an action.** Adding a source never
+  any checkout exists. A source with neither a path nor a remote is rejected.
+- **Recording a remote is a declaration, not an action.** Adding a source never
   clones or fetches. Materialising a workspace from a source is environment
   provisioning's job, and it consumes whatever the source declared.
-- The **first source added becomes the default** (`is_default: true`). Removing
+- The **first source added becomes the default** (`isDefault: true`). Removing
   the default promotes the first remaining source, so a project with sources
   always has exactly one default.
 
@@ -102,33 +103,36 @@ transition is additive.
 
 ## HTTP surface
 
+The read/write routes are bb's, in the contract's shapes: camelCase bodies, bare
+arrays for lists, the created row at `201`.
+
 ```text
-GET    /api/v1/projects                              → { "projects": [Project, …] }
-POST   /api/v1/projects                              { name, git_remote_url? }
-GET    /api/v1/projects/{id}                         → Project
-PATCH  /api/v1/projects/{id}                         { name?, git_remote_url? }
-POST   /api/v1/projects/{id}/archive
-POST   /api/v1/projects/{id}/sources                 { host_id?, path?, git_remote_url? }
-DELETE /api/v1/projects/{id}/sources/{source_id}
+GET    /api/v1/projects                 → [projectSchema, …]
+POST   /api/v1/projects                 { name, source: { type, hostId, path } } → 201 projectSchema
+GET    /api/v1/projects/{id}            → projectSchema
+PATCH  /api/v1/projects/{id}            { name? } → projectSchema
+POST   /api/v1/projects/{id}/sources    { type, hostId, path } → 201 projectSourceSchema
+DELETE /api/v1/projects/{id}/sources/{sourceId}
+POST   /api/v1/projects/{id}/archive    (loom-native) → Project
 ```
 
 The list is sorted by creation time and then id (active projects first,
-archived last), so it never depends on `HashMap` iteration order. `host_id` on
-a source defaults to the primary host, exactly like
-`POST /api/v1/environments`; with no host enrolled the request is a `409`
-rather than an unhosted source.
+archived last), so it never depends on `HashMap` iteration order. `hostId` is
+required on both create calls: a project or source names the machine its code
+lives on, and a host that was never enrolled is a `404` rather than an unhosted
+source.
 
 ## Relationship to bb's contract
 
-This surface is **loom-native**, not a subset of bb's `/api/v1/projects`
-routes. bb models a project as a name plus a single `source` (a discriminated
-`local_path`), and exposes it under `/projects` with different shapes and
-lifecycle verbs (branches, skills, files, attachments). loom reuses its own
-`Project` / `ProjectSource` domain types — one source per host, plural, with an
-optional git remote — because the domain layer predates this issue and the
-issue asks for those types to be reused rather than replaced.
+`projects.list`, `projects.create`, `projects.get`, `projects.update`,
+`projects.createSource` and `projects.deleteSource` are implemented in bb's
+shapes, so a bb client's project calls reach them unchanged. Two things stay
+loom's own: the archive verb, which bb does not have (that is why it is the one
+route above returning the domain `Project`), and the routes this repository has
+not implemented yet — branches, files, attachments, skills — which are tracked
+per route in [`api-coverage.md`](api-coverage.md).
 
-It sits under the `/api/v1/*` prefix that [`contract.md`](contract.md) already
-marks as knowingly divergent from bb until the client/daemon protocol split
-lands, and it is one of the loom-native control endpoints that split has to
-move under a distinct prefix.
+Archive is one of the loom-native control endpoints that
+[`contract.md`](contract.md) says must move off the `/api/v1/*` prefix bb's
+routes are reserved to once the client/daemon protocol split lands; until then
+it is knowingly divergent and uncovered by the contract tests.

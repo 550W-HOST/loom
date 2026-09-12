@@ -142,13 +142,15 @@ curl -X POST localhost:38886/api/v1/hosts \
   -H 'content-type: application/json' -d '{"name":"laptop"}'
 
 # List projects. The server seeds one personal project on first start; it is
-# an ordinary project from then on. A thread must name its project.
+# an ordinary project from then on. A thread must name its project. The body is
+# a bare array of bb's `projectSchema` — no envelope.
 curl localhost:38886/api/v1/projects
 
-# Create a thread; the `thread_created` event goes to the project's scope.
+# Create a thread; the `thread_created` event goes to the project's scope. The
+# body is bb's `threads.create` shape and the response is the thread itself.
 curl -X POST localhost:38886/api/v1/threads \
   -H 'content-type: application/json' \
-  -d '{"project_id":"proj_..."}'
+  -d '{"projectId":"proj_...","origin":"app","input":[],"environment":{"type":"project-default"}}'
 
 # Message a thread; it appends and, from idle, starts a run. Both events go
 # to thread:{id}, in order. With a daemon connected, a `RunDispatch` is also
