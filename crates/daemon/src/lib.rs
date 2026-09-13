@@ -42,6 +42,7 @@
 //!
 //! [`RunDispatch`]: loom_provider_protocol::RunDispatch
 
+pub mod acp;
 pub mod provider;
 pub mod session;
 pub mod update;
@@ -538,7 +539,7 @@ impl Daemon {
         if let Some(id) = &parsed {
             // Advance the resume cursor monotonically; replay and live traffic
             // can arrive in either order around a reconnect.
-            if self.cursor.as_ref().map_or(true, |cursor| id > cursor) {
+            if self.cursor.as_ref().is_none_or(|cursor| id > cursor) {
                 self.cursor = Some(*id);
             }
             if !self.seen_events.insert(*id) {

@@ -8,6 +8,9 @@ license.workspace = true
 
 [dependencies]
 loom-domain.workspace = true
+# The ACP protocol types, so the adapter translates against the real schema
+# rather than a hand-copied mirror of it (which would drift silently).
+agent-client-protocol-schema.workspace = true
 loom-provider-protocol.workspace = true
 loom-relay.workspace = true
 loom-server.workspace = true

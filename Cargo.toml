@@ -5,7 +5,11 @@ members = ["crates/contract", "crates/daemon", "crates/domain", "crates/provider
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.80"
+# 1.88 is the floor the ACP SDK requires (`agent-client-protocol` 2.0.0 and
+# `agent-client-protocol-schema` 1.5.0 both declare it, and their manifests use
+# edition 2024, which Cargo cannot even parse before 1.85). Since loom's whole
+# provider strategy is ACP, this floor is the protocol's floor.
+rust-version = "1.88"
 license = "MIT"
 
 [workspace.dependencies]
@@ -15,6 +19,10 @@ loom-provider-protocol = { path = "crates/provider-protocol" }
 loom-relay = { path = "crates/relay" }
 loom-relay-hub = { path = "crates/relay-hub" }
 loom-server = { path = "crates/server" }
+# Pinned to the exact version the ACP SDK requires, so there is a single schema
+# copy in the tree: type identity matters between a direct dependency and the
+# one `agent-client-protocol` re-exports.
+agent-client-protocol-schema = { version = "=1.5.0", default-features = false }
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio", "ws"] }
 bytes = "1.6"
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
@@ -23,9 +31,11 @@ serde_json = "1.0"
 tokio = { version = "1.40", features = ["macros", "net", "rt-multi-thread", "sync", "time"] }
 # Pinned to the line axum's `ws` feature already uses. A second, newer
 # tungstenite pulls `sha1 0.11 -> digest 0.11 -> block-buffer 0.12`, whose
-# manifest needs the `edition2024` cargo feature and so cannot be parsed by the
-# 1.80 toolchain this workspace declares in `rust-version`. Keeping one
-# tungstenite keeps the MSRV honest and drops duplicate sha1/rand versions.
+# manifest needs the `edition2024` cargo feature. That used to be the reason
+# this was pinned (the workspace floor was 1.80, which cannot parse such a
+# manifest); the floor is now 1.88, so the pin is about keeping one tungstenite
+# in the tree and dropping duplicate sha1/rand versions rather than about the
+# toolchain.
 tokio-tungstenite = "0.29"
 
 [profile.release]

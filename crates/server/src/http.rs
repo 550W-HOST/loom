@@ -1115,7 +1115,7 @@ async fn thread_events(
         .filter(|(sequence, row)| {
             !after.is_some_and(|value| *sequence <= value)
                 && !before.is_some_and(|value| *sequence >= value)
-                && types.as_ref().map_or(true, |allowed| {
+                && types.as_ref().is_none_or(|allowed| {
                     allowed.contains(&row["type"].as_str().unwrap_or_default())
                 })
         })
@@ -2609,8 +2609,8 @@ async fn thread_timeline(
                 .get("sourceSeqEnd")
                 .and_then(Value::as_u64)
                 .unwrap_or_default();
-            after.map_or(true, |value| sequence > value)
-                && before.map_or(true, |value| sequence < value)
+            after.is_none_or(|value| sequence > value)
+                && before.is_none_or(|value| sequence < value)
         })
         .collect::<Vec<_>>();
     let has_older_rows = candidates.len() > segment_limit;
@@ -3635,7 +3635,7 @@ async fn thread_turn_summary_details(
         }
         Err(response) => return response,
     };
-    if query.turn_id.as_deref().map_or(true, str::is_empty) {
+    if query.turn_id.as_deref().is_none_or(str::is_empty) {
         return error_response_with_code(
             StatusCode::BAD_REQUEST,
             "invalid_request",

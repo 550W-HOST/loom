@@ -110,6 +110,29 @@ The MSRV job goes green the moment the floor stops being true, so raising
 `rust-version` is a visible decision rather than a side effect of a dependency
 bump.
 
+### The floor is now 1.88
+
+The ACP SDK set it: `agent-client-protocol` 2.0.0 and
+`agent-client-protocol-schema` 1.5.0 both declare `rust-version = "1.88"`, and
+their manifests are edition 2024, which Cargo cannot parse before 1.85 at all.
+Since loom's provider strategy is ACP — every agent is reached through it — the
+protocol's floor became loom's. Probe it directly:
+
+```bash
+cargo +1.88 check --workspace --all-targets --locked
+```
+
+The raise also relaxed the `tokio-tungstenite` pin's *reason*: a manifest using
+edition 2024 is now parseable, so the pin survives only to keep one WebSocket
+stack in the tree (and the duplicate `sha1`/`rand` versions out), not because
+the toolchain cannot read the alternative.
+
+**If you are reading this to downgrade the floor**, note what the 1.80 work
+established: the floor is not a number in a manifest, it is a property the MSRV
+job verifies by compiling. Lowering it without re-running that job in the
+workspace — including the daemon's whole dependency graph — reintroduces exactly
+the false declaration this job removed.
+
 ## Caching
 
 [`Swatinem/rust-cache`](https://github.com/Swatinem/rust-cache) restores the
@@ -174,7 +197,7 @@ constrained to `-j4` to approximate a runner:
 | `cargo fmt --all -- --check` | 0.3 s |
 | `cargo clippy --workspace --all-targets --locked -j4 -- -D warnings` | 16.7 s |
 | `cargo test --workspace --locked -j4` | 26.1 s |
-| `cargo +1.80 check --workspace --all-targets --locked -j4` | 16.0 s |
+| `cargo +1.88 check --workspace --all-targets --locked -j4` | 16.0 s |
 | contract re-export (bb fetch + `bun install` + export) | 14.9 s |
 
 The `checks` job is roughly 43 s of real work; the rest of its wall-clock is
@@ -479,10 +502,10 @@ cargo test --workspace --locked
 ```
 
 The `msrv` job, once the floor is installed
-(`rustup toolchain install 1.80 --profile minimal`):
+(`rustup toolchain install 1.88 --profile minimal`):
 
 ```bash
-cargo +1.80 check --workspace --all-targets --locked
+cargo +1.88 check --workspace --all-targets --locked
 ```
 
 The `contract` job needs `bun` and a bb checkout at the pinned revision:
