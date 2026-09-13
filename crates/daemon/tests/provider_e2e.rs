@@ -20,6 +20,8 @@ use loom_server::http::router;
 use loom_server::state::{AppConfig, AppState};
 use loom_server::PROTOCOL_VERSION;
 use serde_json::Value;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpStream;
 
 /// Starts a server-only control plane on an ephemeral port.
 async fn spawn_server(config: AppConfig) -> (String, AppState) {
@@ -971,4 +973,343 @@ async fn a_reconnect_recovers_more_dispatches_than_one_replay_page() {
 
     daemon.abort();
     state.shutdown();
+}
+
+// --- permissions: the agent asks a user, and the answer gets back ------------
+
+/// A minimal HTTP client for the two routes the permission tests use.
+///
+/// The B3 conformance suite has the same helper; it is duplicated here because
+/// these tests are about the *daemon* path and must not depend on the server's
+/// test crate.
+async fn http(addr: &str, method: &str, path: &str, body: Option<&Value>) -> (u16, Value) {
+    let payload = body.map(Value::to_string);
+    let mut stream = TcpStream::connect(addr).await.unwrap();
+    let head = match &payload {
+        Some(payload) => format!(
+            "{method} {path} HTTP/1.1\r\nHost: {addr}\r\nContent-Type: application/json\r\n\
+             Content-Length: {}\r\nConnection: close\r\n\r\n{payload}",
+            payload.len()
+        ),
+        None => format!("{method} {path} HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n"),
+    };
+    stream.write_all(head.as_bytes()).await.unwrap();
+    stream.flush().await.unwrap();
+    let mut raw = Vec::new();
+    tokio::time::timeout(Duration::from_secs(10), stream.read_to_end(&mut raw))
+        .await
+        .expect("HTTP response timed out")
+        .unwrap();
+    let text = String::from_utf8(raw).unwrap();
+    let (head, body) = text
+        .split_once("\r\n\r\n")
+        .expect("response had no body separator");
+    let status = head
+        .split(' ')
+        .nth(1)
+        .and_then(|code| code.parse().ok())
+        .expect("no HTTP status line");
+    let body = serde_json::from_str(body).unwrap_or(Value::Null);
+    (status, body)
+}
+
+/// An ACP agent that asks permission once and reports the decision it received.
+///
+/// The decision is written to `$0.decision`, so the test can assert what the
+/// *agent* was told rather than what loom recorded. The stub blocks on the
+/// permission response before finishing the turn, which is what makes the
+/// blocked-turn property observable.
+const PERMISSION_STUB: &str = r#"
+printf '%s\n' '{"jsonrpc":"2.0","id":"perm-1","method":"session/request_permission","params":{"sessionId":"stub-session","toolCall":{"toolCallId":"call-9","title":"Run rm -rf /","kind":"execute","status":"pending"},"options":[{"optionId":"allow-once","name":"Allow once","kind":"allow_once"},{"optionId":"deny","name":"Deny","kind":"reject_once"}]}}'
+while IFS= read -r line; do
+  case "$line" in
+    *'"id":"perm-1"'*)
+      printf '%s' "$line" > "$0.decision"
+      break
+      ;;
+  esac
+done
+printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"stub-session","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"decision received"}}}}'
+"#;
+
+/// The permission request reaches the interaction routes, and the recorded
+/// resolution reaches the blocked agent.
+///
+/// This is the whole bridge, end to end: an ACP agent asks, the daemon forwards
+/// the question up its socket, the control plane records a durable interaction,
+/// a client answers over HTTP, and the answer travels back through the relay to
+/// the agent's own request.
+#[tokio::test]
+async fn a_permission_request_is_answered_through_the_interaction_routes() {
+    let dir = tempfile::tempdir().unwrap();
+    let provider = write_stub(dir.path(), "permission.sh", PERMISSION_STUB);
+    let (url, state) = spawn_server(AppConfig {
+        provider_spec: provider.clone(),
+        run_timeout: Duration::from_secs(30),
+        ..AppConfig::default()
+    })
+    .await;
+    let (host_id, daemon) =
+        enroll_daemon(&url, None, Some(provider), Duration::from_secs(30)).await;
+    assert!(
+        eventually(|| state
+            .registry
+            .host(&host_id)
+            .map(|host| host.status == HostStatus::Connected)
+            .unwrap_or(false))
+        .await
+    );
+
+    let thread_id = start_turn(&state, dir.path(), "do the thing");
+
+    // The question must appear on the thread, in `pending`, while the turn is
+    // still blocked. Nothing may answer it on the daemon's behalf.
+    let addr = url.trim_start_matches("http://").to_string();
+    let listed = eventually_async(|| {
+        let addr = addr.clone();
+        let thread_id = thread_id.clone();
+        async move {
+            let (status, body) = http(
+                &addr,
+                "GET",
+                &format!("/api/v1/threads/{thread_id}/interactions"),
+                None,
+            )
+            .await;
+            (status == 200 && body.as_array().is_some_and(|rows| !rows.is_empty())).then_some(body)
+        }
+    })
+    .await
+    .expect("the permission request must appear as an interaction");
+
+    assert_eq!(listed[0]["payload"]["kind"], "approval");
+    assert_eq!(listed[0]["status"], "pending");
+    assert_eq!(
+        listed[0]["providerThreadId"], "stub-session",
+        "the agent's own session id is what correlates the question with its run"
+    );
+    assert_eq!(
+        listed[0]["payload"]["subject"]["kind"], "tool_use",
+        "the subject is the tool call the agent asked about"
+    );
+    assert_eq!(
+        state.registry.thread(&thread_id).unwrap().status,
+        ThreadStatus::Working,
+        "the turn is blocked on the answer, not finished"
+    );
+
+    // Answer it as a user would.
+    let interaction_id = listed[0]["id"].as_str().unwrap().to_owned();
+    let (status, resolved) = http(
+        &addr,
+        "POST",
+        &format!("/api/v1/threads/{thread_id}/interactions/{interaction_id}/resolve"),
+        Some(&serde_json::json!({
+            "decision": "allow_once",
+            "grantedPermissions": {
+                "network": { "enabled": true },
+                "fileSystem": { "read": [], "write": [] },
+            },
+        })),
+    )
+    .await;
+    assert_eq!(status, 200, "{resolved}");
+    assert_eq!(resolved["status"], "resolved");
+
+    // The agent receives the decision and finishes the turn.
+    assert_eq!(
+        wait_for_terminal(&state, &thread_id).await,
+        ThreadStatus::Idle
+    );
+    let events = thread_events(&state, &thread_id);
+    assert_eq!(terminal_outcome(&events), Some("completed".into()));
+    assert_eq!(output_texts(&events), vec!["decision received"]);
+
+    let decision = std::fs::read_to_string(dir.path().join("permission.sh.decision"))
+        .expect("the agent must have received a permission response");
+    assert!(
+        decision.contains("\"optionId\":\"allow-once\""),
+        "an `allow_once` decision must select the agent's once-option: {decision}"
+    );
+
+    // The interaction history is on the thread scope, so a client that was not
+    // attached when the question was asked can still reconstruct it.
+    assert!(events.iter().any(|event| {
+        event["type"] == "thread_interaction_changed" && event["interaction"]["status"] == "pending"
+    }));
+    assert!(events.iter().any(|event| {
+        event["type"] == "thread_interaction_changed"
+            && event["interaction"]["status"] == "resolved"
+    }));
+    assert_contract_conformant(&events);
+
+    daemon.abort();
+    state.shutdown();
+}
+
+/// A denial reaches the agent as a refusal of the option it offered, never as
+/// an approval.
+#[tokio::test]
+async fn a_denied_permission_selects_the_agents_rejecting_option() {
+    let dir = tempfile::tempdir().unwrap();
+    let provider = write_stub(dir.path(), "deny.sh", PERMISSION_STUB);
+    let (url, state) = spawn_server(AppConfig {
+        provider_spec: provider.clone(),
+        run_timeout: Duration::from_secs(30),
+        ..AppConfig::default()
+    })
+    .await;
+    let (host_id, daemon) =
+        enroll_daemon(&url, None, Some(provider), Duration::from_secs(30)).await;
+    assert!(
+        eventually(|| state
+            .registry
+            .host(&host_id)
+            .map(|host| host.status == HostStatus::Connected)
+            .unwrap_or(false))
+        .await
+    );
+    let thread_id = start_turn(&state, dir.path(), "do the thing");
+    let addr = url.trim_start_matches("http://").to_string();
+
+    let listed = eventually_async(|| {
+        let addr = addr.clone();
+        let thread_id = thread_id.clone();
+        async move {
+            let (status, body) = http(
+                &addr,
+                "GET",
+                &format!("/api/v1/threads/{thread_id}/interactions"),
+                None,
+            )
+            .await;
+            (status == 200 && body.as_array().is_some_and(|rows| !rows.is_empty())).then_some(body)
+        }
+    })
+    .await
+    .expect("the request must appear");
+    let interaction_id = listed[0]["id"].as_str().unwrap().to_owned();
+
+    let (status, resolved) = http(
+        &addr,
+        "POST",
+        &format!("/api/v1/threads/{thread_id}/interactions/{interaction_id}/resolve"),
+        Some(&serde_json::json!({ "decision": "deny" })),
+    )
+    .await;
+    assert_eq!(status, 200, "{resolved}");
+
+    assert_eq!(
+        wait_for_terminal(&state, &thread_id).await,
+        ThreadStatus::Idle
+    );
+    let decision = std::fs::read_to_string(dir.path().join("deny.sh.decision"))
+        .expect("the agent must have received a permission response");
+    assert!(
+        decision.contains("\"optionId\":\"deny\""),
+        "a denial must select the rejecting option, never an allow: {decision}"
+    );
+    assert!(
+        !decision.contains("allow-once"),
+        "a denial must not contain an allowing option: {decision}"
+    );
+
+    daemon.abort();
+    state.shutdown();
+}
+
+/// A permission request nobody answers is cancelled when the run ends, and the
+/// interaction does not stay pending.
+///
+/// The regression this guards is the old auto-allow policy *and* its mirror: a
+/// question left `pending` forever keeps the thread's pending-interaction flag
+/// set. Cancellation is the only outcome when no user answers.
+#[tokio::test]
+async fn an_unanswered_permission_is_cancelled_when_the_run_ends() {
+    let dir = tempfile::tempdir().unwrap();
+    let provider = write_stub(dir.path(), "unanswered.sh", PERMISSION_STUB);
+    let (url, state) = spawn_server(AppConfig {
+        provider_spec: provider.clone(),
+        // Short enough that the run deadline reaps the blocked turn.
+        run_timeout: Duration::from_millis(150),
+        ..AppConfig::default()
+    })
+    .await;
+    let (host_id, daemon) =
+        enroll_daemon(&url, None, Some(provider), Duration::from_millis(150)).await;
+    assert!(
+        eventually(|| state
+            .registry
+            .host(&host_id)
+            .map(|host| host.status == HostStatus::Connected)
+            .unwrap_or(false))
+        .await
+    );
+    let thread_id = start_turn(&state, dir.path(), "do the thing");
+    let addr = url.trim_start_matches("http://").to_string();
+
+    let listed = eventually_async(|| {
+        let addr = addr.clone();
+        let thread_id = thread_id.clone();
+        async move {
+            let (status, body) = http(
+                &addr,
+                "GET",
+                &format!("/api/v1/threads/{thread_id}/interactions"),
+                None,
+            )
+            .await;
+            (status == 200 && body.as_array().is_some_and(|rows| !rows.is_empty())).then_some(body)
+        }
+    })
+    .await
+    .expect("the question was asked");
+
+    // The run deadline reaps the blocked turn; the interaction must settle with
+    // it rather than stay open.
+    let _ = wait_for_terminal_for(&state, &thread_id, Duration::from_secs(10)).await;
+    let interaction_id = listed[0]["id"].as_str().unwrap();
+    let (status, fetched) = http(
+        &addr,
+        "GET",
+        &format!("/api/v1/threads/{thread_id}/interactions/{interaction_id}"),
+        None,
+    )
+    .await;
+    assert_eq!(status, 200, "{fetched}");
+    assert_eq!(
+        fetched["status"], "interrupted",
+        "an unanswered question must settle, not stay pending: {fetched}"
+    );
+    assert_eq!(fetched["resolution"], Value::Null);
+
+    // The agent was *not* told "allowed". Two honest endings are possible here
+    // and both are correct: the broker settles the held request as cancelled
+    // (the file is written with no allow in it), or the run deadline tears the
+    // ACP connection down before the answer can be written (no file). What must
+    // never happen is an allow.
+    if let Ok(decision) = std::fs::read_to_string(dir.path().join("unanswered.sh.decision")) {
+        assert!(
+            !decision.contains("allow-once"),
+            "an unanswered request must never be answered with an allow: {decision}"
+        );
+    }
+
+    daemon.abort();
+    state.shutdown();
+}
+
+/// Polls an async predicate, with the same wall-clock bound as `eventually`.
+async fn eventually_async<T, F, Fut>(mut predicate: F) -> Option<T>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Option<T>>,
+{
+    for _ in 0..400 {
+        if let Some(value) = predicate().await {
+            return Some(value);
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    predicate().await
 }

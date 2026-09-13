@@ -109,9 +109,9 @@ These are authored by a server or a client, never by a provider, so
 | `system/manager/user_message` | server-only | loom user messages are `DomainEvent::ThreadMessageAdded`, not provider events. |
 | `system/thread/interrupted` | server-only | A cancellation is currently `turn/completed` with `status: interrupted`; the thread-level interruption event is future UI work. |
 | `system/operation` | not produced | loom has no thread-management operation model. |
-| `system/interaction/lifecycle` | not produced | loom has no interactive-client model. |
-| `system/permissionGrant/lifecycle` | not produced | loom's bridge auto-declines a provider dialog (no UI is attached); the decline is surfaced as `provider/warning`. A permission UI would emit this type instead. |
-| `system/userQuestion/lifecycle` | not produced | as above: a question dialog is auto-declined and surfaced as `provider/warning`. |
+| `system/interaction/lifecycle` | not produced | loom has no interactive-client model. ACP permission requests become `thread_interaction_changed`, a domain event, not a provider event. |
+| `system/permissionGrant/lifecycle` | not produced | ACP's `session/request_permission` is bridged to a durable interaction (`docs/acp-adapter.md`), so the decision reaches a user instead of being auto-declined. The contract's dedicated lifecycle type remains unproduced because loom's interaction entity is the richer record. |
+| `system/userQuestion/lifecycle` | not produced | ACP v1 has no question channel loom exposes; a bridged permission request is an approval, not a question. |
 | `system/thread-provisioning` | not produced | Environment provisioning emits `environment_status_changed` on the project scope, not a thread event. |
 | `system/provider-turn-watchdog` | not produced | bb's legacy persisted diagnostic; nothing produces it. |
 

@@ -751,7 +751,9 @@ fn content_text(block: &ContentBlock) -> String {
     }
 }
 
+pub mod permission;
 pub mod session;
+pub mod sessions;
 
 #[cfg(test)]
 mod tests;

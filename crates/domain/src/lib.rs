@@ -98,6 +98,6 @@ pub use queue::{
 pub use run::{RunEvent, RunOutcome};
 pub use scope::DomainScope;
 pub use thread::{
-    MessageRole, NewThread, ReasoningLevel, Thread, ThreadMessage, ThreadStatus, ThreadTrigger,
-    ThreadUpdate, ThreadVisibility,
+    MessageRole, NewThread, ProviderSessionBinding, ReasoningLevel, Thread, ThreadMessage,
+    ThreadStatus, ThreadTrigger, ThreadUpdate, ThreadVisibility,
 };

@@ -3073,6 +3073,13 @@ async fn send_queued_message(
 /// `resolution`; seeing one shape rather than four projections is the point of
 /// the domain's [`InteractionPayload`] and [`Resolution`].
 fn interaction_value(state: &AppState, interaction: &Interaction) -> Value {
+    // The agent's own conversation id when the request came from a provider
+    // that had named one; a request with no session (or a plugin's) falls back
+    // to loom's thread id, which is the only identity it has.
+    let provider_thread_id = interaction
+        .provider_thread_id
+        .clone()
+        .unwrap_or_else(|| interaction.thread_id.to_string());
     let origin = match &interaction.origin {
         InteractionOrigin::Provider {
             provider_id,
@@ -3080,7 +3087,7 @@ fn interaction_value(state: &AppState, interaction: &Interaction) -> Value {
         } => json!({
             "kind": "provider",
             "providerId": provider_id,
-            "providerThreadId": interaction.thread_id.to_string(),
+            "providerThreadId": provider_thread_id,
             "providerRequestId": provider_request_id,
         }),
         InteractionOrigin::Plugin {
@@ -3101,7 +3108,7 @@ fn interaction_value(state: &AppState, interaction: &Interaction) -> Value {
         "resolvedAt": interaction.resolved_at_ms,
         "turnId": interaction.turn_id,
         "providerId": configured_provider_id(state),
-        "providerThreadId": interaction.thread_id.to_string(),
+        "providerThreadId": provider_thread_id,
         "providerRequestId": match &interaction.origin {
             InteractionOrigin::Provider { provider_request_id, .. } => provider_request_id.clone(),
             InteractionOrigin::Plugin { plugin_id, .. } => plugin_id.clone(),

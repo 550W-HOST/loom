@@ -84,6 +84,20 @@ pub enum ClientCommand {
         /// The run observation.
         report: Box<ProviderReport>,
     },
+    /// A daemon reports that a provider is blocked on a permission request.
+    ///
+    /// This is a *request*, not an observation: the turn cannot proceed until
+    /// the control plane has recorded the question and a client has answered
+    /// it. The server records a durable interaction, publishes it to the
+    /// thread scope, and acknowledges with the interaction id. The answer
+    /// travels back down through the relay (see
+    /// [`loom_provider_protocol::InteractionResolutionFrame`]), never as a
+    /// reply to this frame, because the client that answers may not be the
+    /// daemon's peer.
+    InteractionRequest {
+        /// The permission request.
+        request: Box<loom_provider_protocol::InteractionRequest>,
+    },
     /// A daemon reports the outcome of provisioning a managed environment's
     /// workspace.
     ///
@@ -189,6 +203,23 @@ pub enum ServerMessage {
         /// are normal under redelivery.
         accepted: bool,
         /// Why it was not applied, when it was not.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        detail: Option<String>,
+    },
+    /// Acknowledges [`ClientCommand::InteractionRequest`].
+    InteractionRequestAck {
+        /// The daemon's identity for the request, echoed so it can match the
+        /// answer that will arrive through the relay.
+        request_id: String,
+        /// loom's durable interaction id, once the question is recorded. Absent
+        /// when the request was refused, in which case `detail` says why.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        interaction_id: Option<String>,
+        /// Whether the question was recorded. `false` means the request named
+        /// an unknown or foreign run; the daemon still holds the request open
+        /// and will settle it through its own outcome, never by assuming a yes.
+        accepted: bool,
+        /// Why it was not accepted, when it was not.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         detail: Option<String>,
     },

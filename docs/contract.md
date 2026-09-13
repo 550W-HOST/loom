@@ -280,18 +280,35 @@ awaiting_user_interaction`, which is a status the contract declares for that
 code. `finish_run_with` settles every interaction a thread still had open when
 its turn ended, so `hasPendingInteraction` in the thread list cannot be stuck.
 
-**Where interactions come from, and what is still missing.** The control plane's
-interaction producer is `AppState::record_interaction`, but no provider report
-calls it yet. The ACP client currently answers `session/request_permission`
-with its non-blocking policy; it does not hold a client-visible interaction.
-Holding that dialog open and bridging the answer back is a
-**provider-protocol** change — a new frame in each direction — and this batch
-deliberately does not ship a half of it. What the
-batch does guarantee is that the state such a frame would write is already
-durable, already routed and already rejectable: a provider that never asks
-leaves the interaction routes answering the truth (an empty list), not a shell
-success. Documenting the gap here rather than faking a producer is the same
-choice `threads.clearContext` makes below.
+**Where interactions come from.** ACP's `session/request_permission` is the
+producer, wired in W-566. The daemon holds the request open and sends
+`ClientCommand::InteractionRequest` up its socket; `AppState::record_interaction_request`
+records a durable interaction and publishes `thread_interaction_changed` to the
+thread scope; a client answers over the interaction routes; and
+`AppState::deliver_interaction_resolution` publishes
+`InteractionResolutionFrame` through the relay to `host:{id}`, where the daemon's
+broker hands it to the agent's blocked request.
+
+That is a frame in each direction, which is what the earlier batch deliberately
+waited for. Three properties are worth stating here because they are the ones a
+client or a reviewer will check:
+
+* **A request is only recorded for a run in flight and owned by the requesting
+  host**, the same ownership rule `apply_run_report` enforces. A question for a
+  run nobody is advancing is refused, because no client could render it in a
+  timeline.
+* **The interaction id is derived from `(run_id, request_id)`.** ACP's request
+  ids are unique only within a session, so scoping the hash by run is what keeps
+  a restarted daemon's fresh question from colliding with a settled row from an
+  earlier run. The provider's own id stays verbatim in `origin`, so the answer
+  frame can name it.
+* **No client, no answer.** The daemon cancels an unanswered request after its
+  permission timeout, cancels it immediately when the control plane refuses to
+  record it, and cancels every open request when the connection drops. A
+  cancellation is never an approval. See `docs/acp-adapter.md`.
+
+`providerThreadId` on the interaction is the agent's own session id when it has
+one, falling back to loom's thread id only when it does not.
 
 ### `threads.clearGoal` publishes an event; `threads.clearContext` refuses
 

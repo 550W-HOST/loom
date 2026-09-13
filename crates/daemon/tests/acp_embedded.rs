@@ -13,6 +13,7 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use loom_daemon::acp::permission::PermissionRegistry;
 use loom_daemon::acp::session::{drive, Transport};
 use loom_daemon::provider::ProviderRun;
 use loom_domain::RunOutcome;
@@ -108,6 +109,7 @@ fn run_resuming(cwd: &str, pi: &Path, provider_session_id: Option<&str>) -> Prov
         project_id: loom_domain::ProjectId::mint(),
         run_id: loom_domain::RunId::mint(),
         timeout: Duration::from_secs(30),
+        permission_timeout: Duration::from_secs(5),
         provider_session_id: provider_session_id.map(str::to_owned),
     }
 }
@@ -118,8 +120,16 @@ async fn drive_embedded(run: ProviderRun) -> Vec<loom_domain::RunEvent> {
         command: run.spec.command.clone(),
         args: Vec::new(),
     };
+    let (interactions, _requests) = mpsc::channel(8);
     let handle = tokio::spawn(async move {
-        let _ = drive(&run, transport, &tx).await;
+        let _ = drive(
+            &run,
+            transport,
+            &tx,
+            PermissionRegistry::new(),
+            interactions,
+        )
+        .await;
     });
     let mut events = Vec::new();
     while let Some(report) = rx.recv().await {
@@ -235,7 +245,15 @@ async fn provider_arguments_are_refused_rather_than_dropped() {
     // `drive` turns a pre-terminal failure into a terminal event, so the
     // refusal surfaces there rather than as a returned error.
     let (tx, mut rx) = mpsc::channel(64);
-    let _ = drive(&run, transport, &tx).await;
+    let (interactions, _requests) = mpsc::channel(8);
+    let _ = drive(
+        &run,
+        transport,
+        &tx,
+        PermissionRegistry::new(),
+        interactions,
+    )
+    .await;
     drop(tx);
     let mut events = Vec::new();
     while let Some(report) = rx.recv().await {

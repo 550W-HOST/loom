@@ -184,6 +184,113 @@ pub struct EnvironmentProvision {
     pub created_at_ms: u64,
 }
 
+/// A provider's request for permission, on its way to the control plane.
+///
+/// This is the upward half of the interaction bridge, and it travels the same
+/// way a [`ProviderReport`] does — up the daemon's own socket, as an
+/// observation the control plane turns into a durable entity. It is a request
+/// rather than a report, so it gets its own frame: a `ProviderReport` wraps a
+/// [`loom_domain::RunEvent`], and a question is not a run event.
+///
+/// `request_id` is the **daemon's** identity for the request, not the
+/// interaction id the control plane mints. The daemon needs a stable key to
+/// wait on before the control plane has answered anything, and the control
+/// plane needs a value a redelivered frame deduplicates on; one string serves
+/// both. The answer comes back naming this value, not loom's interaction id.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct InteractionRequest {
+    /// The host asking. The server rejects a request for a run this host does
+    /// not own, exactly as it does for a report.
+    pub host_id: HostId,
+    /// The run whose turn is blocked on the answer.
+    pub run_id: RunId,
+    /// The thread the run is advancing.
+    pub thread_id: ThreadId,
+    /// Its project, carried so the record needs no lookup.
+    pub project_id: ProjectId,
+    /// The daemon's identity for this request, stable across redelivery.
+    pub request_id: String,
+    /// The agent's session id, when it has named one. This is what a client
+    /// correlates the question with the `providerThreadId` on run events.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_thread_id: Option<String>,
+    /// What kind of request it is. ACP's permission request is an
+    /// [`loom_domain::InteractionKind::Approval`]; the field is generic because
+    /// the bridge is not ACP-specific.
+    pub kind: loom_domain::InteractionKind,
+    /// The request body, in the contract's payload shape.
+    pub payload: loom_domain::InteractionPayload,
+    /// When the request expires, if the agent set a limit. ACP's permission tool
+    /// call can carry a `timeout_ms`, and the control plane records it so a
+    /// client can render a countdown and a reaper can settle it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at_ms: Option<u64>,
+}
+
+/// A permission decision the control plane maps onto the agent's own options.
+///
+/// The three words are bb's contract vocabulary, deliberately narrower than
+/// ACP's `PermissionOptionKind` (which adds a reject-always). The daemon maps a
+/// word onto whichever option of that kind the agent offered — see
+/// `crates/daemon/src/acp/permission.rs` and its note on what a polarity cannot
+/// express.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PermissionDecision {
+    /// Grant this one operation.
+    AllowOnce,
+    /// Grant it for the rest of this agent session.
+    AllowForSession,
+    /// Refuse it.
+    Deny,
+}
+
+/// The answer to an [`InteractionRequest`], on its way back to the daemon.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum InteractionAnswer {
+    /// A permission decision, mapped onto the agent's own options by the daemon
+    /// (an `allow` picks an allowing option, a `deny` a rejecting one).
+    Decision {
+        /// The decision.
+        decision: PermissionDecision,
+    },
+    /// Settled without an answer: the run stopped, or no client answered and
+    /// the request was withdrawn. The daemon must **not** read this as
+    /// acceptance.
+    Cancelled {
+        /// Why, for the daemon's log.
+        reason: String,
+    },
+}
+
+/// A resolved interaction, published to `host:{id}` through the relay.
+///
+/// Downward, this travels exactly like a [`RunDispatch`] — through the relay to
+/// the target host's scope — so a daemon that was reconnecting when the user
+/// answered still receives it on replay. The daemon matches `request_id`
+/// against the permission request it is holding open; a resolution for a
+/// request it is not waiting on is dropped, which makes redelivery idempotent.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct InteractionResolutionFrame {
+    /// The host that owns the run.
+    pub host_id: HostId,
+    /// The run whose turn asked.
+    pub run_id: RunId,
+    /// The thread it is advancing.
+    pub thread_id: ThreadId,
+    /// The daemon's own identity for the request, echoed back so the daemon can
+    /// match it without sharing loom's id derivation.
+    pub request_id: String,
+    /// The control plane's interaction id, for logging and for a client that
+    /// correlates the two.
+    pub interaction_id: String,
+    /// The answer.
+    pub answer: InteractionAnswer,
+    /// Wall-clock milliseconds when the control plane published it.
+    pub created_at_ms: u64,
+}
+
 /// What a daemon did with an [`EnvironmentProvision`].
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "outcome", rename_all = "snake_case")]
@@ -337,6 +444,84 @@ mod tests {
         let value = serde_json::to_value(&failed).unwrap();
         assert_eq!(value["outcome"]["outcome"], "failed");
         assert_eq!(value["outcome"]["error"], "permission denied");
+    }
+
+    #[test]
+    fn an_interaction_request_round_trips() {
+        let request = InteractionRequest {
+            host_id: HostId::mint(),
+            run_id: RunId::mint(),
+            thread_id: ThreadId::mint(),
+            project_id: ProjectId::mint(),
+            request_id: "call-1".into(),
+            provider_thread_id: Some("acp-1".into()),
+            kind: loom_domain::InteractionKind::Approval,
+            payload: loom_domain::InteractionPayload::new(
+                loom_domain::InteractionKind::Approval,
+                serde_json::json!({
+                    "kind": "approval",
+                    "subject": {
+                        "kind": "tool_use",
+                        "itemId": "call-1",
+                        "tool": "other",
+                        "presentation": { "label": { "pending": "Run", "completed": "Ran" }, "icon": { "glyph": "Terminal" } },
+                    },
+                    "reason": null,
+                    "availableDecisions": ["allow_once", "allow_for_session", "deny"],
+                }),
+            ),
+            expires_at_ms: Some(1),
+        };
+        let encoded = serde_json::to_string(&request).unwrap();
+        assert_eq!(
+            serde_json::from_str::<InteractionRequest>(&encoded).unwrap(),
+            request
+        );
+        // The daemon identity survives the wire: the answer is matched on it.
+        let value: serde_json::Value = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(value["request_id"], "call-1");
+        assert_eq!(value["payload"]["kind"], "approval");
+    }
+
+    #[test]
+    fn every_answer_variant_round_trips() {
+        for answer in [
+            InteractionAnswer::Decision {
+                decision: PermissionDecision::AllowOnce,
+            },
+            InteractionAnswer::Decision {
+                decision: PermissionDecision::AllowForSession,
+            },
+            InteractionAnswer::Decision {
+                decision: PermissionDecision::Deny,
+            },
+            InteractionAnswer::Cancelled {
+                reason: "no client answered".into(),
+            },
+        ] {
+            let frame = InteractionResolutionFrame {
+                host_id: HostId::mint(),
+                run_id: RunId::mint(),
+                thread_id: ThreadId::mint(),
+                request_id: "call-1".into(),
+                interaction_id: "intr_01M".into(),
+                answer: answer.clone(),
+                created_at_ms: 7,
+            };
+            let encoded = serde_json::to_string(&frame).unwrap();
+            assert_eq!(
+                serde_json::from_str::<InteractionResolutionFrame>(&encoded).unwrap(),
+                frame
+            );
+        }
+        // The tag is what the daemon dispatches on, and a denial is not
+        // representable as an allow.
+        let denied = serde_json::to_value(InteractionAnswer::Decision {
+            decision: PermissionDecision::Deny,
+        })
+        .unwrap();
+        assert_eq!(denied["kind"], "decision");
+        assert_eq!(denied["decision"], "deny");
     }
 
     #[test]

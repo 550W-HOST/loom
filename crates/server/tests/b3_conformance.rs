@@ -260,6 +260,7 @@ impl Fixture {
                 origin,
                 InteractionPayload::new(kind, body),
                 provider_request_id.as_deref(),
+                Some("acp-session-1"),
                 None,
                 loom_relay::now_ms(),
             )
@@ -912,8 +913,11 @@ async fn a_typed_resolution_must_match_the_interaction() {
         assert_eq!(response.body["code"], "invalid_request");
     }
 
-    // `respond` refuses a typed interaction rather than storing the wrong
-    // shape, which is what keeps it distinct from `resolve`.
+    // `respond` refuses an approval rather than storing the wrong shape, which
+    // is what keeps it distinct from `resolve`. The contract's response union
+    // makes this the only coherent reading: an approval's `resolution` is one of
+    // the three decision shapes or `null`, so a `request_answer` there is a
+    // response the exported schema rejects.
     let opaque = fixture
         .post(
             &format!("{base}/interactions/{}/respond", approval.id),

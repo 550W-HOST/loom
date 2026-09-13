@@ -114,14 +114,34 @@ failure mode worth copying.
 ### The implementation now in use
 
 ```
-loom Thread.provider_session_id
-  → RunDispatch.provider_session_id
+loom Thread.provider_session_id + provider_session_binding
+  → RunDispatch.provider_session_id (only when agent and cwd match)
   → ACP session/load <id, cwd>
   → agent-owned session storage
 ```
 
 The old `effective_argv` / `--session-dir` / `--session-id` path was removed;
 loom never scans or opens a provider session file.
+
+### What was implemented, as of W-566
+
+| Piece | Where | State |
+| --- | --- | --- |
+| `thread -> (agent, session id, cwd)` | `loom_domain::ProviderSessionBinding`, on the thread | stored, replayed, and checked at dispatch |
+| the mismatch guard | `Thread::resumable_session_id` | agent or workspace change starts fresh |
+| the missing-cwd guard | `crate::acp::session::drive` | explicit failure naming the path |
+| `session/list` | `crate::acp::sessions::list_sessions` | capability-gated; `Unsupported` is distinct from an empty list |
+| capability probe | same module, `initialize` | `load_session` and `list_sessions`, never inferred |
+
+The import **surface** is the daemon's `list_sessions` returning
+`SessionListOutcome`. The control plane has no route for it yet: the exported bb
+contract declares no session-import endpoint (`grep -c session` over
+`contracts/bb/server-api.json`'s route ids is 0), so there is nothing to conform
+to and no client call to serve. The capability gate and the outcome distinction
+were implemented because they are the part the acceptance criteria name — "按
+capability 明确省略，不扫描 agent 私有文件格式" — and they are testable without
+a route. Adding a non-contract route would grow loom's own API surface, which
+`docs/api-coverage.md` exists to prevent.
 
 ### The three questions this posed, and how they were decided
 

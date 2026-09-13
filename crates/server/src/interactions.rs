@@ -36,9 +36,25 @@ use loom_domain::{
     Interaction, InteractionId, InteractionKind, InteractionOrigin, InteractionPayload,
     NewInteraction, Resolution, ThreadId,
 };
+use loom_provider_protocol::{
+    InteractionAnswer, InteractionRequest, InteractionResolutionFrame, PermissionDecision,
+};
+use loom_relay::Scope;
 
 use crate::domain_state::CommandError;
 use crate::state::AppState;
+
+/// What happened when a daemon reported a permission request.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RecordOutcome {
+    /// The question was recorded (or was already known) and is now visible to
+    /// clients.
+    Recorded(Box<Interaction>),
+    /// The request named a run that is not in flight, or one this host does not
+    /// own. Nothing was recorded: a question with no turn cannot be answered in
+    /// any client's timeline.
+    Unknown(String),
+}
 
 /// What happened when an answer was delivered.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -68,6 +84,7 @@ impl AppState {
         origin: InteractionOrigin,
         payload: InteractionPayload,
         provider_request_id: Option<&str>,
+        provider_thread_id: Option<&str>,
         expires_at_ms: Option<u64>,
         now_ms: u64,
     ) -> Result<Interaction, CommandError> {
@@ -80,6 +97,7 @@ impl AppState {
                 origin,
                 payload,
                 expires_at_ms,
+                provider_thread_id: provider_thread_id.map(str::to_owned),
                 id,
             },
             now_ms,
@@ -112,10 +130,17 @@ impl AppState {
         }
         match self
             .registry
-            .resolve_interaction(interaction_id, resolution, now_ms)
+            .resolve_interaction(interaction_id, resolution.clone(), now_ms)
         {
             Ok((interaction, event)) => {
                 let _ = self.publish_domain_event(&event);
+                // A permission request is the one interaction a provider is
+                // *blocked on*, so the answer has to reach the daemon's socket
+                // loop, not only a client's. The frame goes through the relay to
+                // the host scope — the same path a dispatch takes — so a
+                // resolution published while the daemon was reconnecting is
+                // replayed to it rather than lost.
+                self.publish_interaction_resolution(&interaction, &resolution, now_ms);
                 DeliverOutcome::Delivered(Box::new(interaction))
             }
             // A conflict means another client settled it while this request was
@@ -175,6 +200,142 @@ impl AppState {
         }
         cancelled
     }
+
+    /// Records a provider's permission request and publishes it to clients.
+    ///
+    /// This is the ACP `session/request_permission` producer the interaction
+    /// routes were missing, and it enforces the same ownership rules a run
+    /// report does: the run must be in flight and owned by the requesting host.
+    /// A question for a run nobody is advancing is refused rather than stored,
+    /// because there is no client that could ever render or answer it.
+    ///
+    /// Idempotent on `request_id`: the interaction id is derived from it, so a
+    /// redelivered frame lands on the same row. An already-known request returns
+    /// the existing interaction unchanged — including when it is already
+    /// settled, which is exactly what a daemon replaying its held requests
+    /// after a reconnect needs.
+    pub fn record_interaction_request(
+        &self,
+        request: InteractionRequest,
+        now_ms: u64,
+    ) -> RecordOutcome {
+        let Some(record) = self.runs.get(&request.run_id) else {
+            return RecordOutcome::Unknown(format!("run {} is not in flight", request.run_id));
+        };
+        if record.host_id != request.host_id {
+            return RecordOutcome::Unknown(format!(
+                "run {} is owned by host {}, not {}",
+                request.run_id, record.host_id, request.host_id
+            ));
+        }
+        if record.thread_id != request.thread_id {
+            return RecordOutcome::Unknown(format!(
+                "run {} belongs to thread {}, not {}",
+                request.run_id, record.thread_id, request.thread_id
+            ));
+        }
+        // The contract requires a turn id and loom's turn *is* the run, so the
+        // run id is the honest value rather than a placeholder.
+        let turn_id = request.run_id.to_string();
+        let origin = InteractionOrigin::Provider {
+            provider_id: self.provider_spec().name.clone(),
+            provider_request_id: request.request_id.clone(),
+        };
+        // The dedup key is scoped by run: ACP's request ids are unique only
+        // within a session, and a daemon that restarts would otherwise be able
+        // to collide a fresh question with a settled row from an earlier run.
+        // The provider's own id stays verbatim in `origin`, so the answer frame
+        // can name it.
+        let scoped_request_id = format!("{}/{}", request.run_id, request.request_id);
+        match self.record_interaction(
+            &request.thread_id,
+            &turn_id,
+            request.kind,
+            origin,
+            request.payload,
+            Some(&scoped_request_id),
+            request.provider_thread_id.as_deref(),
+            request.expires_at_ms,
+            now_ms,
+        ) {
+            Ok(interaction) => {
+                let interaction = self
+                    .registry
+                    .interaction(&interaction.id)
+                    .unwrap_or(interaction);
+                // The agent's session id is what a client correlates the
+                // question with the run events' `providerThreadId`. It arrives
+                // with the request rather than being looked up, so recording it
+                // needs no second read.
+                RecordOutcome::Recorded(Box::new(interaction))
+            }
+            Err(error) => RecordOutcome::Unknown(error.to_string()),
+        }
+    }
+
+    /// Publishes an answered permission request to the answering host's scope.
+    ///
+    /// Only a provider-origin, *resolved* approval produces a frame: a question
+    /// or a cancellation has no ACP request to unblock, and a plugin
+    /// interaction has no daemon waiting. Publishing a frame nothing waits on
+    /// would put an unfalsifiable fact in the host's log.
+    fn publish_interaction_resolution(
+        &self,
+        interaction: &Interaction,
+        resolution: &Resolution,
+        now_ms: u64,
+    ) {
+        if interaction.kind != InteractionKind::Approval {
+            return;
+        }
+        let InteractionOrigin::Provider {
+            provider_request_id,
+            ..
+        } = &interaction.origin
+        else {
+            return;
+        };
+        // The run that asked. `turn_id` is the run id (see
+        // `record_interaction_request`); a request that reached the domain by
+        // another path may carry a different turn id, in which case there is no
+        // run to address the frame to and nothing is published.
+        let Ok(run_id) = interaction.turn_id.parse() else {
+            return;
+        };
+        let Some(record) = self.runs.get(&run_id) else {
+            return;
+        };
+        let answer = match resolution {
+            // The typed decision is the only resolution the contract admits for
+            // an approval, so it is the only arm that can produce an answer.
+            Resolution::Decision { decision, .. } => {
+                let decision = match decision.as_str() {
+                    "allow_once" => PermissionDecision::AllowOnce,
+                    "allow_for_session" => PermissionDecision::AllowForSession,
+                    // `deny` is the contract's only remaining decision, and an
+                    // unknown word cannot be turned into an allow.
+                    _ => PermissionDecision::Deny,
+                };
+                InteractionAnswer::Decision { decision }
+            }
+            // The other resolutions cannot answer an approval; the route
+            // already refused them, so reaching here means the interaction
+            // changed. Publishing nothing is the safe reading — and publishing
+            // nothing is strictly better than publishing an allow.
+            _ => return,
+        };
+        let frame = InteractionResolutionFrame {
+            host_id: record.host_id.clone(),
+            run_id: record.run_id.clone(),
+            thread_id: record.thread_id.clone(),
+            request_id: provider_request_id.clone(),
+            interaction_id: interaction.id.to_string(),
+            answer,
+            created_at_ms: now_ms,
+        };
+        let payload = serde_json::to_vec(&frame).expect("an interaction frame always serializes");
+        let _ = self.publish(Scope::Host(record.host_id.to_string()), payload);
+    }
 }
 
 /// A provider request id as an interaction id.
@@ -220,6 +381,266 @@ mod tests {
         assert_eq!(first, again, "the same request must map to the same row");
         assert_ne!(first, other);
         assert!(first.to_string().starts_with("intr_"));
+    }
+
+    // --- the permission bridge -------------------------------------------
+
+    use crate::state::AppConfig;
+    use loom_domain::{EnvironmentKind, MessageRole, RunEvent, Thread};
+    use loom_relay::now_ms;
+    use loom_relay::Scope;
+
+    /// A state that neither reconciles nor snapshots, so a test drives it.
+    fn state() -> AppState {
+        AppState::build(AppConfig {
+            reconcile_interval: std::time::Duration::ZERO,
+            ..AppConfig::default()
+        })
+        .unwrap()
+    }
+
+    /// A connected host with a thread bound to a workspace, and one run
+    /// dispatched for it. Returns the host, the thread, and the run.
+    fn dispatched_run(
+        state: &AppState,
+        workspace: &str,
+    ) -> (loom_domain::HostId, Thread, loom_domain::RunId) {
+        let (host, _) = state
+            .registry
+            .enroll_host(None, "laptop".into(), now_ms())
+            .unwrap();
+        let (environment, _) = state
+            .registry
+            .create_environment(
+                Some(state.registry.personal_project_id()),
+                host.id.clone(),
+                EnvironmentKind::Unmanaged,
+                Some(workspace.into()),
+                now_ms(),
+            )
+            .unwrap();
+        let (thread, _) = state
+            .registry
+            .create_thread(
+                Some(state.registry.personal_project_id()),
+                Some("t".into()),
+                Some(environment.id),
+                now_ms(),
+            )
+            .unwrap();
+        state
+            .registry
+            .post_message(&thread.id, MessageRole::User, "go".into(), now_ms())
+            .unwrap();
+        let thread = state.registry.thread(&thread.id).unwrap();
+        let run = match state.dispatch_thread(&thread, "go") {
+            crate::runs::DispatchOutcome::Dispatched(run) => run,
+            other => panic!("expected a dispatch, got {other:?}"),
+        };
+        (host.id, thread, run.run_id)
+    }
+
+    /// A permission request for a run.
+    fn request(
+        host_id: &loom_domain::HostId,
+        thread: &Thread,
+        run_id: &loom_domain::RunId,
+        request_id: &str,
+    ) -> InteractionRequest {
+        InteractionRequest {
+            host_id: host_id.clone(),
+            run_id: run_id.clone(),
+            thread_id: thread.id.clone(),
+            project_id: thread.project_id.clone(),
+            request_id: request_id.into(),
+            provider_thread_id: Some("acp-session-1".into()),
+            kind: InteractionKind::Approval,
+            payload: InteractionPayload::new(
+                InteractionKind::Approval,
+                serde_json::json!({
+                    "kind": "approval",
+                    "subject": {
+                        "kind": "tool_use",
+                        "itemId": "call-1",
+                        "tool": "execute",
+                        "presentation": {
+                            "label": { "pending": "Run it", "completed": "Ran it" },
+                            "icon": { "glyph": "Terminal" },
+                        },
+                    },
+                    "reason": null,
+                    "availableDecisions": ["allow_once", "deny"],
+                }),
+            ),
+            expires_at_ms: None,
+        }
+    }
+
+    /// Every host-scope payload, parsed.
+    fn host_frames(state: &AppState, host_id: &loom_domain::HostId) -> Vec<serde_json::Value> {
+        state
+            .relay
+            .replay_scope(&Scope::Host(host_id.to_string()), 50)
+            .unwrap()
+            .into_iter()
+            .filter_map(|envelope| {
+                let frame: serde_json::Value = serde_json::from_slice(&envelope.payload).ok()?;
+                serde_json::from_str(frame["payload"].as_str()?).ok()
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn a_permission_request_becomes_a_durable_interaction_and_its_answer_a_frame() {
+        let state = state();
+        let (host_id, thread, run_id) = dispatched_run(&state, "/srv/project-a");
+
+        // The request is recorded against the run's turn, carries the agent's
+        // session id, and is open.
+        let recorded = state
+            .record_interaction_request(request(&host_id, &thread, &run_id, "call-1"), now_ms());
+        let outcome = match recorded {
+            RecordOutcome::Recorded(interaction) => interaction,
+            other => panic!("expected a recorded request, got {other:?}"),
+        };
+        assert_eq!(outcome.status, loom_domain::InteractionStatus::Pending);
+        assert_eq!(outcome.turn_id, run_id.to_string());
+        assert_eq!(outcome.provider_thread_id.as_deref(), Some("acp-session-1"));
+        assert_eq!(state.registry.pending_interactions(&thread.id).len(), 1);
+
+        // A redelivery lands on the same row rather than asking twice.
+        let again = state
+            .record_interaction_request(request(&host_id, &thread, &run_id, "call-1"), now_ms());
+        let again = match again {
+            RecordOutcome::Recorded(interaction) => interaction,
+            other => panic!("expected the same request, got {other:?}"),
+        };
+        assert_eq!(again.id, outcome.id, "one provider request is one row");
+        assert_eq!(state.registry.pending_interactions(&thread.id).len(), 1);
+
+        // The answer travels to the host scope, naming the daemon's own request
+        // id so it can match the request it is holding open.
+        let delivered = state.deliver_interaction_resolution(
+            &outcome.id,
+            Resolution::Decision {
+                decision: "deny".into(),
+                granted_permissions: None,
+            },
+            now_ms(),
+        );
+        assert!(matches!(delivered, DeliverOutcome::Delivered(_)));
+        let frames = host_frames(&state, &host_id);
+        let frame = frames
+            .iter()
+            .find(|frame| frame["request_id"] == "call-1")
+            .expect("the resolution reached the host scope");
+        assert_eq!(frame["interaction_id"], outcome.id.to_string());
+        assert_eq!(frame["run_id"], run_id.to_string());
+        assert_eq!(frame["thread_id"], thread.id.to_string());
+        assert_eq!(frame["answer"]["kind"], "decision");
+        assert_eq!(frame["answer"]["decision"], "deny");
+
+        state.shutdown();
+    }
+
+    #[tokio::test]
+    async fn a_request_for_a_run_this_host_does_not_own_is_refused() {
+        let state = state();
+        let (host_id, thread, run_id) = dispatched_run(&state, "/srv/project-a");
+        // Host scoping is what stops one machine answering for another's run.
+        let stranger = loom_domain::HostId::mint();
+        assert!(matches!(
+            state.record_interaction_request(
+                request(&stranger, &thread, &run_id, "call-1"),
+                now_ms()
+            ),
+            RecordOutcome::Unknown(_)
+        ));
+        assert!(state.registry.pending_interactions(&thread.id).is_empty());
+        // And the real host still works, so the refusal was not a false negative.
+        assert!(matches!(
+            state.record_interaction_request(
+                request(&host_id, &thread, &run_id, "call-1"),
+                now_ms()
+            ),
+            RecordOutcome::Recorded(_)
+        ));
+        state.shutdown();
+    }
+
+    #[tokio::test]
+    async fn a_request_for_an_unknown_run_is_refused() {
+        let state = state();
+        let (host_id, thread, _) = dispatched_run(&state, "/srv/project-a");
+        // A run id nobody dispatched: there is no turn to render the question
+        // in, so storing it would create an unanswerable row.
+        let unknown = loom_domain::RunId::mint();
+        assert!(matches!(
+            state.record_interaction_request(
+                request(&host_id, &thread, &unknown, "call-1"),
+                now_ms()
+            ),
+            RecordOutcome::Unknown(_)
+        ));
+        assert!(state.registry.pending_interactions(&thread.id).is_empty());
+        state.shutdown();
+    }
+
+    #[tokio::test]
+    async fn ending_the_run_cancels_its_open_request_and_stops_the_frame() {
+        let state = state();
+        let (host_id, thread, run_id) = dispatched_run(&state, "/srv/project-a");
+        let outcome = match state
+            .record_interaction_request(request(&host_id, &thread, &run_id, "call-1"), now_ms())
+        {
+            RecordOutcome::Recorded(interaction) => interaction,
+            other => panic!("expected a recorded request, got {other:?}"),
+        };
+        let before = host_frames(&state, &host_id).len();
+
+        // A terminal report ends the turn, and the open question settles with
+        // it rather than staying `pending` forever.
+        let terminal = RunEvent::completed(
+            thread.id.clone(),
+            thread.project_id.clone(),
+            run_id.clone(),
+            now_ms(),
+            None,
+        );
+        assert_eq!(
+            state.apply_run_report(
+                &host_id,
+                loom_provider_protocol::ProviderReport {
+                    host_id: host_id.clone(),
+                    event: terminal,
+                }
+            ),
+            crate::runs::ReportOutcome::Applied
+        );
+        assert_eq!(
+            state.registry.interaction(&outcome.id).unwrap().status,
+            loom_domain::InteractionStatus::Interrupted,
+        );
+
+        // A later answer cannot unblock anything: the run is gone, so no frame
+        // is published for it.
+        let _ = state.deliver_interaction_resolution(
+            &outcome.id,
+            Resolution::Decision {
+                decision: "allow_once".into(),
+                granted_permissions: Some(serde_json::json!({
+                    "network": { "enabled": true },
+                    "fileSystem": { "read": [], "write": [] },
+                })),
+            },
+            now_ms(),
+        );
+        assert_eq!(
+            host_frames(&state, &host_id).len(),
+            before,
+            "an answer for an ended run must not reach the daemon"
+        );
+        state.shutdown();
     }
 
     #[test]

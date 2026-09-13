@@ -18,6 +18,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
+use loom_daemon::acp::permission::PermissionRegistry;
 use loom_daemon::acp::session::{drive, Transport};
 use loom_daemon::provider::ProviderRun;
 use loom_domain::RunOutcome;
@@ -54,6 +55,7 @@ fn run(cwd: &str) -> ProviderRun {
         project_id: loom_domain::ProjectId::mint(),
         run_id: loom_domain::RunId::mint(),
         timeout: Duration::from_secs(30),
+        permission_timeout: Duration::from_secs(5),
         provider_session_id: None,
     }
 }
@@ -66,8 +68,16 @@ async fn drive_with_agent(run: ProviderRun, agent: PathBuf) -> Vec<loom_domain::
         args: Vec::new(),
     };
 
+    let (interactions, _requests) = mpsc::channel(8);
     let handle = tokio::spawn(async move {
-        let _ = drive(&run, transport, &tx).await;
+        let _ = drive(
+            &run,
+            transport,
+            &tx,
+            PermissionRegistry::new(),
+            interactions,
+        )
+        .await;
     });
 
     let mut events = Vec::new();
@@ -145,6 +155,7 @@ fn run_with_agent(
         project_id: loom_domain::ProjectId::mint(),
         run_id: loom_domain::RunId::mint(),
         timeout: Duration::from_secs(30),
+        permission_timeout: Duration::from_secs(5),
         provider_session_id: provider_session_id.map(str::to_owned),
     }
 }
@@ -267,7 +278,15 @@ async fn a_missing_agent_ends_the_run_rather_than_hanging_it() {
         args: Vec::new(),
     };
     let run = run(&cwd.to_string_lossy());
-    let _ = drive(&run, transport, &tx).await;
+    let (interactions, _requests) = mpsc::channel(8);
+    let _ = drive(
+        &run,
+        transport,
+        &tx,
+        PermissionRegistry::new(),
+        interactions,
+    )
+    .await;
     drop(tx);
 
     let mut events = Vec::new();
@@ -295,7 +314,15 @@ async fn a_dispatch_without_a_working_directory_is_refused() {
         command: "/nonexistent/pi-acp".to_string(),
         args: Vec::new(),
     };
-    let result = drive(&run, transport, &tx).await;
+    let (interactions, _requests) = mpsc::channel(8);
+    let result = drive(
+        &run,
+        transport,
+        &tx,
+        PermissionRegistry::new(),
+        interactions,
+    )
+    .await;
     drop(tx);
 
     // Either the refusal is returned, or it was reported as a failure; both end
@@ -439,7 +466,15 @@ async fn a_workspace_that_does_not_exist_is_refused() {
         command: "/nonexistent/pi-acp".to_string(),
         args: Vec::new(),
     };
-    let result = drive(&run, transport, &tx).await;
+    let (interactions, _requests) = mpsc::channel(8);
+    let result = drive(
+        &run,
+        transport,
+        &tx,
+        PermissionRegistry::new(),
+        interactions,
+    )
+    .await;
     drop(tx);
 
     let mut events = Vec::new();
@@ -455,5 +490,211 @@ async fn a_workspace_that_does_not_exist_is_refused() {
             message.contains("does not exist"),
             "the error names the problem: {message}"
         );
+    }
+}
+
+/// A resume whose workspace is gone fails with the path named, rather than
+/// silently starting a fresh session.
+///
+/// This is the failure bb's own bridge found worth guarding: a resumed session
+/// belongs to the directory it was created in, so if that directory is gone the
+/// conversation cannot continue — and starting a new one in the daemon's own cwd
+/// would edit the wrong project while looking like success.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_resume_in_a_missing_workspace_fails_and_names_the_path() {
+    let tmp = tempfile::tempdir().unwrap();
+    let agent = write_resuming_agent(tmp.path());
+    let missing = tmp.path().join("workspace-gone");
+    let missing = missing.to_string_lossy().into_owned();
+
+    let (tx, mut rx) = mpsc::channel(64);
+    let run = run_with_agent(
+        &missing,
+        &agent,
+        loom_domain::ThreadId::mint(),
+        Some("resumable-session"),
+    );
+    let transport = Transport::Stdio {
+        command: agent.to_string_lossy().into_owned(),
+        args: Vec::new(),
+    };
+    let (interactions, _requests) = mpsc::channel(8);
+    let result = drive(
+        &run,
+        transport,
+        &tx,
+        PermissionRegistry::new(),
+        interactions,
+    )
+    .await;
+    drop(tx);
+
+    let mut events = Vec::new();
+    while let Some(report) = rx.recv().await {
+        events.push(report.event);
+    }
+    // The refusal is returned before any session exists, and nothing was
+    // reported as a resumed identity: no session was opened at all. `drive`'s
+    // contract is that a pre-terminal failure is returned and `spawn` — the
+    // daemon's path — turns it into the one terminal event, so the assertion
+    // here is on the reason rather than on a terminal event.
+    let message = result.expect_err("a missing workspace must be refused");
+    assert!(
+        message.contains(&missing),
+        "the reason names the missing directory: {message}"
+    );
+    assert!(
+        !events.iter().any(|event| event.kind() == "thread/identity"),
+        "a refused resume must not report an identity: {events:#?}"
+    );
+    // The agent was never asked to load: the refusal happens before a session.
+    assert!(
+        !tmp.path().join("resuming-agent.sh.loaded").exists(),
+        "a missing workspace must be refused before `session/load` is sent"
+    );
+}
+
+/// An agent that cannot load a session fails an explicit resume rather than
+/// quietly starting a fresh conversation.
+///
+/// Silently starting over is the other half of the cwd guard: a user who asked
+/// to continue a conversation must be told it cannot be continued, not handed a
+/// new one that looks like the old one's answer.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_resume_against_an_agent_without_load_session_fails() {
+    let tmp = tempfile::tempdir().unwrap();
+    let workspace = tmp.path().join("workspace");
+    std::fs::create_dir_all(&workspace).unwrap();
+    // The agent advertises no `loadSession`, so the id it is handed cannot be
+    // honoured.
+    let agent = write_agent_without_load(tmp.path());
+
+    let (tx, mut rx) = mpsc::channel(64);
+    let transport = Transport::Stdio {
+        command: agent.to_string_lossy().into_owned(),
+        args: Vec::new(),
+    };
+    let run = run_with_agent(
+        &workspace.to_string_lossy(),
+        &agent,
+        loom_domain::ThreadId::mint(),
+        Some("acp-session-from-another-agent"),
+    );
+    let (interactions, _requests) = mpsc::channel(8);
+    let _ = drive(
+        &run,
+        transport,
+        &tx,
+        PermissionRegistry::new(),
+        interactions,
+    )
+    .await;
+    drop(tx);
+
+    let mut events = Vec::new();
+    while let Some(report) = rx.recv().await {
+        events.push(report.event);
+    }
+    let terminal = terminal(&events).expect("the run still ends");
+    assert_eq!(
+        terminal.terminal_status(),
+        Some(loom_domain::TurnStatus::Failed)
+    );
+    assert!(
+        terminal
+            .terminal_error()
+            .is_some_and(|message| message.contains("session/load")),
+        "the reason names the missing capability: {:?}",
+        terminal.terminal_error()
+    );
+    // Nothing was created in its place: a fresh session would have reported the
+    // new identity.
+    assert!(
+        !events.iter().any(|event| event.kind() == "thread/identity"),
+        "a refused resume must not open a replacement session: {events:#?}"
+    );
+}
+
+/// An ACP agent that answers `initialize` without advertising `session/load`.
+///
+/// Its `session/new` would work; only resuming would not, which is what makes it
+/// the fixture for the "cannot honour this id" case.
+fn write_agent_without_load(dir: &std::path::Path) -> PathBuf {
+    let path = dir.join("no-load.sh");
+    // A single-quoted heredoc keeps the shell template literal, so the JSON
+    // printf formats below stay exactly what the agent must emit.
+    let script = r#"#!/bin/sh
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([^,]*\),"method":.*/\1/p')
+  method=$(printf '%s' "$line" | sed -n 's/.*"method":"\([^"]*\)".*/\1/p')
+  case "$method" in
+    initialize)
+      printf '%s\n' '{"jsonrpc":"2.0","id":'"$id"',"result":{"protocolVersion":1,"agentCapabilities":{"loadSession":false}}}'
+      ;;
+    session/new)
+      printf '%s\n' '{"jsonrpc":"2.0","id":'"$id"',"result":{"sessionId":"fresh"}}'
+      ;;
+    session/prompt)
+      printf '%s\n' '{"jsonrpc":"2.0","id":'"$id"',"result":{"stopReason":"end_turn"}}'
+      ;;
+  esac
+done
+"#;
+    std::fs::write(&path, script).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    path
+}
+
+/// `session/list` against a real `pi-acp`, capability-gated.
+///
+/// The unit tests in `crate::acp::sessions` use stubs; this confirms the same
+/// two outcomes against the real adapter — which advertises the capability, so
+/// the important half is that the probe follows it rather than failing closed.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_real_agent_is_probed_for_its_session_capabilities() {
+    let Some(agent) = pi_acp_binary() else {
+        eprintln!("skipping: no pi-acp binary (set PI_ACP_BIN or build the sibling checkout)");
+        return;
+    };
+    use loom_daemon::acp::sessions::{list_sessions, SessionListOutcome};
+
+    let outcome = list_sessions(
+        Transport::Stdio {
+            command: agent.to_string_lossy().into_owned(),
+            args: Vec::new(),
+        },
+        None,
+        Duration::from_secs(30),
+    )
+    .await;
+
+    match outcome {
+        // `pi-acp` advertises `session/list`, so a capable agent must land here
+        // rather than on `Unsupported`. What it lists depends on the machine, so
+        // the session count is not asserted.
+        SessionListOutcome::Listed { capabilities, .. } => {
+            assert!(
+                capabilities.list_sessions,
+                "reaching `Listed` means the capability was advertised"
+            );
+            assert!(
+                capabilities.load_session,
+                "pi-acp advertises session/load too, which is what resume depends on"
+            );
+        }
+        // The opposite is also a legitimate result on a machine where the pinned
+        // `pi-acp` does not advertise listing, and it must be `Unsupported`
+        // rather than an empty `Listed`: "cannot list" and "nothing to list" are
+        // different facts.
+        SessionListOutcome::Unsupported { capabilities } => {
+            assert!(!capabilities.list_sessions);
+        }
+        SessionListOutcome::Failed { error } => {
+            panic!("the real adapter must be reachable: {error}");
+        }
     }
 }
