@@ -46,6 +46,13 @@ use serde::{Deserialize, Serialize};
 pub struct ProviderSpec {
     /// Stable provider name, for example `"pi"`. Echoed in run events.
     pub name: String,
+    /// How the daemon should reach this agent.
+    ///
+    /// Defaults to [`ProviderLaunch::JsonRpc`] so an existing dispatch keeps
+    /// its meaning: the field is additive on the wire, and a daemon that does
+    /// not know a launch kind refuses rather than guessing at one.
+    #[serde(default)]
+    pub launch: ProviderLaunch,
     /// The executable to spawn.
     pub command: String,
     /// Arguments, in order.
@@ -66,8 +73,34 @@ impl ProviderSpec {
     pub fn pi() -> Self {
         Self {
             name: "pi".into(),
+            launch: ProviderLaunch::JsonRpc,
             command: "pi".into(),
             args: vec!["--mode".into(), "rpc".into(), "--no-session".into()],
+            cwd: None,
+        }
+    }
+
+    /// An agent reached over ACP, spawned as a child process.
+    pub fn acp(command: impl Into<String>, args: Vec<String>) -> Self {
+        Self {
+            name: "acp".into(),
+            launch: ProviderLaunch::AcpStdio,
+            command: command.into(),
+            args,
+            cwd: None,
+        }
+    }
+
+    /// Pi reached through `pi-acp` linked into the daemon.
+    ///
+    /// Only `pi` itself is a child process; the adapter is in-process, which is
+    /// why this names no command.
+    pub fn acp_pi() -> Self {
+        Self {
+            name: "pi".into(),
+            launch: ProviderLaunch::AcpEmbeddedPi,
+            command: "pi".into(),
+            args: Vec::new(),
             cwd: None,
         }
     }
@@ -77,6 +110,7 @@ impl ProviderSpec {
     pub fn custom(command: impl Into<String>, args: Vec<String>) -> Self {
         Self {
             name: "custom".into(),
+            launch: ProviderLaunch::JsonRpc,
             command: command.into(),
             args,
             cwd: None,
@@ -96,6 +130,26 @@ impl Default for ProviderSpec {
     fn default() -> Self {
         Self::pi()
     }
+}
+
+/// How an agent is driven.
+///
+/// loom's provider strategy is ACP, so this exists to say *which* agent is
+/// being reached rather than to offer a choice of protocols. The JSON-RPC arm
+/// is the Pi path as it stands today, kept so an existing dispatch keeps
+/// working while the ACP path replaces it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderLaunch {
+    /// Pi's own line-delimited JSON-RPC over stdio, as loom drives it today.
+    #[default]
+    JsonRpc,
+    /// Agent Client Protocol over stdio, for an agent that speaks it natively.
+    AcpStdio,
+    /// Agent Client Protocol against `pi-acp` linked into the daemon.
+    ///
+    /// Nothing is spawned for the adapter itself; only `pi` is a child.
+    AcpEmbeddedPi,
 }
 
 /// A request to run one provider turn for one thread.

@@ -125,14 +125,17 @@ pub fn spawn(
     tokio::spawn(async move {
         if let Err(message) = drive(&run, &reports).await {
             let _ = reports
-                .send(run.report(terminal(&run, RunOutcome::Failed, &message)))
+                .send(run.report(terminal_event(&run, RunOutcome::Failed, &message)))
                 .await;
         }
     })
 }
 
 /// Builds the terminal `turn/completed` event for an outcome.
-fn terminal(run: &ProviderRun, outcome: RunOutcome, message: &str) -> RunEvent {
+///
+/// Public because the ACP driver needs the same shape: a run that fails before
+/// a terminal is reported ends the same way whichever driver ran it.
+pub fn terminal_event(run: &ProviderRun, outcome: RunOutcome, message: &str) -> RunEvent {
     let body = match outcome {
         RunOutcome::Completed => ProviderEvent::TurnCompleted {
             provider_thread_id: Some(run.provider_thread_id()),
@@ -228,7 +231,7 @@ async fn drive(run: &ProviderRun, reports: &mpsc::Sender<ProviderReport>) -> Res
             // The deadline passed with no terminal event: kill and report.
             Err(_elapsed) => {
                 terminate(&mut child).await;
-                let event = terminal(
+                let event = terminal_event(
                     run,
                     RunOutcome::TimedOut,
                     &format!(
@@ -244,7 +247,7 @@ async fn drive(run: &ProviderRun, reports: &mpsc::Sender<ProviderReport>) -> Res
             Ok(Ok(None)) => break,
             Ok(Err(error)) => {
                 terminate(&mut child).await;
-                let event = terminal(
+                let event = terminal_event(
                     run,
                     RunOutcome::Failed,
                     &format!("provider stdout failed: {error}"),
@@ -304,7 +307,7 @@ async fn drive(run: &ProviderRun, reports: &mpsc::Sender<ProviderReport>) -> Res
     } else {
         format!("provider exited with {status}")
     };
-    let event = terminal(run, RunOutcome::Failed, &message);
+    let event = terminal_event(run, RunOutcome::Failed, &message);
     let _ = reports.send(run.report(event)).await;
     Ok(())
 }

@@ -22,6 +22,11 @@ loom-server = { path = "crates/server" }
 # Pinned to the exact version the ACP SDK requires, so there is a single schema
 # copy in the tree: type identity matters between a direct dependency and the
 # one `agent-client-protocol` re-exports.
+# Both pinned exactly, and together: the SDK requires a specific schema, and
+# `pi-acp` (which loom embeds) pins schema `=1.5.0` too. One schema copy in the
+# tree matters because type identity is what lets loom hand a `Channel` to
+# `pi_acp::AcpAgent::run_with`.
+agent-client-protocol = { version = "=2.0.0", default-features = false }
 agent-client-protocol-schema = { version = "=1.5.0", default-features = false }
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio", "ws"] }
 bytes = "1.6"

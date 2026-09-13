@@ -34,13 +34,12 @@
 use std::collections::{BTreeMap, HashMap};
 
 use agent_client_protocol_schema::v1::{
-    ContentBlock, ContentChunk, Plan, PlanEntryStatus, SessionInfoUpdate,
-    SessionUpdate, StopReason, ToolCall, ToolCallContent, ToolCallStatus, ToolCallUpdate, ToolKind,
-    UsageUpdate,
+    ContentBlock, ContentChunk, Plan, PlanEntryStatus, SessionInfoUpdate, SessionUpdate,
+    StopReason, ToolCall, ToolCallContent, ToolCallStatus, ToolCallUpdate, ToolKind, UsageUpdate,
 };
 use loom_domain::{
-    ItemStatus, PlanStep, PlanStepStatus, ProviderEvent, SearchMode,
-    ThreadEventItem, TurnError, TurnStatus, UserContent,
+    ItemStatus, PlanStep, PlanStepStatus, ProviderEvent, SearchMode, ThreadEventItem, TurnError,
+    TurnStatus, UserContent,
 };
 use serde_json::Value;
 
@@ -714,6 +713,8 @@ fn content_text(block: &ContentBlock) -> String {
         _ => String::new(),
     }
 }
+
+pub mod session;
 
 #[cfg(test)]
 mod tests;

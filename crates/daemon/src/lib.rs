@@ -590,7 +590,28 @@ impl Daemon {
             self.config.run_timeout,
             self.config.session_dir.clone(),
         );
-        provider::spawn(run, self.reports_tx.clone());
+        // The launch kind decides which driver runs the turn. They share the
+        // report channel and the run identity, so everything above this point
+        // — dispatch, reconciliation, the relay — is unaware of the choice.
+        match run.spec.launch {
+            loom_provider_protocol::ProviderLaunch::JsonRpc => {
+                provider::spawn(run, self.reports_tx.clone());
+            }
+            loom_provider_protocol::ProviderLaunch::AcpStdio => {
+                let transport = crate::acp::session::Transport::Stdio {
+                    command: run.spec.command.clone(),
+                    args: run.spec.args.clone(),
+                };
+                crate::acp::session::spawn(run, transport, self.reports_tx.clone());
+            }
+            loom_provider_protocol::ProviderLaunch::AcpEmbeddedPi => {
+                crate::acp::session::spawn(
+                    run,
+                    crate::acp::session::Transport::EmbeddedPi,
+                    self.reports_tx.clone(),
+                );
+            }
+        }
     }
 
     /// Creates a managed environment's workspace in the background and queues
