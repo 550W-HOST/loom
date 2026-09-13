@@ -19,10 +19,145 @@ use loom_domain::{
     DomainError, DomainEvent, Environment, EnvironmentId, EnvironmentKind, EnvironmentStatus, Host,
     HostId, Interaction, InteractionId, MessageRole, NewInteraction, NewQueuedMessage, NewThread,
     Project, ProjectId, ProjectKind, ProjectSourceId, QueuedMessage, QueuedMessageId,
-    QueuedMessageStatus, Resolution, RunId, Thread, ThreadId, ThreadStatus, ThreadTrigger,
-    ThreadUpdate,
+    QueuedMessageStatus, Resolution, RunId, Thread, ThreadId, ThreadOriginKind, ThreadStatus,
+    ThreadTrigger, ThreadUpdate,
 };
 use serde::{Deserialize, Serialize};
+
+const ORDER_KEY_ALPHABET: &[u8] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+const ORDER_KEY_WIDTH: usize = 16;
+const ORDER_KEY_SPACE_EXHAUSTED: &str =
+    "there is no order-key space between the requested neighbors";
+
+fn create_order_key_between(
+    previous_key: Option<&str>,
+    next_key: Option<&str>,
+) -> Result<String, CommandError> {
+    let previous_key = previous_key.filter(|key| !key.is_empty());
+    let next_key = next_key.filter(|key| !key.is_empty());
+    for key in [previous_key, next_key].into_iter().flatten() {
+        if key
+            .bytes()
+            .any(|digit| !ORDER_KEY_ALPHABET.contains(&digit))
+        {
+            return Err(CommandError::Conflict(format!(
+                "invalid queued order key {key:?}"
+            )));
+        }
+    }
+    if previous_key.is_some_and(|left| next_key.is_some_and(|right| left >= right)) {
+        return Err(CommandError::Conflict(
+            "the requested order neighbors are not ordered".into(),
+        ));
+    }
+
+    match (previous_key, next_key) {
+        (None, None) => Ok("V".into()),
+        (Some(previous), None) => Ok(format!("{previous}{}", ORDER_KEY_ALPHABET[0] as char)),
+        (None, Some(next)) => {
+            let first = next.as_bytes()[0];
+            if first != ORDER_KEY_ALPHABET[0] {
+                return Ok((ORDER_KEY_ALPHABET[0] as char).to_string());
+            }
+            if next.len() == 1 {
+                return Err(CommandError::Conflict(ORDER_KEY_SPACE_EXHAUSTED.into()));
+            }
+            // A proper prefix sorts before `next`, and is the only available
+            // shape when `next` starts with the alphabet's minimum digit.
+            Ok(next[..next.len() - 1].to_owned())
+        }
+        (Some(previous), Some(next)) => {
+            // Extending a key with the minimum digit is greater than the key
+            // itself. It is also below `next` whenever the interval has room,
+            // including when the keys first differ much later in the string.
+            // The old digit-by-digit implementation accidentally returned a
+            // key after `next` for adjacent-prefix pairs such as `0` and `00`.
+            let candidate = format!("{previous}{}", ORDER_KEY_ALPHABET[0] as char);
+            if candidate.as_str() < next {
+                Ok(candidate)
+            } else {
+                Err(CommandError::Conflict(ORDER_KEY_SPACE_EXHAUSTED.into()))
+            }
+        }
+    }
+}
+
+fn order_key_space_exhausted(error: &CommandError) -> bool {
+    matches!(error, CommandError::Conflict(message) if message == ORDER_KEY_SPACE_EXHAUSTED)
+}
+
+fn order_key_is_occupied<'a, I>(key: &str, keys: I) -> bool
+where
+    I: IntoIterator<Item = &'a str>,
+{
+    keys.into_iter().any(|candidate| candidate == key)
+}
+
+/// Encodes a base-62 slot as a fixed-width key. Fixed-width keys make a
+/// rebalanced order sparse again, so ordinary inserts can use the cheap
+/// prefix-extension path for a long time before another rebalance is needed.
+fn encode_order_key(mut value: u128) -> String {
+    let mut digits = vec![ORDER_KEY_ALPHABET[0]; ORDER_KEY_WIDTH];
+    let base = ORDER_KEY_ALPHABET.len() as u128;
+    for digit in digits.iter_mut().rev() {
+        *digit = ORDER_KEY_ALPHABET[(value % base) as usize];
+        value /= base;
+    }
+    String::from_utf8(digits).expect("order-key alphabet is ASCII")
+}
+
+fn rebalance_order_keys(count: usize) -> Result<Vec<String>, CommandError> {
+    let capacity = (ORDER_KEY_ALPHABET.len() as u128).pow(ORDER_KEY_WIDTH as u32);
+    let slots = u128::try_from(count)
+        .ok()
+        .and_then(|count| count.checked_add(1))
+        .ok_or_else(|| CommandError::Conflict("queued order is too large to rebalance".into()))?;
+    let step = capacity / slots;
+    if step == 0 {
+        return Err(CommandError::Conflict(
+            "queued order is too large to rebalance".into(),
+        ));
+    }
+    (1..=count)
+        .map(|index| {
+            let value = step.checked_mul(index as u128).ok_or_else(|| {
+                CommandError::Conflict("queued order is too large to rebalance".into())
+            })?;
+            Ok(encode_order_key(value))
+        })
+        .collect()
+}
+
+/// Assigns stable keys to rows written by a pre-B4 snapshot.
+fn normalize_queued_order_keys(messages: &mut HashMap<QueuedMessageId, QueuedMessage>) {
+    let mut thread_ids: Vec<ThreadId> = messages
+        .values()
+        .filter(|message| message.sort_key.is_empty())
+        .map(|message| message.thread_id.clone())
+        .collect();
+    thread_ids.sort();
+    thread_ids.dedup();
+    for thread_id in thread_ids {
+        let mut ordered: Vec<QueuedMessageId> = messages
+            .values()
+            .filter(|message| message.thread_id == thread_id)
+            .map(|message| message.id.clone())
+            .collect();
+        ordered.sort_by(|left, right| {
+            let left = messages.get(left).expect("queued id was collected");
+            let right = messages.get(right).expect("queued id was collected");
+            left.created_at_ms
+                .cmp(&right.created_at_ms)
+                .then_with(|| left.id.cmp(&right.id))
+        });
+        let keys = rebalance_order_keys(ordered.len())
+            .expect("a snapshot queue must fit in the order-key space");
+        for (id, key) in ordered.into_iter().zip(keys) {
+            let message = messages.get_mut(&id).expect("queued id was collected");
+            message.sort_key = key;
+        }
+    }
+}
 
 /// A command failed either because the target does not exist or because the
 /// domain rejected the change.
@@ -336,6 +471,64 @@ impl DomainRegistry {
         Ok((thread, event))
     }
 
+    /// Creates a child thread with fork provenance, without copying the
+    /// source provider session. The caller must decide whether the provider
+    /// can actually fork; this method only records a successful domain create.
+    pub fn create_fork_thread(
+        &self,
+        source_thread_id: &ThreadId,
+        title: Option<String>,
+        environment_id: Option<EnvironmentId>,
+        origin_plugin_id: Option<String>,
+        now_ms: u64,
+    ) -> Result<(Thread, DomainEvent), CommandError> {
+        let mut inner = self.lock();
+        let source = inner
+            .threads
+            .get(source_thread_id)
+            .cloned()
+            .filter(|thread| thread.deleted_at_ms.is_none())
+            .ok_or_else(|| {
+                CommandError::NotFound(format!("thread {source_thread_id} is not known"))
+            })?;
+        let Some(project) = inner.projects.get(&source.project_id) else {
+            return Err(CommandError::NotFound(format!(
+                "project {} is not known",
+                source.project_id
+            )));
+        };
+        if project.is_archived() {
+            return Err(CommandError::Conflict(format!(
+                "project {} is archived; unarchive it before creating a thread",
+                source.project_id
+            )));
+        }
+        if let Some(id) = &environment_id {
+            if !inner.environments.contains_key(id) {
+                return Err(CommandError::NotFound(format!(
+                    "environment {id} is not known"
+                )));
+            }
+        }
+        let (mut thread, _) = Thread::create(
+            NewThread {
+                project_id: source.project_id,
+                title,
+                parent_thread_id: Some(source.id.clone()),
+                environment_id,
+            },
+            now_ms,
+        );
+        thread.source_thread_id = Some(source.id);
+        thread.origin_kind = Some(ThreadOriginKind::Fork);
+        thread.origin_plugin_id = origin_plugin_id;
+        let event = DomainEvent::ThreadCreated {
+            thread: thread.clone(),
+        };
+        inner.threads.insert(thread.id.clone(), thread.clone());
+        Ok((thread, event))
+    }
+
     /// Creates an environment and returns it with the events it produced.
     ///
     /// The owning project is **required**, exactly like a thread: an
@@ -469,6 +662,11 @@ impl DomainRegistry {
             .threads
             .get_mut(thread_id)
             .ok_or_else(|| CommandError::NotFound(format!("thread {thread_id} is not known")))?;
+        if thread.deleted_at_ms.is_some() {
+            return Err(CommandError::NotFound(format!(
+                "thread {thread_id} is not known"
+            )));
+        }
         let events = thread.post_message(role, content, now_ms)?;
         Ok(events)
     }
@@ -568,19 +766,43 @@ impl DomainRegistry {
         self.lock().threads.get(thread_id).cloned()
     }
 
-    /// Marks a thread read without publishing a timeline event.
+    /// Looks up a thread that is still public to clients.
+    pub fn public_thread(&self, thread_id: &ThreadId) -> Option<Thread> {
+        self.lock()
+            .threads
+            .get(thread_id)
+            .filter(|thread| thread.deleted_at_ms.is_none())
+            .cloned()
+    }
+
+    /// Marks a thread read and returns the replayable metadata event.
     pub fn mark_thread_read(
         &self,
         thread_id: &ThreadId,
         now_ms: u64,
-    ) -> Result<Thread, CommandError> {
+    ) -> Result<(Thread, Option<DomainEvent>), CommandError> {
         let mut inner = self.lock();
         let thread = inner
             .threads
             .get_mut(thread_id)
             .ok_or_else(|| CommandError::NotFound(format!("thread {thread_id} is not known")))?;
-        thread.mark_read(now_ms);
-        Ok(thread.clone())
+        let event = thread.set_read_at(Some(now_ms), now_ms);
+        Ok((thread.clone(), event))
+    }
+
+    /// Clears a thread's read marker and returns the replayable metadata event.
+    pub fn mark_thread_unread(
+        &self,
+        thread_id: &ThreadId,
+        now_ms: u64,
+    ) -> Result<(Thread, Option<DomainEvent>), CommandError> {
+        let mut inner = self.lock();
+        let thread = inner
+            .threads
+            .get_mut(thread_id)
+            .ok_or_else(|| CommandError::NotFound(format!("thread {thread_id} is not known")))?;
+        let event = thread.set_read_at(None, now_ms);
+        Ok((thread.clone(), event))
     }
 
     /// Applies a client's field changes to a stored thread.
@@ -662,23 +884,31 @@ impl DomainRegistry {
 
     /// How many threads name `thread_id` as their parent.
     ///
-    /// bb's `childSummary` counts *non-deleted* children. Loom has no thread
-    /// deletion yet, so every child counts; the day deletion lands, this is
-    /// where the filter goes.
+    /// bb's `childSummary` counts *non-deleted* children, so tombstones do not
+    /// keep a parent looking as if it still has a live child.
     pub fn child_count(&self, thread_id: &ThreadId) -> usize {
         self.lock()
             .threads
             .values()
-            .filter(|thread| thread.parent_thread_id.as_ref() == Some(thread_id))
+            .filter(|thread| {
+                thread.deleted_at_ms.is_none()
+                    && thread.parent_thread_id.as_ref() == Some(thread_id)
+            })
             .count()
     }
 
-    /// Every known thread, newest first.
+    /// Every non-deleted thread, newest first.
     ///
     /// The list a UI renders in its sidebar. Ordering is by creation time and
     /// then id, so it is stable when two threads share a millisecond.
     pub fn threads(&self) -> Vec<Thread> {
-        let mut threads: Vec<Thread> = self.lock().threads.values().cloned().collect();
+        let mut threads: Vec<Thread> = self
+            .lock()
+            .threads
+            .values()
+            .filter(|thread| thread.deleted_at_ms.is_none())
+            .cloned()
+            .collect();
         threads.sort_by(|left, right| {
             right
                 .created_at_ms
@@ -686,6 +916,443 @@ impl DomainRegistry {
                 .then_with(|| left.id.cmp(&right.id))
         });
         threads
+    }
+
+    /// Archives one live thread. Repeating the command is an idempotent
+    /// success, matching the lifecycle route's acknowledgement contract.
+    pub fn archive_thread(
+        &self,
+        thread_id: &ThreadId,
+        now_ms: u64,
+    ) -> Result<(Thread, Option<DomainEvent>), CommandError> {
+        let mut inner = self.lock();
+        let thread = inner
+            .threads
+            .get_mut(thread_id)
+            .ok_or_else(|| CommandError::NotFound(format!("thread {thread_id} is not known")))?;
+        if thread.deleted_at_ms.is_some() {
+            return Err(CommandError::NotFound(format!(
+                "thread {thread_id} is not known"
+            )));
+        }
+        if thread.status == ThreadStatus::Archived {
+            return Ok((thread.clone(), None));
+        }
+        let event = thread.transition(ThreadTrigger::Archive, now_ms)?;
+        Ok((thread.clone(), Some(event)))
+    }
+
+    /// Archives the target and its direct child/source-fork threads.
+    ///
+    /// The returned ids contain only rows that changed during this command;
+    /// deleted tombstones and already archived rows are deliberately omitted.
+    pub fn archive_all_threads(
+        &self,
+        thread_id: &ThreadId,
+        now_ms: u64,
+    ) -> Result<(Vec<ThreadId>, Vec<DomainEvent>), CommandError> {
+        let mut inner = self.lock();
+        let target = inner
+            .threads
+            .get(thread_id)
+            .ok_or_else(|| CommandError::NotFound(format!("thread {thread_id} is not known")))?;
+        if target.deleted_at_ms.is_some() {
+            return Err(CommandError::NotFound(format!(
+                "thread {thread_id} is not known"
+            )));
+        }
+
+        let mut ids = vec![thread_id.clone()];
+        ids.extend(
+            inner
+                .threads
+                .values()
+                .filter(|thread| {
+                    thread.id != *thread_id
+                        && thread.deleted_at_ms.is_none()
+                        && (thread.parent_thread_id.as_ref() == Some(thread_id)
+                            || thread.source_thread_id.as_ref() == Some(thread_id))
+                })
+                .map(|thread| thread.id.clone()),
+        );
+        ids.sort_by(|left, right| {
+            if left == thread_id {
+                std::cmp::Ordering::Less
+            } else if right == thread_id {
+                std::cmp::Ordering::Greater
+            } else {
+                left.cmp(right)
+            }
+        });
+
+        let mut archived_ids = Vec::new();
+        let mut events = Vec::new();
+        for id in ids {
+            let Some(thread) = inner.threads.get_mut(&id) else {
+                continue;
+            };
+            if thread.deleted_at_ms.is_some() || thread.status == ThreadStatus::Archived {
+                continue;
+            }
+            let event = thread.transition(ThreadTrigger::Archive, now_ms)?;
+            archived_ids.push(id);
+            events.push(event);
+        }
+        Ok((archived_ids, events))
+    }
+
+    /// Soft-deletes a thread while retaining its tombstone for replay.
+    pub fn delete_thread(
+        &self,
+        thread_id: &ThreadId,
+        now_ms: u64,
+    ) -> Result<(Thread, Option<DomainEvent>), CommandError> {
+        let mut inner = self.lock();
+        let thread = inner
+            .threads
+            .get_mut(thread_id)
+            .ok_or_else(|| CommandError::NotFound(format!("thread {thread_id} is not known")))?;
+        if thread.deleted_at_ms.is_some() {
+            return Err(CommandError::NotFound(format!(
+                "thread {thread_id} is not known"
+            )));
+        }
+        let event = thread.mark_deleted(now_ms);
+        Ok((thread.clone(), event))
+    }
+
+    /// Unarchives a live thread. Repeating the command is an idempotent
+    /// success, so an already idle thread returns without an event.
+    pub fn unarchive_thread(
+        &self,
+        thread_id: &ThreadId,
+        now_ms: u64,
+    ) -> Result<(Thread, Option<DomainEvent>), CommandError> {
+        let mut inner = self.lock();
+        let thread = inner
+            .threads
+            .get_mut(thread_id)
+            .ok_or_else(|| CommandError::NotFound(format!("thread {thread_id} is not known")))?;
+        if thread.deleted_at_ms.is_some() {
+            return Err(CommandError::NotFound(format!(
+                "thread {thread_id} is not known"
+            )));
+        }
+        if thread.status != ThreadStatus::Archived {
+            return Ok((thread.clone(), None));
+        }
+        let event = thread.transition(ThreadTrigger::Unarchive, now_ms)?;
+        Ok((thread.clone(), Some(event)))
+    }
+
+    /// Pins a thread at the front of the pinned list.
+    pub fn pin_thread(
+        &self,
+        thread_id: &ThreadId,
+        now_ms: u64,
+    ) -> Result<(Thread, Vec<DomainEvent>), CommandError> {
+        let mut inner = self.lock();
+        let thread =
+            inner.threads.get(thread_id).cloned().ok_or_else(|| {
+                CommandError::NotFound(format!("thread {thread_id} is not known"))
+            })?;
+        if thread.deleted_at_ms.is_some() {
+            return Err(CommandError::NotFound(format!(
+                "thread {thread_id} is not known"
+            )));
+        }
+        if thread.pinned_at_ms.is_some() && thread.pin_sort_key.is_some() {
+            return Ok((thread, Vec::new()));
+        }
+        let first_key = inner
+            .threads
+            .values()
+            .filter(|thread| {
+                thread.deleted_at_ms.is_none()
+                    && thread.pinned_at_ms.is_some()
+                    && thread.pin_sort_key.is_some()
+            })
+            .min_by(|left, right| {
+                left.pin_sort_key
+                    .cmp(&right.pin_sort_key)
+                    .then_with(|| left.id.cmp(&right.id))
+            })
+            .and_then(|thread| thread.pin_sort_key.clone());
+        let sort_key = match create_order_key_between(None, first_key.as_deref()) {
+            Ok(sort_key)
+                if order_key_is_occupied(
+                    &sort_key,
+                    inner
+                        .threads
+                        .values()
+                        .filter(|candidate| candidate.id != *thread_id)
+                        .filter_map(|candidate| candidate.pin_sort_key.as_deref()),
+                ) =>
+            {
+                Err(CommandError::Conflict(ORDER_KEY_SPACE_EXHAUSTED.into()))
+            }
+            result => result,
+        };
+        let sort_key = match sort_key {
+            Ok(sort_key) => sort_key,
+            Err(error) if order_key_space_exhausted(&error) => {
+                let mut ids: Vec<ThreadId> = inner
+                    .threads
+                    .values()
+                    .filter(|candidate| {
+                        candidate.id != *thread_id
+                            && candidate.deleted_at_ms.is_none()
+                            && candidate.pinned_at_ms.is_some()
+                            && candidate.pin_sort_key.is_some()
+                    })
+                    .map(|candidate| candidate.id.clone())
+                    .collect();
+                ids.sort_by(|left, right| {
+                    inner
+                        .threads
+                        .get(left)
+                        .and_then(|thread| thread.pin_sort_key.as_ref())
+                        .cmp(
+                            &inner
+                                .threads
+                                .get(right)
+                                .and_then(|thread| thread.pin_sort_key.as_ref()),
+                        )
+                        .then_with(|| left.cmp(right))
+                });
+                ids.insert(0, thread_id.clone());
+                let keys = rebalance_order_keys(ids.len())?;
+                let mut events = Vec::new();
+                for (id, key) in ids.into_iter().zip(keys) {
+                    let candidate = inner
+                        .threads
+                        .get_mut(&id)
+                        .expect("the pinned thread was collected");
+                    let pinned_at = if id == *thread_id {
+                        Some(now_ms)
+                    } else {
+                        candidate.pinned_at_ms
+                    };
+                    if let Some(event) = candidate.set_pin(pinned_at, Some(key), now_ms) {
+                        events.push(event);
+                    }
+                }
+                let thread = inner
+                    .threads
+                    .get(thread_id)
+                    .expect("the target was present in the registry")
+                    .clone();
+                return Ok((thread, events));
+            }
+            Err(error) => return Err(error),
+        };
+        let thread = inner
+            .threads
+            .get_mut(thread_id)
+            .expect("the target was present in the registry");
+        let event = thread.set_pin(Some(now_ms), Some(sort_key), now_ms);
+        Ok((thread.clone(), event.into_iter().collect()))
+    }
+
+    /// Removes a thread from the pinned list.
+    pub fn unpin_thread(
+        &self,
+        thread_id: &ThreadId,
+        now_ms: u64,
+    ) -> Result<(Thread, Option<DomainEvent>), CommandError> {
+        let mut inner = self.lock();
+        let thread = inner
+            .threads
+            .get_mut(thread_id)
+            .ok_or_else(|| CommandError::NotFound(format!("thread {thread_id} is not known")))?;
+        if thread.deleted_at_ms.is_some() {
+            return Err(CommandError::NotFound(format!(
+                "thread {thread_id} is not known"
+            )));
+        }
+        let event = thread.set_pin(None, None, now_ms);
+        Ok((thread.clone(), event))
+    }
+
+    /// Moves a pinned thread between the supplied neighbors.
+    pub fn reorder_pinned_thread(
+        &self,
+        thread_id: &ThreadId,
+        previous_thread_id: Option<&ThreadId>,
+        next_thread_id: Option<&ThreadId>,
+        now_ms: u64,
+    ) -> Result<(Vec<Thread>, Vec<DomainEvent>), CommandError> {
+        let mut inner = self.lock();
+        let moved = inner
+            .threads
+            .get(thread_id)
+            .ok_or_else(|| CommandError::NotFound(format!("thread {thread_id} is not known")))?;
+        if moved.deleted_at_ms.is_some() {
+            return Err(CommandError::NotFound(format!(
+                "thread {thread_id} is not known"
+            )));
+        }
+        if moved.pinned_at_ms.is_none() || moved.pin_sort_key.is_none() {
+            return Err(CommandError::Conflict(format!(
+                "thread {thread_id} is not pinned"
+            )));
+        }
+
+        let mut pinned: Vec<Thread> = inner
+            .threads
+            .values()
+            .filter(|thread| {
+                thread.deleted_at_ms.is_none()
+                    && thread.pinned_at_ms.is_some()
+                    && thread.pin_sort_key.is_some()
+                    && thread.visibility == loom_domain::ThreadVisibility::Visible
+            })
+            .cloned()
+            .collect();
+        pinned.sort_by(|left, right| {
+            left.pin_sort_key
+                .cmp(&right.pin_sort_key)
+                .then_with(|| left.id.cmp(&right.id))
+        });
+        if !pinned.iter().any(|thread| thread.id == *thread_id) {
+            return Err(CommandError::Conflict(
+                "the pinned thread is not visible in the current order".into(),
+            ));
+        }
+
+        let neighbor = |id: Option<&ThreadId>| -> Result<Option<&Thread>, CommandError> {
+            let Some(id) = id else {
+                return Ok(None);
+            };
+            if id == thread_id {
+                return Err(CommandError::Conflict(
+                    "a pinned thread cannot be its own neighbor".into(),
+                ));
+            }
+            pinned
+                .iter()
+                .find(|thread| thread.id == *id)
+                .map(Some)
+                .ok_or_else(|| CommandError::Conflict("pinned thread neighbor is stale".into()))
+        };
+        let previous = neighbor(previous_thread_id)?;
+        let next = neighbor(next_thread_id)?;
+        if previous.is_some_and(|thread| thread.pin_sort_key.is_none())
+            || next.is_some_and(|thread| thread.pin_sort_key.is_none())
+        {
+            return Err(CommandError::Conflict(
+                "pinned thread neighbor is stale".into(),
+            ));
+        }
+        if previous
+            .is_some_and(|left| next.is_some_and(|right| left.pin_sort_key >= right.pin_sort_key))
+        {
+            return Err(CommandError::Conflict(
+                "the requested pinned neighbors are not ordered".into(),
+            ));
+        }
+
+        let current_index = pinned
+            .iter()
+            .position(|thread| thread.id == *thread_id)
+            .expect("the target was present in the pinned list");
+        let current_previous = pinned
+            .get(current_index.wrapping_sub(1))
+            .map(|thread| &thread.id);
+        let current_next = pinned.get(current_index + 1).map(|thread| &thread.id);
+        if current_previous == previous_thread_id && current_next == next_thread_id {
+            return Ok((pinned, Vec::new()));
+        }
+
+        let sort_key = match create_order_key_between(
+            previous.and_then(|thread| thread.pin_sort_key.as_deref()),
+            next.and_then(|thread| thread.pin_sort_key.as_deref()),
+        ) {
+            Ok(sort_key) => Some(sort_key),
+            Err(error) if order_key_space_exhausted(&error) => None,
+            Err(error) => return Err(error),
+        };
+        let mut events = Vec::new();
+        if let Some(sort_key) = sort_key {
+            let moved = inner
+                .threads
+                .get_mut(thread_id)
+                .expect("the target was present in the registry");
+            if let Some(event) = moved.set_pin(moved.pinned_at_ms, Some(sort_key), now_ms) {
+                events.push(event);
+            }
+        } else {
+            let mut desired_ids: Vec<ThreadId> = pinned
+                .iter()
+                .filter(|thread| thread.id != *thread_id)
+                .map(|thread| thread.id.clone())
+                .collect();
+            let previous_index = previous_thread_id.and_then(|neighbor_id| {
+                desired_ids
+                    .iter()
+                    .position(|candidate| candidate == neighbor_id)
+            });
+            let next_index = next_thread_id.and_then(|neighbor_id| {
+                desired_ids
+                    .iter()
+                    .position(|candidate| candidate == neighbor_id)
+            });
+            let insert_index = match (previous_index, next_index) {
+                (Some(index), _) => index + 1,
+                (None, Some(index)) => index,
+                (None, None) => 0,
+            };
+            desired_ids.insert(insert_index, thread_id.clone());
+            let keys = rebalance_order_keys(desired_ids.len())?;
+            for (id, key) in desired_ids.iter().zip(keys) {
+                let pinned_thread = inner
+                    .threads
+                    .get_mut(id)
+                    .expect("the pinned thread was collected");
+                if let Some(event) =
+                    pinned_thread.set_pin(pinned_thread.pinned_at_ms, Some(key), now_ms)
+                {
+                    events.push(event);
+                }
+            }
+        }
+
+        let mut reordered: Vec<Thread> = inner
+            .threads
+            .values()
+            .filter(|thread| {
+                thread.deleted_at_ms.is_none()
+                    && thread.pinned_at_ms.is_some()
+                    && thread.pin_sort_key.is_some()
+                    && thread.visibility == loom_domain::ThreadVisibility::Visible
+            })
+            .cloned()
+            .collect();
+        reordered.sort_by(|left, right| {
+            left.pin_sort_key
+                .cmp(&right.pin_sort_key)
+                .then_with(|| left.id.cmp(&right.id))
+        });
+        Ok((reordered, events))
+    }
+
+    /// Resolves mention ids in input order, omitting deleted or unknown rows.
+    pub fn resolve_mention_threads(&self, thread_ids: &[ThreadId]) -> Vec<Thread> {
+        let inner = self.lock();
+        let mut resolved = Vec::new();
+        for id in thread_ids {
+            if resolved.iter().any(|thread: &Thread| thread.id == *id) {
+                continue;
+            }
+            if let Some(thread) = inner
+                .threads
+                .get(id)
+                .filter(|thread| thread.deleted_at_ms.is_none())
+            {
+                resolved.push(thread.clone());
+            }
+        }
+        resolved
     }
 
     /// Applies a lifecycle trigger to a stored thread.
@@ -777,7 +1444,11 @@ impl DomainRegistry {
         now_ms: u64,
     ) -> Result<(QueuedMessage, DomainEvent), CommandError> {
         let mut inner = self.lock();
-        if !inner.threads.contains_key(&new.thread_id) {
+        if !inner
+            .threads
+            .get(&new.thread_id)
+            .is_some_and(|thread| thread.deleted_at_ms.is_none())
+        {
             return Err(CommandError::NotFound(format!(
                 "thread {} is not known",
                 new.thread_id
@@ -791,6 +1462,19 @@ impl DomainRegistry {
             }
         }
         let message = QueuedMessage::create(new, now_ms)?;
+        let mut message = message;
+        let previous_key = inner
+            .queued_messages
+            .values()
+            .filter(|existing| existing.thread_id == message.thread_id)
+            .filter(|existing| !existing.sort_key.is_empty())
+            .max_by(|left, right| {
+                left.sort_key
+                    .cmp(&right.sort_key)
+                    .then_with(|| left.id.cmp(&right.id))
+            })
+            .map(|existing| existing.sort_key.as_str());
+        message.sort_key = create_order_key_between(previous_key, None)?;
         inner
             .queued_messages
             .insert(message.id.clone(), message.clone());
@@ -818,10 +1502,16 @@ impl DomainRegistry {
     /// Oldest first is the drain order: the queue is a FIFO, and a client
     /// renders it top-down.
     pub fn queued_messages_for(&self, thread_id: Option<&ThreadId>) -> Vec<QueuedMessage> {
-        let mut messages: Vec<QueuedMessage> = self
-            .lock()
+        let inner = self.lock();
+        let mut messages: Vec<QueuedMessage> = inner
             .queued_messages
             .values()
+            .filter(|message| {
+                inner
+                    .threads
+                    .get(&message.thread_id)
+                    .is_some_and(|thread| thread.deleted_at_ms.is_none())
+            })
             .filter(|message| match thread_id {
                 None => true,
                 Some(id) => &message.thread_id == id,
@@ -829,8 +1519,9 @@ impl DomainRegistry {
             .cloned()
             .collect();
         messages.sort_by(|left, right| {
-            left.created_at_ms
-                .cmp(&right.created_at_ms)
+            left.sort_key
+                .cmp(&right.sort_key)
+                .then_with(|| left.created_at_ms.cmp(&right.created_at_ms))
                 .then_with(|| left.id.cmp(&right.id))
         });
         messages
@@ -919,6 +1610,345 @@ impl DomainRegistry {
                 queued_message: message,
             },
         ))
+    }
+
+    /// Replaces a queued prompt under a compare-and-swap timestamp.
+    pub fn update_queued_message(
+        &self,
+        thread_id: &ThreadId,
+        id: &QueuedMessageId,
+        expected_updated_at_ms: u64,
+        text: String,
+        now_ms: u64,
+    ) -> Result<(QueuedMessage, DomainEvent), CommandError> {
+        let mut inner = self.lock();
+        if !inner
+            .threads
+            .get(thread_id)
+            .is_some_and(|thread| thread.deleted_at_ms.is_none())
+        {
+            return Err(CommandError::NotFound(format!(
+                "thread {thread_id} is not known"
+            )));
+        }
+        let message = inner
+            .queued_messages
+            .get_mut(id)
+            .ok_or_else(|| CommandError::NotFound(format!("queued message {id} is not known")))?;
+        if message.thread_id != *thread_id {
+            return Err(CommandError::NotFound(format!(
+                "queued message {id} belongs to another thread"
+            )));
+        }
+        if message.updated_at_ms != expected_updated_at_ms {
+            return Err(CommandError::Conflict(format!(
+                "queued message {id} was updated at {}, not the expected {}",
+                message.updated_at_ms, expected_updated_at_ms
+            )));
+        }
+        message.update_text(text, now_ms)?;
+        let message = message.clone();
+        Ok((
+            message.clone(),
+            DomainEvent::ThreadQueuedMessageChanged {
+                queued_message: message,
+            },
+        ))
+    }
+
+    /// Reorders one open queued message between two optional neighbors.
+    ///
+    /// The returned rows are the current open queue, and the returned events
+    /// contain every entity mutation made by the command. `group_boundary_id`
+    /// is accepted as the caller's grouping anchor; grouping itself is changed
+    /// only by `set_queued_message_group_boundary`, so moving a row does not
+    /// silently rewrite its grouping edges.
+    pub fn reorder_queued_message(
+        &self,
+        thread_id: &ThreadId,
+        id: &QueuedMessageId,
+        previous_id: Option<&QueuedMessageId>,
+        next_id: Option<&QueuedMessageId>,
+        group_boundary_id: Option<&QueuedMessageId>,
+        now_ms: u64,
+    ) -> Result<(Vec<QueuedMessage>, Vec<DomainEvent>), CommandError> {
+        let mut inner = self.lock();
+        if !inner
+            .threads
+            .get(thread_id)
+            .is_some_and(|thread| thread.deleted_at_ms.is_none())
+        {
+            return Err(CommandError::NotFound(format!(
+                "thread {thread_id} is not known"
+            )));
+        }
+
+        let target =
+            inner.queued_messages.get(id).cloned().ok_or_else(|| {
+                CommandError::NotFound(format!("queued message {id} is not known"))
+            })?;
+        if target.thread_id != *thread_id {
+            return Err(CommandError::NotFound(format!(
+                "queued message {id} belongs to another thread"
+            )));
+        }
+        if !target.status.is_open() {
+            return Err(CommandError::Conflict(format!(
+                "queued message {id} is already {}",
+                target.status
+            )));
+        }
+
+        let mut queued: Vec<QueuedMessage> = inner
+            .queued_messages
+            .values()
+            .filter(|message| {
+                message.thread_id == *thread_id && message.status == QueuedMessageStatus::Queued
+            })
+            .cloned()
+            .collect();
+        queued.sort_by(|left, right| {
+            left.sort_key
+                .cmp(&right.sort_key)
+                .then_with(|| left.created_at_ms.cmp(&right.created_at_ms))
+                .then_with(|| left.id.cmp(&right.id))
+        });
+
+        let neighbor = |neighbor_id: Option<&QueuedMessageId>| {
+            let Some(neighbor_id) = neighbor_id else {
+                return Ok(None);
+            };
+            if neighbor_id == id {
+                return Err(CommandError::Conflict(
+                    "a queued message cannot be its own neighbor".into(),
+                ));
+            }
+            queued
+                .iter()
+                .find(|message| message.id == *neighbor_id)
+                .map(Some)
+                .ok_or_else(|| CommandError::Conflict("queued message neighbor is stale".into()))
+        };
+        let previous = neighbor(previous_id)?;
+        let next = neighbor(next_id)?;
+        let grouping_anchor = neighbor(group_boundary_id)?;
+        if let Some(anchor) = grouping_anchor {
+            if !anchor.group_with_next && anchor.id != target.id {
+                return Err(CommandError::Conflict(
+                    "group boundary anchor is not part of a grouped prefix".into(),
+                ));
+            }
+        }
+        let current_index = queued
+            .iter()
+            .position(|message| message.id == *id)
+            .expect("the target was present in the queued list");
+        let current_previous = current_index
+            .checked_sub(1)
+            .and_then(|index| queued.get(index))
+            .map(|message| &message.id);
+        let current_next = queued.get(current_index + 1).map(|message| &message.id);
+        if current_previous == previous_id && current_next == next_id {
+            return Ok((queued, Vec::new()));
+        }
+
+        // Build the intended order without the target first. This validates
+        // that `previous` really precedes `next`, even when the caller moves a
+        // row across both of its old neighbors.
+        let mut desired_ids: Vec<QueuedMessageId> = queued
+            .iter()
+            .filter(|message| message.id != *id)
+            .map(|message| message.id.clone())
+            .collect();
+        let previous_index = previous_id.and_then(|neighbor_id| {
+            desired_ids
+                .iter()
+                .position(|candidate| candidate == neighbor_id)
+        });
+        let next_index = next_id.and_then(|neighbor_id| {
+            desired_ids
+                .iter()
+                .position(|candidate| candidate == neighbor_id)
+        });
+        if (previous_id.is_some() && previous_index.is_none())
+            || (next_id.is_some() && next_index.is_none())
+        {
+            return Err(CommandError::Conflict(
+                "queued message neighbor is stale".into(),
+            ));
+        }
+        if let (Some(previous_index), Some(next_index)) = (previous_index, next_index) {
+            if previous_index >= next_index {
+                return Err(CommandError::Conflict(
+                    "the requested queued neighbors are not ordered".into(),
+                ));
+            }
+        }
+        let insert_index = match (previous_index, next_index) {
+            (Some(index), _) => index + 1,
+            (None, Some(index)) => index,
+            (None, None) => 0,
+        };
+        desired_ids.insert(insert_index, id.clone());
+
+        let mut events = Vec::new();
+        let sort_key = match create_order_key_between(
+            previous.map(|message| message.sort_key.as_str()),
+            next.map(|message| message.sort_key.as_str()),
+        ) {
+            Ok(sort_key)
+                if order_key_is_occupied(
+                    &sort_key,
+                    queued
+                        .iter()
+                        .filter(|message| message.id != *id)
+                        .map(|message| message.sort_key.as_str()),
+                ) =>
+            {
+                Err(CommandError::Conflict(ORDER_KEY_SPACE_EXHAUSTED.into()))
+            }
+            result => result,
+        };
+        match sort_key {
+            Ok(sort_key) => {
+                let message = inner
+                    .queued_messages
+                    .get_mut(id)
+                    .expect("the target was present in the registry");
+                message.set_sort_key(sort_key, now_ms);
+                events.push(DomainEvent::ThreadQueuedMessageChanged {
+                    queued_message: message.clone(),
+                });
+            }
+            Err(error) if order_key_space_exhausted(&error) => {
+                // Adjacent-prefix keys can be genuinely consecutive in the
+                // lexicographic order (`0` and `00`). Rebalance the entire
+                // desired order atomically and publish every changed row so a
+                // replaying client cannot observe a locally invented order.
+                let keys = rebalance_order_keys(desired_ids.len())?;
+                for (message_id, key) in desired_ids.iter().zip(keys) {
+                    let message = inner
+                        .queued_messages
+                        .get_mut(message_id)
+                        .expect("the queued message was collected");
+                    if message.sort_key == key {
+                        continue;
+                    }
+                    message.set_sort_key(key, now_ms);
+                    events.push(DomainEvent::ThreadQueuedMessageChanged {
+                        queued_message: message.clone(),
+                    });
+                }
+            }
+            Err(error) => return Err(error),
+        }
+
+        let mut reordered: Vec<QueuedMessage> = inner
+            .queued_messages
+            .values()
+            .filter(|message| {
+                message.thread_id == *thread_id && message.status == QueuedMessageStatus::Queued
+            })
+            .cloned()
+            .collect();
+        reordered.sort_by(|left, right| {
+            left.sort_key
+                .cmp(&right.sort_key)
+                .then_with(|| left.created_at_ms.cmp(&right.created_at_ms))
+                .then_with(|| left.id.cmp(&right.id))
+        });
+        Ok((reordered, events))
+    }
+
+    /// Sets the grouping boundary after an optimistic prefix check.
+    ///
+    /// The prefix names the contiguous rows the caller believes are grouped;
+    /// the boundary row is the first row after that prefix. The edge immediately
+    /// before the boundary is kept open, and the boundary's own edge is closed.
+    /// A prefix mismatch is a conflict rather than a best-effort rewrite.
+    pub fn set_queued_message_group_boundary(
+        &self,
+        thread_id: &ThreadId,
+        expected_grouped_prefix_ids: &[QueuedMessageId],
+        boundary_id: &QueuedMessageId,
+        now_ms: u64,
+    ) -> Result<(Vec<QueuedMessage>, Vec<DomainEvent>), CommandError> {
+        let mut inner = self.lock();
+        if !inner
+            .threads
+            .get(thread_id)
+            .is_some_and(|thread| thread.deleted_at_ms.is_none())
+        {
+            return Err(CommandError::NotFound(format!(
+                "thread {thread_id} is not known"
+            )));
+        }
+
+        let mut queued: Vec<QueuedMessage> = inner
+            .queued_messages
+            .values()
+            .filter(|message| {
+                message.thread_id == *thread_id && message.status == QueuedMessageStatus::Queued
+            })
+            .cloned()
+            .collect();
+        queued.sort_by(|left, right| {
+            left.sort_key
+                .cmp(&right.sort_key)
+                .then_with(|| left.created_at_ms.cmp(&right.created_at_ms))
+                .then_with(|| left.id.cmp(&right.id))
+        });
+
+        let boundary_index = queued
+            .iter()
+            .position(|message| message.id == *boundary_id)
+            .ok_or_else(|| {
+                CommandError::NotFound(format!("queued message {boundary_id} is not known"))
+            })?;
+        if expected_grouped_prefix_ids.is_empty()
+            || expected_grouped_prefix_ids.len() != boundary_index
+            || queued
+                .iter()
+                .take(boundary_index)
+                .map(|message| &message.id)
+                .ne(expected_grouped_prefix_ids.iter())
+        {
+            return Err(CommandError::Conflict(
+                "the queued message grouping changed; reload before setting its boundary".into(),
+            ));
+        }
+
+        let mut events = Vec::new();
+        for (index, message) in queued.iter().enumerate() {
+            let should_group = index + 1 < boundary_index;
+            if message.group_with_next == should_group {
+                continue;
+            }
+            let stored = inner
+                .queued_messages
+                .get_mut(&message.id)
+                .expect("the queued message was collected");
+            stored.set_group_with_next(should_group, now_ms);
+            events.push(DomainEvent::ThreadQueuedMessageChanged {
+                queued_message: stored.clone(),
+            });
+        }
+
+        let mut result: Vec<QueuedMessage> = inner
+            .queued_messages
+            .values()
+            .filter(|message| {
+                message.thread_id == *thread_id && message.status == QueuedMessageStatus::Queued
+            })
+            .cloned()
+            .collect();
+        result.sort_by(|left, right| {
+            left.sort_key
+                .cmp(&right.sort_key)
+                .then_with(|| left.created_at_ms.cmp(&right.created_at_ms))
+                .then_with(|| left.id.cmp(&right.id))
+        });
+        Ok((result, events))
     }
 
     // --- interactions -------------------------------------------------------
@@ -1232,7 +2262,7 @@ impl RegistryInner {
             .into_iter()
             .map(|environment| (environment.id.clone(), environment))
             .collect();
-        let queued_messages = snapshot
+        let mut queued_messages = snapshot
             .queued_messages
             .into_iter()
             .map(|message| (message.id.clone(), message))
@@ -1258,6 +2288,10 @@ impl RegistryInner {
                 created_at_ms: 0,
                 updated_at_ms: 0,
             });
+        // B4 introduced durable fractional queue ordering. Migrate legacy
+        // rows while restoring the baseline, where no client can observe an
+        // unannounced mutation and the next snapshot persists the keys.
+        normalize_queued_order_keys(&mut queued_messages);
         Self {
             personal_project_id,
             projects,

@@ -144,6 +144,33 @@ impl fmt::Display for ThreadVisibility {
     }
 }
 
+/// Why a thread was created outside the normal root/child flow.
+///
+/// Fork is the only origin currently represented by the public contract. The
+/// enum is intentionally closed so an unsupported origin cannot leak into a
+/// thread projection that clients validate strictly.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ThreadOriginKind {
+    /// The thread was created from another thread's history.
+    Fork,
+}
+
+impl ThreadOriginKind {
+    /// The stable wire token.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ThreadOriginKind::Fork => "fork",
+        }
+    }
+}
+
+impl fmt::Display for ThreadOriginKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// How much reasoning a provider is asked to spend on a turn.
 ///
 /// The set is closed: bb's `reasoningLevelSchema` names exactly these eight,
@@ -355,6 +382,12 @@ pub struct Thread {
     pub updated_at_ms: u64,
     /// When the thread was archived, mirroring `status == Archived`.
     pub archived_at_ms: Option<u64>,
+    /// When the thread was soft-deleted.
+    ///
+    /// Deleted threads remain in the registry and snapshots as tombstones so
+    /// replay cannot resurrect them when an older creation event is retained.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deleted_at_ms: Option<u64>,
     /// Wall-clock milliseconds when a client last marked the thread read.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_read_at_ms: Option<u64>,
@@ -413,6 +446,21 @@ pub struct Thread {
     /// serialized into an HTTP response.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_session_id: Option<String>,
+    /// The source thread when this thread came from a fork.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_thread_id: Option<ThreadId>,
+    /// The non-standard creation origin, when one exists.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin_kind: Option<ThreadOriginKind>,
+    /// The plugin that requested the origin, when applicable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin_plugin_id: Option<String>,
+    /// When the thread was pinned.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pinned_at_ms: Option<u64>,
+    /// Stable fractional ordering key among pinned threads.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pin_sort_key: Option<String>,
 }
 
 impl Thread {
@@ -431,6 +479,7 @@ impl Thread {
             created_at_ms: now_ms,
             updated_at_ms: now_ms,
             archived_at_ms: None,
+            deleted_at_ms: None,
             last_read_at_ms: None,
             active_run_id: None,
             section_id: None,
@@ -440,6 +489,11 @@ impl Thread {
             tabs: Vec::new(),
             tabs_revision: 0,
             provider_session_id: None,
+            source_thread_id: None,
+            origin_kind: None,
+            origin_plugin_id: None,
+            pinned_at_ms: None,
+            pin_sort_key: None,
         };
         let event = DomainEvent::ThreadCreated {
             thread: thread.clone(),
@@ -492,6 +546,52 @@ impl Thread {
     /// Records that a client has consumed the thread up to `now_ms`.
     pub fn mark_read(&mut self, now_ms: u64) {
         self.last_read_at_ms = Some(now_ms);
+    }
+
+    /// Changes the read marker and returns a replayable update when it moved.
+    pub fn set_read_at(
+        &mut self,
+        last_read_at_ms: Option<u64>,
+        now_ms: u64,
+    ) -> Option<DomainEvent> {
+        if self.last_read_at_ms == last_read_at_ms {
+            return None;
+        }
+        self.last_read_at_ms = last_read_at_ms;
+        self.updated_at_ms = now_ms;
+        Some(DomainEvent::ThreadUpdated {
+            thread: self.clone(),
+        })
+    }
+
+    /// Marks this thread deleted without removing its tombstone.
+    pub fn mark_deleted(&mut self, now_ms: u64) -> Option<DomainEvent> {
+        if self.deleted_at_ms.is_some() {
+            return None;
+        }
+        self.deleted_at_ms = Some(now_ms);
+        self.updated_at_ms = now_ms;
+        Some(DomainEvent::ThreadUpdated {
+            thread: self.clone(),
+        })
+    }
+
+    /// Changes pin state and returns a replayable update when it moved.
+    pub fn set_pin(
+        &mut self,
+        pinned_at_ms: Option<u64>,
+        pin_sort_key: Option<String>,
+        now_ms: u64,
+    ) -> Option<DomainEvent> {
+        if self.pinned_at_ms == pinned_at_ms && self.pin_sort_key == pin_sort_key {
+            return None;
+        }
+        self.pinned_at_ms = pinned_at_ms;
+        self.pin_sort_key = pin_sort_key;
+        self.updated_at_ms = now_ms;
+        Some(DomainEvent::ThreadUpdated {
+            thread: self.clone(),
+        })
     }
 
     /// Applies a client's field changes, returning the event when anything
