@@ -123,7 +123,7 @@ be treated as verified only if it was checked against the sibling
 implementation, not merely against a schema. This row was decided from schema
 reading alone, and it was wrong in a way that would have blocked the migration.
 
-## pi-acp: W-559 done and verified; W-562 is the v2 work
+## pi-acp: W-559 and W-562 both done and verified
 
 W-559 in the `pi-acp Rust 重写` project (`166a0b99`), assigned to
 `全栈开发者-pi`, status **done** (2026-09-12 16:11). Commits:
@@ -163,6 +163,45 @@ just plausible.
 **Note**: the local `pi-acp` checkout was behind. `git pull` was needed before
 the test existed. Anyone verifying this must pull first.
 
+### W-562 (v2 support): done at `b3e7e8f`, verified here
+
+Status **done** (2026-09-13 11:22). 2,431 insertions across 16 files, including
+741 lines of v2 tests and two new modules (`src/v2.rs`, `src/protocol.rs`).
+
+Verified independently by running both configurations:
+
+```
+default (feature off):  194 passed, 0 failed
+default + protocol-v2:   196 passed, 0 failed
+```
+
+The first attempt at the feature-enabled run failed with `could not compile
+foldhash` — that was the known sccache fault (a stale
+`/tmp/multica-task-*/sccache*` temp dir), not a code problem.
+`sccache --stop-server` cleared it.
+
+Checked against the issue's acceptance criteria rather than trusting the green
+tests:
+
+| Requirement | Verified |
+| --- | --- |
+| Feature off by default, default behaviour unchanged | yes — no `default` key in `[features]`, and the default test suite is green |
+| `initialize` answers the requested version | yes — `agent.rs:651-665`, feature-gated; the old hardcoded `V1` is gone |
+| Uses `AgentProtocolRouter` | yes — `agent.rs:537-539` `.protocol_router().with_v1(v1).with_v2(..)` |
+| One conversion at the boundary, no unconverted frame | yes — `protocol.rs:109` `send_session_update` is the single outbound point, and a conversion failure surfaces rather than dropping |
+| `message_id` minted at `message_start` | yes — `session.rs:1500`, `pi-msg-<n>`, session-scoped counter |
+| Patch object on v2 only | yes — `OutboundMessage::AgentMessage` → `send_agent_message`; v2 clients get it, v1 stays chunk-only |
+| `CurrentModeUpdate` skipped on v2 | yes — `protocol.rs:129`, with the reason in a comment just above |
+| v2 completion via `state_update` | yes — `foreground_state_notification`, v2-only |
+| `resume`: `start` replays, omitted does not | yes — `plan_resume` (`v2.rs:317`), asserted by two tests |
+| Unknown replay cursor rejected | yes — neither `_`-prefixed nor future variants are guessed at; asserted by a test that also checks the error names the cursor |
+
+One thing the agent did beyond the issue, which matters: **v2 reports turn
+completion through `state_update`, not `PromptResponse`.** I had not accounted
+for this — v2's `PromptResponse` carries no `stopReason`. Since loom's whole
+run lifecycle depends on exactly one terminal event per run, this was
+load-bearing and would have been a bug had it been missed.
+
 ## B3 verification (W-557)
 
 W-557 is **done** (`1f2f865`, merge `f3a1c15`). Its first four runs failed — one
@@ -178,7 +217,7 @@ real daemon, and calling all fourteen routes by hand. Results:
 | `GET /queued-messages` | 200 |
 | `GET /threads/:id/queued-messages` | 200 |
 | `GET /threads/:id/interactions` | 200 |
-| `GET /threads/:id/interactions/:id` | 404 (no producer — see below) |
+| `GET /threads/:id/interactions/:id` | 404 (none exist — see below) |
 | `GET /threads/:id/events/wait` | 200 `null` on timeout |
 | `GET /threads/:id/timeline/turn-summary-details` | 200 with data |
 | `POST /threads/:id/queued-messages` | 201 |
@@ -203,10 +242,10 @@ Pointer-precise messages (`missing required property mode`,
 `value "queue" is not one of the allowed values`) until the body matched
 `{"mode":"auto"}`.
 
-### The honest gap: interactions have no producer
+### The gap: nothing in loom produces an interaction (the source exists upstream)
 
 `record_interaction` and `create_interaction` have **no callers outside tests**.
-Verified:
+Verified in this repository:
 
 ```
 $ grep -rn "record_interaction\|create_interaction" crates/ --include=*.rs | grep -v "/tests/"
@@ -215,14 +254,43 @@ crates/server/src/interactions.rs:75:        let (interaction, event) = self.reg
 crates/server/src/domain_state.rs:914:    pub fn create_interaction(
 ```
 
-And the provider protocol cannot express one either — `provider-protocol` has
+And loom's provider protocol cannot express one either — `provider-protocol` has
 `ProviderSpec`, `RunDispatch`, `EnvironmentProvision`,
 `EnvironmentProvisionOutcome`, `EnvironmentProvisionReport`, `ProviderReport`,
-`GuardedLine`, and no interaction frame.
+`GuardedLine`, and no interaction frame. So the five interaction routes are
+implemented, contract-shaped, persisted and tested, but **loom never creates an
+interaction to serve**.
 
-So: the five interaction routes are implemented, contract-shaped, persisted, and
-tested — but in a running system nothing ever creates an interaction to serve.
-The domain and HTTP layers are real; the producer is missing.
+What I got wrong when this was first written: I recorded that ACP would supply
+the producer, as if it were future work. **It already exists, and loom is
+actively suppressing it.** `crates/daemon/src/provider.rs` declines these
+requests on the Pi path:
+
+```rust
+// A dialog request blocks the provider until answered. There is no UI
+// on this path yet, so decline it explicitly rather than hang, and tell
+// the client what was declined.
+if let Some(response) = auto_cancel_response(&frame) {
+    ...
+}
+```
+
+So the producer is not missing from the system — it is reachable and
+deliberately answered with `cancelled`. Three consequences worth stating:
+
+1. **The `auto_cancel_response` path is a real, exercised producer** and its
+   refusals are a product decision ("no UI on this path yet"), not an accident.
+   Once interactions have somewhere to render, this is the call site that should
+   create them instead of cancelling.
+2. **`pi-acp` already maps pi's dialog requests onto real ACP permission
+   requests.** `handle_extension_ui_request` turns pi's `select` into
+   `session/request_permission` with one `PermissionOption` per choice, and
+   `confirm` into Yes/No options, with the answer flowing back to pi
+   (`session/session.rs:2791`, `:2883`). So the ACP adapter path does not need a
+   producer built — it needs loom to interpret the request it already receives.
+3. The interaction gap is therefore **a UI/projection gap, not a protocol gap**.
+   That reframes the work: it belongs with the front end, not with the provider
+   migration.
 
 Same shape of gap for two neighbouring things, though the details differ:
 
@@ -234,15 +302,9 @@ Same shape of gap for two neighbouring things, though the details differ:
   idempotent and honest, but not yet useful.
 - `ProviderEvent::Plan`, `PlanSteps`, `TurnPlanUpdated`, `ItemPlanDelta` — same
   as `ThreadGoalUpdated`: defined, mapped to contract event names, never
-  constructed outside tests.
-
-These are honest gaps rather than bugs: the routes refuse or no-op correctly.
-But B3's domain concepts are not reachable through the product path yet, and
-that should be stated plainly rather than discovered later. Whether the producer
-belongs in this batch or in the ACP migration is a decision for the next
-session — **with ACP, interactions and plans arrive as ACP `SessionUpdate`s**
-(request permission, plan updates), so the producer may naturally land as part
-of step 2 of the migration rather than as separate work.
+  constructed outside tests. Note that **`pi-acp` emits no plan updates at all**
+  (verified: no `SessionUpdate::Plan*` anywhere in its source), so this one
+  genuinely has no upstream source on the Pi path yet.
 
 ## Route batches
 
@@ -290,11 +352,14 @@ loom does **not** depend on `pi-acp` yet — `grep pi-acp Cargo.toml
 crates/*/Cargo.toml` is empty. The `agent-client-protocol` crate is not a
 dependency either. **Migration step 1 has not started.**
 
-On the `pi-acp` side, W-559 (transport injection) is done and W-562 adds v2
-support behind a feature: dual-protocol registration, per-message conversion at
-the adapter boundary, `message_id` on chunks, and a `SessionUpdate::AgentMessage`
-at `message_end` so v2 clients get patch semantics. Both versions are needed
-because loom negotiates.
+On the `pi-acp` side, **both issues are done**: W-559 added the
+`run_with` transport entry point, and W-562 added v2 support behind an
+off-by-default `protocol-v2` feature — `AgentProtocolRouter` registration,
+`initialize` answering the requested version, one conversion at the connection
+boundary, a minted `message_id` on chunks, and pi's authoritative
+`message_end.message` republished as a v2 `agent_message` patch. It also handles
+v2's `state_update` completion signal (v2's `PromptResponse` has no
+`stopReason`) and `session/resume` with v2's replay-cursor semantics.
 
 Current Pi path, which step 3 removes:
 
@@ -380,15 +445,18 @@ Gotchas found:
 
 ## Immediate next steps
 
-1. Start migration step 1 (ACP adapter boundary) — unblocked. The `SessionUpdate`
-   → event mapping must handle both protocol versions, including the
-   `CurrentModeUpdate` asymmetry and v1's lack of a typed `Other`.
-2. Decide the interaction/goal/plan producer: same batch, or part of the ACP
-   migration. Confirmed that the ACP route has one — `session/request_permission`
-   arrives as a request from the agent and maps onto `Interaction` with
-   `InteractionKind::Approval`. Note that `pi-acp` emits no `Plan` updates at
-   all today, so adopting it would not close the plan gap by itself.
-3. Then B4, ideally split into two smaller issues given the context-limit
+1. **Start migration step 1 (ACP adapter boundary)** — unblocked. The
+   `SessionUpdate` → event mapping must handle both protocol versions, including
+   the `CurrentModeUpdate` asymmetry and v1's lack of a typed `Other`.
+2. **Wire interactions up, as a projection/UI task rather than a protocol one.**
+   The requests already arrive; loom answers them with `cancelled`
+   (`auto_cancel_response` on the Pi path). Replacing that with a real
+   `Interaction` is what makes the five B3 routes serve data. Not part of the
+   provider migration.
+3. **Plan events have no upstream source on the Pi path** — `pi-acp` emits none.
+   Either add them there or leave the plan routes refusing; do not invent a
+   producer.
+4. Then B4, ideally split into two smaller issues given the context-limit
    experience on B3.
 
 Documentation defects are fixed and `d7fbf72` is confirmed non-existent, so

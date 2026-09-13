@@ -196,7 +196,8 @@ options) and conversion errors. The adapter skips it on the v2 path.
 The patchable full objects are the reason v2 is worth the negotiation: repeated
 updates for the same `messageId` are applied as patches, so an event log can
 carry corrections and a consumer converges. That is available to loom once
-`pi-acp` emits it — tracked as W-562 in the `pi-acp` project.
+`pi-acp` emits it — shipped as W-562 in the `pi-acp` project, behind an
+off-by-default `protocol-v2` feature.
 
 ## The resulting loom architecture
 
@@ -346,7 +347,7 @@ Required changes, in dependency order:
    ACP agent via `Stdio::new()`. The client code is identical for both. Use
    `Client::protocol_connector().with_v1(..).with_v2(..)` so both versions are
    negotiated. The `pi-acp` half is in progress: `run_with` shipped in W-559, and
-   W-562 adds v2 support behind a feature.
+   W-562 shipped v2 support behind an off-by-default feature.
 3. **Remove the Pi-specific path** — `effective_argv`'s `--session-dir` /
    `--session-id` rewriting, and the `pi` special case in `ProviderSpec`.
 4. **Add `loom resume <thread>`** and the import flow. Prefer `session/resume`
@@ -406,7 +407,7 @@ Required changes, in dependency order:
   - `src/jsonrpc.rs:4491` — `UntypedMessage`, the v1 escape hatch for unknown types
 - `pi-acp` (sibling checkout) — `src/agent.rs` (handlers),
   `src/session_store.rs` (id mapping), `src/pi/sessions.rs`
-  (`list_pi_sessions`); W-562 tracks v2 support there
+  (`list_pi_sessions`); W-562 shipped v2 support there (feature `protocol-v2`)
 - bb `docs/provider-bridge-protocol.md` — narrow grammar and division of labour
 - bb `packages/provider-bridge-protocol/src/thread-delta.ts` — the grammar
   itself
