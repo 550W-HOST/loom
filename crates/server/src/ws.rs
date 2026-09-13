@@ -19,7 +19,7 @@
 //! {"type":"host_disconnect","host_id":"host_..."}
 //!
 //! // server -> daemon
-//! {"type":"welcome","connection_id":1,"protocol_version":1}
+//! {"type":"welcome","connection_id":1,"protocol_version":2}
 //! {"type":"host_enrolled","host":{...},"event_id":"01M..."}
 //! {"type":"host_heartbeat_ack","host_id":"host_...","last_seen_at_ms":1}
 //! {"type":"host_disconnected","host_id":"host_..."}

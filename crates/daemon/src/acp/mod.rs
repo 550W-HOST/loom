@@ -45,10 +45,12 @@ use serde_json::Value;
 
 /// What a translator is built from: the parts of a run every event needs.
 pub struct RunContext {
-    /// loom's thread id, which is also the provider session identity.
+    /// loom's thread id, used only when no agent session is known.
     pub thread_id: loom_domain::ThreadId,
     /// The workspace the provider runs in, used as a tool item's `cwd`.
     pub cwd: Option<String>,
+    /// The agent's session id, when the dispatch already knows one.
+    pub provider_session_id: Option<String>,
 }
 
 /// One run's ACP frames, translated into contract bodies.
@@ -57,6 +59,9 @@ pub struct RunContext {
 /// instead of through a live agent.
 pub struct AcpTranslator {
     ctx: RunContext,
+    /// The agent's session id, learned from `session/new` or supplied by the
+    /// dispatch when this run resumes one.
+    provider_session_id: Option<String>,
     /// Whether `thread/identity` has been emitted. ACP has no notion of a
     /// running thread, so this is accounted for here rather than observed.
     identified: bool,
@@ -93,6 +98,7 @@ impl AcpTranslator {
     /// Builds a translator for one run.
     pub fn new(ctx: RunContext) -> Self {
         Self {
+            provider_session_id: ctx.provider_session_id.clone(),
             ctx,
             identified: false,
             turn_open: false,
@@ -108,11 +114,42 @@ impl AcpTranslator {
 
     /// The provider thread id reported on every event.
     ///
-    /// loom runs one provider session per thread, so the thread id is the
-    /// session identity; ACP's own `sessionId` is recorded separately for
-    /// resume.
+    /// This is the *agent's* identifier for the conversation, not loom's
+    /// thread id: it is what a resumed session is keyed by, and what the
+    /// control plane stores so a later turn can continue this conversation.
+    ///
+    /// Before the agent names a session there is nothing true to report, so the
+    /// thread id stands in. Callers avoid emitting in that window by deferring
+    /// updates until the session is known — see `UpdateSink::on_notification`.
     fn ptid(&self) -> String {
-        self.ctx.thread_id.to_string()
+        self.provider_session_id
+            .clone()
+            .unwrap_or_else(|| self.ctx.thread_id.to_string())
+    }
+
+    /// Records the agent's session id, once `session/new` (or a resume) named
+    /// it.
+    pub fn set_provider_session_id(&mut self, session_id: impl Into<String>) {
+        let session_id = session_id.into();
+        if !session_id.is_empty() {
+            self.provider_session_id = Some(session_id);
+        }
+    }
+
+    /// The session id currently used for provider events, when the agent has
+    /// named the session.
+    pub fn provider_session_id(&self) -> Option<&str> {
+        self.provider_session_id.as_deref()
+    }
+
+    /// Whether `thread/identity` has been emitted, which is what makes it safe
+    /// to report events.
+    ///
+    /// Not the same question as "is the session id known": a resumed run knows
+    /// the id from the start but has not yet stated it, and events reported in
+    /// that window would precede the identity that explains them.
+    pub fn has_identity(&self) -> bool {
+        self.identified
     }
 
     /// A prompt has been sent: open the turn.

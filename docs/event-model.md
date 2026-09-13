@@ -58,40 +58,40 @@ provider bridge.
 | # | contract type | coverage | producer / reason |
 | --- | --- | --- | --- |
 | 1 | `thread/started` | not produced | Thread creation is `DomainEvent::ThreadCreated` before a run exists; no provider frame starts a thread. A turn opens with `turn/started`. |
-| 2 | `thread/identity` | produced | daemon; the run's first event. `providerThreadId` is the thread id, which the daemon also passes as `--session-id`. |
-| 3 | `turn/started` | produced | daemon; Pi `agent_start`. |
-| 4 | `turn/completed` | produced | daemon (Pi `agent_settled`, a rejected prompt, exit, timeout) and server (deadline, stale host, restart, no host). The single terminal event. |
+| 2 | `thread/identity` | produced | daemon; the run's first event after `session/new` or `session/load`. `providerThreadId` is the ACP agent's opaque session id. |
+| 3 | `turn/started` | produced | daemon; synthesized before `session/prompt` because ACP has no turn event. |
+| 4 | `turn/completed` | produced | daemon (ACP prompt stop reason, connection failure, timeout) and server (deadline, stale host, restart, no host). The single terminal event. |
 | 5 | `turn/input/accepted` | not produced | loom dispatches one prompt synchronously; acceptance is the `turn/started` boundary. There is no client request id to echo yet. |
-| 6 | `thread/name/updated` | not produced | loom sets the provider session name through argv, not a frame; Pi never reports a rename back. |
-| 7 | `thread/compacted` | produced | daemon; Pi `compaction_end` when it succeeded. |
-| 8 | `thread/context/cleared` | not produced | Pi's RPC mode has no context-clear notification; `new_session` is an operation loom does not drive. |
-| 9 | `thread/goal/updated` | not produced | Pi exposes no goal object through its RPC events. |
+| 6 | `thread/name/updated` | not produced | ACP session metadata is translated only when the agent sends a concrete title; the current adapter does not receive a Pi-specific rename command. |
+| 7 | `thread/compacted` | produced | daemon; an ACP adapter's compaction update when one is available. |
+| 8 | `thread/context/cleared` | not produced | ACP has no provider-neutral context-clear update that the current adapter drives. |
+| 9 | `thread/goal/updated` | not produced | The current ACP adapter does not synthesize a goal object from agent text or tool calls. |
 | 10 | `thread/goal/cleared` | not produced | as above. |
-| 11 | `item/started` | produced | daemon; Pi `tool_execution_start`, `compaction_start`. |
-| 12 | `item/completed` | produced | daemon; Pi `tool_execution_end`, `text_end`, `thinking_end`, `compaction_end`, and the assistant flush. |
-| 13 | `item/agentMessage/delta` | produced | daemon; Pi `message_update` / `text_delta`. |
-| 14 | `item/commandExecution/outputDelta` | produced | daemon; Pi `tool_execution_update` for a command tool, with `reset: true` because Pi sends an accumulated snapshot. |
-| 15 | `item/fileChange/outputDelta` | not produced | loom closes a file change in one `item/completed`; Pi streams no separate file-change output. |
-| 16 | `item/reasoning/summaryTextDelta` | not produced | Pi's thinking frames carry reasoning text, not a distinct summary channel; that text maps to `item/reasoning/textDelta`. |
-| 17 | `item/reasoning/textDelta` | produced | daemon; Pi `message_update` / `thinking_delta`. |
-| 18 | `item/plan/delta` | not produced | Pi's RPC event list has no plan/todo delta; a plan would arrive as ordinary assistant text or a tool item. |
-| 19 | `item/mcpToolCall/progress` | not produced | Pi's tool updates do not distinguish MCP servers; they map to `item/toolCall/progress`. |
-| 20 | `item/toolCall/progress` | produced | daemon; Pi `tool_execution_update` for a non-command tool. |
-| 21 | `item/backgroundTask/progress` | not produced | Pi has no background-task concept. |
+| 11 | `item/started` | produced | daemon; ACP `tool_call` and related item-bearing updates. |
+| 12 | `item/completed` | produced | daemon; terminal ACP tool updates, message flushes and compaction updates. |
+| 13 | `item/agentMessage/delta` | produced | daemon; ACP `agent_message_chunk`. |
+| 14 | `item/commandExecution/outputDelta` | not produced | ACP tool output is currently represented by generic tool progress; no command-output accumulator is synthesized. |
+| 15 | `item/fileChange/outputDelta` | not produced | The current ACP mapping closes a file change as one item; it does not invent output deltas. |
+| 16 | `item/reasoning/summaryTextDelta` | not produced | ACP thought chunks map to reasoning text, not a separate summary channel. |
+| 17 | `item/reasoning/textDelta` | produced | daemon; ACP `agent_thought_chunk`. |
+| 18 | `item/plan/delta` | not produced | ACP plan updates map to `turn/plan/updated`; no item-level plan delta is synthesized. |
+| 19 | `item/mcpToolCall/progress` | not produced | ACP tool calls are not distinguished as MCP calls by the current adapter. |
+| 20 | `item/toolCall/progress` | produced | daemon; non-terminal ACP `tool_call_update`. |
+| 21 | `item/backgroundTask/progress` | not produced | ACP has no mapping in the current adapter. |
 | 22 | `item/backgroundTask/completed` | not produced | as above. |
-| 23 | `item/delegation/progress` | not produced | Pi has no delegation concept; a delegated thread would be a loom thread, not a provider item. |
+| 23 | `item/delegation/progress` | not produced | Delegation is a loom thread operation, not an ACP item in the current adapter. |
 | 24 | `item/delegation/completed` | not produced | as above. |
-| 25 | `thread/tokenUsage/updated` | produced | daemon; the assistant `usage` block in Pi `agent_end`. |
-| 26 | `thread/contextWindowUsage/updated` | not produced | Pi reports context usage only through the `get_session_stats` command, which loom does not issue. |
-| 27 | `turn/plan/updated` | not produced | no Pi plan frame (see #18). |
-| 28 | `turn/diff/updated` | not produced | no Pi working-tree diff frame; a diff would be derived from `fileChange` items. |
-| 29 | `provider/error` | produced | daemon; Pi `agent_end` with `stopReason: error`, `auto_retry_*` failure, compaction failure, a rejected prompt. |
-| 30 | `provider/rateLimits/updated` | not produced | Pi's RPC events do not carry rate-limit state. |
+| 25 | `thread/tokenUsage/updated` | not produced | The current ACP v1 mapping receives context occupancy, not a token breakdown. |
+| 26 | `thread/contextWindowUsage/updated` | produced | daemon; ACP `usage_update`, including the usage snapshot retained during `session/load`. |
+| 27 | `turn/plan/updated` | produced | daemon; ACP `plan` update. |
+| 28 | `turn/diff/updated` | not produced | The current ACP adapter does not derive a working-tree diff. |
+| 29 | `provider/error` | produced | daemon; rejected prompt or ACP transport failure. |
+| 30 | `provider/rateLimits/updated` | not produced | The current ACP mapping does not expose rate-limit state. |
 | 31 | `provider.env-resolved` | not produced | loom resolves env at spawn time in the daemon process; it is not a Pi event. |
 | 32 | `thread/extensionState/updated` | not produced | loom has no plugin/extension system, by decision. |
-| 33 | `provider/warning` | produced | daemon; Pi `extension_error`, a declined interactive dialog, a skipped compaction. |
-| 34 | `provider/modelFallback` | not produced | Pi does not report a model fallback as an event. |
-| 35 | `provider/unhandled` | **not produced** | bb's diagnostic for an unmapped provider frame. loom deliberately has **no body variant** for it: an unmapped Pi frame is reported explicitly on stderr and produces no event. A catch-all row would hide a missing mapping. The token is still classified (see below). |
+| 33 | `provider/warning` | produced | daemon; declined ACP permission requests and adapter warnings. |
+| 34 | `provider/modelFallback` | not produced | No ACP model fallback event is mapped today. |
+| 35 | `provider/unhandled` | **not produced** | An unmapped ACP update is logged and produces no fabricated contract event. |
 
 ### Client and system types (13)
 
@@ -124,8 +124,8 @@ is never "unknown" when it is really this — but `ProviderEvent` has no
 `ProviderUnhandled` body variant and the bridge never constructs one.
 
 The reason is the issue's own constraint: a fallback type is a place for
-mapping gaps to hide. An unmapped Pi frame is written to stderr with the raw
-frame and produces no event, so a new provider frame shows up as a visible
+mapping gaps to hide. An unmapped ACP update is logged with its raw
+payload and produces no event, so a new agent variant shows up as a visible
 gap rather than a timeline row nobody reads. Adding a variant later is a
 deliberate decision with a test, not a default.
 
@@ -152,12 +152,11 @@ The fields the projection needs are all present on the contract events:
 | timestamps | `RunEvent::at_ms` (envelope) and item `durationMs` |
 | thinking vs text channel | distinct types: `item/reasoning/*` vs `item/agentMessage/*` |
 
-## The stdout guard is unchanged
+## ACP framing
 
-`guard_stdout_line` still runs before the frame mapper: only a JSON object with
-a string `type` becomes a frame, and everything else goes to stderr. The new
-model widens what a *frame* can become; it does not widen what counts as a
-frame. bb #1180 (Pi's OSC 777 notification wedging a turn) stays prevented.
+ACP owns JSON-RPC framing and the daemon SDK consumes complete requests,
+responses and notifications. The daemon does not parse Pi's private JSONL
+protocol; only embedded `pi-acp` talks to Pi internally.
 
 ## Enforcement
 
@@ -167,7 +166,6 @@ frame. bb #1180 (Pi's OSC 777 notification wedging a turn) stays prevented.
   and that each sample's serialized `RunEvent` validates. A renamed field or
   discriminant fails there.
 - `crates/daemon/tests/provider_e2e.rs::a_provider_turn_runs_end_to_end_and_is_replayable`
-  runs a provider whose stdout is deliberately polluted and validates every
-  produced frame.
+  runs an ACP agent stub and validates every translated contract event.
 - `the_real_pi_process_streams_through_the_bridge` (ignored by default, runs
-  the real `pi` CLI) validates a real turn's frames the same way.
+  Pi through embedded `pi-acp`) validates a real turn's events the same way.

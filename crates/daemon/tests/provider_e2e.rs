@@ -1,9 +1,9 @@
 //! Provider execution end to end, over real sockets and real processes.
 //!
 //! Each test starts a real server, enrolls a real daemon, and runs a real
-//! provider process — a small stub that speaks the same JSON-RPC line protocol
-//! Pi does. The Pi *bridge* is exercised directly in the crate's unit tests;
-//! here the point is the path around it: dispatch through the relay, provider
+//! provider process — a small stub that speaks ACP over JSON-RPC. The ACP
+//! client and translator are exercised directly in the crate's unit tests; here
+//! the point is the path around them: dispatch through the relay, provider
 //! output reported back, and the thread leaving `working` with exactly one
 //! terminal event, including when the provider crashes, hangs or the daemon
 //! disappears.
@@ -33,10 +33,46 @@ async fn spawn_server(config: AppConfig) -> (String, AppState) {
     (format!("http://{}:{}", addr.ip(), addr.port()), state)
 }
 
-/// Writes an executable `#!/bin/sh` provider stub and returns its spec.
-fn write_stub(dir: &Path, name: &str, body: &str) -> ProviderSpec {
+/// Writes an executable ACP agent stub and returns its spec.
+///
+/// The supplied body runs for `session/prompt`. Keeping the JSON-RPC server
+/// shell here means every end-to-end test exercises the real ACP client rather
+/// than the removed direct-Pi JSONL driver.
+fn write_stub(dir: &Path, name: &str, prompt_body: &str) -> ProviderSpec {
     let path = dir.join(name);
-    std::fs::write(&path, format!("#!/bin/sh\n{body}")).unwrap();
+    let script = format!(
+        r#"#!/bin/sh
+session_id=stub-session
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([^,]*\),"method":.*/\1/p')
+  method=$(printf '%s' "$line" | sed -n 's/.*"method":"\([^"]*\)".*/\1/p')
+  case "$method" in
+    initialize)
+      printf '{{"jsonrpc":"2.0","id":%s,"result":{{"protocolVersion":1,"agentCapabilities":{{"loadSession":true}}}}}}\n' "$id"
+      ;;
+    session/new)
+      printf '{{"jsonrpc":"2.0","id":%s,"result":{{"sessionId":"%s"}}}}\n' "$id" "$session_id"
+      ;;
+    session/load)
+      touch "$0.loaded"
+      printf '{{"jsonrpc":"2.0","id":%s,"result":{{}}}}\n' "$id"
+      ;;
+    session/prompt)
+      {prompt_body}
+      printf '{{"jsonrpc":"2.0","id":%s,"result":{{"stopReason":"end_turn"}}}}\n' "$id"
+      ;;
+    session/cancel)
+      printf '{{"jsonrpc":"2.0","id":%s,"result":{{}}}}\n' "$id"
+      ;;
+    *)
+      printf '{{"jsonrpc":"2.0","id":%s,"result":{{}}}}\n' "$id"
+      ;;
+  esac
+done
+"#,
+        prompt_body = prompt_body
+    );
+    std::fs::write(&path, script).unwrap();
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -44,7 +80,7 @@ fn write_stub(dir: &Path, name: &str, body: &str) -> ProviderSpec {
         permissions.set_mode(0o755);
         std::fs::set_permissions(&path, permissions).unwrap();
     }
-    ProviderSpec::custom(path.to_string_lossy().into_owned(), Vec::new())
+    ProviderSpec::acp(path.to_string_lossy().into_owned(), Vec::new())
 }
 
 /// Connects and enrolls a daemon, then drives it on a background task.
@@ -245,23 +281,15 @@ fn terminal_outcome(events: &[Value]) -> Option<String> {
 #[tokio::test]
 async fn a_provider_turn_runs_end_to_end_and_is_replayable() {
     let dir = tempfile::tempdir().unwrap();
-    // The stub deliberately pollutes stdout: an OSC 777 notification (bb
-    // #1180) and a bare log line. Neither may wedge the turn.
+    // The stub speaks ACP over JSON-RPC. The client must still receive the
+    // streamed text and tool lifecycle through `session/update`.
     let provider = write_stub(
         dir.path(),
         "provider.sh",
-        r#"read -r _prompt
-printf '%s\n' '{"type":"agent_start"}'
-printf '%s\n' '{"type":"turn_start"}'
-printf '%s\n' '{"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"hello "}}'
-printf '\033]777;notify;pi;working\007\n'
-printf '%s\n' 'this line is not JSON at all'
-printf '%s\n' '{"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"world"}}'
-printf '%s\n' '{"type":"tool_execution_start","toolCallId":"c1","toolName":"bash","args":{"command":"ls"}}'
-printf '%s\n' '{"type":"tool_execution_end","toolCallId":"c1","toolName":"bash","result":{"content":[{"type":"text","text":"ok"}]},"isError":false}'
-printf '%s\n' '{"type":"turn_end"}'
-printf '%s\n' '{"type":"agent_settled"}'
-sleep 1
+        r#"printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"stub-session","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"hello "}}}}'
+printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"stub-session","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"world"}}}}'
+printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"stub-session","update":{"sessionUpdate":"tool_call","toolCallId":"c1","title":"ls","kind":"execute","status":"in_progress","rawInput":{"command":"ls"}}}}'
+printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"stub-session","update":{"sessionUpdate":"tool_call_update","toolCallId":"c1","status":"completed"}}}'
 "#,
     );
 
@@ -315,13 +343,78 @@ sleep 1
         .filter(|event| event["type"] == "thread_status_changed")
         .any(|event| event["to"] == "idle"));
 
-    // Every frame this turn produced is a valid bb ThreadEvent, including the
-    // ones around the deliberately polluted stdout.
+    // Every ACP update this turn produced is a valid bb `ThreadEvent`.
     assert_contract_conformant(&events);
 
     // No run is left in flight.
     assert!(state.runs.is_empty());
 
+    daemon.abort();
+    state.shutdown();
+}
+
+#[tokio::test]
+async fn a_second_turn_reuses_the_persisted_acp_session() {
+    let dir = tempfile::tempdir().unwrap();
+    let provider = write_stub(
+        dir.path(),
+        "resume.sh",
+        r#"if [ -f "$0.loaded" ]; then
+  text=resumed
+else
+  text=fresh
+fi
+printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"stub-session","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"'"$text"'"}}}}'
+"#,
+    );
+    let (url, state) = spawn_server(AppConfig {
+        provider_spec: provider.clone(),
+        ..AppConfig::default()
+    })
+    .await;
+    let (_host_id, daemon) =
+        enroll_daemon(&url, None, Some(provider), Duration::from_secs(10)).await;
+    assert!(
+        eventually(|| state
+            .registry
+            .hosts()
+            .iter()
+            .any(|host| host.status == HostStatus::Connected))
+        .await
+    );
+
+    let thread_id = start_turn(&state, dir.path(), "first turn");
+    assert_eq!(
+        wait_for_terminal(&state, &thread_id).await,
+        ThreadStatus::Idle
+    );
+    let first_thread = state.registry.thread(&thread_id).unwrap();
+    assert_eq!(
+        first_thread.provider_session_id.as_deref(),
+        Some("stub-session")
+    );
+
+    let follow_up = state
+        .registry
+        .post_message(
+            &thread_id,
+            MessageRole::User,
+            "second turn".to_owned(),
+            loom_relay::now_ms(),
+        )
+        .unwrap();
+    for event in &follow_up {
+        state.publish_domain_event(event).unwrap();
+    }
+    let thread = state.registry.thread(&thread_id).unwrap();
+    state.dispatch_thread(&thread, "second turn");
+    assert_eq!(
+        wait_for_terminal(&state, &thread_id).await,
+        ThreadStatus::Idle
+    );
+
+    let events = thread_events(&state, &thread_id);
+    assert_eq!(output_texts(&events), vec!["fresh", "resumed"]);
     daemon.abort();
     state.shutdown();
 }
@@ -335,11 +428,7 @@ async fn a_provider_runs_in_the_environment_workspace() {
     let provider = write_stub(
         dir.path(),
         "pwd.sh",
-        r#"read -r _prompt
-pwd > pwd.out
-printf '%s\n' '{"type":"agent_start"}'
-printf '%s\n' '{"type":"agent_settled"}'
-sleep 1
+        r#"pwd > pwd.out
 "#,
     );
 
@@ -384,8 +473,7 @@ async fn a_dispatch_to_a_missing_workspace_fails_with_a_clear_reason() {
     let provider = write_stub(
         dir.path(),
         "never-runs.sh",
-        r#"read -r _prompt
-printf '%s\n' '{"type":"agent_settled"}'
+        r#"# The daemon refuses before the ACP agent is started.
 "#,
     );
 
@@ -440,9 +528,7 @@ async fn a_crashing_provider_leaves_the_thread_in_error() {
     let provider = write_stub(
         dir.path(),
         "crash.sh",
-        r#"read -r _prompt
-printf '%s\n' '{"type":"agent_start"}'
-printf '%s\n' '{"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"partial"}}'
+        r#"printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"stub-session","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"partial"}}}}'
 exit 7
 "#,
     );
@@ -494,9 +580,7 @@ async fn a_hanging_provider_is_killed_and_reported_as_timed_out() {
     let provider = write_stub(
         dir.path(),
         "hang.sh",
-        r#"read -r _prompt
-printf '%s\n' '{"type":"agent_start"}'
-sleep 30
+        r#"sleep 30
 "#,
     );
 
@@ -538,11 +622,7 @@ async fn a_dispatch_missed_while_disconnected_is_replayed_on_reconnect() {
     let provider = write_stub(
         dir.path(),
         "late.sh",
-        r#"read -r _prompt
-printf '%s\n' '{"type":"agent_start"}'
-printf '%s\n' '{"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"caught up"}}'
-printf '%s\n' '{"type":"agent_settled"}'
-sleep 1
+        r#"printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"stub-session","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"caught up"}}}}'
 "#,
     );
 
@@ -640,7 +720,7 @@ async fn a_run_on_a_silent_daemon_is_reaped_by_the_stale_heartbeat_sweep() {
 #[test]
 fn the_protocol_version_is_pinned() {
     // A wire-format change has to be deliberate; this fails loudly otherwise.
-    assert_eq!(PROTOCOL_VERSION, 1);
+    assert_eq!(PROTOCOL_VERSION, 2);
 }
 
 #[tokio::test]
@@ -817,10 +897,7 @@ async fn a_reconnect_recovers_more_dispatches_than_one_replay_page() {
     let provider = write_stub(
         dir.path(),
         "quick.sh",
-        r#"read -r _prompt
-printf '%s\n' '{"type":"agent_start"}'
-printf '%s\n' '{"type":"agent_settled"}'
-sleep 1
+        r#"# A quick ACP prompt completes with no content.
 "#,
     );
 

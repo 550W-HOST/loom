@@ -11,8 +11,9 @@
 //! bb's `apps/host-daemon` is the real execution plane and it is ~45k lines,
 //! but the *boundary* it sits behind is small: enroll, heartbeat, receive
 //! dispatch through a scope, report events back. This crate implements exactly
-//! that boundary, with a provider bridge that speaks Pi's RPC protocol. When
-//! the Node daemon lands it replaces the bridge, not the contract.
+//! that boundary, with an ACP client and the embedded `pi-acp` adapter for Pi.
+//! When the Node daemon lands it replaces the execution implementation, not the
+//! contract.
 //!
 //! # Lifecycle
 //!
@@ -209,13 +210,11 @@ pub struct DaemonConfig {
     pub provider: Option<ProviderSpec>,
     /// How long one provider run may take before it is killed.
     pub run_timeout: Duration,
-    /// Base directory for per-thread provider sessions, when supported.
-    pub session_dir: Option<PathBuf>,
     /// Root under which managed environments' workspaces are created.
     ///
     /// A managed environment's directory is `<environment_root>/<env_id>`. The
-    /// daemon chooses the actual path and reports it; the control plane never
-    /// presumes a layout.
+    /// daemon owns the directory layout and reports the resulting path; the ACP
+    /// agent owns its own session storage.
     pub environment_root: PathBuf,
     /// The host-scope event id to resume from. `None` replays the retained
     /// window and relies on dispatch dedup.
@@ -261,7 +260,6 @@ impl DaemonConfig {
             heartbeat_interval: DEFAULT_HEARTBEAT_INTERVAL,
             provider: None,
             run_timeout: DEFAULT_RUN_TIMEOUT,
-            session_dir: None,
             environment_root: default_environment_root(),
             resume_cursor: None,
             replay_limit: 500,
@@ -584,19 +582,11 @@ impl Daemon {
             }
             None => dispatch.provider.clone(),
         };
-        let run = ProviderRun::from_dispatch(
-            &dispatch,
-            spec,
-            self.config.run_timeout,
-            self.config.session_dir.clone(),
-        );
-        // The launch kind decides which driver runs the turn. They share the
-        // report channel and the run identity, so everything above this point
-        // — dispatch, reconciliation, the relay — is unaware of the choice.
+        let run = ProviderRun::from_dispatch(&dispatch, spec, self.config.run_timeout);
+        // ACP is the only provider protocol. Pi uses the embedded adapter;
+        // native agents use the same client over their stdio transport. The
+        // dispatch, reconciliation and relay remain unaware of that detail.
         match run.spec.launch {
-            loom_provider_protocol::ProviderLaunch::JsonRpc => {
-                provider::spawn(run, self.reports_tx.clone());
-            }
             loom_provider_protocol::ProviderLaunch::AcpStdio => {
                 let transport = crate::acp::session::Transport::Stdio {
                     command: run.spec.command.clone(),

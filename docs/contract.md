@@ -281,13 +281,12 @@ code. `finish_run_with` settles every interaction a thread still had open when
 its turn ended, so `hasPendingInteraction` in the thread list cannot be stuck.
 
 **Where interactions come from, and what is still missing.** The control plane's
-producer is `AppState::record_interaction`, which is reached from a provider
-report. No such report exists yet: the daemon sees Pi's blocking dialog
-(`extension_ui_request` with `select`/`confirm`/`input`/`editor`) and
-*declines* it, reporting a `provider/warning` instead
-(`crates/daemon/src/provider.rs::observe`). Holding that dialog open and
-bridging the answer back is a **provider-protocol** change — a new frame in each
-direction — and this batch deliberately does not ship a half of it. What the
+interaction producer is `AppState::record_interaction`, but no provider report
+calls it yet. The ACP client currently answers `session/request_permission`
+with its non-blocking policy; it does not hold a client-visible interaction.
+Holding that dialog open and bridging the answer back is a
+**provider-protocol** change — a new frame in each direction — and this batch
+deliberately does not ship a half of it. What the
 batch does guarantee is that the state such a frame would write is already
 durable, already routed and already rejectable: a provider that never asks
 leaves the interaction routes answering the truth (an empty list), not a shell
@@ -305,12 +304,10 @@ added to the entity view, because a stored goal would be a second source of
 truth that could disagree with the log.
 
 `threads.clearContext` answers `501 not_configured`. Clearing a context means
-emptying the **provider's** session memory, and the session lives in the
-execution plane (Pi is launched with `--session-dir`/`--session-id`). A
-server-side "clear" would drop loom's records while the provider carried on
-with the context it still holds, which is the failure the acceptance criteria
-name. The protocol has no frame for it. When it grows one, this is the route
-that changes.
+emptying the **provider's** ACP session memory. The session is owned by the ACP
+agent and can only be changed through a provider-supported lifecycle method;
+dropping loom's records while the agent carried on would be the same silently
+wrong answer. The current provider protocol has no context-clear command.
 
 ### `threads.cancelPlan` refuses
 

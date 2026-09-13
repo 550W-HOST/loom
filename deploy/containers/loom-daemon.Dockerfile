@@ -45,7 +45,6 @@ USER 1000:1000
 #
 #   LOOM_DAEMON_STATE    the enrolled host id, so a rebuilt container is the
 #                        same machine instead of a second host
-#   LOOM_SESSION_DIR     per-thread provider sessions, likewise persistent
 #   LOOM_WORKSPACE_ROOT  where managed environments are created; the mount
 #                        point is the whole of what this container can edit
 #
@@ -54,7 +53,6 @@ USER 1000:1000
 # immediately and visibly.
 ENV HOME=/var/lib/loom \
     LOOM_DAEMON_STATE=/var/lib/loom/host-id \
-    LOOM_SESSION_DIR=/var/lib/loom/sessions \
     LOOM_WORKSPACE_ROOT=/workspace
 
 WORKDIR /var/lib/loom

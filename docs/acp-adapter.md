@@ -13,7 +13,7 @@ Read `provider-strategy.md` first for *why* ACP; this document is *what* and
                      ┌─────────────────────────────────────────┐
   ACP agent  ──ACP──▶│            ACP adapter                  │
   (pi-acp or         │                                         │
-   native)           │  · negotiate protocol version           │
+   native)           │  · initialize ACP v1 and capture caps   │
                      │  · own the session lifecycle            │
                      │  · translate updates → ProviderEvent     │
                      └──────────────┬──────────────────────────┘
@@ -23,16 +23,16 @@ Read `provider-strategy.md` first for *why* ACP; this document is *what* and
                      (RunDispatch in, ProviderReport out)
 ```
 
-The adapter is a **translator with state**, not a new layer. It produces exactly
-the event type the Pi bridge produces today, so everything above it — the run
-record, the relay, the projection, the UI — is untouched.
+The adapter is a **translator with state**, not a new layer. It produces the
+same event type consumed by the existing run path, so everything above it — the
+run record, relay, projection and UI — is unchanged.
 
 ## What the adapter owns
 
 | Responsibility | Detail |
 | --- | --- |
 | Transport | Spawn a native ACP agent (`Stdio`), or drive an embedded `pi-acp` (`Channel::duplex()`) |
-| Handshake | `initialize`, version negotiation, capability capture |
+| Handshake | `initialize` with ACP v1; capability capture |
 | Session lifecycle | `session/new`, `session/resume`/`session/load`, `session/cancel`, `session/delete` |
 | Update translation | `SessionUpdate` → `ProviderEvent`, with the state that requires |
 | Client callbacks | Answer `session/request_permission`; declare `fs`/`terminal` capabilities it actually implements |
@@ -75,15 +75,14 @@ must not invent detail.
 ACP has no thread or turn concept at all — it models a *session* and a
 *prompt*. loom's contract has `thread/started`, `thread/identity`,
 `turn/started`, `turn/input/accepted` and `turn/completed`. **The adapter
-synthesizes the missing ones**, which is what the Pi bridge already does
-(`crates/daemon/src/provider.rs:492-500`):
+synthesizes the missing ones** in `crates/daemon/src/acp/session.rs`:
 
 | Event | Source |
 | --- | --- |
 | `thread/identity` | the ACP `sessionId`, emitted once when it is known |
 | `turn/started` | a `session/prompt` was sent |
 | `turn/input/accepted` | the prompt was accepted (`PromptResponse` under v1) |
-| `turn/completed` | v1's `StopReason`, or v2's `StateUpdate::Idle` |
+| `turn/completed` | v1's `PromptResponse.stop_reason` (v2 will use `StateUpdate::Idle`) |
 | `thread/started` | **not emitted** — the contract scopes it to thread creation, which the domain already recorded |
 
 ACP v1 and v2 signal completion differently, and this is the one place the
@@ -119,8 +118,8 @@ existing convention:
 | Reasoning block | minted | `reasoning-<n>` |
 | Plan | minted | `plan-<n>` |
 
-The existing Pi bridge already mints `assistant-<n>` (`crates/daemon/src/provider.rs:910`),
-so the convention is fixed, not invented here.
+The adapter mints `assistant-<n>` for message items; ACP's `toolCallId` remains
+the stable id for tool items.
 
 **Roles**: the contract's `ItemAgentMessageDelta` is the assistant's delta
 channel. ACP's `UserMessageChunk` carries the user's own message echoed back.
@@ -169,10 +168,8 @@ takes the `ToolKind` and `title` carries the human-readable description.
 **File changes are better under ACP than under the Pi path.** `ToolCallContent::Diff`
 gives `path`, `old_text` and `new_text` per file, so `FileChangeKind` is derived
 from fact (`old_text` absent → `Add`, present → `Update`) rather than inferred.
-Compare the Pi bridge, which guesses from argument key names
-(`crates/daemon/src/provider.rs:977`). `content` is also an array, so a
-multi-file edit maps to one `FileChange` with several `changes` entries — which
-the contract supports and the Pi path cannot express.
+The adapter maps ACP tool data directly from `raw_input` and `content`; it does
+not carry a second provider-specific argument parser.
 
 A terminal-backed tool call (`ToolCallContent::Terminal`) maps to
 `CommandExecution` with the terminal id in `presentation`, since the contract has
@@ -211,60 +208,30 @@ Mapping:
 | `Cancelled` | interaction cancelled |
 | `PermissionOptionKind::Allow*` / `Reject*` | decision polarity |
 
-Note this **replaces** the current `auto_cancel_response`
-(`crates/daemon/src/provider.rs:358`), which declines every dialog because
-there is nowhere to render it. Once interactions are projected, that call site
-creates an `Interaction` instead.
+Note this **replaces** the old direct-provider auto-cancel path. ACP permission
+requests are handled by the adapter callback and the current policy selects an
+allow option or cancels when none exists.
 
 ## Capabilities the adapter declares
 
-The client capabilities sent in `initialize` must be **true**, because an agent
-will call these back:
-
-| Capability | Decision |
-| --- | --- |
-| `fs.readTextFile` | yes — loom can read within the environment root |
-| `fs.writeTextFile` | yes |
-| `terminal` | **no, initially** — answering `terminal/create` etc. properly is its own work; declaring it would make agents call methods we cannot serve |
-| `session.*` | whatever the adapter implements |
-
-This follows the no-fallback rule: an undeclared capability makes the agent use
-its own fallback (its own filesystem access), which is correct behaviour, rather
-than making loom answer a method it would fake.
+The client capabilities are intentionally left at the SDK defaults for now;
+filesystem and terminal callbacks are not advertised until loom has handlers for
+them. The permission callback is handled locally with the current non-blocking
+policy.
 
 ## Version handling
 
-The adapter negotiates v1 and v2 (`Client::protocol_connector()`). The mapping
-above is version-independent **except**:
-
-1. **Completion signal** — `PromptResponse` (v1) vs `StateUpdate` (v2).
-2. **`CurrentModeUpdate`** — v1 only. Under v2 it does not exist; the adapter
-   publishes nothing for a mode change on that path and does not error.
-3. **`Other`** — under v2 an unknown update arrives typed as
-   `SessionUpdate::Other`; under v1 there is no such variant and an unknown
-   `sessionUpdate` fails to deserialise, so the adapter intercepts unknown
-   frames at the raw JSON-RPC layer (`UntypedMessage`) before typed dispatch.
-   Either way: log the discriminator, publish nothing, keep the session alive.
-4. **Resume** — `session/resume` under v2 (requesting no replay, since loom has
-   the log), `session/load` under v1.
+The current Rust adapter speaks ACP v1, which is the stable version used by the
+pinned `pi-acp` dependency. v1 completion arrives in `PromptResponse.stop_reason`;
+`session/load` is used for restore. ACP v2 negotiation and its `session/resume`
+shape are deliberately not enabled yet.
 
 ## The session mapping
 
-Recorded on session creation, read on resume:
-
-```rust
-struct ProviderSession {
-    agent: String,            // "pi", "omp", …
-    session_id: String,       // the agent's id
-    cwd: String,              // the directory the session was created in
-    protocol: Protocol,       // v1 | v2, for resume shape
-}
-```
-
-Keyed by thread, stored in the domain snapshot beside it (W-543 already
-persists that). Today the Pi path puts the *thread id* into `--session-id`
-(`effective_argv`, `crates/daemon/src/provider.rs:336`); with the adapter owning
-session identity, that rewriting is deleted.
+The session mapping is stored on the thread as the opaque provider session id;
+the current implementation records v1 as the protocol. A future version-aware
+adapter can add the negotiated protocol without changing the thread-to-session
+relationship.
 
 **The `cwd` must exist on resume.** If it does not, fail with an explicit error
 naming the path. Never silently start a fresh session.
@@ -273,23 +240,14 @@ naming the path. Never silently start a fresh session.
 
 | Piece | Location | Why |
 | --- | --- | --- |
-| Adapter, transport, translation | `crates/daemon/src/acp/` | It runs where the agent runs, like the Pi bridge |
+| Adapter, transport, translation | `crates/daemon/src/acp/` | It is the sole provider execution path |
 | Session mapping type | `crates/domain/` | It is persisted state |
 | Event types | unchanged | The adapter produces existing `ProviderEvent`s |
 | Dispatch | `crates/provider-protocol/` | `ProviderSpec` gains an ACP variant |
 
-`ProviderSpec` currently names a command and argv, and special-cases `pi`. The
-ACP path needs to say *which agent* and *how to launch it* instead:
-
-```rust
-enum ProviderLaunch {
-    AcpStdio { command: String, args: Vec<String> },  // native ACP agent
-    AcpEmbeddedPi,                                     // pi-acp linked in
-}
-```
-
-`pi-acp` as a library means the `AcpEmbeddedPi` arm spawns no adapter process —
-only `pi` itself.
+`ProviderSpec` names an ACP launch. `AcpStdio` starts a native ACP agent as a
+child; `AcpEmbeddedPi` connects the same client to `pi-acp` in-process. There is
+no direct Pi JSON-RPC launch arm.
 
 ## What deliberately stays out
 
@@ -311,8 +269,8 @@ only `pi` itself.
 The adapter is testable without a real agent, which is why this boundary is
 worth defining before writing it:
 
-1. **Golden mapping tests** — feed recorded ACP frames, assert the
-   `ProviderEvent` sequence. Frames from both versions.
+1. **Golden mapping tests** — feed recorded ACP v1 frames, assert the
+   `ProviderEvent` sequence.
 2. **Item lifecycle** — a tool call start→update→complete produces one
    `ItemStarted` and one `ItemCompleted` with the merged shape.
 3. **Data-driven variant selection** — the same `ToolKind` maps to a specific
@@ -320,12 +278,8 @@ worth defining before writing it:
    This is the rule most likely to rot.
 4. **Terminal invariant** — every path ends in exactly one `TurnCompleted`,
    including cancelled and failed.
-5. **Permission round trip** — a request becomes an interaction, and each
-   outcome reaches the agent.
-6. **Unknown update** — v2 `Other` and a raw v1 unknown frame are logged and do
-   not break the session.
-7. **Embedded pi-acp** — the whole thing over `Channel::duplex()` against a mock
-   pi, no child process.
+5. **Embedded pi-acp** — the whole thing over `Channel::duplex()` against a mock
+   Pi, no child adapter process.
 
 ## Open questions
 

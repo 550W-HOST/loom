@@ -399,6 +399,20 @@ pub struct Thread {
     /// editing the same thread's tabs cannot silently overwrite each other.
     #[serde(default)]
     pub tabs_revision: u64,
+    /// The agent's own identifier for this thread's conversation.
+    ///
+    /// loom does not invent this: an ACP agent returns it from `session/new`
+    /// and accepts it back through `session/load` (or the versioned resume
+    /// method), and it is what makes a second turn continue the first one's
+    /// conversation instead of starting over. Reported to the log as
+    /// `providerThreadId`, learned back from the `thread/identity` event, and
+    /// stored here so a dispatch can replay it.
+    ///
+    /// Domain state rather than a client-visible field: the contract's thread
+    /// shape has no place for it, so it is persisted and used without being
+    /// serialized into an HTTP response.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_session_id: Option<String>,
 }
 
 impl Thread {
@@ -425,6 +439,7 @@ impl Thread {
             reasoning_level: None,
             tabs: Vec::new(),
             tabs_revision: 0,
+            provider_session_id: None,
         };
         let event = DomainEvent::ThreadCreated {
             thread: thread.clone(),
@@ -580,6 +595,29 @@ impl Thread {
         self.tabs_revision = self.tabs_revision.saturating_add(1);
         self.updated_at_ms = now_ms;
         Ok(DomainEvent::ThreadUpdated {
+            thread: self.clone(),
+        })
+    }
+
+    /// Records the agent's identifier for this thread's conversation.
+    ///
+    /// Returns the event when the value actually changed, and `None` when it
+    /// did not: the agent reports its identity on every turn, so a repeat is
+    /// the common case and republishing would put a fact in the log that says
+    /// nothing new. Once known, the value is never cleared — a session that
+    /// exists still exists even if a later turn fails.
+    pub fn set_provider_session_id(
+        &mut self,
+        session_id: impl Into<String>,
+        now_ms: u64,
+    ) -> Option<DomainEvent> {
+        let session_id = session_id.into();
+        if session_id.is_empty() || self.provider_session_id.as_deref() == Some(&session_id) {
+            return None;
+        }
+        self.provider_session_id = Some(session_id);
+        self.updated_at_ms = now_ms;
+        Some(DomainEvent::ThreadUpdated {
             thread: self.clone(),
         })
     }

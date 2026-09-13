@@ -376,15 +376,17 @@ things follow from what it is:
   it actually requires is a *configured* `pi`, and those are different things.
   A runner that has the CLI installed but no `$HOME/.pi/agent` gets no frames at
   all: `pi --mode rpc --no-session </dev/null` exits immediately, emitting
-  nothing, and the test then fails on `should report `started`` in under a
-  second — deterministically, on every run, with no credentials involved.
+  nothing, and the embedded `pi-acp` integration then fails on
+  `should report started` in under a second — deterministically, on every run,
+  with no credentials involved.
 
   A job that is red every time is worse than no job: it trains people to ignore
   the checks list. So the job probes the behaviour the test needs and skips with
   a `::notice::` when it is absent, which is the state of a stock runner. Red
   then means something really changed.
 
-  The probe captures `pi --mode rpc --no-session </dev/null` and asks whether it
+  The probe captures the Pi RPC child invocation used internally by
+  `pi-acp`: `pi --mode rpc --no-session </dev/null`, and asks whether it
   produced any frames. `</dev/null` makes pi exit on EOF so it returns in a few
   seconds either way, and the output is captured whole rather than piped, so
   `pipefail` cannot mistake a `SIGPIPE` for "no frames". Verified both ways

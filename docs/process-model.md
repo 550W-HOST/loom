@@ -67,7 +67,7 @@ A daemon speaks the same WebSocket as a UI, on `GET /ws`:
 {"type":"replay","scope":{"kind":"host","id":"host_…"},"since":"01M…"}
 
 // server -> daemon
-{"type":"welcome","connection_id":1,"protocol_version":1}
+{"type":"welcome","connection_id":1,"protocol_version":2}
 {"type":"host_enrolled","host":{"id":"host_01M…","status":"connected",…},"event_id":"01M…"}
 {"type":"host_heartbeat_ack","host_id":"host_01M…","last_seen_at_ms":1}
 {"type":"host_disconnected","host_id":"host_01M…"}
@@ -139,14 +139,14 @@ machine A.
 - `loom-daemon` — the reference daemon-only entry point. It enrolls, follows its
   `host:{id}` room through the relay with replay on reconnect, and runs the
   provider the control plane dispatches.
-- `loom-provider-protocol` — the dispatch/report contract between the two, plus
-  the stdout guard that keeps provider pollution out of the frame parser. The
-  full contract, the terminal-state guarantee and the stdout guard are specified
-  in [`provider-protocol.md`](provider-protocol.md).
+- `loom-provider-protocol` — the dispatch/report contract between the two. ACP
+  framing and provider-specific translation stay in the daemon, not in the
+  control plane; the terminal-state guarantee is specified in
+  [`provider-protocol.md`](provider-protocol.md).
 - The bb Node sources (`apps/`, `packages/`) are **not yet checked in**; they
   land beside the Rust workspace as a separate step. Until then the Node-facing
   acceptance items are specified here and exercised through `loom-daemon`,
-  which implements the identical wire contract and a Pi bridge.
+  which implements the ACP execution boundary and embeds `pi-acp`.
 
 ## Deploying it
 

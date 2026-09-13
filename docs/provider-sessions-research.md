@@ -16,9 +16,9 @@
 Research for W-558 and for the larger question of supporting many agents
 (especially ACP) without inventing a storage scheme each one rejects.
 
-Nothing here is implemented yet. This document exists so the design can be
-decided from measured facts rather than from an assumption about what a
-"session directory" means — because it means something different per agent.
+The measurements remain useful, but the implementation now follows the ACP
+boundary described below rather than reading any of these layouts from loom.
+This document exists as the evidence record, not as a second storage design.
 
 ## What was measured
 
@@ -111,23 +111,17 @@ failure mode worth copying.
 
 ## What this means for loom
 
-### The current state
+### The implementation now in use
 
 ```
-crates/daemon/src/provider.rs   effective_argv()
-  if spec.name == "pi" and session_dir is set:
-      add --session-dir <dir> --session-id <thread_id>
+loom Thread.provider_session_id
+  → RunDispatch.provider_session_id
+  → ACP session/load <id, cwd>
+  → agent-owned session storage
 ```
 
-- loom has **no ACP support at all** (only Pi and a generic `custom`)
-- the daemon currently runs as a system user (`loom`), so its `$HOME` is
-  `/var/lib/loom` and none of the user's `~/.pi` is reachable
-
-That second point was the motivation for W-558 (make the daemon a user-level
-service so it could see the user's agent sessions). **W-558 is now parked**:
-with loom never reading session files, the daemon has no reason to reach
-`~/.pi` at all, so the issue reduces to a plain resource-isolation trade-off and
-no longer blocks anything here.
+The old `effective_argv` / `--session-dir` / `--session-id` path was removed;
+loom never scans or opens a provider session file.
 
 ### The three questions this posed, and how they were decided
 

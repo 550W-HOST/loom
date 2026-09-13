@@ -249,7 +249,7 @@ rather than by making the server grow.
 | Daemon restart kills in-flight agent turns | provider bridge transport is inherited stdio owned by the daemon's parent | daemon is an independent process; relay replays what it missed |
 | An event the server refuses blocks every thread's events | one host-wide event queue spliced only on success | ordered per-scope log; a rejection cannot block another scope |
 | UI freezes with the server | UI and server share one process/cgroup | UI is a URL client; server and daemon are separate units |
-| Provider stdout pollution wedges a turn | bridge expects stdout to be JSON-RPC with no guard | provider supervision is first-class, not a plugin |
+| Provider output handling wedges a turn | provider-specific bridge assumes one private wire format | ACP framing/translation is isolated in the daemon and the server reaps silent runs |
 
 ## Deployment shapes
 

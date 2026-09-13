@@ -57,5 +57,9 @@ pub use runs::{
 pub use state::{relay_scope, AppState, BuildStateError};
 pub use transport::ChannelTransport;
 
-/// Protocol version reported by `/api/v1/version`.
-pub const PROTOCOL_VERSION: u32 = 1;
+/// Protocol version reported by `/api/v1/version` and negotiated by daemons.
+///
+/// Version 2 makes ACP the only provider wire protocol and removes the legacy
+/// direct-Pi JSON-RPC launch kind. Server and daemon must upgrade together (or
+/// use the existing daemon self-update path).
+pub const PROTOCOL_VERSION: u32 = 2;

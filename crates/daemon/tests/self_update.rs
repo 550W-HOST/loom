@@ -193,10 +193,41 @@ async fn spawn_server(config: AppConfig) -> (String, AppState) {
     (format!("http://{}:{}", addr.ip(), addr.port()), state)
 }
 
-/// Writes an executable provider stub and returns its spec.
-fn write_stub(dir: &Path, name: &str, body: &str) -> ProviderSpec {
+/// Writes an executable ACP agent stub and returns its spec.
+fn write_stub(dir: &Path, name: &str, prompt_body: &str) -> ProviderSpec {
     let path = dir.join(name);
-    std::fs::write(&path, format!("#!/bin/sh\n{body}")).unwrap();
+    let script = format!(
+        r#"#!/bin/sh
+session_id=stub-session
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([^,]*\),"method":.*/\1/p')
+  method=$(printf '%s' "$line" | sed -n 's/.*"method":"\([^"]*\)".*/\1/p')
+  case "$method" in
+    initialize)
+      printf '{{"jsonrpc":"2.0","id":%s,"result":{{"protocolVersion":1,"agentCapabilities":{{"loadSession":true}}}}}}\n' "$id"
+      ;;
+    session/new)
+      printf '{{"jsonrpc":"2.0","id":%s,"result":{{"sessionId":"%s"}}}}\n' "$id" "$session_id"
+      ;;
+    session/load)
+      printf '{{"jsonrpc":"2.0","id":%s,"result":{{}}}}\n' "$id"
+      ;;
+    session/prompt)
+      {prompt_body}
+      printf '{{"jsonrpc":"2.0","id":%s,"result":{{"stopReason":"end_turn"}}}}\n' "$id"
+      ;;
+    session/cancel)
+      printf '{{"jsonrpc":"2.0","id":%s,"result":{{}}}}\n' "$id"
+      ;;
+    *)
+      printf '{{"jsonrpc":"2.0","id":%s,"result":{{}}}}\n' "$id"
+      ;;
+  esac
+done
+"#,
+        prompt_body = prompt_body
+    );
+    std::fs::write(&path, script).unwrap();
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -204,7 +235,7 @@ fn write_stub(dir: &Path, name: &str, body: &str) -> ProviderSpec {
         permissions.set_mode(0o755);
         std::fs::set_permissions(&path, permissions).unwrap();
     }
-    ProviderSpec::custom(path.to_string_lossy().into_owned(), Vec::new())
+    ProviderSpec::acp(path.to_string_lossy().into_owned(), Vec::new())
 }
 
 async fn eventually(mut predicate: impl FnMut() -> bool) -> bool {
@@ -355,12 +386,7 @@ async fn a_protocol_mismatch_updates_the_daemon_and_the_new_binary_runs_a_turn()
     let provider = write_stub(
         staging.path(),
         "provider.sh",
-        r#"read -r _prompt
-printf '%s\n' '{"type":"agent_start"}'
-printf '%s\n' '{"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"updated and running"}}'
-printf '%s\n' '{"type":"turn_end"}'
-printf '%s\n' '{"type":"agent_settled"}'
-sleep 1
+        r#"printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"stub-session","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"updated and running"}}}}'
 "#,
     );
     let workspace = tempfile::tempdir().unwrap();

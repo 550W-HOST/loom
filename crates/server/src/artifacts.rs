@@ -12,7 +12,7 @@
 //!
 //! | Route | Answer |
 //! | --- | --- |
-//! | `GET /install/version` | `{"version":"0.1.0","protocolVersion":1}` |
+//! | `GET /install/version` | `{"version":"0.1.0","protocolVersion":2}` |
 //! | `GET /install/loom-daemon?target=<triple>` | the binary, its SHA-256 in `ETag` and `X-Loom-Artifact-Sha256` |//!
 //! The artifact directory defaults to the directory the running
 //! `loom-server` was started from — `deploy/install.sh` puts

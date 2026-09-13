@@ -3,7 +3,7 @@
 //! `acp_session.rs` drives the transport directly; this proves the *dispatch*
 //! path chooses it: a `ProviderLaunch::AcpStdio` spec travels through the relay,
 //! the daemon picks the ACP driver for it, and the thread still leaves `working`
-//! with exactly one terminal event — the same guarantees the JSON-RPC path has.
+//! with exactly one terminal event.
 //!
 //! Needs a `pi-acp` binary; skips when there is none, like the sibling test.
 
@@ -69,8 +69,8 @@ async fn enroll_daemon(
     (host_id, handle)
 }
 
-/// The same shape the JSON-RPC end-to-end tests use, so both paths are
-/// exercised identically.
+/// The same shape the ACP end-to-end tests use, so the server↔daemon dispatch
+/// path and the ACP driver are exercised together.
 fn start_turn(
     state: &AppState,
     workspace: &std::path::Path,
@@ -212,6 +212,11 @@ async fn an_acp_dispatch_runs_through_a_real_daemon() {
         kinds.contains(&"turn/started"),
         "the turn was opened: {kinds:?}"
     );
+    let stored = state.registry.thread(&thread_id).unwrap();
+    assert!(
+        stored.provider_session_id.is_some(),
+        "the server stores the ACP session id learned from thread/identity"
+    );
 
     daemon.abort();
 }
@@ -277,13 +282,14 @@ fn the_launch_kind_survives_serialization() {
     let back: ProviderSpec = serde_json::from_value(json).unwrap();
     assert_eq!(back.launch, ProviderLaunch::AcpStdio);
 
-    // A dispatch from before this field existed still means the Pi JSON-RPC
-    // path, so an in-flight dispatch is not reinterpreted.
+    // A dispatch without a launch kind is interpreted as a native ACP agent;
+    // The launch kind is explicit: no missing field can re-enable a removed
+    // direct provider protocol.
     let legacy: ProviderSpec = serde_json::from_value(serde_json::json!({
-        "name": "pi",
-        "command": "pi",
-        "args": ["--mode", "rpc"]
+        "name": "custom",
+        "command": "agent",
+        "args": []
     }))
     .unwrap();
-    assert_eq!(legacy.launch, ProviderLaunch::JsonRpc);
+    assert_eq!(legacy.launch, ProviderLaunch::AcpStdio);
 }

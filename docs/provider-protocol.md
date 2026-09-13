@@ -39,9 +39,10 @@ no runtime, no relay dependency.
   "project_id":  "proj_01M…",
   "host_id":     "host_01M…",
   "prompt":      "fix the failing test",
-  "provider":    { "name": "pi", "command": "pi",
-                   "args": ["--mode", "rpc", "--no-session"],
+  "provider":    { "name": "pi", "launch": "acp_embedded_pi",
+                   "command": "pi", "args": [],
                    "cwd": "/srv/projects/loom" },
+  "provider_session_id": null,
   "deadline_ms": 1789120438372,
   "created_at_ms": 1789120430000
 }
@@ -64,7 +65,7 @@ editing. See [the workspace section](#the-workspace-is-part-of-the-dispatch).
     "event": {
       "threadId": "thr_01M…",
       "scope": { "kind": "turn", "turnId": "run_01M…" },
-      "providerThreadId": "thr_01M…",
+      "providerThreadId": "pi-acp-session-1",
       "type": "item/agentMessage/delta",
       "itemId": "assistant-1",
       "delta": "hello "
@@ -80,24 +81,22 @@ bb's projection layer consumes it unchanged. See
 [`event-model.md`](event-model.md) for the full type map and the per-type
 decisions.
 
-The events the daemon produces from Pi frames:
+The events the daemon produces from ACP updates (Pi uses `pi-acp` internally):
 
-| contract `type` | Pi frame | note |
+| contract `type` | ACP source | note |
 | --- | --- | --- |
-| `thread/identity` | `agent_start` (first) | `providerThreadId` is the thread id |
-| `turn/started` | `agent_start` | |
-| `item/agentMessage/delta` | `message_update` / `text_delta` | assistant answer channel |
-| `item/reasoning/textDelta` | `message_update` / `thinking_delta` | reasoning channel, a distinct type |
-| `item/started` | `tool_execution_start`, `compaction_start` | `bash` → `commandExecution`, `edit`/`write` → `fileChange`, `read` → `fileRead`, `grep`/`find`/`ls` → `search`, else `toolCall` |
-| `item/completed` | `tool_execution_end`, `text_end`, `thinking_end`, `compaction_end` | |
-| `item/commandExecution/outputDelta` | `tool_execution_update` (bash) | `reset: true`, because Pi sends a snapshot |
-| `item/toolCall/progress` | `tool_execution_update` (other) | |
-| `thread/compacted` | `compaction_end` (success) | |
-| `thread/tokenUsage/updated` | `agent_end` | from the assistant `usage` block |
-| `provider/error` | `agent_end` (`stopReason: error`), retry failure | |
-| `provider/warning` | `extension_error`, declined dialog | |
-| _(unmapped)_ | anything else | reported on stderr; **no event**. loom has no `provider/unhandled` fallback body (see [`event-model.md`](event-model.md)) |
-| `turn/completed` | `agent_settled`, rejected prompt, exit, timeout | **terminal** |
+| `thread/identity` | `session/new` / `session/load` response | `providerThreadId` is the agent's opaque `sessionId` |
+| `turn/started` | before `session/prompt` | ACP has sessions and prompts, not bb turns |
+| `item/agentMessage/delta` | `session/update.agent_message_chunk` | assistant answer channel |
+| `item/reasoning/textDelta` | `session/update.agent_thought_chunk` | reasoning channel |
+| `item/started` | `session/update.tool_call` | ACP tool data is classified when required fields exist |
+| `item/completed` | terminal `tool_call_update` / stream flush | |
+| `item/toolCall/progress` | non-terminal `tool_call_update` | |
+| `turn/plan/updated` | `session/update.plan` | whole plan update |
+| `thread/contextWindowUsage/updated` | `session/update.usage_update` | context occupancy, not token counts |
+| `thread/name/updated` | `session/update.session_info_update` | only a concrete title is emitted |
+| `provider/error` | rejected prompt, transport failure | |
+| `turn/completed` | v1 prompt `stopReason` or daemon timeout | **terminal** |
 
 On the wire, the server stores the whole envelope as a domain event on the
 thread scope:
@@ -140,10 +139,10 @@ Three rules, all enforced in code:
    `provider.cwd` from the environment's path and targets the environment's
    host — the directory only exists there. See
    `AppState::dispatch_thread` in `crates/server/src/runs.rs`.
-2. **The daemon validates the directory, never falls back.** Before spawning,
-   the daemon checks `provider.cwd` is a directory *on its own machine*. A
+2. **The daemon validates the directory, never falls back.** Before starting the
+   ACP agent, it checks `provider.cwd` is a directory *on its own machine*. A
    missing one fails the run with a reason naming the path; it is not a license
-   to use the daemon's cwd. See `provider::drive`.
+   to use the daemon's cwd. See `acp::session::drive`.
 3. **An operator override replaces the executable, not the workspace.**
    `LOOM_PROVIDER_CMD` swaps what runs; `cwd` still comes from the dispatch.
 
@@ -196,9 +195,9 @@ This is the class of bug the contract exists to eliminate. bb's
 thread stayed `working` forever. The contract makes that unrepresentable by
 giving the terminal state **two independent owners**:
 
-1. **The daemon** guarantees it per process. `loom-daemon`'s bridge maps a
-   terminal Pi frame, a non-zero exit, an exit with no settle, or a deadline to
-   exactly one `finished`. There is no code path that returns without one.
+1. **The daemon** guarantees it per ACP connection. The ACP driver maps a
+   terminal prompt result, a transport exit or a timeout to exactly one
+   `turn/completed`.
 2. **The server** guarantees it per run. `AppState::reconcile_runs` reaps a run
    whose deadline passed (`timed_out`) and every run on a host that stopped
    heartbeating (`host_stale`). It does not trust the execution plane to report
@@ -207,22 +206,11 @@ giving the terminal state **two independent owners**:
 The thread transition is idempotent: a terminal event for a run already reaped
 is dropped, and a second status change is not produced.
 
-## The stdout guard
+## ACP framing
 
-A provider is not required to keep stdout clean, and bb #1180 is what happens
-when a bridge assumes it is: Pi emitted an OSC 777 desktop notification on
-stdout, the bridge fed it to a JSON parser, and the thread wedged.
-
-Every stdout line therefore passes `guard_stdout_line` *before* the frame
-mapper:
-
-* a JSON **object** with a **string `type`** is a frame;
-* everything else — log lines, OSC escapes, JSON scalars or arrays, objects
-  without `type` — is routed to stderr and never reaches the mapper.
-
-Framing is also strict JSONL: split on `LF` only, strip a trailing `CR`. Pi's
-RPC docs call this out explicitly because Node's `readline` also splits on
-`U+2028` / `U+2029`, which are legal inside JSON strings.
+ACP owns JSON-RPC framing. The daemon consumes typed ACP requests, responses and
+`session/update` notifications; it does not parse Pi's private JSONL protocol.
+Only the embedded `pi-acp` library speaks that private protocol internally.
 
 ## Idempotence and reconnect
 
@@ -239,10 +227,12 @@ RPC docs call this out explicitly because Node's `readline` also splits on
 * **No plugin system.** A provider is a `ProviderSpec` — a command plus
   arguments. There is no manifest, no discovery, no marketplace, no lifecycle
   hooks.
-* **No provider protocol in the control plane.** The server never parses Pi's
-  event shape. The daemon normalises it. That is what keeps a provider's stdout
-  format from coupling into the control plane.
-* **No FFI, no embedded runtime.** The boundary is a network boundary.
+* **No provider protocol in the control plane.** The server never parses ACP
+  frames. The daemon owns the ACP client, translates `session/update`, and
+  reports only the canonical run events.
+* **No provider-owned session files in loom.** The ACP agent owns storage;
+  loom persists only the opaque `provider_session_id` needed for the next
+  `session/load`.
 
 ## Running it
 
@@ -250,8 +240,9 @@ RPC docs call this out explicitly because Node's `readline` also splits on
 # Server-only, as usual.
 cargo run -p loom-server
 
-# A daemon that runs whatever provider the control plane dispatches (pi).
-# LOOM_WORKSPACE_ROOT is where it will create managed environments' workspaces.
+# A daemon that runs the provider the control plane dispatched. The built-in Pi
+# provider is ACP through embedded `pi-acp`; a custom command must be an ACP
+# agent speaking stdio.
 cargo run -p loom-daemon -- --server-url http://127.0.0.1:38886 --name laptop
 
 # Create a workspace pointing at an existing project directory, bind a thread
@@ -277,10 +268,11 @@ An operator can override the provider executable on a machine with
 
 | behaviour | where |
 | --- | --- |
-| stdout guard, Pi frame mapping, one terminal per process | `crates/daemon/src/provider.rs` unit tests |
+| ACP mapping, session identity, one terminal per run | `crates/daemon/src/acp/` unit and integration tests |
 | dispatch, report, host ownership, timeout + stale reaping, `cwd` from the environment | `crates/server/src/runs.rs` unit tests |
 | environment registry, lifecycle, provisioning dispatch + reports | `crates/server/src/domain_state.rs`, `crates/server/src/environments.rs` unit tests |
 | environment HTTP API (create/list/get/destroy, path validation) | `crates/server/src/http.rs` unit tests |
-| normal turn, provider crash, provider timeout, missed-dispatch replay, silent-daemon reaping | `crates/daemon/tests/provider_e2e.rs` (real sockets, real processes) |
-| provider runs *in* the bound workspace; a missing workspace fails clearly; managed provisioning succeeds and fails | same file |
-| the real `pi` binary | same file, `#[ignore]`d |
+| normal ACP turn, provider crash, provider timeout, missed-dispatch replay, silent-daemon reaping | `crates/daemon/tests/provider_e2e.rs` (real sockets, real ACP agents) |
+| two-run ACP session/load resume and identity persistence | `crates/daemon/tests/acp_session.rs`, `crates/daemon/tests/acp_dispatch.rs` |
+| embedded Pi through `pi-acp` | `crates/daemon/tests/acp_embedded.rs` |
+| the real `pi` binary | same provider e2e file, `#[ignore]`d |

@@ -250,12 +250,11 @@ the program (`-v ~/.pi:/var/lib/loom/.pi:ro`), and it is a good fit.
 finding out whether something works, and wrong as a deployment: it is invisible to
 the Dockerfile, gone on the next rebuild, and not reproducible from a tag.
 
-Whichever way, a provider also needs *configuration* — for `pi`, `$HOME/.pi/agent`
-has to exist, or `pi --mode rpc` exits without emitting a frame (that is the same
-condition [`ci.md`](ci.md) skips its real-provider job on). `HOME` in the daemon
-image is `/var/lib/loom`, the state volume, so a provider configured inside the
-container keeps that configuration across rebuilds. Mounting the host's
-`~/.pi` over it reuses one that already exists.
+Whichever way, an ACP provider also needs *configuration* — for the embedded
+Pi adapter, `$HOME/.pi/agent` has to exist. `HOME` in the daemon image is
+`/var/lib/loom`, the state volume, so the adapter and Pi configuration survive a
+container rebuild. Mounting the host's `~/.pi` over it reuses one that already
+exists.
 
 ## What a containerised daemon cannot do
 

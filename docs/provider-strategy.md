@@ -331,32 +331,17 @@ unmapped frame is reported, never given a catch-all body.
 
 ## Migration
 
-Current state: loom has Pi-only JSON-RPC (`crates/daemon/src/provider.rs`,
-`effective_argv`) and a generic `custom` spec. `crates/provider-protocol`
-carries `ProviderSpec`, `RunDispatch`, `ProviderReport`, and the stdout guard.
+Current state: loom depends on `pi-acp` and the ACP SDK. `ProviderLaunch` has
+only two ACP forms: `AcpEmbeddedPi` for Pi and `AcpStdio` for native agents.
+`crates/daemon/src/provider.rs` contains only run metadata and terminal-event
+construction; the old `effective_argv` and direct Pi JSON-RPC mapper are gone.
+The server persists the opaque provider session id in the thread snapshot and
+carries it on the next `RunDispatch`. The ACP driver uses `session/load` for a
+resumed v1 session and suppresses its history replay from the new run.
 
-Required changes, in dependency order:
-
-1. **Define the ACP-adapter boundary** in `loom-domain` / `provider-protocol`:
-   what an event is, how the adapter reports it, and how `(agent, session_id,
-   cwd)` is recorded. The `SessionUpdate` → event mapping must handle both
-   versions, including the `CurrentModeUpdate` asymmetry and v1's lack of a
-   typed `Other`.
-2. **Build loom's ACP client** and wire two kinds of peer to it: an embedded
-   `pi-acp` via `AcpAgent::run_with(Channel::duplex())`, and a spawned native
-   ACP agent via `Stdio::new()`. The client code is identical for both. Use
-   `Client::protocol_connector().with_v1(..).with_v2(..)` so both versions are
-   negotiated. The `pi-acp` half is in progress: `run_with` shipped in W-559, and
-   W-562 shipped v2 support behind an off-by-default feature.
-3. **Remove the Pi-specific path** — `effective_argv`'s `--session-dir` /
-   `--session-id` rewriting, and the `pi` special case in `ProviderSpec`.
-4. **Add `loom resume <thread>`** and the import flow. Prefer `session/resume`
-   when the negotiated version is v2 (loom already has the history) and
-   `session/load` under v1, where it is the only option. `session/list` backs the
-   import flow.
-5. **Decide the daemon's user model.** With no file reading, the loopback
-   argument for a user-level service weakens to "resource isolation versus
-   convenience" and becomes independent of sessions (was W-558).
+The current implementation intentionally targets ACP v1, because that is the
+stable schema and the version `pi-acp` speaks by default. v2 negotiation remains
+a separate follow-up once the v2 schema feature is enabled end to end.
 
 ## Decisions taken
 
@@ -364,7 +349,7 @@ Required changes, in dependency order:
 | --- | --- |
 | One protocol or several? | **ACP only.** Pi is not special-cased at the client. |
 | How is Pi reached? | **`pi-acp` embedded as a library**, over `Channel::duplex()`. |
-| ACP version | **Negotiate v1 and v2.** v2 first, falling back to v1 on the same connection. v1 is not "degraded" — it is what agents speak and the only version with `session/load`. |
+| ACP version | **v1 currently.** `pi-acp` speaks v1 by default; v2 negotiation is not yet wired in loom. |
 | Resume entry point | **`loom resume <thread>`** — `session/resume` under v2, which replays nothing since loom has the log; `session/load` under v1, where it is the only restore method. |
 | Unsupported capability | **Reported, never worked around.** |
 | `CurrentModeUpdate` under v2 | **Skipped.** v2 replaced modes with config options, so v1's mode update has no v2 equivalent and the conversion layer errors on it. Omitting it follows v2's design rather than papering over a gap. |
@@ -412,5 +397,6 @@ Required changes, in dependency order:
 - bb `packages/provider-bridge-protocol/src/thread-delta.ts` — the grammar
   itself
 - bb `plugins/provider-acp/src/known-agents.ts` — the five ACP agents
-- `crates/daemon/src/provider.rs` — loom's current Pi-only path
+- `crates/daemon/src/provider.rs` — ACP run metadata and the shared terminal
+  event; the old Pi-specific direct driver was removed
 - `docs/provider-sessions-research.md` — the storage survey this builds on

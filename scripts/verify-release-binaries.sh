@@ -360,7 +360,7 @@ note "GET /install/loom-daemon (If-None-Match) -> 304"
 # the contract's body — a name plus the source the project starts with — and the
 # only host on this machine is the daemon's.
 "$daemon" --server-url "$base" --name "release-verification" \
-  --state "$tmp/host-id" --session-dir "$tmp/sessions" >"$tmp/daemon.log" 2>&1 &
+  --state "$tmp/host-id" >"$tmp/daemon.log" 2>&1 &
 daemon_pid=$!
 enrolled=""
 for _ in $(seq 1 150); do

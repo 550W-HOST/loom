@@ -730,6 +730,24 @@ impl DomainRegistry {
         Ok(())
     }
 
+    /// Records the agent's identifier for a thread's conversation.
+    ///
+    /// Returns the event when the value changed, and `None` when it did not or
+    /// the thread is gone — a report for a thread that no longer exists is not
+    /// an error, because the domain has no way to have known it was deleted.
+    pub fn set_provider_session_id(
+        &self,
+        thread_id: &ThreadId,
+        session_id: &str,
+        now_ms: u64,
+    ) -> Option<DomainEvent> {
+        let mut inner = self.lock();
+        inner
+            .threads
+            .get_mut(thread_id)
+            .and_then(|thread| thread.set_provider_session_id(session_id, now_ms))
+    }
+
     /// Clears a thread's recorded run once it has ended.
     pub fn clear_thread_run(&self, thread_id: &ThreadId, now_ms: u64) -> Result<(), CommandError> {
         let mut inner = self.lock();
@@ -1263,6 +1281,39 @@ mod tests {
     /// The seeded project's id, the explicit owner every command must name.
     fn personal(registry: &DomainRegistry) -> ProjectId {
         registry.personal_project_id()
+    }
+
+    #[test]
+    fn a_provider_session_id_is_stored_and_replayed() {
+        let registry = registry();
+        let (thread, _) = registry
+            .create_thread(Some(personal(&registry)), Some("acp".into()), None, 2)
+            .unwrap();
+
+        let event = registry
+            .set_provider_session_id(&thread.id, "acp-session-1", 3)
+            .expect("the first ACP identity changes the thread");
+        assert_eq!(
+            registry
+                .thread(&thread.id)
+                .unwrap()
+                .provider_session_id
+                .as_deref(),
+            Some("acp-session-1")
+        );
+
+        let restored = DomainRegistry::new(1);
+        restored.apply_event(&DomainEvent::ThreadCreated { thread });
+        restored.apply_event(&event);
+        let DomainEvent::ThreadUpdated { thread: updated } = &event else {
+            panic!("expected a thread update");
+        };
+        assert_eq!(
+            restored
+                .thread(&updated.id)
+                .and_then(|thread| thread.provider_session_id),
+            Some("acp-session-1".to_owned())
+        );
     }
 
     #[test]

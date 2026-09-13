@@ -22,23 +22,34 @@ claims in [`upgrades.md`](upgrades.md).
 | Binaries | `target/release/loom-server`, `target/release/loom-daemon` |
 | Server bind | `127.0.0.1:38899` (a test port; the unit default is `38886`) |
 | Relay backend | `LOOM_DATA_DIR` (durable disk) |
-| Provider | a stub emitting real Pi RPC frames, because `pi` is not installed here |
+| Provider | a stub ACP agent speaking JSON-RPC, because the built-in Pi adapter is not needed for this socket-path check |
 
-The provider stub is worth stating plainly: `loom-daemon`'s Pi bridge is what
-the daemon runs, and the stub speaks the same JSONL frames as
-`pi --mode rpc`. The stub is only there to stand in for the agent binary; the
+The provider stub is worth stating plainly: `loom-daemon` now drives ACP, and
+the stub speaks the same ACP JSON-RPC requests and `session/update` notifications
+as a native agent. The stub is only there to stand in for the agent binary; the
 dispatch, relay, report and replay path under test is the production one.
 
 ```bash
 #!/usr/bin/env bash
-# Minimal Pi RPC provider: read the prompt, emit two assistant deltas, settle.
-read -r _prompt || true
-printf '%s\n' '{"type":"agent_start"}'
-printf '%s\n' '{"type":"turn_start"}'
-printf '%s\n' '{"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"pong "}}'
-printf '%s\n' '{"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"from fakepi"}}'
-printf '%s\n' '{"type":"turn_end"}'
-printf '%s\n' '{"type":"agent_settled"}'
+# Minimal ACP agent: answer initialize/session/new, then emit two ACP text
+# updates for session/prompt and acknowledge the prompt.
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([^,]*\),"method":.*/\1/p')
+  method=$(printf '%s' "$line" | sed -n 's/.*"method":"\([^"]*\)".*/\1/p')
+  case "$method" in
+    initialize)
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":1,"agentCapabilities":{"loadSession":true}}}\n' "$id"
+      ;;
+    session/new|session/load)
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"sessionId":"verify-session"}}\n' "$id"
+      ;;
+    session/prompt)
+      printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"verify-session","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"pong "}}}}'
+      printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"verify-session","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"from fake ACP"}}}}'
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"end_turn"}}\n' "$id"
+      ;;
+  esac
+done
 ```
 
 ## 1. Server, daemon, UI, dispatch
@@ -52,15 +63,15 @@ LOOM_BIND=127.0.0.1:38899 LOOM_DATA_DIR=…/verify/server LOOM_NODE_ID=verify-no
 
 target/release/loom-daemon --server-url http://127.0.0.1:38899 \
   --name verify-machine --state …/verify/machine/host-id \
-  --session-dir …/verify/machine/sessions --provider-cmd …/verify/fakepi.sh
+  --provider-cmd …/verify/fake-acp.sh
 ```
 
 Recorded output:
 
 ```
 ### 1. start server (server-only), loopback + durable local log
-  health:  {"status":"ok","protocol_version":1,"node_id":"verify-node","uptime_ms":11,"readers":8,"retained_events":0}
-  version: {"version":"0.1.0","protocol_version":1}
+  health:  {"status":"ok","protocol_version":2,"node_id":"verify-node","uptime_ms":11,"readers":8,"retained_events":0}
+  version: {"version":"0.1.0","protocol_version":2}
   server log: loom-server (server-only) listening on http://127.0.0.1:38899 (node verify-node, no local daemon)
 
 ### 2. join a daemon (daemon-only, outbound)
@@ -92,7 +103,7 @@ Recorded output:
 
 What this proves, item by item:
 
-- The server answers `/health` and `/api/v1/version` with `protocol_version: 1`,
+- The server answers `/health` and `/api/v1/version` with `protocol_version: 2`,
   and its startup line says **server-only, no local daemon** — it did not wait
   for or start one.
 - The daemon enrolled as `host_01M…`, and the same id is in the state file. The
@@ -246,9 +257,9 @@ Honest boundaries, so the next run knows where to start:
   not started. `install.sh`'s root-only steps (`useradd`, `install`, `systemctl
   enable --now`) were not executed. A follow-up on a real VM should run
   `deploy/install.sh all` and `systemctl status`.
-- **The real `pi` provider.** The Pi bridge is exercised by the repository's
-  own `crates/daemon/tests/provider_e2e.rs`; this run stood in a stub for the
-  agent binary.
+- **The real `pi` provider.** The embedded `pi-acp` path is exercised by the
+  repository's `crates/daemon/tests/acp_embedded.rs`; this run stood in a stub
+  for the ACP agent binary.
 - **Remote access.** Tailscale Serve and the reverse-proxy path in
   [`remote-access.md`](remote-access.md) are configuration, not code; they were
   not exercised here. The relevant host-side invariant is checkable anywhere:

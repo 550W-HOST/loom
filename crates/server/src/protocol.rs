@@ -356,7 +356,7 @@ mod tests {
     fn welcome_and_error_serialize_with_a_type_tag() {
         let welcome = serde_json::to_value(ServerMessage::Welcome {
             connection_id: 3,
-            protocol_version: 1,
+            protocol_version: crate::PROTOCOL_VERSION,
         })
         .unwrap();
         assert_eq!(welcome["type"], "welcome");

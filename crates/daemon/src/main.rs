@@ -7,12 +7,12 @@
 //! ```bash
 //! loom-daemon --server-url http://127.0.0.1:38886 --name laptop
 //! loom-daemon --server-url https://loom.example.com --name builder-1 \
-//!             --state ./builder-1.host-id --session-dir /var/lib/loom/sessions
+//!             --state ./builder-1.host-id
 //! ```
 //!
 //! Everything is also settable through the environment (`LOOM_SERVER_URL`,
 //! `LOOM_HOST_NAME`, `LOOM_HOST_ID`, `LOOM_HEARTBEAT_MS`, `LOOM_DAEMON_STATE`,
-//! `LOOM_PROVIDER_CMD`, `LOOM_PROVIDER_ARGS`, `LOOM_SESSION_DIR`,
+//! `LOOM_PROVIDER_CMD`, `LOOM_PROVIDER_ARGS`,
 //! `LOOM_RUN_TIMEOUT_MS`, `LOOM_WORKSPACE_ROOT`, `LOOM_AUTO_UPDATE`) so a
 //! systemd unit needs no command line.
 //!
@@ -60,7 +60,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut config = DaemonConfig::new(&options.server_url, &options.name);
     config.heartbeat_interval = options.heartbeat_interval;
     config.run_timeout = options.run_timeout;
-    config.session_dir = options.session_dir.clone();
     if let Some(root) = &options.workspace_root {
         config.environment_root = root.clone();
     }
@@ -221,7 +220,6 @@ struct Options {
     heartbeat_interval: Duration,
     run_timeout: Duration,
     provider: Option<ProviderSpec>,
-    session_dir: Option<PathBuf>,
     workspace_root: Option<PathBuf>,
     state: Option<PathBuf>,
     auto_update: bool,
@@ -238,7 +236,6 @@ impl Options {
         let mut state = std::env::var("LOOM_DAEMON_STATE").ok();
         let mut provider_cmd = std::env::var("LOOM_PROVIDER_CMD").ok();
         let mut provider_args = std::env::var("LOOM_PROVIDER_ARGS").ok();
-        let mut session_dir = std::env::var("LOOM_SESSION_DIR").ok();
         let mut workspace_root = std::env::var("LOOM_WORKSPACE_ROOT").ok();
         // `--auto-update` is the affirmative of bb's flag: loom's default is on,
         // because a daemon that cannot follow a server upgrade is the
@@ -260,7 +257,6 @@ impl Options {
                 "--state" => state = args.next(),
                 "--provider-cmd" => provider_cmd = args.next(),
                 "--provider-args" => provider_args = args.next(),
-                "--session-dir" => session_dir = args.next(),
                 "--workspace-root" => workspace_root = args.next(),
                 // bb spells the switch `--auto-update`; loom keeps the spelling
                 // and defaults it on. Both flags are accepted so a unit written
@@ -304,7 +300,7 @@ impl Options {
                     .split_whitespace()
                     .map(str::to_owned)
                     .collect();
-                ProviderSpec::custom(command, args)
+                ProviderSpec::acp(command, args)
             });
 
         Ok(Some(Self {
@@ -314,7 +310,6 @@ impl Options {
             heartbeat_interval,
             run_timeout,
             provider,
-            session_dir: session_dir.map(PathBuf::from),
             workspace_root: workspace_root
                 .filter(|value| !value.trim().is_empty())
                 .map(PathBuf::from),
@@ -357,7 +352,7 @@ USAGE:
     loom-daemon --server-url <URL> [--name <NAME>] [--host-id <HOST_ID>]
                 [--heartbeat-ms <MS>] [--run-timeout-ms <MS>]
                 [--provider-cmd <CMD>] [--provider-args <ARGS>]
-                [--session-dir <PATH>] [--state <PATH>]
+                [--state <PATH>]
                 [--auto-update | --no-auto-update]
 
 FLAGS:
@@ -371,13 +366,12 @@ FLAGS:
                              Env: LOOM_HEARTBEAT_MS
     --run-timeout-ms <MS>    Kill a provider that has not settled by then.
                              Default: 1800000. Env: LOOM_RUN_TIMEOUT_MS
-    --provider-cmd <CMD>     Override the provider executable. Default: the
-                             provider named in the dispatch (pi).
+    --provider-cmd <CMD>     Override the ACP agent executable. Default: the
+                             provider named in the dispatch (Pi uses embedded
+                             pi-acp).
                              Env: LOOM_PROVIDER_CMD
-    --provider-args <ARGS>   Space-separated arguments for --provider-cmd.
-                             Env: LOOM_PROVIDER_ARGS
-    --session-dir <PATH>     Base directory for per-thread provider sessions.
-                             Env: LOOM_SESSION_DIR
+    --provider-args <ARGS>   Space-separated arguments for the ACP agent
+                             override. Env: LOOM_PROVIDER_ARGS
     --workspace-root <PATH>  Root under which managed environments' workspaces
                              are created as <root>/<env_id>. Default:
                              $HOME/.loom/workspaces. Env: LOOM_WORKSPACE_ROOT

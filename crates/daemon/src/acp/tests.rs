@@ -17,6 +17,7 @@ fn translator() -> AcpTranslator {
     AcpTranslator::new(RunContext {
         thread_id: loom_domain::ThreadId::mint(),
         cwd: Some("/srv/project".into()),
+        provider_session_id: None,
     })
 }
 

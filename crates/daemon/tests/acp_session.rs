@@ -44,7 +44,7 @@ fn pi_acp_binary() -> Option<PathBuf> {
 }
 
 fn run(cwd: &str) -> ProviderRun {
-    let mut spec = ProviderSpec::custom("unused".to_string(), Vec::new());
+    let mut spec = ProviderSpec::acp("unused".to_string(), Vec::new());
     spec.cwd = Some(cwd.to_string());
     ProviderRun {
         spec,
@@ -54,16 +54,15 @@ fn run(cwd: &str) -> ProviderRun {
         project_id: loom_domain::ProjectId::mint(),
         run_id: loom_domain::RunId::mint(),
         timeout: Duration::from_secs(30),
-        session_dir: None,
+        provider_session_id: None,
     }
 }
 
-/// Drives one run to completion and returns every event it reported.
-async fn drive_to_completion(run: ProviderRun) -> Vec<loom_domain::RunEvent> {
+/// Drives one run to completion with an explicitly named ACP agent.
+async fn drive_with_agent(run: ProviderRun, agent: PathBuf) -> Vec<loom_domain::RunEvent> {
     let (tx, mut rx) = mpsc::channel(64);
-    let binary = pi_acp_binary().expect("checked by the caller");
     let transport = Transport::Stdio {
-        command: binary.to_string_lossy().into_owned(),
+        command: agent.to_string_lossy().into_owned(),
         args: Vec::new(),
     };
 
@@ -79,9 +78,149 @@ async fn drive_to_completion(run: ProviderRun) -> Vec<loom_domain::RunEvent> {
     events
 }
 
+/// Drives one run against the real pi-acp binary when the sibling checkout is
+/// available.
+async fn drive_to_completion(run: ProviderRun) -> Vec<loom_domain::RunEvent> {
+    let binary = pi_acp_binary().expect("checked by the caller");
+    drive_with_agent(run, binary).await
+}
+
+/// A minimal ACP agent that records whether the client restored its session.
+fn write_resuming_agent(dir: &std::path::Path) -> PathBuf {
+    let path = dir.join("resuming-agent.sh");
+    let script = r#"#!/bin/sh
+session_id=resumable-session
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([^,]*\),"method":.*/\1/p')
+  method=$(printf '%s' "$line" | sed -n 's/.*"method":"\([^"]*\)".*/\1/p')
+  case "$method" in
+    initialize)
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":1,"agentCapabilities":{"loadSession":true}}}\n' "$id"
+      ;;
+    session/new)
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"sessionId":"%s"}}\n' "$id" "$session_id"
+      ;;
+    session/load)
+      touch "$0.loaded"
+      printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"%s","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"history"}}}}\n' "$session_id"
+      printf '{"jsonrpc":"2.0","id":%s,"result":{}}\n' "$id"
+      ;;
+    session/prompt)
+      if [ -f "$0.loaded" ]; then
+        text=resumed
+      else
+        text=fresh
+      fi
+      printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"%s","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"%s"}}}}\n' "$session_id" "$text"
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"end_turn"}}\n' "$id"
+      ;;
+    session/cancel)
+      printf '{"jsonrpc":"2.0","id":%s,"result":{}}\n' "$id"
+      ;;
+  esac
+done
+"#;
+    std::fs::write(&path, script).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    path
+}
+
+fn run_with_agent(
+    cwd: &str,
+    agent: &std::path::Path,
+    thread_id: loom_domain::ThreadId,
+    provider_session_id: Option<&str>,
+) -> ProviderRun {
+    let mut spec = ProviderSpec::acp(agent.to_string_lossy().into_owned(), Vec::new());
+    spec.cwd = Some(cwd.to_owned());
+    ProviderRun {
+        spec,
+        prompt: "say hello".to_string(),
+        host_id: loom_domain::HostId::mint(),
+        thread_id,
+        project_id: loom_domain::ProjectId::mint(),
+        run_id: loom_domain::RunId::mint(),
+        timeout: Duration::from_secs(30),
+        provider_session_id: provider_session_id.map(str::to_owned),
+    }
+}
+
 /// The terminal event, if the run ended.
 fn terminal(events: &[loom_domain::RunEvent]) -> Option<&loom_domain::RunEvent> {
     events.iter().find(|e| e.is_terminal())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_resume_loads_the_same_acp_session() {
+    let tmp = tempfile::tempdir().unwrap();
+    let workspace = tmp.path().join("workspace");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let agent = write_resuming_agent(tmp.path());
+    let thread_id = loom_domain::ThreadId::mint();
+
+    let first = drive_with_agent(
+        run_with_agent(
+            &workspace.to_string_lossy(),
+            &agent,
+            thread_id.clone(),
+            None,
+        ),
+        agent.clone(),
+    )
+    .await;
+    let session_id = first
+        .iter()
+        .find(|event| event.kind() == "thread/identity")
+        .and_then(loom_domain::RunEvent::provider_thread_id)
+        .expect("the first run reports the ACP session id")
+        .to_owned();
+    assert_eq!(session_id, "resumable-session");
+    assert_eq!(
+        first
+            .iter()
+            .filter_map(|event| match &event.event.body {
+                loom_domain::ProviderEvent::ItemAgentMessageDelta { delta, .. } => {
+                    Some(delta.as_str())
+                }
+                _ => None,
+            })
+            .collect::<String>(),
+        "fresh"
+    );
+
+    let second = drive_with_agent(
+        run_with_agent(
+            &workspace.to_string_lossy(),
+            &agent,
+            thread_id,
+            Some(&session_id),
+        ),
+        agent,
+    )
+    .await;
+    assert_eq!(
+        second
+            .iter()
+            .find(|event| event.kind() == "thread/identity")
+            .and_then(loom_domain::RunEvent::provider_thread_id),
+        Some(session_id.as_str())
+    );
+    assert_eq!(
+        second
+            .iter()
+            .filter_map(|event| match &event.event.body {
+                loom_domain::ProviderEvent::ItemAgentMessageDelta { delta, .. } => {
+                    Some(delta.as_str())
+                }
+                _ => None,
+            })
+            .collect::<String>(),
+        "resumed"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

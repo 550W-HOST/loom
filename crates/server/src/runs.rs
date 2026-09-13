@@ -295,6 +295,11 @@ impl AppState {
         let dispatch = RunDispatch {
             run_id: run_id.clone(),
             thread_id: thread.id.clone(),
+            // The thread already knows the agent's conversation id once a
+            // first run has reported it, so a later turn continues that
+            // conversation rather than starting over. `None` means this is
+            // the first run.
+            provider_session_id: thread.provider_session_id.clone(),
             project_id: thread.project_id.clone(),
             host_id: host.id.clone(),
             prompt: prompt.to_owned(),
@@ -420,9 +425,38 @@ impl AppState {
             let error = event.terminal_error().map(str::to_owned);
             self.finish_run_with(&record, outcome, error, Some(event), now);
         } else {
+            self.learn_provider_session(&event, now);
             self.publish_run_event(&record, event, now);
         }
         ReportOutcome::Applied
+    }
+
+    /// Records the agent's session id from a `thread/identity` event.
+    ///
+    /// This is how the control plane learns which conversation a thread is: the
+    /// value is read from the event stream rather than requested over a second
+    /// channel, so the adapter needs no callback and the dispatch path stays
+    /// one-way. The stored id travels back on the next dispatch, which is what
+    /// lets a later turn continue this conversation instead of starting over.
+    ///
+    /// Idempotent: the agent reports its identity every run, and only a change
+    /// produces an event.
+    fn learn_provider_session(&self, event: &RunEvent, now: u64) {
+        if event.kind() != "thread/identity" {
+            return;
+        }
+        let Some(session_id) = event.provider_thread_id() else {
+            return;
+        };
+        if let Some(learned) =
+            self.registry
+                .set_provider_session_id(&event.thread_id, session_id, now)
+        {
+            // The thread's own record changed, so the sidebar sees it. Nothing
+            // in the contract's thread shape carries this value; the event is
+            // how a client could observe it.
+            let _ = self.publish_domain_event(&learned);
+        }
     }
 
     /// Reaps runs whose host went quiet or whose deadline passed.
@@ -773,7 +807,10 @@ mod tests {
         let (host_id, thread, workspace) = thread_with_workspace(&state, "/srv/project-a");
         state
             .registry
-            .post_message(&thread.id, MessageRole::User, "hi".into(), 2)
+            .set_provider_session_id(&thread.id, "acp-session-1", 2);
+        state
+            .registry
+            .post_message(&thread.id, MessageRole::User, "hi".into(), 3)
             .unwrap();
         let thread = state.registry.thread(&thread.id).unwrap();
         assert!(matches!(
@@ -792,6 +829,7 @@ mod tests {
         let dispatch: serde_json::Value =
             serde_json::from_str(frame["payload"].as_str().unwrap()).unwrap();
         assert_eq!(dispatch["provider"]["cwd"], workspace);
+        assert_eq!(dispatch["provider_session_id"], "acp-session-1");
         state.shutdown();
     }
 

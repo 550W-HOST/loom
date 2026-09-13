@@ -343,60 +343,32 @@ B10 does.
 | --- | --- |
 | One protocol or several? | **ACP only.** Pi is not special-cased at the client. |
 | How is Pi reached? | **`pi-acp` embedded as a library**, over `Channel::duplex()`. |
-| ACP version | **Negotiate v1 and v2.** v2 first, falling back to v1 on the same connection. The earlier "v2, refuse v1" decision was wrong and is corrected below. |
-| Resume entry point | **`loom resume <thread>`** — `session/resume` under v2 (no replay), `session/load` under v1. |
+| ACP version | **v1 currently.** The pinned `pi-acp` default and loom adapter use v1; v2 negotiation is a follow-up. |
+| Resume entry point | The next run carries the stored provider session id and uses `session/load` under v1. |
 | Unsupported capability | **Reported, never worked around.** |
-| Unmapped update type | **Stored and logged, not rendered.** On v2 via `SessionUpdate::Other`; on v1, which has no catch-all, at the raw JSON-RPC layer (`UntypedMessage`). `_` prefix distinguished from future standard variants. |
+| Unmapped update type | An unmapped v1 update is ignored by the typed schema and logged by the adapter; no synthetic event is emitted. |
 
-loom does **not** depend on `pi-acp` yet — `grep pi-acp Cargo.toml
-crates/*/Cargo.toml` is empty. The `agent-client-protocol` crate is not a
-dependency either. **Migration step 1 has not started.**
+loom now depends on `pi-acp` and the ACP SDK. `ProviderLaunch` has only two
+ACP forms: `AcpEmbeddedPi` for Pi and `AcpStdio` for native agents. The old
+`effective_argv`/`--session-dir`/`--session-id` path and direct Pi JSON-RPC
+mapper have been removed.
 
-On the `pi-acp` side, **both issues are done**: W-559 added the
-`run_with` transport entry point, and W-562 added v2 support behind an
-off-by-default `protocol-v2` feature — `AgentProtocolRouter` registration,
-`initialize` answering the requested version, one conversion at the connection
-boundary, a minted `message_id` on chunks, and pi's authoritative
-`message_end.message` republished as a v2 `agent_message` patch. It also handles
-v2's `state_update` completion signal (v2's `PromptResponse` has no
-`stopReason`) and `session/resume` with v2's replay-cursor semantics.
+The current ACP v1 flow is:
 
-Current Pi path, which step 3 removes:
-
-```rust
-// crates/daemon/src/provider.rs:336
-pub fn effective_argv(spec, thread_id, session_dir) -> Vec<String> {
-    let mut argv = spec.argv();
-    if spec.name == "pi" {
-        if let Some(dir) = session_dir {
-            argv.retain(|arg| arg != "--no-session");
-            argv.push("--session-dir".into());
-            argv.push(dir.to_string_lossy().into_owned());
-            argv.push("--session-id".into());
-            argv.push(thread_id.to_string());   // thread id used as session id
-        }
-    }
-    argv
-}
+```text
+first run:  session/new → returned sessionId → thread/identity → persist id
+next run:   dispatch id → session/load(id, cwd) → suppress history replay → prompt
 ```
 
-Migration order from the strategy doc, restated with what each step now needs:
+The server stores the opaque id with the thread and includes it in the next
+`RunDispatch`; loom never reads an agent session file. The adapter serializes
+construction/report ordering, checks `loadSession` before resuming, and treats a
+missing workspace or unsupported restore as an explicit run failure. A real
+second-run regression test is in `crates/daemon/tests/acp_session.rs`.
 
-1. **Define the ACP-adapter boundary** in `loom-domain` / `provider-protocol`.
-   Not started. Independent of pi-acp, can begin immediately.
-2. **Build loom's ACP client**; wire both an embedded peer (`Channel::duplex()`
-   → `pi_acp::agent::AcpAgent::run_with`) and a spawned one (`Stdio::new()`).
-   Unblocked — pi-acp's half is done. Adds `pi-acp` and
-   `agent-client-protocol` as dependencies.
-3. **Remove the Pi-specific path** — `effective_argv` rewriting, the `pi`
-   special case in `ProviderSpec`.
-4. **Add `loom resume <thread>`** plus the import flow over
-   `session/load` / `session/list`. Depends on `(thread) → (agent, session_id,
-   cwd)` being in the domain snapshot.
-5. **Re-decide the daemon's user model.** W-558 is parked: with loom no longer
-   reading session files, its "let the daemon see the user's `~/.pi`"
-   justification is gone, and it reduces to resource isolation versus
-   convenience.
+The ACP v2 schema and negotiation are not enabled in this checkout yet. The
+stable v1 path is deliberate: it is the default protocol implemented by the
+pinned `pi-acp` dependency.
 
 Open questions carried forward:
 

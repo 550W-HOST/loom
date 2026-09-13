@@ -20,8 +20,8 @@ an in-process swap — and this page is how that is used rather than fought.
 Two version fields exist, and only one of them is a compatibility gate:
 
 - **`protocol_version`** — the wire contract on `/ws` and for
-  `RunDispatch`/`ProviderReport`. Currently `1`
-  (`crates/server/src/lib.rs`, pinned by a test). **This is the gate.**
+  `RunDispatch`/`ProviderReport`. Currently `2`
+  (`crates/server/src/lib.rs`, bumped for the ACP-only provider wire). **This is the gate.**
 - **`version`** — the crate semver (`0.1.0`). Informational; releases with the
   same `protocol_version` are interoperable regardless of `version`.
 
@@ -29,11 +29,11 @@ Two version fields exist, and only one of them is a compatibility gate:
 
 ```bash
 curl -s http://127.0.0.1:38886/api/v1/version
-# {"version":"0.1.0","protocol_version":1}
+# {"version":"0.1.0","protocol_version":2}
 ```
 
 The server also sends `protocol_version` in the first frame of every `/ws`
-connection (`{"type":"welcome",…,"protocol_version":1}`). A daemon reads it
+connection (`{"type":"welcome",…,"protocol_version":2}`). A daemon reads it
 before enrolling and refuses a mismatch
 (`loom_daemon::ensure_compatible_protocol`) — and now, instead of failing
 permanently, that refusal **starts the update flow below**. The reference UI
@@ -46,7 +46,7 @@ has been started — which is what a download has to be checked with
 
 ```bash
 loom-server --version
-# loom-server 0.1.0 (x86_64-unknown-linux-musl, protocol 1, commit 0f1e2d3c…)
+# loom-server 0.1.0 (x86_64-unknown-linux-musl, protocol 2, commit 0f1e2d3c…)
 ```
 
 The line names the target triple and the commit the file was built from as well
@@ -70,7 +70,7 @@ curl -s http://127.0.0.1:38886/api/v1/version | grep protocol_version
 
 # what the server hosts for daemons
 curl -s http://127.0.0.1:38886/install/version
-# {"version":"0.1.0","protocolVersion":1}
+# {"version":"0.1.0","protocolVersion":2}
 
 # each daemon reports the number it speaks at startup, and a mismatch in its log
 journalctl -u 'loom-host-daemon@builder-1' | grep -i 'protocol version'
@@ -158,7 +158,7 @@ failure:
 
 | Route | Answer |
 | --- | --- |
-| `GET /install/version` | `{"version":"0.1.0","protocolVersion":1}` |
+| `GET /install/version` | `{"version":"0.1.0","protocolVersion":2}` |
 | `GET /install/loom-daemon?target=<triple>` | the binary, with `X-Loom-Artifact-Sha256` and `ETag` |
 
 The server looks in `LOOM_ARTIFACT_DIR`, and **by default in the directory

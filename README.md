@@ -25,7 +25,7 @@ on it and it can be validated on its own.
 - [x] `loom-domain` — projects, threads, hosts and environments as pure types and invariants
 - [x] Managed projects: create / list / rename / archive / sources over HTTP, with threads and environments naming their project (`docs/projects.md`)
 - [x] Server-only startup and an independently stoppable local daemon (`loom-daemon`)
-- [x] `loom-provider-protocol` — the server↔daemon provider contract, plus a Pi bridge in `loom-daemon`: dispatch through the relay, replayable run events, and a terminal-state guarantee
+- [x] `loom-provider-protocol` — the server↔daemon ACP execution contract, replayable run events, and a terminal-state guarantee
 - [x] The event model aligned with bb's `ThreadEvent` contract (35 provider event types) — see [`docs/event-model.md`](docs/event-model.md)
 - [ ] Persist domain entities (the domain registry is in-process and lost on restart)
 - [x] `loom-server` hosts the UI from its own origin; a client subscribes to `thread:{id}` through the relay and reconnects by subscribe-then-replay (`docs/ui.md`)
@@ -45,7 +45,7 @@ crates/
   relay-hub/    loom-relay-hub  connections, rooms, delivery
   server/       loom-server     HTTP, WebSocket, protocol, dispatch, fixed readers, UI hosting
   provider-protocol/  loom-provider-protocol  the server↔daemon provider contract
-  daemon/       loom-daemon     the execution plane: enrollment, dispatch, Pi bridge
+  daemon/       loom-daemon     the execution plane: enrollment, dispatch, ACP agents
   contract/     loom-contract   bb's exported contract as a conformance target
 contracts/bb/                   generated JSON Schema from bb's contract packages
 tools/contract-export/          the exporter that produces contracts/bb
@@ -180,8 +180,8 @@ frontend dev server. The client derives its server from its own origin and
 reconnects with subscribe-then-replay — the contract is in
 [`docs/ui.md`](docs/ui.md).
 
-The provider contract — dispatch through the relay, the report path, the
-stdout guard and the guarantee that a run always ends — is specified in
+The provider contract — ACP dispatch through the relay, the report path and the
+guarantee that a run always ends — is specified in
 [`docs/provider-protocol.md`](docs/provider-protocol.md).
 
 Deploying the multi-machine shape (server plus execution machines) is

@@ -3759,11 +3759,11 @@ async fn clear_thread_goal(
 
 /// `threads.clearContext`: refused, explicitly.
 ///
-/// Clearing a context means emptying the provider's own session memory. loom's
-/// provider runs are dispatched statelessly, but the session persists in the
-/// execution plane (Pi's `--session-dir`/`--session-id`), so a server-side
-/// "clear" would drop loom's records while the provider carried on with the
-/// context it still holds — the failure mode the acceptance criteria name.
+/// Clearing a context means emptying the provider's own ACP session memory.
+/// loom's provider runs are dispatched statelessly, but the session persists in
+/// the ACP agent, so a server-side "clear" would drop loom's records while the
+/// provider carried on with the context it still holds — the failure mode the
+/// acceptance criteria name.
 /// `loom_provider_protocol` has no frame for it, so the route answers bb's
 /// `not_configured` at the `501` that code declares rather than a `{ok:true}`
 /// for something that did not happen.

@@ -5,10 +5,10 @@
 //! task inside the daemon and the two halves are joined by an in-process
 //! channel pair. Only the stub `pi` is a child.
 //!
-//! The stub speaks the JSONL protocol `pi --mode rpc` speaks, so the test needs
-//! no LLM and no auth. It is written here rather than reused from pi-acp
-//! because pi-acp's mock lives in its *binary*, and cargo does not build a
-//! dependency's binary.
+//! The stub speaks the Pi JSONL protocol *behind* the embedded `pi-acp` agent,
+//! so the test exercises the real ACP-to-Pi translation without an LLM or auth.
+//! It is written here rather than reused from pi-acp because pi-acp's mock lives
+//! in its binary, and cargo does not build a dependency's binary.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -24,7 +24,8 @@ use tokio::sync::mpsc;
 ///
 /// These are the events `pi-acp` translates; matching them means the test
 /// exercises the real translation rather than a shortcut.
-/// A stub `pi` speaking the JSONL protocol `pi --mode rpc` speaks.
+/// A stub Pi speaking the private JSONL protocol consumed internally by
+/// `pi-acp`. The outer daemon path is still ACP.
 ///
 /// Written here rather than reused from pi-acp because pi-acp's mock lives in
 /// its *binary*, and cargo does not build a dependency's binary. The shapes
@@ -91,6 +92,11 @@ fn write_stub_pi(dir: &Path) -> PathBuf {
 }
 
 fn run(cwd: &str, pi: &Path) -> ProviderRun {
+    run_resuming(cwd, pi, None)
+}
+
+/// A run that continues `provider_session_id` when one is given.
+fn run_resuming(cwd: &str, pi: &Path, provider_session_id: Option<&str>) -> ProviderRun {
     let mut spec = ProviderSpec::acp_pi();
     spec.command = pi.to_string_lossy().into_owned();
     spec.cwd = Some(cwd.to_string());
@@ -102,7 +108,7 @@ fn run(cwd: &str, pi: &Path) -> ProviderRun {
         project_id: loom_domain::ProjectId::mint(),
         run_id: loom_domain::RunId::mint(),
         timeout: Duration::from_secs(30),
-        session_dir: None,
+        provider_session_id: provider_session_id.map(str::to_owned),
     }
 }
 
