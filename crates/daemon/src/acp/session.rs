@@ -48,7 +48,16 @@ pub enum Transport {
         args: Vec<String>,
     },
     /// `pi-acp` linked into this process, reached over an in-process channel.
-    EmbeddedPi,
+    ///
+    /// The adapter is not a process, but `pi` still is, so this carries the
+    /// command that reaches it — the same field the JSON-RPC path uses, and
+    /// the same one an operator override replaces.
+    EmbeddedPi {
+        /// The `pi` executable the in-process adapter spawns.
+        command: String,
+        /// Its arguments.
+        args: Vec<String>,
+    },
 }
 
 /// Drives one ACP session to completion, reporting as it goes.
@@ -95,7 +104,7 @@ pub async fn drive(
                 .map_err(|e| format!("could not describe the ACP agent: {e}"))?;
             serve(agent, &sink, &cwd).await
         }
-        Transport::EmbeddedPi => serve_embedded(&sink, &cwd).await,
+        Transport::EmbeddedPi { command, args } => serve_embedded(&sink, &cwd, command, args).await,
     };
 
     match outcome {
@@ -156,20 +165,66 @@ async fn serve(
         .map_err(|e| format!("the ACP connection ended: {e}"))
 }
 
-/// Runs the client loop against an embedded `pi-acp`.
+/// Runs the client loop against `pi-acp` linked into this process.
 ///
-/// The two halves connect over an in-process channel pair, which the SDK
-/// provides for exactly this ([`agent_client_protocol::ConnectTo`]'s
-/// `into_channel_and_future`). An embedded library and a spawned agent differ
-/// only in which transport is handed to the builder, so the client code above
-/// is shared.
+/// The adapter is not a child process: `pi-acp`'s `AcpAgent` runs on a task in
+/// this daemon, and the two halves are joined by an in-process channel pair
+/// that the SDK provides for exactly this. Only `pi` itself is a child.
 ///
-/// Not wired yet: it needs `pi-acp` as a dependency, and the shape of that
-/// dependency is its own decision. Until then this reports rather than
-/// pretending, so a Pi run cannot silently reach no agent at all.
-async fn serve_embedded(sink: &UpdateSink, cwd: &str) -> Result<(), String> {
-    let _ = (sink, cwd);
-    Err("this build cannot reach Pi: the embedded pi-acp transport is not wired yet".to_string())
+/// The client code above is shared with the spawned path — an embedded library
+/// and a spawned agent differ only in which transport is handed to the builder
+/// — which is the property that makes one provider path cover every agent.
+async fn serve_embedded(
+    sink: &UpdateSink,
+    cwd: &str,
+    command: String,
+    args: Vec<String>,
+) -> Result<(), String> {
+    use agent_client_protocol::Channel;
+
+    // `pi-acp` takes a *program*, not a command line: its resolver decides
+    // between a path, a PATH lookup and a Windows batch wrapper, and appends
+    // nothing. So a dispatch that names arguments cannot be honoured on this
+    // path, and saying so is better than dropping them silently — an operator
+    // who set `LOOM_PROVIDER_ARGS` would otherwise see them ignored.
+    if !args.is_empty() {
+        return Err(format!(
+            "the embedded pi-acp transport takes no provider arguments, but the dispatch \
+             supplies {args:?}; use the acp_stdio launch kind to pass a command line"
+        ));
+    }
+    let mut config = pi_acp::config::Config::default();
+    // The adapter spawns `pi` itself, so the command travels through rather
+    // than being loom's business. Leaving the default would look for a bare
+    // `pi` on PATH, which is right when nothing overrides it.
+    if !command.is_empty() {
+        config.pi_command = command;
+    }
+
+    let agent = Arc::new(pi_acp::agent::AcpAgent::new(config));
+
+    // `duplex` returns two connected endpoints. The adapter takes one and runs
+    // until it ends; loom's client takes the other.
+    let (adapter_side, client_side) = Channel::duplex();
+    // The adapter's exit is deliberately not reported from its own task: the
+    // client side observes the closed channel and reports the failure, so there
+    // is one reporting path rather than two that could race.
+    let running = tokio::spawn(async move {
+        let _ = agent.run_with(adapter_side).await;
+    });
+
+    let outcome = serve(client_side, sink, cwd).await;
+    // `serve` consumed the client side, which ends the adapter's loop, and
+    // awaiting lets the adapter run `AcpAgent::run_with`'s own `dispose_all`.
+    //
+    // This is graceful rather than necessary: `pi-acp` gives `PiProcess` a
+    // `Drop` that signals the child's process group, so aborting here would not
+    // orphan `pi`. Waiting is still preferable because it is the *disposing*
+    // path the adapter documents for itself, and it costs nothing when the
+    // adapter is already unwinding — the channel closed, so it will finish.
+    // Bounded so a wedged adapter cannot hold the run open.
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), running).await;
+    outcome
 }
 
 /// What is shared between the client callbacks and the conversation driver.

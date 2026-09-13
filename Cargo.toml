@@ -27,6 +27,11 @@ loom-server = { path = "crates/server" }
 # tree matters because type identity is what lets loom hand a `Channel` to
 # `pi_acp::AcpAgent::run_with`.
 agent-client-protocol = { version = "=2.0.0", default-features = false }
+# `pi-acp` is not published to crates.io, so it is pinned by revision. The
+# revision matters: `run_with` (the transport injection loom needs) and the v2
+# support both landed after `v0.4.0`, so the tag cannot be used. Move this to a
+# tag once one contains them.
+pi-acp = { git = "https://github.com/AndPuQing/pi-acp", rev = "b3e7e8f" }
 agent-client-protocol-schema = { version = "=1.5.0", default-features = false }
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio", "ws"] }
 bytes = "1.6"

@@ -605,11 +605,11 @@ impl Daemon {
                 crate::acp::session::spawn(run, transport, self.reports_tx.clone());
             }
             loom_provider_protocol::ProviderLaunch::AcpEmbeddedPi => {
-                crate::acp::session::spawn(
-                    run,
-                    crate::acp::session::Transport::EmbeddedPi,
-                    self.reports_tx.clone(),
-                );
+                let transport = crate::acp::session::Transport::EmbeddedPi {
+                    command: run.spec.command.clone(),
+                    args: run.spec.args.clone(),
+                };
+                crate::acp::session::spawn(run, transport, self.reports_tx.clone());
             }
         }
     }
