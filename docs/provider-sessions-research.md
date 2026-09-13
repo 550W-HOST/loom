@@ -1,5 +1,18 @@
 # Provider sessions: how each agent stores and resumes a conversation
 
+> **Status: superseded in its conclusions, still valid in its measurements.**
+>
+> This document surveyed how five agents lay out their session storage. That
+> survey has not been repeated and remains the evidence base for loom's
+> position that it does not read agent session files.
+>
+> The design questions it raised, however, have been decided. See
+> [`provider-strategy.md`](provider-strategy.md) for the decisions: **loom never
+> reads an agent's session files**; every agent is reached through ACP; and
+> resume is `loom resume <thread>` backed by `session/load`. Where this document
+> presents something as an open question, treat the strategy document as
+> authoritative.
+
 Research for W-558 and for the larger question of supporting many agents
 (especially ACP) without inventing a storage scheme each one rejects.
 
@@ -108,33 +121,44 @@ crates/daemon/src/provider.rs   effective_argv()
 
 - loom has **no ACP support at all** (only Pi and a generic `custom`)
 - the daemon currently runs as a system user (`loom`), so its `$HOME` is
-  `/var/lib/loom` and none of the user's `~/.pi` is reachable (W-558)
+  `/var/lib/loom` and none of the user's `~/.pi` is reachable
 
-### The three questions to decide
+That second point was the motivation for W-558 (make the daemon a user-level
+service so it could see the user's agent sessions). **W-558 is now parked**:
+with loom never reading session files, the daemon has no reason to reach
+`~/.pi` at all, so the issue reduces to a plain resource-isolation trade-off and
+no longer blocks anything here.
 
-**1. Where do sessions live?**
+### The three questions this posed, and how they were decided
 
-| Option | Consequence |
+**1. Where do sessions live?** — *Decided: adapter-owned mapping; storage
+stays wherever the agent wants.* loom stores only
+`thread -> (agent, session id, cwd)` in its domain snapshot and never chooses a
+session directory. The first two options below were rejected: agent-native roots
+make loom's sessions indistinguishable from hand-run ones and give no uniform
+identity, while `~/.loom/sessions/<agent>/` asks agents to relocate their
+storage, which the measured layouts show they will not all do.
+
+| Option | Outcome |
 | --- | --- |
-| Agent-native roots (`~/.pi/agent/sessions/...`) | Native `pi --resume` works with zero extra machinery. loom does not control the layout, and its sessions mix with hand-run ones. |
-| `~/.loom/sessions/<agent>/` | loom controls layout and can map ids uniformly. Requires each agent to support redirecting its storage, which Codex (date-partitioned) and Hermes (flat) may not. |
-| Adapter-owned mapping, storage wherever the agent wants | loom stores only `thread -> (agent, session id, cwd)`. Works for every agent including ACP, where there is no file to move at all. |
+| Agent-native roots (`~/.pi/agent/sessions/...`) | Rejected |
+| `~/.loom/sessions/<agent>/` | Rejected |
+| Adapter-owned mapping, storage wherever the agent wants | **Adopted** |
 
-**2. What is the user-facing entry point?**
+**2. What is the user-facing entry point?** — *Decided: an agent-agnostic
+`loom resume <thread-id>`.* The per-agent wrapper was rejected because it
+multiplies commands as agents are added. `session/load` covers ACP agents, and
+ACP is now the only path, so one command covers everything.
 
-`loom pi --resume` (a per-agent wrapper) versus an agent-agnostic
-`loom resume <thread-id>`. The second can be implemented for file-partitioned
-agents by locating the file, and for ACP agents by `session/load`, so one
-command works across both.
-
-**3. Does loom need sessions to be *files*?**
-
-For ACP agents, no — the session never appears on disk in a form loom chose.
-Any design that depends on symlinking or hardlinking a directory will not cover
-them. A design that stores an id mapping and asks the agent (`session/list`,
-`session/load`) covers both kinds.
+**3. Does loom need sessions to be *files*?** — *Decided: no.* This was the
+question that settled the design. With ACP as the single path, there is no file
+for loom to find, so any scheme built on symlinking or hardlinking is dead on
+arrival. The id mapping plus `session/list` / `session/load` is the whole
+mechanism.
 
 ### A design that survives both kinds of agent
+
+The survey produced this shape:
 
 ```
 loom thread  ──owns──▶  (agent, session id, cwd)   stored in the domain snapshot
@@ -147,32 +171,51 @@ loom thread  ──owns──▶  (agent, session id, cwd)   stored in the domai
     each header's cwd)        │
 ```
 
+Its lasting contribution is the layer it separates:
+
 - The mapping belongs in loom's domain state, next to the thread — it is
   per-thread metadata, and W-543 already persists that.
-- Enumeration and resume are **per-agent adapter** concerns, because only the
-  adapter knows whether its agent is file-partitioned or id-addressed.
-- `loom resume <thread-id>` is the single entry point; `loom pi` exists only if
-  a user wants to drop into the raw CLI.
+- Enumeration and resume are **adapter** concerns, because only the adapter
+  knows how its agent addresses sessions.
+- The entry point is a single agent-agnostic `loom resume <thread-id>`.
 
-This is also what makes the ACP path cheap: an ACP provider needs no storage
-code in loom, only `session/new` / `session/load` plumbing and the id mapping.
+The left branch was then deleted rather than implemented. Once every agent goes
+through ACP, no adapter is file-partitioned, so `loom` never walks a session
+directory. The right branch is the whole design:
+
+```
+loom thread  ──owns──▶  (agent, session id, cwd)   stored in the domain snapshot
+                              │
+                              │ ACP adapter
+                              │
+                        session/load <id>
+```
+
+The file-reading code lives in `pi-acp`, which already does it for Zed. loom
+reuses the adapter rather than duplicating the format knowledge — which is why
+this branch survived and the other did not.
 
 ## Open questions
 
-- **Does every ACP agent implement `session/list`?** It is a capability, so an
-  agent may not. The mapping in loom's domain state is the fallback: loom
-  already knows the session id it used, so resume does not depend on listing.
-- **Does `--session-id <loom thread id>` conflict with Pi's own id format?**
-  (Pi uses UUIDv7; loom passes `thr_...`.) An earlier probe did not produce a
-  session file, but the probe closed stdin before `agent_settled`, so the test
-  was inconclusive. This must be measured properly before relying on it.
-- **What is the right behaviour when a resumed session's cwd is gone?** bb
-  refuses with a clear error. loom should decide explicitly rather than
-  silently starting a fresh session.
-- **Should loom adopt Pi through ACP instead of JSON-RPC?** `pi-acp` already
-  exists and speaks ACP; using it would give one provider path for Pi *and*
-  every other ACP agent, at the cost of a bridge process. Worth deciding before
-  building more Pi-specific code.
+None of these are open any longer as *design* questions; they are kept as the
+record of what the survey could not settle, with how each was resolved.
+
+- **Does every ACP agent implement `session/list`?** — It is a capability, so
+  an agent may not. Still true, and now a product rule rather than a gap: an
+  agent that cannot list simply does not appear in the import list.
+  `provider-strategy.md` records this under "No fallbacks".
+- **Does `--session-id <loom thread id>` conflict with Pi's own id format?** —
+  *Resolved by removal.* The `--session-id` rewriting is part of the Pi-specific
+  path that the ACP migration deletes (`effective_argv` in
+  `crates/daemon/src/provider.rs`). With `pi-acp` owning session identity, loom
+  no longer passes a thread id where a Pi UUIDv7 is expected, so the conflict
+  cannot arise. The inconclusive probe no longer blocks anything.
+- **What is the right behaviour when a resumed session's cwd is gone?** —
+  *Decided*: refuse with an explicit error quoting the missing path. Never
+  silently start a fresh session. See "No fallbacks" in `provider-strategy.md`.
+- **Should loom adopt Pi through ACP instead of JSON-RPC?** — *Decided: yes.*
+  `pi-acp` is embedded as a library, so the "cost of a bridge process" that
+  this question weighed no longer applies. See "Pi is embedded, not spawned".
 
 ## References
 

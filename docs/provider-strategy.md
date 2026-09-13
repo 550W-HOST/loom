@@ -151,8 +151,14 @@ Why this shape rather than rewriting Pi support in loom:
 | pi-acp changes required | one transport-injection entry point | none, but loom duplicates it |
 
 The cost is one small change in `pi-acp`: an entry point that accepts
-`impl ConnectTo<Client>` so a caller can supply a channel instead of stdio.
+`impl ConnectTo<Agent>` so a caller can supply a channel instead of stdio.
 `run()` keeps its signature and behaviour, so Zed is unaffected.
+
+(The bound is `ConnectTo<Agent>`, not `ConnectTo<Client>`: in
+`agent-client-protocol` 2.0.0 the parameter is the *counterpart* role, matching
+the SDK's own `AgentProtocolRouter::connect_to(client: impl ConnectTo<Agent>)`.
+This was settled while implementing the change — see `pi-acp` W-559, which
+shipped `AcpAgent::run_with` with that bound.)
 
 **The property that survives either way**: loom's ACP client does not know which
 kind of peer it is talking to. An embedded library and a spawned agent differ
@@ -225,9 +231,11 @@ Required changes, in dependency order:
    what an event is, how the adapter reports it, and how `(agent, session_id,
    cwd)` is recorded.
 2. **Build loom's ACP client** and wire two kinds of peer to it: an embedded
-   `pi-acp` (requires the transport-injection entry point tracked in the
-   `pi-acp` project) and a spawned native ACP agent. The client code is
-   identical for both.
+   `pi-acp` via `AcpAgent::run_with(Channel::duplex())`, and a spawned native
+   ACP agent via `Stdio::new()`. The client code is identical for both. The
+   `pi-acp` half is done and tested — `run_with` shipped in W-559, with an
+   in-process `initialize` → `session/new` → `session/prompt` → `EndTurn` test
+   that runs against a mock pi in CI.
 3. **Remove the Pi-specific path** — `effective_argv`'s `--session-dir` /
    `--session-id` rewriting, and the `pi` special case in `ProviderSpec`.
 4. **Add `loom resume <thread>`** and the import flow on top of
