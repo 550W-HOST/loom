@@ -53,16 +53,21 @@ ui/             the reference UI client: buildless, served by loom-server
 deploy/         systemd units, environment templates, install/uninstall scripts,
                 the container images and a compose example
 docs/
+  api-coverage.md
   architecture.md
   ci.md
   containers.md
   contract.md
   event-model.md
   domain-persistence.md
+  handoff.md
   process-model.md
   projects.md
   provider-protocol.md
+  provider-sessions-research.md
+  provider-strategy.md
   redis-backend.md
+  releasing.md
   ui.md
   remote-access.md
   mobile.md
