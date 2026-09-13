@@ -43,11 +43,13 @@ amend.** It is not a case of sitting in a checkout this environment cannot see,
 because GitHub itself has no record of it. The documentation problems that were
 reported alongside it turned out to be real, and are fixed below.
 
-## Real documentation defects, both now fixed
+## Real documentation defects, now fixed
 
-These were found and fixed in the session that wrote this document. Kept on the
-record because the *pattern* is worth watching: a decision was made in one
-document and the document it superseded was not updated.
+Three were found. Two were inherited; the third (`provider-strategy.md`'s ACP
+version recommendation) was mine, and it would have blocked the migration.
+They are kept on the record because the *pattern* is worth watching: decisions
+recorded from schema reading alone, without cross-checking the implementation
+that has to satisfy them.
 
 ### 1. `docs/provider-sessions-research.md` was stale — fixed
 
@@ -81,7 +83,47 @@ the correction came from. Migration step 2 also now states that the `pi-acp`
 half is done and tested, rather than "requires the entry point tracked in the
 `pi-acp` project".
 
-## pi-acp: done, and verified here
+### 3. `docs/provider-strategy.md` recommended ACP v2 — wrong, fixed
+
+This one was mine and it was the most consequential. The document recorded
+"**ACP version | v2.** v1 is refused rather than degraded." I had read the v2
+schema, seen that it covers the render surface better, and recommended it —
+**without checking what `pi-acp` actually speaks**, which was the entire point
+of the exercise. The handoff doc then repeated it as settled.
+
+Three facts make the original decision unimplementable:
+
+1. **v2 is an unstable draft.** It lives behind
+   `#[cfg(feature = "unstable_protocol_v2")]` (`schema/src/lib.rs:44`), and
+   without the feature `LATEST` resolves to v1 (`schema/src/version.rs:49`).
+2. **v2 has no `session/load`.** It was replaced by `session/resume`. The method
+   `loom resume` was designed around does not exist in v2.
+3. **`pi-acp` hardcodes a v1 reply** (`pi-acp/src/agent.rs:524-527`): it logs the
+   requested version and answers `ProtocolVersion::V1` regardless. A client that
+   "refuses v1" therefore refuses to talk to `pi-acp` at all — the adapter this
+   project had just finished wiring for embedding.
+
+A fourth thing, less severe but instructive: **`SessionUpdate::Other` does not
+exist in v1** (`grep -c Other schema/src/v1/client.rs` → 0), so the
+"store + log, don't render" decision recorded for it was inert as written. Under
+v1 the interception point is the raw JSON-RPC layer (`UntypedMessage`).
+
+Corrected to **negotiate**: v2 first, v1 on the same connection, via the SDK's
+owner `Client::protocol_connector().with_v1(..).with_v2(..)`. The document now
+says why this is *not* the fallback the no-fallback rule forbids (v1 is what the
+ecosystem speaks and the only version with `session/load`), records the one
+lossy conversion edge (`CurrentModeUpdate`, v1-only, skipped on the v2 path),
+and notes that the SDK converts at `initialize` but pipes frames unconverted
+afterwards.
+
+Supporting both versions on the `pi-acp` side is tracked as **W-562**.
+
+**The generalisable lesson**: every "already decided" row in these docs should
+be treated as verified only if it was checked against the sibling
+implementation, not merely against a schema. This row was decided from schema
+reading alone, and it was wrong in a way that would have blocked the migration.
+
+## pi-acp: W-559 done and verified; W-562 is the v2 work
 
 W-559 in the `pi-acp Rust 重写` project (`166a0b99`), assigned to
 `全栈开发者-pi`, status **done** (2026-09-12 16:11). Commits:
@@ -239,14 +281,20 @@ B10 does.
 | --- | --- |
 | One protocol or several? | **ACP only.** Pi is not special-cased at the client. |
 | How is Pi reached? | **`pi-acp` embedded as a library**, over `Channel::duplex()`. |
-| ACP version | **v2.** v1 refused rather than degraded. |
-| Resume entry point | **`loom resume <thread>`**, backed by `session/load`. |
+| ACP version | **Negotiate v1 and v2.** v2 first, falling back to v1 on the same connection. The earlier "v2, refuse v1" decision was wrong and is corrected below. |
+| Resume entry point | **`loom resume <thread>`** — `session/resume` under v2 (no replay), `session/load` under v1. |
 | Unsupported capability | **Reported, never worked around.** |
-| `SessionUpdate::Other` | **Stored and logged, not rendered**; `_` prefix distinguished from future standard variants. |
+| Unmapped update type | **Stored and logged, not rendered.** On v2 via `SessionUpdate::Other`; on v1, which has no catch-all, at the raw JSON-RPC layer (`UntypedMessage`). `_` prefix distinguished from future standard variants. |
 
 loom does **not** depend on `pi-acp` yet — `grep pi-acp Cargo.toml
 crates/*/Cargo.toml` is empty. The `agent-client-protocol` crate is not a
-dependency either. Migration step 1 has not started.
+dependency either. **Migration step 1 has not started.**
+
+On the `pi-acp` side, W-559 (transport injection) is done and W-562 adds v2
+support behind a feature: dual-protocol registration, per-message conversion at
+the adapter boundary, `message_id` on chunks, and a `SessionUpdate::AgentMessage`
+at `message_end` so v2 clients get patch semantics. Both versions are needed
+because loom negotiates.
 
 Current Pi path, which step 3 removes:
 
@@ -332,11 +380,14 @@ Gotchas found:
 
 ## Immediate next steps
 
-1. Decide the interaction/goal/plan producer: same batch, or part of the ACP
-   migration. (The ACP route is likely cheaper, since ACP already models
-   permission requests and plan updates.)
-2. Start migration step 1 (ACP adapter boundary) — unblocked, and independent of
-   anything else here.
+1. Start migration step 1 (ACP adapter boundary) — unblocked. The `SessionUpdate`
+   → event mapping must handle both protocol versions, including the
+   `CurrentModeUpdate` asymmetry and v1's lack of a typed `Other`.
+2. Decide the interaction/goal/plan producer: same batch, or part of the ACP
+   migration. Confirmed that the ACP route has one — `session/request_permission`
+   arrives as a request from the agent and maps onto `Interaction` with
+   `InteractionKind::Approval`. Note that `pi-acp` emits no `Plan` updates at
+   all today, so adopting it would not close the plan gap by itself.
 3. Then B4, ideally split into two smaller issues given the context-limit
    experience on B3.
 

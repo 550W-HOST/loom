@@ -52,52 +52,151 @@ model.
 
 ### Session lifecycle
 
-| Method | Purpose |
-| --- | --- |
-| `session/new` | Create; the agent returns a `sessionId` |
-| `session/load` | Restore by id |
-| `session/list` | Enumerate, with `cwd` filter and cursor pagination |
-| `session/delete` | Remove |
-| `session/set_mode`, `session/set_config_option` | Session configuration |
+| Method | v1 | v2 | Purpose |
+| --- | --- | --- | --- |
+| `session/new` | yes | yes | Create; the agent returns a `sessionId` |
+| `session/load` | yes | **no** | Restore by id, replaying history |
+| `session/resume` | yes | yes | Restore by id; v2 adds a replay cursor |
+| `session/list` | yes | yes | Enumerate, with a `cwd` filter and cursor pagination |
+| `session/delete` | yes | yes | Remove |
+| `session/fork`, `session/close` | yes | yes | Branch, release |
+| `session/set_mode` | yes | **no** | v2 replaced modes with config options |
+| `session/set_config_option` | yes | yes | Session configuration |
 
-Capabilities are advertised in `initialize`:
-`agentCapabilities.loadSession`, `agentCapabilities.sessionCapabilities.fork`.
+The `session/load` row is the sharpest difference and the reason the negotiation
+matters: the method `loom resume` was designed around does not exist in v2. v2's
+`session/resume` with `replayFrom: {"type":"start"}` is its equivalent, and the
+conversion layer maps them onto each other.
+
+`ReplayFrom` has only two variants — `Start` and an untagged `Other` for
+forward compatibility — so "replay from an arbitrary point" is not expressible.
+An adapter that receives an unknown cursor must reject it rather than guess,
+as the schema itself instructs.
+
+Capabilities are advertised in `initialize`. The shape differs by version:
+v1 uses a flat `agentCapabilities.loadSession: bool` plus
+`sessionCapabilities.{list,delete,resume}`, while v2 has no `loadSession` at all
+(it is implied by `session/resume`) and nests capabilities under `session`.
 
 ### Streaming and timeline
 
-`SessionUpdate` (v2) covers the whole render surface:
+The union of what the two versions can carry:
 
 ```
-UserMessageChunk / UserMessage
+UserMessageChunk / UserMessage          ← the non-chunked forms are v2 only
 AgentMessageChunk / AgentMessage
 AgentThoughtChunk / AgentThought
-ToolCallUpdate / ToolCallContentChunk
-TerminalUpdate / TerminalOutputChunk
-PlanUpdate / PlanRemoved
-StateUpdate
+ToolCall / ToolCallUpdate               ← v1's only patchable pair
+ToolCallContentChunk
+TerminalUpdate / TerminalOutputChunk    ← v2 only
+Plan / PlanUpdate / PlanRemoved
+StateUpdate                             ← v2 only
 UsageUpdate
 SessionInfoUpdate
 AvailableCommandsUpdate / ConfigOptionUpdate
+CurrentModeUpdate                       ← v1 only; skipped when talking v2
 ```
+
+The `CurrentModeUpdate` asymmetry is the one lossy edge in the conversion layer:
+v2 dropped modes in favour of config options, so the adapter omits it on the v2
+path rather than failing the turn.
 
 Two properties matter for loom's timeline:
 
 - **Chunked variants stream.** `AgentMessageChunk`, `AgentThoughtChunk`,
   `ToolCallContentChunk`, `TerminalOutputChunk` are deltas, so text arrives
-  incrementally rather than as whole messages.
+  incrementally rather than as whole messages. Both versions have the message
+  and thought chunks; v1 has no terminal or tool-content chunks.
 - **The non-chunked variants are full objects with ids, and repeat updates patch
   by id.** The schema documents this: *"When a client receives another
   `agent_message` update with the same `messageId`, fields in the new update
-  patch the previous fields for that message."*
+  patch the previous fields for that message."* In v1 only `ToolCall` /
+  `ToolCallUpdate` work this way; the message objects are v2's addition.
 
 The second is what makes an event log work: an item's identity is stable across
-updates, so a log can carry patches and a consumer can converge.
+updates, so a log can carry patches and a consumer can converge. Under ACP the
+exact form of that patch comes from the schema:
 
-### What v2 adds over v1
+> `content` has patch semantics: an omitted field leaves existing message
+> content unchanged, `null` clears the value, and a concrete array replaces the
+> previous value.
 
-`StateUpdate`, `AgentMessage`/`AgentThought`/`UserMessage` (the patchable full
-objects), `TerminalUpdate`/`TerminalOutputChunk`, and `Other` for forward
-compatibility. loom should target v2.
+A useful consequence: a **resumed** log needs only the newest full object per
+item to converge, not every chunk that built it.
+
+### v1, v2, and why loom negotiates rather than picks
+
+There are two complete, mutually incompatible type trees in
+`agent-client-protocol-schema`: `v1` and `v2`. They are not one tree with a
+version field, and types from one do not interoperate with the other.
+
+What v2 adds over v1:
+
+- `StateUpdate` (`Running` / `Idle` / `RequiresAction`)
+- `AgentMessage` / `AgentThought` / `UserMessage` — **patchable full objects**
+  (v1 has only `ToolCall` / `ToolCallUpdate`)
+- `TerminalUpdate` / `TerminalOutputChunk` (agent-owned terminals)
+- `Other` (`OtherSessionUpdate`) as a typed catch-all for forward compatibility
+- structured multi-file diffs (`DiffPatch` et al.; v1 has only `Diff`)
+- `session/resume` replaces `session/load`, and prompt completion moves from
+  `PromptResponse.stop_reason` to `StateUpdate::Idle`
+
+Three facts constrain the choice, all verified against the crates and against
+`pi-acp` rather than assumed:
+
+**1. v2 is an unstable draft.**
+
+```rust
+// schema 1.5.0, src/lib.rs:44
+#[cfg(feature = "unstable_protocol_v2")]
+pub mod v2;
+
+// src/version.rs:49 — without the feature, LATEST is v1
+#[cfg(not(feature = "unstable_protocol_v2"))]
+pub const LATEST: Self = Self::V1;
+```
+
+**2. v1 has no `Other` catch-all.** `v1::SessionUpdate` is a plain tagged enum;
+an unknown `sessionUpdate` value fails to deserialise. So under v1 the "store
+unknown updates" rule must be implemented at the **raw JSON-RPC layer**
+(`UntypedMessage`), before typed dispatch — not at the `SessionUpdate` level.
+
+**3. `pi-acp` speaks v1, and the ecosystem is on v1.** A client that sends v2
+and refuses the v1 reply cannot talk to it at all.
+
+So loom **negotiates**, using the SDK's own connector:
+
+```rust
+// agent-client-protocol 2.0.0, src/role/acp.rs:266
+Client::protocol_connector()
+    .with_v1(|| my_v1_client())
+    .with_v2(|| my_v2_client())
+    .connect_to(agent)
+```
+
+It tries v2 first, and when the agent answers v1 it replays `initialize` on the
+same connection and switches (acp.rs:183-206) — a negotiation, not a reconnect.
+
+**This is not the fallback the no-fallback rule forbids.** Refusing to degrade
+means *report what cannot be done rather than fake it*. Choosing the stable
+version that the agent actually speaks is not degradation; and v1 is the version
+that has `session/load`, which is what `loom resume` needs.
+
+The SDK handles version selection and initialization-level conversion, but note
+that **after `initialize` it pipes frames through without converting them**
+(`pipe_protocol_peers_until_done`, acp.rs:828). Per-message conversion is the
+adapter's responsibility.
+
+`agent-client-protocol-schema`'s `v2::conversion` module supplies that
+conversion **in both directions** — 207 v2→v1 and 200 v1→v2 implementations,
+gen against `try_v2_to_v1` / `try_v1_to_v2`. One variant is lossy:
+v1's `CurrentModeUpdate` has no v2 equivalent (v2 replaces modes with config
+options) and conversion errors. The adapter skips it on the v2 path.
+
+The patchable full objects are the reason v2 is worth the negotiation: repeated
+updates for the same `messageId` are applied as patches, so an event log can
+carry corrections and a consumer converges. That is available to loom once
+`pi-acp` emits it — tracked as W-562 in the `pi-acp` project.
 
 ## The resulting loom architecture
 
@@ -179,14 +278,24 @@ Responsibilities:
 ```
 loom resume <thread-id>
   → look up (agent, session_id, cwd) in domain state
-  → start the agent
-  → session/load { sessionId, cwd }
+  → start the agent and negotiate a protocol version
+  → v2: session/resume { sessionId, cwd }        (no replay — loom has the log)
+     v1: session/load   { sessionId, cwd }        (the only option; replays)
   → the agent restores its own storage
 ```
 
-**loom never reads an agent's session files.** It asks the agent. This is the
-property that makes the design clean: no format parsing, no layout assumptions,
-no per-agent storage code.
+Under v2 loom asks for **no replay**: it already holds the conversation in its
+event log, so the agent's history would be redundant, and a log plus patchable
+full objects converges without it. Under v1 there is no such choice —
+`session/load` is the only restore method, and it replays.
+
+Either way, **loom never reads an agent's session files.** It asks the agent.
+That is the property that makes the design clean: no format parsing, no layout
+assumptions, no per-agent storage code.
+
+A resumed session's `cwd` must still exist. The check is the adapter's, since
+only it knows the agent's rules, and the failure is explicit rather than a
+silently fresh session (see "No fallbacks").
 
 ### Importing existing sessions
 
@@ -214,7 +323,7 @@ Consequences that must be enforced rather than papered over:
 | Agent does not advertise `session/list` | The agent does not appear in the import list. loom does not scan a guessed directory. |
 | A resumed session's `cwd` no longer exists | Explicit error. bb's wording is a good model: *"Cannot resume: the session's working directory `<path>` no longer exists."* Never silently start a fresh session. |
 | Agent process dies mid-turn | The turn ends in a terminal state with the reason. No automatic replay into a new session. |
-| `SessionUpdate::Other` | Logged as unmapped, not coerced into a nearby type. |
+| Unmapped update type | **Stored and logged, never coerced.** The mechanism differs by version — see below. |
 
 The last row is the same rule W-538 applied to `provider/unhandled`: an
 unmapped frame is reported, never given a catch-all body.
@@ -229,17 +338,21 @@ Required changes, in dependency order:
 
 1. **Define the ACP-adapter boundary** in `loom-domain` / `provider-protocol`:
    what an event is, how the adapter reports it, and how `(agent, session_id,
-   cwd)` is recorded.
+   cwd)` is recorded. The `SessionUpdate` → event mapping must handle both
+   versions, including the `CurrentModeUpdate` asymmetry and v1's lack of a
+   typed `Other`.
 2. **Build loom's ACP client** and wire two kinds of peer to it: an embedded
    `pi-acp` via `AcpAgent::run_with(Channel::duplex())`, and a spawned native
-   ACP agent via `Stdio::new()`. The client code is identical for both. The
-   `pi-acp` half is done and tested — `run_with` shipped in W-559, with an
-   in-process `initialize` → `session/new` → `session/prompt` → `EndTurn` test
-   that runs against a mock pi in CI.
+   ACP agent via `Stdio::new()`. The client code is identical for both. Use
+   `Client::protocol_connector().with_v1(..).with_v2(..)` so both versions are
+   negotiated. The `pi-acp` half is in progress: `run_with` shipped in W-559, and
+   W-562 adds v2 support behind a feature.
 3. **Remove the Pi-specific path** — `effective_argv`'s `--session-dir` /
    `--session-id` rewriting, and the `pi` special case in `ProviderSpec`.
-4. **Add `loom resume <thread>`** and the import flow on top of
-   `session/load` / `session/list`.
+4. **Add `loom resume <thread>`** and the import flow. Prefer `session/resume`
+   when the negotiated version is v2 (loom already has the history) and
+   `session/load` under v1, where it is the only option. `session/list` backs the
+   import flow.
 5. **Decide the daemon's user model.** With no file reading, the loopback
    argument for a user-level service weakens to "resource isolation versus
    convenience" and becomes independent of sessions (was W-558).
@@ -250,28 +363,50 @@ Required changes, in dependency order:
 | --- | --- |
 | One protocol or several? | **ACP only.** Pi is not special-cased at the client. |
 | How is Pi reached? | **`pi-acp` embedded as a library**, over `Channel::duplex()`. |
-| ACP version | **v2.** v1 is refused rather than degraded. |
-| Resume entry point | **`loom resume <thread>`**, backed by `session/load`. |
+| ACP version | **Negotiate v1 and v2.** v2 first, falling back to v1 on the same connection. v1 is not "degraded" — it is what agents speak and the only version with `session/load`. |
+| Resume entry point | **`loom resume <thread>`** — `session/resume` under v2, which replays nothing since loom has the log; `session/load` under v1, where it is the only restore method. |
 | Unsupported capability | **Reported, never worked around.** |
-| `SessionUpdate::Other` | **Stored and logged, not rendered.** The schema requires preserving the payload; rendering an unknown structure carries no meaning. The discriminator is logged, and a leading `_` (implementation-private) is distinguished from a future ACP variant. |
+| `CurrentModeUpdate` under v2 | **Skipped.** v2 replaced modes with config options, so v1's mode update has no v2 equivalent and the conversion layer errors on it. Omitting it follows v2's design rather than papering over a gap. |
+| Unmapped update type | **Stored and logged, not rendered.** Below the typed layer: on the v2 path `SessionUpdate::Other` carries it; on the v1 path there is no catch-all, so it is intercepted as a raw JSON-RPC frame (`UntypedMessage`) before typed dispatch. Either way the discriminator is logged, and a leading `_` (implementation-private) is distinguished from a future ACP variant. |
 
 ## Open questions
 
 - **Does every target agent implement `session/list`?** It is a capability, so
   no. The import flow must handle absence by omission rather than by guessing.
-- **Version policy for `agent-client-protocol`.** Pinned? The protocol version
-  (v2) and the crate version are different axes.
+- **Version policy for the crates.** `agent-client-protocol` (the framework) and
+  `agent-client-protocol-schema` (the types) version independently, and the
+  protocol version under negotiation is a third axis. Loom pins the schema to
+  the exact version the framework requires, as `pi-acp` does, so there is one
+  schema copy in the tree — type identity matters between the re-exported
+  `agent_client_protocol::schema` and a direct dependency.
 - **Does the embedded `pi-acp` need its own process isolation?** Running in the
   daemon means a panic in the translator takes the daemon with it, whereas a
   spawned process would not. Worth deciding explicitly rather than by default.
+- **How long to keep the v1 path?** v2 is a draft and may rename things again
+  (it already dropped `session/load`). The negotiation makes supporting both
+  cheap at the transport level, but the adapter's event mapping has to carry
+  both shapes. Deprecate v1 when stable agents stop speaking it, not on a date.
 
 ## References
 
-- `agent-client-protocol-schema` 1.5.0 — `src/v2/client.rs` (`SessionUpdate`),
-  `src/v2/agent.rs` (`ListSessionsRequest.cwd`, `LoadSessionRequest`)
+- `agent-client-protocol-schema` 1.5.0
+  - `src/lib.rs:44` — the `unstable_protocol_v2` gate; by default `LATEST` is v1
+  - `src/v2/conversion.rs` — the bidirectional conversion layer (`try_v2_to_v1`,
+    `try_v1_to_v2`); `:1864` is `v1::SessionUpdate`'s v2 form, `:1894` is the
+    `CurrentModeUpdate` gap
+  - `src/v1/client.rs:99` — v1's `SessionUpdate`, with no `Other` variant
+  - `src/v2/client.rs:889` — `AgentMessage` and its patch semantics
+  - `src/v1/agent.rs:1171` / `:1498` — `session/load` and `session/resume`
+  - `src/v2/agent.rs:1411` / `:1511` — `ResumeSessionRequest` and `ReplayFrom`
+- `agent-client-protocol` 2.0.0
+  - `src/role/acp.rs:266` — `Client::protocol_connector` (client-side negotiation)
+  - `src/role/acp.rs:359` — `AgentProtocolRouter` (agent side)
+  - `src/role/acp.rs:828` — `pipe_protocol_peers_until_done`: frames pass through
+    unconverted after `initialize`
+  - `src/jsonrpc.rs:4491` — `UntypedMessage`, the v1 escape hatch for unknown types
 - `pi-acp` (sibling checkout) — `src/agent.rs` (handlers),
   `src/session_store.rs` (id mapping), `src/pi/sessions.rs`
-  (`list_pi_sessions`)
+  (`list_pi_sessions`); W-562 tracks v2 support there
 - bb `docs/provider-bridge-protocol.md` — narrow grammar and division of labour
 - bb `packages/provider-bridge-protocol/src/thread-delta.ts` — the grammar
   itself
