@@ -31,12 +31,13 @@
 //!
 //! See `docs/acp-adapter.md` for the full mapping and its rationale.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use agent_client_protocol_schema::v1::{
     ContentBlock, ContentChunk, Plan, PlanEntryStatus, SessionInfoUpdate, SessionUpdate,
     StopReason, ToolCall, ToolCallContent, ToolCallStatus, ToolCallUpdate, ToolKind, UsageUpdate,
 };
+use agent_client_protocol_schema::v2;
 use loom_domain::{
     ItemStatus, PlanStep, PlanStepStatus, ProviderEvent, SearchMode, ThreadEventItem, TurnError,
     TurnStatus, UserContent,
@@ -81,11 +82,55 @@ pub struct AcpTranslator {
     /// then `ToolCallUpdate` patches in which every field is optional, so the
     /// merged shape must be retained to emit a whole `item/completed`.
     tools: HashMap<String, ToolItem>,
+    /// v2 message patches are keyed by the agent-supplied message id. Keeping
+    /// the accumulated text here lets a repeated full patch become only the
+    /// newly appended suffix in loom's delta-only contract.
+    v2_agent_messages: HashMap<String, V2MessageState>,
+    v2_current_agent_message: Option<String>,
+    v2_thought_messages: HashMap<String, V2MessageState>,
+    /// v2 user upserts are complete snapshots, so only the first non-empty
+    /// snapshot becomes a timeline item.
+    v2_user_messages: HashSet<String>,
+    /// v2 user chunks are deltas but loom has no user-message delta event. Keep
+    /// them until the next full user upsert or agent update so the item is not
+    /// truncated to its first chunk.
+    v2_pending_user_messages: BTreeMap<String, String>,
+    /// v2 tool calls are upserts rather than the v1 start/update pair.
+    v2_tools: HashMap<String, V2ToolState>,
+    v2_finished_tools: HashSet<String>,
+    /// Agent-owned terminals have their own lifecycle and output stream in v2.
+    v2_terminals: HashMap<String, V2TerminalState>,
+    v2_finished_terminals: HashSet<String>,
 }
 
 /// A tool call's accumulated state.
 struct ToolItem {
     item: ThreadEventItem,
+}
+
+struct V2MessageState {
+    item_id: String,
+    text: String,
+}
+
+struct V2ToolState {
+    started: bool,
+    title: Option<String>,
+    kind: v2::ToolKind,
+    status: v2::ToolCallStatus,
+    content: Vec<v2::ToolCallContent>,
+    locations: Vec<v2::ToolCallLocation>,
+    raw_input: Option<Value>,
+    raw_output: Option<Value>,
+}
+
+struct V2TerminalState {
+    item_id: String,
+    command: Option<String>,
+    cwd: Option<String>,
+    output: String,
+    exit: Option<v2::TerminalExitStatus>,
+    started: bool,
 }
 
 /// What an update translates into.
@@ -109,6 +154,15 @@ impl AcpTranslator {
             assistant_id: None,
             thinking_ids: HashMap::new(),
             tools: HashMap::new(),
+            v2_agent_messages: HashMap::new(),
+            v2_current_agent_message: None,
+            v2_thought_messages: HashMap::new(),
+            v2_user_messages: HashSet::new(),
+            v2_pending_user_messages: BTreeMap::new(),
+            v2_tools: HashMap::new(),
+            v2_finished_tools: HashSet::new(),
+            v2_terminals: HashMap::new(),
+            v2_finished_terminals: HashSet::new(),
         }
     }
 
@@ -202,13 +256,82 @@ impl AcpTranslator {
         }
     }
 
+    /// One ACP v2 session update.
+    ///
+    /// v2 adds full message patches, append-only tool content, terminal
+    /// updates and an explicit foreground state. Those differences stay here;
+    /// callers still receive the same loom provider events as the v1 path.
+    pub fn on_v2_session_update(&mut self, update: &v2::SessionUpdate) -> Translated {
+        let mut events = match update {
+            v2::SessionUpdate::UserMessageChunk(_) | v2::SessionUpdate::UserMessage(_) => {
+                Vec::new()
+            }
+            _ => self.flush_v2_user_messages(),
+        };
+        events.extend(match update {
+            v2::SessionUpdate::UserMessageChunk(chunk) => self.on_v2_user_chunk(chunk),
+            v2::SessionUpdate::UserMessage(message) => self.on_v2_user_message(message),
+            v2::SessionUpdate::AgentMessageChunk(chunk) => self.on_v2_agent_chunk(chunk),
+            v2::SessionUpdate::AgentMessage(message) => self.on_v2_agent_message(message),
+            v2::SessionUpdate::AgentThoughtChunk(chunk) => self.on_v2_thought_chunk(chunk),
+            v2::SessionUpdate::AgentThought(message) => self.on_v2_thought_message(message),
+            v2::SessionUpdate::StateUpdate(state) => self.on_v2_state_update(state),
+            v2::SessionUpdate::ToolCallContentChunk(chunk) => self.on_v2_tool_content_chunk(chunk),
+            v2::SessionUpdate::ToolCallUpdate(patch) => self.on_v2_tool_update(patch),
+            v2::SessionUpdate::TerminalUpdate(update) => self.on_v2_terminal_update(update),
+            v2::SessionUpdate::TerminalOutputChunk(chunk) => {
+                self.on_v2_terminal_output_chunk(chunk)
+            }
+            v2::SessionUpdate::PlanUpdate(plan) => self.on_v2_plan(plan),
+            v2::SessionUpdate::SessionInfoUpdate(info) => self.on_v2_session_info(info),
+            v2::SessionUpdate::UsageUpdate(usage) => self.on_v2_usage(usage),
+            v2::SessionUpdate::AvailableCommandsUpdate(_)
+            | v2::SessionUpdate::ConfigOptionUpdate(_)
+            | v2::SessionUpdate::Other(_) => Vec::new(),
+            // `PlanRemoved` is behind an optional schema feature and is not
+            // enabled by loom. Keep the wildcard for future v2 additions.
+            _ => Vec::new(),
+        });
+        events
+    }
+
     /// The turn finished, in the protocol's terms.
     ///
     /// Both versions funnel here: v1 reports `stop_reason` on the
     /// `session/prompt` response, v2 through `StateUpdate::Idle`. Normalizing
     /// at the call site keeps the mapping in one place.
     pub fn on_stop_reason(&mut self, reason: StopReason) -> Translated {
+        self.finish_stop_reason(reason, false)
+    }
+
+    /// The v2 completion signal is an idle state update rather than a prompt
+    /// response. It uses the same terminal-event mapping as v1, while also
+    /// closing any message item keyed by a v2 `messageId`.
+    pub fn on_v2_stop_reason(&mut self, reason: v2::StopReason) -> Translated {
+        let reason = match reason {
+            v2::StopReason::EndTurn => StopReason::EndTurn,
+            v2::StopReason::MaxTokens => StopReason::MaxTokens,
+            v2::StopReason::MaxTurnRequests => StopReason::MaxTurnRequests,
+            v2::StopReason::Refusal => StopReason::Refusal,
+            v2::StopReason::Cancelled => StopReason::Cancelled,
+            // A future stop reason is still a stop. Completing the turn keeps
+            // the control plane from being left in `working`.
+            _ => StopReason::EndTurn,
+        };
+        self.finish_stop_reason(reason, true)
+    }
+
+    fn finish_stop_reason(&mut self, reason: StopReason, include_v2_messages: bool) -> Translated {
+        if !self.turn_open
+            && self.assistant_id.is_none()
+            && (!include_v2_messages || self.v2_current_agent_message.is_none())
+        {
+            return Vec::new();
+        }
         let mut events = self.flush_assistant();
+        if include_v2_messages {
+            events.extend(self.flush_v2_assistant());
+        }
         let (status, error) = match reason {
             StopReason::EndTurn => (TurnStatus::Completed, None),
             // A limit was reached, so the model stopped. The run succeeded;
@@ -297,6 +420,219 @@ impl AcpTranslator {
         }]
     }
 
+    fn on_v2_user_chunk(&mut self, chunk: &v2::ContentChunk) -> Translated {
+        let text = v2_content_text(&chunk.content);
+        if text.is_empty() {
+            return Vec::new();
+        }
+        let message_id = chunk.message_id.to_string();
+        self.v2_pending_user_messages
+            .entry(message_id)
+            .or_default()
+            .push_str(&text);
+        Vec::new()
+    }
+
+    fn on_v2_user_message(&mut self, message: &v2::UserMessage) -> Translated {
+        let Some(content) = message.content.value() else {
+            return Vec::new();
+        };
+        let text = v2_content_texts(content);
+        if text.is_empty() {
+            return Vec::new();
+        }
+        let message_id = message.message_id.to_string();
+        if !self.v2_user_messages.insert(message_id.clone()) {
+            return Vec::new();
+        }
+        self.v2_pending_user_messages.remove(&message_id);
+        vec![ProviderEvent::ItemStarted {
+            item: ThreadEventItem::UserMessage {
+                id: format!("user-v2-{message_id}"),
+                content: vec![UserContent::Text { text }],
+                client_request_id: None,
+                parent_tool_call_id: None,
+            },
+            provider_thread_id: self.ptid(),
+        }]
+    }
+
+    fn on_v2_agent_chunk(&mut self, chunk: &v2::ContentChunk) -> Translated {
+        let text = v2_content_text(&chunk.content);
+        if text.is_empty() {
+            return Vec::new();
+        }
+        self.append_v2_agent_message(chunk.message_id.to_string(), text)
+    }
+
+    fn on_v2_agent_message(&mut self, message: &v2::AgentMessage) -> Translated {
+        let Some(content) = message.content.value() else {
+            // `null` clears the provider's snapshot. loom's event contract has
+            // no message-reset operation, so there is no truthful delta to log.
+            if message.content.is_null() {
+                if let Some(state) = self
+                    .v2_agent_messages
+                    .get_mut(&message.message_id.to_string())
+                {
+                    state.text.clear();
+                }
+            }
+            return Vec::new();
+        };
+        self.patch_v2_agent_message(message.message_id.to_string(), v2_content_texts(content))
+    }
+
+    fn flush_v2_user_messages(&mut self) -> Translated {
+        let pending = std::mem::take(&mut self.v2_pending_user_messages);
+        pending
+            .into_iter()
+            .map(|(message_id, text)| {
+                self.v2_user_messages.insert(message_id.clone());
+                ProviderEvent::ItemStarted {
+                    item: ThreadEventItem::UserMessage {
+                        id: format!("user-v2-{message_id}"),
+                        content: vec![UserContent::Text { text }],
+                        client_request_id: None,
+                        parent_tool_call_id: None,
+                    },
+                    provider_thread_id: self.ptid(),
+                }
+            })
+            .collect()
+    }
+
+    fn on_v2_thought_chunk(&mut self, chunk: &v2::ContentChunk) -> Translated {
+        let text = v2_content_text(&chunk.content);
+        if text.is_empty() {
+            return Vec::new();
+        }
+        self.append_v2_thought(chunk.message_id.to_string(), text)
+    }
+
+    fn on_v2_thought_message(&mut self, message: &v2::AgentThought) -> Translated {
+        let Some(content) = message.content.value() else {
+            if message.content.is_null() {
+                if let Some(state) = self
+                    .v2_thought_messages
+                    .get_mut(&message.message_id.to_string())
+                {
+                    state.text.clear();
+                }
+            }
+            return Vec::new();
+        };
+        self.patch_v2_thought(message.message_id.to_string(), v2_content_texts(content))
+    }
+
+    fn append_v2_agent_message(&mut self, message_id: String, text: String) -> Translated {
+        let mut events = Vec::new();
+        if self.v2_current_agent_message.as_deref() != Some(message_id.as_str()) {
+            events.extend(self.flush_v2_assistant());
+            self.v2_current_agent_message = Some(message_id.clone());
+        }
+        let state = self
+            .v2_agent_messages
+            .entry(message_id.clone())
+            .or_insert_with(|| V2MessageState {
+                item_id: format!("assistant-v2-{message_id}"),
+                text: String::new(),
+            });
+        state.text.push_str(&text);
+        events.push(ProviderEvent::ItemAgentMessageDelta {
+            item_id: state.item_id.clone(),
+            delta: text,
+            provider_thread_id: self.ptid(),
+            parent_tool_call_id: None,
+        });
+        events
+    }
+
+    fn patch_v2_agent_message(&mut self, message_id: String, text: String) -> Translated {
+        let mut events = Vec::new();
+        if self.v2_current_agent_message.as_deref() != Some(message_id.as_str()) {
+            events.extend(self.flush_v2_assistant());
+            self.v2_current_agent_message = Some(message_id.clone());
+        }
+        let item_id = format!("assistant-v2-{message_id}");
+        let state = self
+            .v2_agent_messages
+            .entry(message_id)
+            .or_insert_with(|| V2MessageState {
+                item_id,
+                text: String::new(),
+            });
+        let delta = patch_message_text(&mut state.text, &text);
+        if !delta.is_empty() {
+            events.push(ProviderEvent::ItemAgentMessageDelta {
+                item_id: state.item_id.clone(),
+                delta,
+                provider_thread_id: self.ptid(),
+                parent_tool_call_id: None,
+            });
+        }
+        events
+    }
+
+    fn append_v2_thought(&mut self, message_id: String, text: String) -> Translated {
+        let item_id = format!("reasoning-v2-{message_id}");
+        let state = self
+            .v2_thought_messages
+            .entry(message_id)
+            .or_insert_with(|| V2MessageState {
+                item_id,
+                text: String::new(),
+            });
+        state.text.push_str(&text);
+        vec![ProviderEvent::ItemReasoningTextDelta {
+            item_id: state.item_id.clone(),
+            delta: text,
+            provider_thread_id: self.ptid(),
+            parent_tool_call_id: None,
+        }]
+    }
+
+    fn patch_v2_thought(&mut self, message_id: String, text: String) -> Translated {
+        let item_id = format!("reasoning-v2-{message_id}");
+        let state = self
+            .v2_thought_messages
+            .entry(message_id)
+            .or_insert_with(|| V2MessageState {
+                item_id,
+                text: String::new(),
+            });
+        let delta = patch_message_text(&mut state.text, &text);
+        if delta.is_empty() {
+            return Vec::new();
+        }
+        vec![ProviderEvent::ItemReasoningTextDelta {
+            item_id: state.item_id.clone(),
+            delta,
+            provider_thread_id: self.ptid(),
+            parent_tool_call_id: None,
+        }]
+    }
+
+    /// Completes the currently streaming v2 assistant message. A repeated full
+    /// patch never reaches this as a second item because the message id owns a
+    /// single stable item id.
+    fn flush_v2_assistant(&mut self) -> Translated {
+        let Some(message_id) = self.v2_current_agent_message.take() else {
+            return Vec::new();
+        };
+        let Some(state) = self.v2_agent_messages.get(&message_id) else {
+            return Vec::new();
+        };
+        vec![ProviderEvent::ItemCompleted {
+            item: ThreadEventItem::AgentMessage {
+                id: state.item_id.clone(),
+                text: String::new(),
+                presentation: None,
+                parent_tool_call_id: None,
+            },
+            provider_thread_id: self.ptid(),
+        }]
+    }
+
     /// The item id of the assistant message currently streaming.
     ///
     /// A new message begins once the previous one was flushed — at a turn's end
@@ -351,6 +687,18 @@ impl AcpTranslator {
             },
             provider_thread_id: self.ptid(),
         }]
+    }
+
+    fn on_v2_state_update(&mut self, state: &v2::StateUpdate) -> Translated {
+        match state {
+            v2::StateUpdate::Idle(idle) => {
+                self.on_v2_stop_reason(idle.stop_reason.clone().unwrap_or(v2::StopReason::EndTurn))
+            }
+            v2::StateUpdate::Running(_)
+            | v2::StateUpdate::RequiresAction(_)
+            | v2::StateUpdate::Other(_) => Vec::new(),
+            _ => Vec::new(),
+        }
     }
 
     // --- tools ------------------------------------------------------------
@@ -416,6 +764,241 @@ impl AcpTranslator {
         }]
     }
 
+    fn on_v2_tool_content_chunk(&mut self, chunk: &v2::ToolCallContentChunk) -> Translated {
+        let key = chunk.tool_call_id.0.to_string();
+        if self.v2_finished_tools.contains(&key) {
+            return Vec::new();
+        }
+        let mut events = self.flush_v2_assistant();
+        let session_cwd = self.ctx.cwd.clone();
+        let (started, item) = {
+            let state = self
+                .v2_tools
+                .entry(key.clone())
+                .or_insert_with(v2_tool_state);
+            state.content.push(chunk.content.clone());
+            let started = !state.started;
+            state.started = true;
+            let item = v2_item_from_tool_state(state, &key, session_cwd.as_deref());
+            (started, item)
+        };
+        if started {
+            events.push(ProviderEvent::ItemStarted {
+                item,
+                provider_thread_id: self.ptid(),
+            });
+        }
+        events
+    }
+
+    fn on_v2_tool_update(&mut self, patch: &v2::ToolCallUpdate) -> Translated {
+        let key = patch.tool_call_id.0.to_string();
+        if self.v2_finished_tools.contains(&key) {
+            return Vec::new();
+        }
+        let mut events = self.flush_v2_assistant();
+        let session_cwd = self.ctx.cwd.clone();
+        let provider_thread_id = self.ptid();
+        let (started, status, title) = {
+            let state = self
+                .v2_tools
+                .entry(key.clone())
+                .or_insert_with(v2_tool_state);
+            if !patch.title.is_undefined() {
+                state.title = patch.title.value().cloned();
+            }
+            if !patch.kind.is_undefined() {
+                state.kind = patch.kind.value().cloned().unwrap_or(v2::ToolKind::Other);
+            }
+            if !patch.status.is_undefined() {
+                state.status = patch
+                    .status
+                    .value()
+                    .cloned()
+                    .unwrap_or(v2::ToolCallStatus::Pending);
+            }
+            if !patch.content.is_undefined() {
+                state.content = patch.content.value().cloned().unwrap_or_default();
+            }
+            if !patch.locations.is_undefined() {
+                state.locations = patch.locations.value().cloned().unwrap_or_default();
+            }
+            if !patch.raw_input.is_undefined() {
+                state.raw_input = patch.raw_input.value().cloned();
+            }
+            if !patch.raw_output.is_undefined() {
+                state.raw_output = patch.raw_output.value().cloned();
+            }
+            let started = !state.started;
+            state.started = true;
+            let status = item_status_v2(&state.status);
+            let title = state.title.clone();
+            if started {
+                let item = v2_item_from_tool_state(state, &key, session_cwd.as_deref());
+                events.push(ProviderEvent::ItemStarted {
+                    item,
+                    provider_thread_id: provider_thread_id.clone(),
+                });
+            }
+            (started, status, title)
+        };
+
+        if !matches!(status, ItemStatus::Pending) {
+            let state = self
+                .v2_tools
+                .remove(&key)
+                .expect("v2 tool state was inserted above");
+            self.v2_finished_tools.insert(key.clone());
+            events.push(ProviderEvent::ItemCompleted {
+                item: v2_item_from_tool_state(&state, &key, session_cwd.as_deref()),
+                provider_thread_id: provider_thread_id.clone(),
+            });
+        } else if !started || title.is_some() {
+            events.push(ProviderEvent::ItemToolCallProgress {
+                item_id: key,
+                message: title,
+                provider_thread_id,
+                parent_tool_call_id: None,
+            });
+        }
+        events
+    }
+
+    fn on_v2_terminal_update(&mut self, update: &v2::TerminalUpdate) -> Translated {
+        let key = update.terminal_id.0.to_string();
+        if self.v2_finished_terminals.contains(&key) {
+            return Vec::new();
+        }
+        let mut events = self.flush_v2_assistant();
+        let fallback_cwd = self.ctx.cwd.clone().unwrap_or_default();
+        let (started, output_reset, status) = {
+            let state = self
+                .v2_terminals
+                .entry(key.clone())
+                .or_insert_with(|| V2TerminalState {
+                    item_id: format!("terminal-v2-{key}"),
+                    command: None,
+                    cwd: None,
+                    output: String::new(),
+                    exit: None,
+                    started: false,
+                });
+            if !update.command.is_undefined() {
+                state.command = update.command.value().cloned();
+            }
+            if !update.cwd.is_undefined() {
+                state.cwd = update
+                    .cwd
+                    .value()
+                    .map(|cwd| cwd.0.to_string_lossy().into_owned());
+            }
+            let mut output_reset = None;
+            if update.output.is_null() {
+                state.output.clear();
+                output_reset = Some(String::new());
+            } else if let Some(output) = update.output.value() {
+                if let Some(decoded) = decode_terminal_data(&output.data) {
+                    state.output = decoded.clone();
+                    output_reset = Some(decoded);
+                }
+            }
+            if !update.exit_status.is_undefined() {
+                state.exit = update.exit_status.value().cloned();
+            }
+            let started = state.command.is_some() && !state.started;
+            if started {
+                state.started = true;
+            }
+            let status = terminal_item_status(state.exit.as_ref());
+            (started, output_reset, status)
+        };
+
+        let state = self
+            .v2_terminals
+            .get(&key)
+            .expect("v2 terminal state was inserted above");
+        if started {
+            let item = terminal_item(state, &fallback_cwd, status);
+            events.push(ProviderEvent::ItemStarted {
+                item,
+                provider_thread_id: self.ptid(),
+            });
+        }
+        if let Some(output) = output_reset {
+            if !started && state.started {
+                events.push(ProviderEvent::ItemCommandExecutionOutputDelta {
+                    item_id: state.item_id.clone(),
+                    delta: output,
+                    provider_thread_id: self.ptid(),
+                    reset: Some(true),
+                    parent_tool_call_id: None,
+                });
+            }
+        }
+        if !matches!(status, ItemStatus::Pending) && state.started {
+            if let Some(state) = self.v2_terminals.remove(&key) {
+                self.v2_finished_terminals.insert(key.clone());
+                events.push(ProviderEvent::ItemCompleted {
+                    item: terminal_item(&state, &fallback_cwd, status),
+                    provider_thread_id: self.ptid(),
+                });
+            }
+        }
+        events
+    }
+
+    fn on_v2_terminal_output_chunk(&mut self, chunk: &v2::TerminalOutputChunk) -> Translated {
+        let key = chunk.terminal_id.0.to_string();
+        if self.v2_finished_terminals.contains(&key) {
+            return Vec::new();
+        }
+        let Some(delta) = decode_terminal_data(&chunk.data) else {
+            return Vec::new();
+        };
+        let mut events = self.flush_v2_assistant();
+        let fallback_cwd = self.ctx.cwd.clone().unwrap_or_default();
+        let provider_thread_id = self.ptid();
+        let can_emit = {
+            let state = self
+                .v2_terminals
+                .entry(key.clone())
+                .or_insert_with(|| V2TerminalState {
+                    item_id: format!("terminal-v2-{key}"),
+                    command: None,
+                    cwd: None,
+                    output: String::new(),
+                    exit: None,
+                    started: false,
+                });
+            state.output.push_str(&delta);
+            let started_now = state.command.is_some() && !state.started;
+            if started_now {
+                state.started = true;
+                let item = terminal_item(state, &fallback_cwd, ItemStatus::Pending);
+                events.push(ProviderEvent::ItemStarted {
+                    item,
+                    provider_thread_id: provider_thread_id.clone(),
+                });
+            }
+            state.command.is_some()
+        };
+        if can_emit {
+            let item_id = self
+                .v2_terminals
+                .get(&key)
+                .map(|state| state.item_id.clone())
+                .expect("v2 terminal state was inserted above");
+            events.push(ProviderEvent::ItemCommandExecutionOutputDelta {
+                item_id,
+                delta,
+                provider_thread_id,
+                reset: None,
+                parent_tool_call_id: None,
+            });
+        }
+        events
+    }
+
     // --- plan, usage, name ------------------------------------------------
 
     fn on_plan(&mut self, plan: &Plan) -> Translated {
@@ -465,9 +1048,359 @@ impl AcpTranslator {
             thread_name: title.clone(),
         }]
     }
+
+    fn on_v2_plan(&mut self, update: &v2::PlanUpdate) -> Translated {
+        let v2::PlanUpdateContent::Items(plan) = &update.plan else {
+            return Vec::new();
+        };
+        let steps = plan
+            .entries
+            .iter()
+            .map(|entry| PlanStep {
+                step: entry.content.clone(),
+                status: Some(plan_step_status_v2(&entry.status)),
+            })
+            .collect();
+        vec![ProviderEvent::TurnPlanUpdated {
+            provider_thread_id: self.ptid(),
+            plan: steps,
+            explanation: None,
+        }]
+    }
+
+    fn on_v2_usage(&mut self, usage: &v2::UsageUpdate) -> Translated {
+        vec![ProviderEvent::ThreadContextWindowUsageUpdated {
+            provider_thread_id: self.ptid(),
+            context_window_usage: loom_domain::ContextWindowUsage {
+                used_tokens: Some(usage.used),
+                model_context_window: Some(usage.size),
+                estimated: false,
+            },
+        }]
+    }
+
+    fn on_v2_session_info(&mut self, info: &v2::SessionInfoUpdate) -> Translated {
+        let Some(title) = info.title.value() else {
+            return Vec::new();
+        };
+        vec![ProviderEvent::ThreadNameUpdated {
+            provider_thread_id: self.ptid(),
+            thread_name: title.clone(),
+        }]
+    }
 }
 
 // --- tool mapping ---------------------------------------------------------
+
+fn v2_tool_state() -> V2ToolState {
+    V2ToolState {
+        started: false,
+        title: None,
+        kind: v2::ToolKind::Other,
+        status: v2::ToolCallStatus::Pending,
+        content: Vec::new(),
+        locations: Vec::new(),
+        raw_input: None,
+        raw_output: None,
+    }
+}
+
+fn v2_item_from_tool_state(
+    state: &V2ToolState,
+    id: &str,
+    session_cwd: Option<&str>,
+) -> ThreadEventItem {
+    let status = item_status_v2(&state.status);
+    let args = state.raw_input.as_ref();
+    match state.kind {
+        v2::ToolKind::Execute => {
+            if let Some(command) = args
+                .and_then(|input| input.get("command"))
+                .and_then(Value::as_str)
+            {
+                let cwd = args
+                    .and_then(|input| input.get("cwd"))
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+                    .or_else(|| session_cwd.map(str::to_owned))
+                    .unwrap_or_default();
+                return ThreadEventItem::CommandExecution {
+                    id: id.to_owned(),
+                    command: command.to_owned(),
+                    cwd,
+                    status,
+                    approval_status: None,
+                    aggregated_output: None,
+                    exit_code: None,
+                    duration_ms: None,
+                    presentation: None,
+                    parent_tool_call_id: None,
+                };
+            }
+        }
+        v2::ToolKind::Edit | v2::ToolKind::Delete | v2::ToolKind::Move => {
+            let changes = v2_changes_from_content(&state.content);
+            if !changes.is_empty() {
+                return ThreadEventItem::FileChange {
+                    id: id.to_owned(),
+                    changes,
+                    status,
+                    approval_status: None,
+                    presentation: None,
+                    parent_tool_call_id: None,
+                };
+            }
+        }
+        v2::ToolKind::Read => {
+            if let Some(path) = v2_read_path(state) {
+                return ThreadEventItem::FileRead {
+                    id: id.to_owned(),
+                    path,
+                    cmd: None,
+                    status,
+                    presentation: None,
+                    parent_tool_call_id: None,
+                };
+            }
+        }
+        v2::ToolKind::Search => {
+            if let Some(query) = args
+                .and_then(|input| input.get("query"))
+                .and_then(Value::as_str)
+            {
+                return ThreadEventItem::Search {
+                    id: id.to_owned(),
+                    mode: SearchMode::Content,
+                    query: query.to_owned(),
+                    path: None,
+                    cmd: None,
+                    status,
+                    presentation: None,
+                    parent_tool_call_id: None,
+                };
+            }
+        }
+        v2::ToolKind::Fetch => {
+            if let Some(url) = args
+                .and_then(|input| input.get("url"))
+                .and_then(Value::as_str)
+            {
+                return ThreadEventItem::WebFetch {
+                    id: id.to_owned(),
+                    url: url.to_owned(),
+                    prompt: None,
+                    pattern: None,
+                    result_text: None,
+                    presentation: None,
+                    parent_tool_call_id: None,
+                };
+            }
+        }
+        v2::ToolKind::Think => {
+            return ThreadEventItem::Reasoning {
+                id: id.to_owned(),
+                summary: Vec::new(),
+                content: Vec::new(),
+                presentation: None,
+                parent_tool_call_id: None,
+            };
+        }
+        _ => {}
+    }
+
+    ThreadEventItem::ToolCall {
+        id: id.to_owned(),
+        server: None,
+        tool: v2_tool_kind_name(&state.kind),
+        arguments: state.raw_input.as_ref().and_then(|input| {
+            input.as_object().map(|object| {
+                object
+                    .iter()
+                    .map(|(key, value)| (key.clone(), value.clone()))
+                    .collect::<BTreeMap<_, _>>()
+            })
+        }),
+        status,
+        result: state.raw_output.clone(),
+        error: None,
+        duration_ms: None,
+        presentation: None,
+        parent_tool_call_id: None,
+    }
+}
+
+fn v2_tool_kind_name(kind: &v2::ToolKind) -> String {
+    match kind {
+        v2::ToolKind::Read => "read",
+        v2::ToolKind::Edit => "edit",
+        v2::ToolKind::Delete => "delete",
+        v2::ToolKind::Move => "move",
+        v2::ToolKind::Search => "search",
+        v2::ToolKind::Execute => "execute",
+        v2::ToolKind::Think => "think",
+        v2::ToolKind::Fetch => "fetch",
+        v2::ToolKind::SwitchMode => "switch_mode",
+        v2::ToolKind::Other => "other",
+        v2::ToolKind::Unknown(name) => name.as_str(),
+        _ => "other",
+    }
+    .to_owned()
+}
+
+fn item_status_v2(status: &v2::ToolCallStatus) -> ItemStatus {
+    match status {
+        v2::ToolCallStatus::Pending | v2::ToolCallStatus::InProgress => ItemStatus::Pending,
+        v2::ToolCallStatus::Completed => ItemStatus::Completed,
+        v2::ToolCallStatus::Failed => ItemStatus::Failed,
+        _ => ItemStatus::Pending,
+    }
+}
+
+fn v2_read_path(state: &V2ToolState) -> Option<String> {
+    state
+        .locations
+        .first()
+        .map(|location| location.path.0.to_string_lossy().into_owned())
+        .or_else(|| {
+            state
+                .raw_input
+                .as_ref()
+                .and_then(|input| input.get("path").or_else(|| input.get("file_path")))
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        })
+}
+
+fn v2_changes_from_content(content: &[v2::ToolCallContent]) -> Vec<loom_domain::FileChange> {
+    content
+        .iter()
+        .filter_map(|entry| {
+            let v2::ToolCallContent::Diff(diff) = entry else {
+                return None;
+            };
+            let patch = diff.patch.as_ref().map(|patch| patch.text.clone());
+            Some(diff.changes.iter().filter_map(move |change| {
+                use v2::DiffChangeOperation;
+                let (path, kind, move_path) = match &change.operation {
+                    DiffChangeOperation::Add(change) => (
+                        change.path.0.to_string_lossy().into_owned(),
+                        loom_domain::FileChangeKind::Add,
+                        None,
+                    ),
+                    DiffChangeOperation::Delete(change) => (
+                        change.path.0.to_string_lossy().into_owned(),
+                        loom_domain::FileChangeKind::Delete,
+                        None,
+                    ),
+                    DiffChangeOperation::Modify(change) => (
+                        change.path.0.to_string_lossy().into_owned(),
+                        loom_domain::FileChangeKind::Update,
+                        None,
+                    ),
+                    DiffChangeOperation::Move(change) => (
+                        change.old_path.0.to_string_lossy().into_owned(),
+                        loom_domain::FileChangeKind::Update,
+                        Some(change.path.0.to_string_lossy().into_owned()),
+                    ),
+                    DiffChangeOperation::Copy(change) => (
+                        change.old_path.0.to_string_lossy().into_owned(),
+                        loom_domain::FileChangeKind::Add,
+                        Some(change.path.0.to_string_lossy().into_owned()),
+                    ),
+                    _ => return None,
+                };
+                Some(loom_domain::FileChange {
+                    path,
+                    kind,
+                    move_path,
+                    diff: patch.clone(),
+                })
+            }))
+        })
+        .flatten()
+        .collect()
+}
+
+fn plan_step_status_v2(status: &v2::PlanEntryStatus) -> PlanStepStatus {
+    match status {
+        v2::PlanEntryStatus::Pending => PlanStepStatus::Pending,
+        v2::PlanEntryStatus::InProgress => PlanStepStatus::Active,
+        v2::PlanEntryStatus::Completed => PlanStepStatus::Completed,
+        _ => PlanStepStatus::Pending,
+    }
+}
+
+fn terminal_item_status(exit: Option<&v2::TerminalExitStatus>) -> ItemStatus {
+    let Some(exit) = exit else {
+        return ItemStatus::Pending;
+    };
+    if exit.signal.is_some() || exit.exit_code.is_some_and(|code| code != 0) {
+        ItemStatus::Failed
+    } else {
+        ItemStatus::Completed
+    }
+}
+
+fn terminal_item(
+    terminal: &V2TerminalState,
+    fallback_cwd: &str,
+    status: ItemStatus,
+) -> ThreadEventItem {
+    let exit_code = terminal
+        .exit
+        .as_ref()
+        .and_then(|exit| exit.exit_code)
+        .map(i64::from);
+    ThreadEventItem::CommandExecution {
+        id: terminal.item_id.clone(),
+        command: terminal.command.clone().unwrap_or_default(),
+        cwd: terminal
+            .cwd
+            .clone()
+            .unwrap_or_else(|| fallback_cwd.to_owned()),
+        status,
+        approval_status: None,
+        aggregated_output: (!terminal.output.is_empty()).then(|| terminal.output.clone()),
+        exit_code,
+        duration_ms: None,
+        presentation: None,
+        parent_tool_call_id: None,
+    }
+}
+
+fn decode_terminal_data(data: &str) -> Option<String> {
+    use base64::Engine as _;
+    base64::engine::general_purpose::STANDARD
+        .decode(data)
+        .ok()
+        .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+}
+
+fn v2_content_text(block: &v2::ContentBlock) -> String {
+    match block {
+        v2::ContentBlock::Text(text) => text.text.clone(),
+        _ => String::new(),
+    }
+}
+
+fn v2_content_texts(blocks: &[v2::ContentBlock]) -> String {
+    blocks.iter().map(v2_content_text).collect()
+}
+
+/// Converts an authoritative v2 message snapshot into the suffix supported by
+/// loom's append-only delta event. A non-prefix replacement cannot be expressed
+/// without a reset event, so it updates the adapter's state and waits for the
+/// next append rather than duplicating already-persisted text.
+fn patch_message_text(current: &mut String, snapshot: &str) -> String {
+    if snapshot.starts_with(current.as_str()) {
+        let delta = snapshot[current.len()..].to_owned();
+        current.push_str(&delta);
+        delta
+    } else {
+        *current = snapshot.to_owned();
+        String::new()
+    }
+}
 
 /// Builds a contract item from an ACP tool call.
 ///

@@ -139,6 +139,52 @@ done
     path
 }
 
+/// A minimal ACP v2 agent that streams a patch and reports completion through
+/// the idle state. Its resume notification deliberately looks like history,
+/// so the second run proves that loom does not replay it.
+fn write_v2_resuming_agent(dir: &std::path::Path) -> PathBuf {
+    let path = dir.join("v2-resuming-agent.sh");
+    let script = r#"#!/bin/sh
+session_id=v2-resumable-session
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([^,]*\),"method":.*/\1/p')
+  method=$(printf '%s' "$line" | sed -n 's/.*"method":"\([^"]*\)".*/\1/p')
+  case "$method" in
+    initialize)
+      printf '%s\n' '{"jsonrpc":"2.0","id":'"$id"',"result":{"protocolVersion":2,"info":{"name":"fake-v2-agent","version":"1"},"capabilities":{"session":{}}}}'
+      ;;
+    session/new)
+      printf '%s\n' '{"jsonrpc":"2.0","id":'"$id"',"result":{"sessionId":"'"$session_id"'"}}'
+      ;;
+    session/resume)
+      touch "$0.resumed"
+      printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"'"$session_id"'","update":{"sessionUpdate":"agent_message_chunk","messageId":"history-message","content":{"type":"text","text":"history"}}}}'
+      printf '%s\n' '{"jsonrpc":"2.0","id":'"$id"',"result":{}}'
+      ;;
+    session/prompt)
+      if [ -f "$0.resumed" ]; then
+        text=resumed
+      else
+        text=fresh
+      fi
+      printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"'"$session_id"'","update":{"sessionUpdate":"agent_message_chunk","messageId":"answer-message","content":{"type":"text","text":"'"$text"'"}}}}'
+      printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"'"$session_id"'","update":{"sessionUpdate":"agent_message","messageId":"answer-message","content":[{"type":"text","text":"'"$text"' answer"}]}}}'
+      printf '%s\n' '{"jsonrpc":"2.0","id":'"$id"',"result":{}}'
+      printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"'"$session_id"'","update":{"sessionUpdate":"state_update","state":"idle","stopReason":"end_turn"}}}'
+      printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"'"$session_id"'","update":{"sessionUpdate":"state_update","state":"idle","stopReason":"end_turn"}}}'
+      ;;
+  esac
+done
+"#;
+    std::fs::write(&path, script).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    path
+}
+
 fn run_with_agent(
     cwd: &str,
     agent: &std::path::Path,
@@ -231,6 +277,79 @@ async fn a_resume_loads_the_same_acp_session() {
             })
             .collect::<String>(),
         "resumed"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_v2_agent_resumes_without_replay_and_completes_once() {
+    let tmp = tempfile::tempdir().unwrap();
+    let workspace = tmp.path().join("workspace");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let agent = write_v2_resuming_agent(tmp.path());
+    let thread_id = loom_domain::ThreadId::mint();
+
+    let first = drive_with_agent(
+        run_with_agent(
+            &workspace.to_string_lossy(),
+            &agent,
+            thread_id.clone(),
+            None,
+        ),
+        agent.clone(),
+    )
+    .await;
+    let session_id = first
+        .iter()
+        .find(|event| event.kind() == "thread/identity")
+        .and_then(loom_domain::RunEvent::provider_thread_id)
+        .expect("the v2 run reports its session id")
+        .to_owned();
+    assert_eq!(session_id, "v2-resumable-session");
+    assert_eq!(
+        first
+            .iter()
+            .filter_map(|event| match &event.event.body {
+                loom_domain::ProviderEvent::ItemAgentMessageDelta { delta, .. } => {
+                    Some(delta.as_str())
+                }
+                _ => None,
+            })
+            .collect::<String>(),
+        "fresh answer"
+    );
+    assert_eq!(
+        first.iter().filter(|event| event.is_terminal()).count(),
+        1,
+        "the first v2 prompt has one terminal event: {first:#?}"
+    );
+
+    let second = drive_with_agent(
+        run_with_agent(
+            &workspace.to_string_lossy(),
+            &agent,
+            thread_id,
+            Some(&session_id),
+        ),
+        agent,
+    )
+    .await;
+    assert_eq!(
+        second
+            .iter()
+            .filter_map(|event| match &event.event.body {
+                loom_domain::ProviderEvent::ItemAgentMessageDelta { delta, .. } => {
+                    Some(delta.as_str())
+                }
+                _ => None,
+            })
+            .collect::<String>(),
+        "resumed answer",
+        "resume history must not be written as a new timeline delta: {second:#?}"
+    );
+    assert_eq!(
+        second.iter().filter(|event| event.is_terminal()).count(),
+        1,
+        "duplicate idle notifications cannot duplicate completion: {second:#?}"
     );
 }
 

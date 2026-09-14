@@ -1,9 +1,9 @@
 //! Driving an ACP agent for one run.
 //!
-//! This is the transport half of the adapter: it initializes ACP v1, opens or
-//! restores a session, sends one prompt, and feeds every update through
-//! [`AcpTranslator`](super::AcpTranslator) on the way to the run's report
-//! channel.
+//! This is the transport half of the adapter: it negotiates ACP v2 first and
+//! falls back to v1, opens or restores a session, sends one prompt, and feeds
+//! every update through [`AcpTranslator`](super::AcpTranslator) on the way to
+//! the run's report channel.
 //!
 //! Two kinds of peer are supported and loom treats them identically:
 //!
@@ -29,8 +29,10 @@ use agent_client_protocol::schema::v1::{
     ContentBlock, InitializeRequest, LoadSessionRequest, NewSessionRequest, PromptRequest,
     RequestPermissionRequest, SessionId, SessionNotification, SessionUpdate, TextContent,
 };
-use agent_client_protocol::schema::ProtocolVersion;
-use agent_client_protocol::{on_receive_notification, on_receive_request, Client, ConnectionTo};
+use agent_client_protocol::schema::{v2, ProtocolVersion};
+use agent_client_protocol::{
+    on_receive_notification, on_receive_request, Agent, Client, ConnectTo, ConnectionTo, Error,
+};
 use loom_domain::{ProviderEvent, RunEvent};
 use loom_provider_protocol::{InteractionRequest, ProviderReport};
 use tokio::sync::mpsc;
@@ -99,10 +101,12 @@ pub async fn drive(
             phase: UpdatePhase::Constructing,
             pending: Vec::new(),
             pending_load_usage: None,
+            pending_load_usage_v2: None,
         })),
         reports: reports.clone(),
         report_lock: Arc::new(tokio::sync::Mutex::new(())),
         terminal_sent: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        completion_notify: Arc::new(tokio::sync::Notify::new()),
         broker: PermissionBroker::new(
             run.clone(),
             interactions,
@@ -114,10 +118,18 @@ pub async fn drive(
     let operation = async {
         match transport {
             Transport::Stdio { command, args } => {
-                let agent =
-                    agent_client_protocol::AcpAgent::from_args(agent_argv(&command, &args, &cwd))
-                        .map_err(|e| format!("could not describe the ACP agent: {e}"))?;
-                serve(agent, &sink, &cwd).await
+                let argv = agent_argv(&command, &args, &cwd);
+                agent_client_protocol::AcpAgent::from_args(argv.clone())
+                    .map_err(|e| format!("could not describe the ACP agent: {e}"))?;
+                serve(
+                    move || {
+                        agent_client_protocol::AcpAgent::from_args(argv.clone())
+                            .expect("validated ACP agent arguments")
+                    },
+                    &sink,
+                    &cwd,
+                )
+                .await
             }
             Transport::EmbeddedPi { command, args } => {
                 serve_embedded(&sink, &cwd, command, args).await
@@ -186,53 +198,181 @@ pub(super) fn agent_argv(command: &str, args: &[String], cwd: &str) -> Vec<Strin
 /// Runs the client loop against a connected agent.
 /// `connect_with` takes the *counterpart* role: a client connects to something
 /// that is a `ConnectTo<Client>`, which is what `AcpAgent` implements.
-async fn serve(
-    agent: impl agent_client_protocol::ConnectTo<Client> + 'static,
-    sink: &UpdateSink,
-    cwd: &str,
-) -> Result<(), String> {
-    let notifications = sink.clone();
-    // The permission bridge, not the sink's own policy: the decision is the
-    // user's and travels to the control plane.
-    let permissions = sink.broker.clone();
-    let conversation = sink.clone();
-    let cwd = cwd.to_string();
-
+async fn serve<C, F>(agent_factory: F, sink: &UpdateSink, cwd: &str) -> Result<(), String>
+where
+    C: agent_client_protocol::ConnectTo<Client>,
+    F: FnMut() -> C + Send + 'static,
+{
     Client
-        .builder()
-        .on_receive_notification(
-            async move |notification: SessionNotification, _cx| {
-                notifications.on_notification(notification).await;
-                Ok(())
-            },
-            on_receive_notification!(),
-        )
-        .on_receive_request(
-            async move |request: RequestPermissionRequest, responder, _cx| {
-                let response = permissions.ask(request).await;
-                let _ = responder.respond(response);
-                Ok(())
-            },
-            on_receive_request!(),
-        )
-        .connect_with(
-            agent,
-            |connection: ConnectionTo<agent_client_protocol::Agent>| async move {
-                conversation.converse(&connection, &cwd).await
-            },
-        )
+        .protocol_connector()
+        .with_v1({
+            let sink = sink.clone();
+            let cwd = cwd.to_owned();
+            move || V1Client {
+                sink: sink.clone(),
+                cwd: cwd.clone(),
+            }
+        })
+        .with_v2({
+            let sink = sink.clone();
+            let cwd = cwd.to_owned();
+            move || V2Client {
+                sink: sink.clone(),
+                cwd: cwd.clone(),
+            }
+        })
+        .connect_to(agent_factory)
         .await
         .map_err(|e| format!("the ACP connection ended: {e}"))
 }
 
-/// Aborts an embedded adapter if the surrounding run times out or is
-/// cancelled. Dropping a bare `JoinHandle` would detach `pi-acp` and leave its
-/// child alive after the daemon has declared the run finished.
-struct AbortOnDrop(tokio::task::JoinHandle<()>);
+/// A typed ACP v1 client component used by the protocol connector.
+struct V1Client {
+    sink: UpdateSink,
+    cwd: String,
+}
 
-impl Drop for AbortOnDrop {
+impl ConnectTo<Agent> for V1Client {
+    async fn connect_to(self, agent: impl ConnectTo<Client>) -> Result<(), Error> {
+        let notifications = self.sink.clone();
+        let permissions = self.sink.broker.clone();
+        let conversation = self.sink;
+        let cwd = self.cwd;
+
+        Client
+            .builder()
+            .on_receive_notification(
+                async move |notification: SessionNotification, _cx| {
+                    notifications.on_notification(notification).await;
+                    Ok(())
+                },
+                on_receive_notification!(),
+            )
+            .on_receive_request(
+                async move |request: RequestPermissionRequest, responder, _cx| {
+                    let response = permissions.ask(request).await;
+                    let _ = responder.respond(response);
+                    Ok(())
+                },
+                on_receive_request!(),
+            )
+            .connect_with(agent, |connection: ConnectionTo<Agent>| async move {
+                conversation.converse_v1(&connection, &cwd).await
+            })
+            .await
+    }
+}
+
+/// A typed ACP v2 client component used by the protocol connector.
+struct V2Client {
+    sink: UpdateSink,
+    cwd: String,
+}
+
+impl ConnectTo<Agent> for V2Client {
+    async fn connect_to(self, agent: impl ConnectTo<Client>) -> Result<(), Error> {
+        let notifications = self.sink.clone();
+        let permissions = self.sink.broker.clone();
+        let conversation = self.sink;
+        let cwd = self.cwd;
+
+        Client
+            .v2()
+            .on_receive_notification(
+                async move |notification: v2::UpdateSessionNotification, _cx| {
+                    notifications.on_v2_notification(notification).await;
+                    Ok(())
+                },
+                on_receive_notification!(),
+            )
+            .on_receive_request(
+                async move |request: v2::RequestPermissionRequest, responder, _cx| {
+                    let request = v2::conversion::try_v2_to_v1(request).map_err(|error| {
+                        Error::invalid_params().data(format!(
+                            "could not convert ACP v2 permission request: {error}"
+                        ))
+                    })?;
+                    let response = permissions.ask(request).await;
+                    let response = v2::conversion::try_v1_to_v2(response).map_err(|error| {
+                        Error::internal_error().data(format!(
+                            "could not convert ACP permission response to v2: {error}"
+                        ))
+                    })?;
+                    responder.respond(response)
+                },
+                on_receive_request!(),
+            )
+            .connect_with(agent, |connection: ConnectionTo<Agent>| async move {
+                conversation.converse_v2(&connection, &cwd).await
+            })
+            .await
+    }
+}
+
+/// A join guard for an embedded adapter task.
+///
+/// The protocol connector owns a transport component until the connection is
+/// finished. If the surrounding run is cancelled while that component is
+/// being polled, dropping its future must also stop the adapter task rather
+/// than detaching it.
+struct AbortOnDrop<T>(tokio::task::JoinHandle<T>);
+
+impl<T> Drop for AbortOnDrop<T> {
     fn drop(&mut self) {
         self.0.abort();
+    }
+}
+
+/// The embedded agent transport must keep its adapter task alive after the
+/// connector's initialize probe. A bare [`agent_client_protocol::Channel`]
+/// reports a ready component future, which would make the protocol connector
+/// stop forwarding frames as soon as the probe completed.
+pub(super) struct EmbeddedAgentTransport {
+    channel: agent_client_protocol::Channel,
+    task: AbortOnDrop<Result<(), String>>,
+}
+
+impl ConnectTo<Client> for EmbeddedAgentTransport {
+    async fn connect_to(self, client: impl ConnectTo<Agent>) -> Result<(), Error> {
+        let Self { channel, mut task } = self;
+        let transport = ConnectTo::<Client>::connect_to(channel, client);
+        let (transport_result, task_result) = tokio::join!(transport, &mut task.0);
+        transport_result?;
+
+        match task_result {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(error)) => Err(Error::internal_error().data(format!(
+                "the embedded pi-acp agent ended with an error: {error}"
+            ))),
+            Err(error) => Err(Error::internal_error()
+                .data(format!("the embedded pi-acp agent task failed: {error}"))),
+        }
+    }
+}
+
+/// Builds a fresh embedded agent connection for each protocol negotiation
+/// attempt. The connector may need a new connection when it falls back from
+/// v2 to v1, so the adapter and its channel must be created per factory call.
+pub(super) fn embedded_agent_factory(
+    command: String,
+) -> impl FnMut() -> EmbeddedAgentTransport + Send + 'static {
+    move || {
+        let mut config = pi_acp::config::Config::default();
+        if !command.is_empty() {
+            config.pi_command = command.clone();
+        }
+        let agent = Arc::new(pi_acp::agent::AcpAgent::new(config));
+        let (adapter_side, client_side) = agent_client_protocol::Channel::duplex();
+        let task = tokio::spawn(async move {
+            agent
+                .run_with(adapter_side)
+                .await
+                .map_err(|error| error.to_string())
+        });
+        EmbeddedAgentTransport {
+            channel: client_side,
+            task: AbortOnDrop(task),
+        }
     }
 }
 
@@ -251,8 +391,6 @@ async fn serve_embedded(
     command: String,
     args: Vec<String>,
 ) -> Result<(), String> {
-    use agent_client_protocol::Channel;
-
     // `pi-acp` takes a *program*, not a command line: its resolver decides
     // between a path, a PATH lookup and a Windows batch wrapper, and appends
     // nothing. So a dispatch that names arguments cannot be honoured on this
@@ -264,38 +402,7 @@ async fn serve_embedded(
              supplies {args:?}; use the acp_stdio launch kind to pass a command line"
         ));
     }
-    let mut config = pi_acp::config::Config::default();
-    // The adapter spawns `pi` itself, so the command travels through rather
-    // than being loom's business. Leaving the default would look for a bare
-    // `pi` on PATH, which is right when nothing overrides it.
-    if !command.is_empty() {
-        config.pi_command = command;
-    }
-
-    let agent = Arc::new(pi_acp::agent::AcpAgent::new(config));
-
-    // `duplex` returns two connected endpoints. The adapter takes one and runs
-    // until it ends; loom's client takes the other.
-    let (adapter_side, client_side) = Channel::duplex();
-    // The adapter's exit is deliberately not reported from its own task: the
-    // client side observes the closed channel and reports the failure, so there
-    // is one reporting path rather than two that could race.
-    let mut running = AbortOnDrop(tokio::spawn(async move {
-        let _ = agent.run_with(adapter_side).await;
-    }));
-
-    let outcome = serve(client_side, sink, cwd).await;
-    // `serve` consumed the client side, which ends the adapter's loop, and
-    // awaiting lets the adapter run `AcpAgent::run_with`'s own `dispose_all`.
-    //
-    // This is graceful rather than necessary: `pi-acp` gives `PiProcess` a
-    // `Drop` that signals the child's process group, so aborting here would not
-    // orphan `pi`. Waiting is still preferable because it is the *disposing*
-    // path the adapter documents for itself, and it costs nothing when the
-    // adapter is already unwinding — the channel closed, so it will finish.
-    // Bounded so a wedged adapter cannot hold the run open.
-    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), &mut running.0).await;
-    outcome
+    serve(embedded_agent_factory(command), sink, cwd).await
 }
 
 /// The construction/load phase controls which agent notifications can be
@@ -315,7 +422,12 @@ enum UpdatePhase {
 
 struct PendingUpdate {
     session_id: String,
-    update: SessionUpdate,
+    update: PendingUpdateKind,
+}
+
+enum PendingUpdateKind {
+    V1(SessionUpdate),
+    V2(v2::SessionUpdate),
 }
 
 struct UpdateState {
@@ -326,6 +438,8 @@ struct UpdateState {
     /// Keep the latest one; history and metadata updates are intentionally not
     /// replayed into the new run.
     pending_load_usage: Option<SessionUpdate>,
+    /// The v2 equivalent of the load-time usage snapshot.
+    pending_load_usage_v2: Option<v2::SessionUpdate>,
 }
 
 /// What is shared between the client callbacks and the conversation driver.
@@ -341,6 +455,8 @@ struct UpdateSink {
     /// Whether the terminal event has been sent, so it is sent exactly once
     /// even when a failure races an ordinary completion.
     terminal_sent: Arc<std::sync::atomic::AtomicBool>,
+    /// Wakes the v2 conversation future when `StateUpdate::Idle` is reported.
+    completion_notify: Arc<tokio::sync::Notify>,
     /// Where a permission request goes and how its answer gets back.
     ///
     /// A broker rather than the former in-place auto-allow: the ACP client must
@@ -364,7 +480,7 @@ impl UpdateSink {
                 UpdatePhase::Constructing => {
                     state.pending.push(PendingUpdate {
                         session_id,
-                        update: notification.update,
+                        update: PendingUpdateKind::V1(notification.update),
                     });
                     return;
                 }
@@ -391,11 +507,50 @@ impl UpdateSink {
         self.report_all(events).await;
     }
 
+    /// The v2 form of one ACP session update. Construction and resume use the
+    /// same buffering rules as v1, but the schema is intentionally kept typed
+    /// until it reaches the adapter translator.
+    async fn on_v2_notification(&self, notification: v2::UpdateSessionNotification) {
+        let session_id = notification.session_id.0.to_string();
+        let events = {
+            let mut state = self.state.lock().await;
+            match &state.phase {
+                UpdatePhase::Constructing => {
+                    state.pending.push(PendingUpdate {
+                        session_id,
+                        update: PendingUpdateKind::V2(notification.update),
+                    });
+                    return;
+                }
+                UpdatePhase::Loading {
+                    session_id: expected,
+                }
+                | UpdatePhase::Loaded {
+                    session_id: expected,
+                } => {
+                    if expected == &session_id
+                        && matches!(notification.update, v2::SessionUpdate::UsageUpdate(_))
+                    {
+                        state.pending_load_usage_v2 = Some(notification.update);
+                    }
+                    return;
+                }
+                UpdatePhase::Ready => {}
+            }
+            if state.translator.provider_session_id() != Some(session_id.as_str()) {
+                return;
+            }
+            state.translator.on_v2_session_update(&notification.update)
+        };
+        self.report_all(events).await;
+    }
+
     /// Marks a v1 load request as in flight.
     async fn begin_load(&self, session_id: String) {
         let mut state = self.state.lock().await;
         state.phase = UpdatePhase::Loading { session_id };
         state.pending_load_usage = None;
+        state.pending_load_usage_v2 = None;
     }
 
     /// Finishes a load response. The phase remains `Loaded` until the new
@@ -424,6 +579,14 @@ impl UpdateSink {
         usage
     }
 
+    /// Releases a v2 load-time usage snapshot after replay suppression ends.
+    async fn ready_for_prompt_v2(&self) -> Option<v2::SessionUpdate> {
+        let mut state = self.state.lock().await;
+        let usage = state.pending_load_usage_v2.take();
+        state.phase = UpdatePhase::Ready;
+        usage
+    }
+
     /// Names the agent's session and releases anything held for it.
     ///
     /// Called once the session exists, before the prompt is sent. The identity
@@ -431,7 +594,7 @@ impl UpdateSink {
     /// everything held follows in arrival order.
     async fn on_session_known(&self, session_id: &str) {
         let _report_guard = self.report_lock.lock().await;
-        let (identity, buffered, load_usage) = {
+        let (identity, buffered, load_usage, load_usage_v2) = {
             let mut state = self.state.lock().await;
             state.translator.set_provider_session_id(session_id);
             let buffered = std::mem::take(&mut state.pending)
@@ -444,7 +607,8 @@ impl UpdateSink {
             }
             let identity = state.translator.on_prompt_sent();
             let load_usage = state.pending_load_usage.take();
-            (identity, buffered, load_usage)
+            let load_usage_v2 = state.pending_load_usage_v2.take();
+            (identity, buffered, load_usage, load_usage_v2)
         };
 
         // Identity first: it is the event that tells the control plane which
@@ -453,7 +617,10 @@ impl UpdateSink {
         for pending in buffered {
             let events = {
                 let mut state = self.state.lock().await;
-                state.translator.on_session_update(&pending.update)
+                match &pending.update {
+                    PendingUpdateKind::V1(update) => state.translator.on_session_update(update),
+                    PendingUpdateKind::V2(update) => state.translator.on_v2_session_update(update),
+                }
             };
             self.report_all_locked(events, None).await;
         }
@@ -464,40 +631,38 @@ impl UpdateSink {
             };
             self.report_all_locked(events, None).await;
         }
+        if let Some(update) = load_usage_v2 {
+            let events = {
+                let mut state = self.state.lock().await;
+                state.translator.on_v2_session_update(&update)
+            };
+            self.report_all_locked(events, None).await;
+        }
     }
 
-    /// Initialize, open a session, send the prompt, and wait for the turn.
-    async fn converse(
-        &self,
-        connection: &ConnectionTo<agent_client_protocol::Agent>,
-        cwd: &str,
-    ) -> Result<(), agent_client_protocol::Error> {
+    /// Initialize, open a v1 session, send the prompt, and finish from the
+    /// response's stop reason.
+    async fn converse_v1(&self, connection: &ConnectionTo<Agent>, cwd: &str) -> Result<(), Error> {
         let initialized = connection
-            .send_request(InitializeRequest::new(ProtocolVersion::V1))
+            .send_request(InitializeRequest::new(ProtocolVersion::V1).client_info(
+                agent_client_protocol::schema::v1::Implementation::new(
+                    "loom",
+                    env!("CARGO_PKG_VERSION"),
+                ),
+            ))
             .block_task()
             .await?;
         if initialized.protocol_version != ProtocolVersion::V1 {
-            return Err(agent_client_protocol::Error::internal_error().data(
-                "the ACP agent negotiated an unsupported protocol version; loom currently supports v1",
+            return Err(Error::internal_error().data(
+                "the ACP agent negotiated an unsupported protocol version for the v1 client",
             ));
         }
         if self.run.provider_session_id.is_some() && !initialized.agent_capabilities.load_session {
-            return Err(agent_client_protocol::Error::internal_error().data(
+            return Err(Error::internal_error().data(
                 "the ACP agent does not advertise session/load support for this resumed run",
             ));
         }
 
-        // Resume the thread's existing conversation when the dispatch carried
-        // one, and start a new session otherwise. This is what makes a second
-        // turn continue the first: the id came from the previous run's
-        // `thread/identity` event, was stored with the thread, and travelled
-        // back on the dispatch.
-        //
-        // `session/load` rather than `session/resume`, because this protocol
-        // version's `resume` is not implemented by the adapter loom embeds
-        // (pi-acp handles `load`). `load` replays history, which loom does not
-        // need, but it accepts the same id and restores the same conversation,
-        // so the redundant replay is cheaper than a missing capability.
         let session_id = match &self.run.provider_session_id {
             Some(existing) => {
                 self.begin_load(existing.clone()).await;
@@ -520,9 +685,6 @@ impl UpdateSink {
             }
         };
 
-        // For a resumed v1 session, `session/load` may have replayed history
-        // after its response. The sink keeps that phase suppressed until this
-        // point; only updates caused by the new prompt belong to this run.
         if let Some(update) = self.ready_for_prompt().await {
             let events = {
                 let mut state = self.state.lock().await;
@@ -530,21 +692,89 @@ impl UpdateSink {
             };
             self.report_all(events).await;
         }
-        let session = SessionId::new(session_id);
         let prompt = PromptRequest::new(
-            session,
+            SessionId::new(session_id),
             vec![ContentBlock::Text(TextContent::new(
                 self.run.prompt.clone(),
             ))],
         );
         let response = connection.send_request(prompt).block_task().await?;
-
         let events = {
             let mut state = self.state.lock().await;
             state.translator.on_stop_reason(response.stop_reason)
         };
         self.report_all(events).await;
         Ok(())
+    }
+
+    /// Initialize, open or resume a v2 session, send the prompt, and wait for
+    /// the protocol's `state_update: idle` notification. The v2 resume request
+    /// intentionally omits `replayFrom`: loom's timeline already owns the
+    /// history, so replaying it would duplicate events in the current run.
+    async fn converse_v2(&self, connection: &ConnectionTo<Agent>, cwd: &str) -> Result<(), Error> {
+        let initialized = connection
+            .send_request(v2::InitializeRequest::new(
+                ProtocolVersion::V2,
+                v2::Implementation::new("loom", env!("CARGO_PKG_VERSION")),
+            ))
+            .block_task()
+            .await?;
+        if initialized.protocol_version != ProtocolVersion::V2 {
+            return Err(Error::internal_error().data(
+                "the ACP agent negotiated an unsupported protocol version for the v2 client",
+            ));
+        }
+        if initialized.capabilities.session.is_none() {
+            return Err(Error::internal_error().data(
+                "the ACP v2 agent does not advertise the session capability required by loom",
+            ));
+        }
+
+        let session_id = match &self.run.provider_session_id {
+            Some(existing) => {
+                self.begin_load(existing.clone()).await;
+                connection
+                    .send_request(v2::ResumeSessionRequest::new(existing.clone(), cwd))
+                    .block_task()
+                    .await?;
+                self.finish_load(existing).await;
+                self.on_session_known(existing).await;
+                existing.clone()
+            }
+            None => {
+                let created = connection
+                    .send_request(v2::NewSessionRequest::new(cwd))
+                    .block_task()
+                    .await?;
+                let session_id = created.session_id.0.to_string();
+                self.on_session_known(&session_id).await;
+                session_id
+            }
+        };
+
+        if let Some(update) = self.ready_for_prompt_v2().await {
+            let events = {
+                let mut state = self.state.lock().await;
+                state.translator.on_v2_session_update(&update)
+            };
+            self.report_all(events).await;
+        }
+        let prompt = v2::PromptRequest::new(
+            v2::SessionId::new(session_id),
+            vec![v2::ContentBlock::Text(v2::TextContent::new(
+                self.run.prompt.clone(),
+            ))],
+        );
+        connection.send_request(prompt).block_task().await?;
+        self.wait_for_completion().await;
+        Ok(())
+    }
+
+    async fn wait_for_completion(&self) {
+        use std::sync::atomic::Ordering;
+        while !self.terminal_sent.load(Ordering::SeqCst) {
+            self.completion_notify.notified().await;
+        }
     }
 
     /// Ends the run with a failure, unless it already ended.
@@ -605,6 +835,7 @@ impl UpdateSink {
             );
             let event = if terminal {
                 self.terminal_sent.store(true, Ordering::SeqCst);
+                self.completion_notify.notify_one();
                 let outcome = forced_outcome.unwrap_or_else(|| match event.terminal_status() {
                     Some(loom_domain::TurnStatus::Completed) => loom_domain::RunOutcome::Completed,
                     Some(loom_domain::TurnStatus::Interrupted) => {

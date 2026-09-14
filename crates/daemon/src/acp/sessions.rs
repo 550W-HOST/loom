@@ -22,30 +22,111 @@
 //! trip. See `docs/provider-sessions-research.md` for the design history and
 //! `docs/acp-adapter.md` for the adapter boundary this sits on.
 
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use agent_client_protocol::schema::v1::{
     InitializeRequest, ListSessionsRequest, RequestPermissionOutcome, RequestPermissionRequest,
     RequestPermissionResponse,
 };
-use agent_client_protocol::schema::ProtocolVersion;
-use agent_client_protocol::{on_receive_request, Client, ConnectionTo};
+use agent_client_protocol::schema::{v2, ProtocolVersion};
+use agent_client_protocol::{on_receive_request, Agent, Client, ConnectTo, ConnectionTo, Error};
+use serde_json::Value;
 
-use super::session::{agent_argv, Transport};
+use super::session::{agent_argv, embedded_agent_factory, Transport};
 
 /// What an ACP agent says it can do, learned once from `initialize`.
 ///
 /// Reported alongside a listing so the control plane can record it without a
 /// second probe. An absent capability is absent: loom does not infer one from an
 /// agent's name and does not look for the agent's storage instead.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AgentIdentity {
+    /// Stable programmatic name from the ACP initialize response.
+    pub name: Option<String>,
+    /// Human-readable title, when the agent supplies one.
+    pub title: Option<String>,
+    /// Agent implementation version, when supplied.
+    pub version: Option<String>,
+}
+
+/// The ACP protocol version used for the probe.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AcpProtocolVersion {
+    /// Stable ACP v1.
+    V1,
+    /// Draft ACP v2.
+    V2,
+}
+
+/// Capabilities and identity captured from one initialize response.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AgentCapabilities {
+    /// The version selected by protocol negotiation.
+    pub protocol_version: AcpProtocolVersion,
+    /// The agent identity returned by initialize.
+    pub identity: AgentIdentity,
+    /// The raw typed capability object, kept opaque to the domain/server.
+    pub capability_snapshot: Value,
     /// The agent supports `session/load`, so a thread's known session id can be
     /// resumed. This is what makes a second turn continue the first.
     pub load_session: bool,
     /// The agent supports `session/list`. `false` means the import picker is
     /// empty **by capability**, and nothing is scanned to fill it.
     pub list_sessions: bool,
+}
+
+impl AgentCapabilities {
+    fn v1(response: &agent_client_protocol::schema::v1::InitializeResponse) -> Self {
+        let identity = response.agent_info.as_ref().map(identity_from_v1);
+        Self {
+            protocol_version: AcpProtocolVersion::V1,
+            identity: identity.unwrap_or(AgentIdentity {
+                name: None,
+                title: None,
+                version: None,
+            }),
+            capability_snapshot: serde_json::to_value(&response.agent_capabilities)
+                .unwrap_or(Value::Null),
+            load_session: response.agent_capabilities.load_session,
+            list_sessions: response
+                .agent_capabilities
+                .session_capabilities
+                .list
+                .is_some(),
+        }
+    }
+
+    fn v2(response: &v2::InitializeResponse) -> Self {
+        let session = response.capabilities.session.is_some();
+        Self {
+            protocol_version: AcpProtocolVersion::V2,
+            identity: identity_from_v2(&response.info),
+            capability_snapshot: serde_json::to_value(&response.capabilities)
+                .unwrap_or(Value::Null),
+            // v2 folds resume into the baseline session capability block.
+            load_session: session,
+            // v2 likewise defines session/list as a baseline session method;
+            // there is no v1-style nested `list` flag in the draft schema.
+            list_sessions: session,
+        }
+    }
+}
+
+fn identity_from_v1(info: &agent_client_protocol::schema::v1::Implementation) -> AgentIdentity {
+    AgentIdentity {
+        name: Some(info.name.clone()),
+        title: info.title.clone(),
+        version: Some(info.version.clone()),
+    }
+}
+
+fn identity_from_v2(info: &v2::Implementation) -> AgentIdentity {
+    AgentIdentity {
+        name: Some(info.name.clone()),
+        title: info.title.clone(),
+        version: Some(info.version.clone()),
+    }
 }
 
 /// One session an agent reports, ready to be bound to a thread.
@@ -118,13 +199,17 @@ pub async fn list_sessions(
     let operation = async {
         match transport {
             Transport::Stdio { command, args } => {
-                let agent = agent_client_protocol::AcpAgent::from_args(agent_argv(
-                    &command,
-                    &args,
-                    &fallback_cwd,
-                ))
-                .map_err(|error| format!("could not describe the ACP agent: {error}"))?;
-                probe(agent, cwd).await
+                let argv = agent_argv(&command, &args, &fallback_cwd);
+                agent_client_protocol::AcpAgent::from_args(argv.clone())
+                    .map_err(|error| format!("could not describe the ACP agent: {error}"))?;
+                probe(
+                    move || {
+                        agent_client_protocol::AcpAgent::from_args(argv.clone())
+                            .expect("validated ACP agent arguments")
+                    },
+                    cwd,
+                )
+                .await
             }
             // Only `pi` is a child here; the adapter itself is in-process, so
             // there is no argv to build for it. `pi-acp` resolves its own
@@ -137,18 +222,7 @@ pub async fn list_sessions(
                          request supplies {args:?}"
                     ));
                 }
-                let mut config = pi_acp::config::Config::default();
-                if !command.is_empty() {
-                    config.pi_command = command;
-                }
-                let agent = std::sync::Arc::new(pi_acp::agent::AcpAgent::new(config));
-                let (adapter_side, client_side) = agent_client_protocol::Channel::duplex();
-                let mut running = AbortOnDrop(tokio::spawn(async move {
-                    let _ = agent.run_with(adapter_side).await;
-                }));
-                let outcome = probe(client_side, cwd).await;
-                let _ = tokio::time::timeout(Duration::from_secs(5), &mut running.0).await;
-                outcome
+                probe(embedded_agent_factory(command), cwd).await
             }
         }
     };
@@ -166,103 +240,209 @@ pub async fn list_sessions(
 }
 
 /// Runs the initialize-and-list conversation against a connected agent.
-async fn probe(
-    agent: impl agent_client_protocol::ConnectTo<Client> + 'static,
+async fn probe<C, F>(agent_factory: F, cwd: Option<String>) -> Result<SessionListOutcome, String>
+where
+    C: agent_client_protocol::ConnectTo<Client>,
+    F: FnMut() -> C + Send + 'static,
+{
+    let state = Arc::new(ProbeState::default());
+    let result = Client
+        .protocol_connector()
+        .with_v1({
+            let state = Arc::clone(&state);
+            let cwd = cwd.clone();
+            move || V1ListClient {
+                state: Arc::clone(&state),
+                cwd: cwd.clone(),
+            }
+        })
+        .with_v2({
+            let state = Arc::clone(&state);
+            move || V2ListClient {
+                state: Arc::clone(&state),
+                cwd: cwd.clone(),
+            }
+        })
+        .connect_to(agent_factory)
+        .await;
+
+    result.map_err(|error| format!("the ACP connection ended: {error}"))?;
+    state
+        .take()
+        .ok_or_else(|| "the ACP agent ended without returning a session-list result".to_owned())
+}
+
+#[derive(Default)]
+struct ProbeState {
+    outcome: Mutex<Option<SessionListOutcome>>,
+}
+
+impl ProbeState {
+    fn set(&self, outcome: SessionListOutcome) {
+        *self.outcome.lock().expect("session probe result lock") = Some(outcome);
+    }
+
+    fn take(&self) -> Option<SessionListOutcome> {
+        self.outcome
+            .lock()
+            .expect("session probe result lock")
+            .take()
+    }
+}
+
+struct V1ListClient {
+    state: Arc<ProbeState>,
     cwd: Option<String>,
-) -> Result<SessionListOutcome, String> {
-    // A listing is not a run, so there is no thread to record an interaction
-    // against and no client that could answer one. Cancelling is therefore the
-    // only truthful reply to a permission request here — and it must never be an
-    // allow, which is what the previous auto-allow policy got wrong.
-    Client
-        .builder()
-        .on_receive_request(
-            async move |_request: RequestPermissionRequest, responder, _cx| {
-                let _ = responder.respond(RequestPermissionResponse::new(
-                    RequestPermissionOutcome::Cancelled,
-                ));
-                Ok(())
-            },
-            on_receive_request!(),
-        )
-        .connect_with(
-            agent,
-            |connection: ConnectionTo<agent_client_protocol::Agent>| async move {
+}
+
+impl ConnectTo<Agent> for V1ListClient {
+    async fn connect_to(self, agent: impl ConnectTo<Client>) -> Result<(), Error> {
+        let state = self.state;
+        let cwd = self.cwd;
+        Client
+            .builder()
+            .on_receive_request(
+                async move |_request: RequestPermissionRequest, responder, _cx| {
+                    let _ = responder.respond(RequestPermissionResponse::new(
+                        RequestPermissionOutcome::Cancelled,
+                    ));
+                    Ok(())
+                },
+                on_receive_request!(),
+            )
+            .connect_with(agent, |connection: ConnectionTo<Agent>| async move {
                 let initialized = connection
                     .send_request(InitializeRequest::new(ProtocolVersion::V1))
                     .block_task()
                     .await?;
                 if initialized.protocol_version != ProtocolVersion::V1 {
-                    return Err(agent_client_protocol::Error::internal_error().data(
-                        "the ACP agent negotiated an unsupported protocol version; loom currently \
-                         supports v1",
+                    return Err(Error::internal_error().data(
+                        "the ACP agent negotiated an unsupported protocol version for the v1 probe",
                     ));
                 }
-                let capabilities = AgentCapabilities {
-                    load_session: initialized.agent_capabilities.load_session,
-                    // The capability is an `Option`: `Some` means the agent
-                    // supports listing, `None`/absent means it does not. An
-                    // agent that cannot list gets no scan in its place.
-                    list_sessions: initialized
-                        .agent_capabilities
-                        .session_capabilities
-                        .list
-                        .is_some(),
+                let capabilities = AgentCapabilities::v1(&initialized);
+                let outcome = if capabilities.list_sessions {
+                    SessionListOutcome::Listed {
+                        capabilities: capabilities.clone(),
+                        sessions: list_v1(&connection, cwd).await?,
+                    }
+                } else {
+                    SessionListOutcome::Unsupported { capabilities }
                 };
-                if !capabilities.list_sessions {
-                    return Ok(SessionListOutcome::Unsupported { capabilities });
-                }
-
-                let mut sessions = Vec::new();
-                let mut cursor: Option<String> = None;
-                for _ in 0..MAX_SESSION_LIST_PAGES {
-                    let mut request = ListSessionsRequest::new();
-                    if let Some(cwd) = &cwd {
-                        request = request.cwd(std::path::PathBuf::from(cwd));
-                    }
-                    if let Some(cursor) = &cursor {
-                        request = request.cursor(cursor.clone());
-                    }
-                    let response = connection.send_request(request).block_task().await?;
-                    sessions.extend(response.sessions.into_iter().map(|info| AgentSessionInfo {
-                        session_id: info.session_id.0.to_string(),
-                        cwd: info.cwd.to_string_lossy().into_owned(),
-                        title: info.title,
-                    }));
-                    match response.next_cursor {
-                        Some(next) if !next.is_empty() => cursor = Some(next),
-                        _ => {
-                            return Ok(SessionListOutcome::Listed {
-                                capabilities,
-                                sessions,
-                            })
-                        }
-                    }
-                }
-                Err(agent_client_protocol::Error::internal_error().data(format!(
-                    "the ACP agent kept returning a session-list cursor after \
-                     {MAX_SESSION_LIST_PAGES} pages"
-                )))
-            },
-        )
-        .await
-        // `connect_with` returns the closure's own `R` flat, so the only `Err`
-        // here is a connection-level failure; a listing problem was turned into
-        // `SessionListOutcome::Failed` inside the closure, where it could name
-        // what went wrong.
-        .map_err(|error| format!("the ACP connection ended: {error}"))
+                state.set(outcome);
+                Ok(())
+            })
+            .await
+    }
 }
 
-/// Aborts an embedded adapter if the probe times out.
-///
-/// Dropping a bare `JoinHandle` would detach `pi-acp` and leave its child alive
-/// after the daemon had given up on the answer.
-struct AbortOnDrop(tokio::task::JoinHandle<()>);
+struct V2ListClient {
+    state: Arc<ProbeState>,
+    cwd: Option<String>,
+}
 
-impl Drop for AbortOnDrop {
-    fn drop(&mut self) {
-        self.0.abort();
+impl ConnectTo<Agent> for V2ListClient {
+    async fn connect_to(self, agent: impl ConnectTo<Client>) -> Result<(), Error> {
+        let state = self.state;
+        let cwd = self.cwd;
+        Client
+            .v2()
+            .on_receive_request(
+                async move |_request: v2::RequestPermissionRequest, responder, _cx| {
+                    let _ = responder.respond(v2::RequestPermissionResponse::new(
+                        v2::RequestPermissionOutcome::Cancelled,
+                    ));
+                    Ok(())
+                },
+                on_receive_request!(),
+            )
+            .connect_with(agent, |connection: ConnectionTo<Agent>| async move {
+                let initialized = connection
+                    .send_request(v2::InitializeRequest::new(
+                        ProtocolVersion::V2,
+                        v2::Implementation::new("loom", env!("CARGO_PKG_VERSION")),
+                    ))
+                    .block_task()
+                    .await?;
+                if initialized.protocol_version != ProtocolVersion::V2 {
+                    return Err(Error::internal_error().data(
+                        "the ACP agent negotiated an unsupported protocol version for the v2 probe",
+                    ));
+                }
+                let capabilities = AgentCapabilities::v2(&initialized);
+                let outcome = if capabilities.list_sessions {
+                    SessionListOutcome::Listed {
+                        capabilities: capabilities.clone(),
+                        sessions: list_v2(&connection, cwd).await?,
+                    }
+                } else {
+                    SessionListOutcome::Unsupported { capabilities }
+                };
+                state.set(outcome);
+                Ok(())
+            })
+            .await
     }
+}
+
+async fn list_v1(
+    connection: &ConnectionTo<Agent>,
+    cwd: Option<String>,
+) -> Result<Vec<AgentSessionInfo>, Error> {
+    let mut sessions = Vec::new();
+    let mut cursor: Option<String> = None;
+    for _ in 0..MAX_SESSION_LIST_PAGES {
+        let mut request = ListSessionsRequest::new();
+        if let Some(cwd) = &cwd {
+            request = request.cwd(std::path::PathBuf::from(cwd));
+        }
+        if let Some(cursor) = &cursor {
+            request = request.cursor(cursor.clone());
+        }
+        let response = connection.send_request(request).block_task().await?;
+        sessions.extend(response.sessions.into_iter().map(|info| AgentSessionInfo {
+            session_id: info.session_id.0.to_string(),
+            cwd: info.cwd.to_string_lossy().into_owned(),
+            title: info.title,
+        }));
+        match response.next_cursor {
+            Some(next) if !next.is_empty() => cursor = Some(next),
+            _ => return Ok(sessions),
+        }
+    }
+    Err(Error::internal_error().data(format!(
+        "the ACP agent kept returning a session-list cursor after {MAX_SESSION_LIST_PAGES} pages"
+    )))
+}
+
+async fn list_v2(
+    connection: &ConnectionTo<Agent>,
+    cwd: Option<String>,
+) -> Result<Vec<AgentSessionInfo>, Error> {
+    let mut sessions = Vec::new();
+    let mut cursor: Option<v2::SessionListCursor> = None;
+    for _ in 0..MAX_SESSION_LIST_PAGES {
+        let mut request = v2::ListSessionsRequest::new();
+        if let Some(cwd) = &cwd {
+            request = request.cwd(cwd.clone());
+        }
+        if let Some(cursor) = &cursor {
+            request = request.cursor(cursor.clone());
+        }
+        let response = connection.send_request(request).block_task().await?;
+        sessions.extend(response.sessions.into_iter().map(|info| AgentSessionInfo {
+            session_id: info.session_id.0.to_string(),
+            cwd: info.cwd.0.to_string_lossy().into_owned(),
+            title: info.title,
+        }));
+        match response.next_cursor {
+            Some(next) if !next.as_ref().is_empty() => cursor = Some(next),
+            _ => return Ok(sessions),
+        }
+    }
+    Err(Error::internal_error().data(format!(
+        "the ACP agent kept returning a session-list cursor after {MAX_SESSION_LIST_PAGES} pages"
+    )))
 }
 
 #[cfg(test)]
@@ -318,6 +498,31 @@ done
         let script = TEMPLATE
             .replace("%SESSION%", &session)
             .replace("%LIST%", &list);
+        std::fs::write(&path, script).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        path
+    }
+
+    fn write_v2_agent(dir: &Path) -> PathBuf {
+        let path = dir.join("v2-list.sh");
+        let script = r#"#!/bin/sh
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([^,]*\),"method":.*/\1/p')
+  method=$(printf '%s' "$line" | sed -n 's/.*"method":"\([^"]*\)".*/\1/p')
+  case "$method" in
+    initialize)
+      printf '%s\n' '{"jsonrpc":"2.0","id":'"$id"',"result":{"protocolVersion":2,"info":{"name":"fake-v2","version":"1"},"capabilities":{"session":{}}}}'
+      ;;
+    session/list)
+      printf '%s\n' '{"jsonrpc":"2.0","id":'"$id"',"result":{"sessions":[{"sessionId":"v2-session","cwd":"/srv/v2","title":"v2 test"}]}}'
+      ;;
+  esac
+done
+"#;
         std::fs::write(&path, script).unwrap();
         #[cfg(unix)]
         {
@@ -405,6 +610,29 @@ fi"#,
                 );
             }
             other => panic!("expected Listed, got {other:?}"),
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_v2_agent_is_negotiated_and_lists_sessions() {
+        let dir = tempfile::tempdir().unwrap();
+        let agent = write_v2_agent(dir.path());
+        let outcome = list_sessions(stdio(&agent), None, Duration::from_secs(10)).await;
+        match outcome {
+            SessionListOutcome::Listed {
+                capabilities,
+                sessions,
+            } => {
+                assert_eq!(capabilities.protocol_version, AcpProtocolVersion::V2);
+                assert_eq!(capabilities.identity.name.as_deref(), Some("fake-v2"));
+                assert!(capabilities.load_session);
+                assert!(capabilities.list_sessions);
+                assert_eq!(sessions.len(), 1);
+                assert_eq!(sessions[0].session_id, "v2-session");
+                assert_eq!(sessions[0].cwd, "/srv/v2");
+                assert_eq!(sessions[0].title.as_deref(), Some("v2 test"));
+            }
+            other => panic!("expected a v2 session listing, got {other:?}"),
         }
     }
 

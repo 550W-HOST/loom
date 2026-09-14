@@ -9,6 +9,7 @@ use agent_client_protocol_schema::v1::{
     SessionInfoUpdate, SessionUpdate, StopReason, TextContent, ToolCall, ToolCallContent,
     ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields, ToolKind,
 };
+use agent_client_protocol_schema::v2;
 use loom_domain::{ItemStatus, ProviderEvent, ThreadEventItem, TurnStatus};
 
 use super::{AcpTranslator, RunContext};
@@ -490,4 +491,159 @@ fn a_plan_becomes_the_contract_step_list() {
         }
         other => panic!("expected a plan update, got {other:?}"),
     }
+}
+
+#[test]
+fn a_v2_full_message_patch_only_emits_the_new_suffix() {
+    let mut t = translator();
+    t.on_prompt_sent();
+
+    let chunk = v2::ContentChunk::new(
+        v2::ContentBlock::Text(v2::TextContent::new("hello")),
+        "message-1",
+    );
+    let first = t.on_v2_session_update(&v2::SessionUpdate::AgentMessageChunk(chunk));
+    assert!(matches!(
+        first.first(),
+        Some(ProviderEvent::ItemAgentMessageDelta { delta, .. }) if delta == "hello"
+    ));
+
+    let patch = v2::AgentMessage::new("message-1").content(vec![v2::ContentBlock::Text(
+        v2::TextContent::new("hello world"),
+    )]);
+    let suffix = t.on_v2_session_update(&v2::SessionUpdate::AgentMessage(patch.clone()));
+    assert!(matches!(
+        suffix.first(),
+        Some(ProviderEvent::ItemAgentMessageDelta { delta, .. }) if delta == " world"
+    ));
+    assert!(
+        t.on_v2_session_update(&v2::SessionUpdate::AgentMessage(patch))
+            .is_empty(),
+        "a repeated authoritative patch must not duplicate persisted text"
+    );
+
+    let done = t.on_v2_session_update(&v2::SessionUpdate::StateUpdate(v2::StateUpdate::Idle(
+        v2::IdleStateUpdate::new().stop_reason(v2::StopReason::EndTurn),
+    )));
+    assert_eq!(
+        done.iter()
+            .filter(|event| matches!(event, ProviderEvent::TurnCompleted { .. }))
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn a_v2_tool_upsert_maps_to_the_existing_tool_lifecycle() {
+    let mut t = translator();
+    let started = v2::ToolCallUpdate::new("tool-1")
+        .kind(v2::ToolKind::Execute)
+        .status(v2::ToolCallStatus::InProgress)
+        .raw_input(serde_json::json!({"command": "cargo test"}));
+    let events = t.on_v2_session_update(&v2::SessionUpdate::ToolCallUpdate(started));
+    assert!(matches!(
+        events.first(),
+        Some(ProviderEvent::ItemStarted {
+            item: ThreadEventItem::CommandExecution { command, .. },
+            ..
+        }) if command == "cargo test"
+    ));
+
+    let done = v2::ToolCallUpdate::new("tool-1").status(v2::ToolCallStatus::Completed);
+    let events = t.on_v2_session_update(&v2::SessionUpdate::ToolCallUpdate(done));
+    assert!(matches!(
+        events.last(),
+        Some(ProviderEvent::ItemCompleted {
+            item: ThreadEventItem::CommandExecution { status, .. },
+            ..
+        }) if *status == ItemStatus::Completed
+    ));
+}
+
+#[test]
+fn a_v2_terminal_decodes_output_and_completes_once() {
+    use base64::Engine as _;
+
+    let mut t = translator();
+    let initial_output = base64::engine::general_purpose::STANDARD.encode("old");
+    let started = v2::TerminalUpdate::new("terminal-1")
+        .command("printf old")
+        .output(v2::TerminalOutput::new(initial_output));
+    let events = t.on_v2_session_update(&v2::SessionUpdate::TerminalUpdate(started));
+    assert!(matches!(
+        events.first(),
+        Some(ProviderEvent::ItemStarted {
+            item: ThreadEventItem::CommandExecution {
+                aggregated_output: Some(output),
+                ..
+            },
+            ..
+        }) if output == "old"
+    ));
+
+    let chunk = base64::engine::general_purpose::STANDARD.encode(" next");
+    let events = t.on_v2_session_update(&v2::SessionUpdate::TerminalOutputChunk(
+        v2::TerminalOutputChunk::new("terminal-1", chunk),
+    ));
+    assert!(matches!(
+        events.last(),
+        Some(ProviderEvent::ItemCommandExecutionOutputDelta { item_id, delta, .. })
+            if item_id == "terminal-v2-terminal-1" && delta == " next"
+    ));
+
+    let exited = v2::TerminalUpdate::new("terminal-1")
+        .exit_status(v2::TerminalExitStatus::new().exit_code(0));
+    let events = t.on_v2_session_update(&v2::SessionUpdate::TerminalUpdate(exited));
+    assert!(matches!(
+        events.last(),
+        Some(ProviderEvent::ItemCompleted {
+            item: ThreadEventItem::CommandExecution {
+                status,
+                aggregated_output: Some(output),
+                exit_code: Some(0),
+                ..
+            },
+            ..
+        }) if *status == ItemStatus::Completed && output == "old next"
+    ));
+}
+
+#[test]
+fn v2_plan_usage_name_and_unknown_updates_use_the_v1_contract() {
+    let mut t = translator();
+    let plan = v2::PlanUpdate::new(v2::PlanUpdateContent::items(
+        "plan-1",
+        vec![v2::PlanEntry::new(
+            "ship it",
+            v2::PlanEntryPriority::High,
+            v2::PlanEntryStatus::InProgress,
+        )],
+    ));
+    assert!(matches!(
+        t.on_v2_session_update(&v2::SessionUpdate::PlanUpdate(plan))
+            .first(),
+        Some(ProviderEvent::TurnPlanUpdated { plan, .. })
+            if plan[0].status == Some(loom_domain::PlanStepStatus::Active)
+    ));
+
+    assert!(matches!(
+        t.on_v2_session_update(&v2::SessionUpdate::UsageUpdate(v2::UsageUpdate::new(
+            4, 100
+        ),))
+            .first(),
+        Some(ProviderEvent::ThreadContextWindowUsageUpdated { .. })
+    ));
+    assert!(matches!(
+        t.on_v2_session_update(&v2::SessionUpdate::SessionInfoUpdate(
+            v2::SessionInfoUpdate::new().title("v2 session"),
+        ))
+        .first(),
+        Some(ProviderEvent::ThreadNameUpdated { thread_name, .. })
+            if thread_name == "v2 session"
+    ));
+
+    let unknown = v2::OtherSessionUpdate::new("future_update", std::collections::BTreeMap::new());
+    assert!(t
+        .on_v2_session_update(&v2::SessionUpdate::Other(unknown))
+        .is_empty());
 }

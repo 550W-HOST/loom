@@ -6,8 +6,9 @@ Decision record. loom standardises every agent on ACP. Pi is not special-cased.
 
 1. **All agents are reached through ACP.** One adapter, N agents.
 2. **`loom resume <thread>` is the only resume entry point.**
-3. **No fallback paths.** An agent that cannot do something is reported, not
-   worked around.
+3. **No provider-specific fallback paths.** ACP protocol negotiation may select
+   v1 when an agent does not speak v2; an unsupported capability is reported,
+   not worked around.
 
 ## Why not copy bb
 
@@ -320,7 +321,7 @@ Consequences that must be enforced rather than papered over:
 
 | Situation | Behaviour |
 | --- | --- |
-| Agent does not advertise `loadSession` | `loom resume` reports it is unsupported. No copy-a-file fallback. |
+| Agent does not advertise the selected version's resume capability | `loom resume` reports it is unsupported. No copy-a-file or private-storage fallback. |
 | Agent does not advertise `session/list` | The agent does not appear in the import list. loom does not scan a guessed directory. |
 | A resumed session's `cwd` no longer exists | Explicit error. bb's wording is a good model: *"Cannot resume: the session's working directory `<path>` no longer exists."* Never silently start a fresh session. |
 | Agent process dies mid-turn | The turn ends in a terminal state with the reason. No automatic replay into a new session. |
@@ -336,12 +337,16 @@ only two ACP forms: `AcpEmbeddedPi` for Pi and `AcpStdio` for native agents.
 `crates/daemon/src/provider.rs` contains only run metadata and terminal-event
 construction; the old `effective_argv` and direct Pi JSON-RPC mapper are gone.
 The server persists the opaque provider session id in the thread snapshot and
-carries it on the next `RunDispatch`. The ACP driver uses `session/load` for a
-resumed v1 session and suppresses its history replay from the new run.
+carries it on the next `RunDispatch`. The ACP driver uses `session/resume` for a
+resumed v2 session without replay and `session/load` for v1, suppressing
+history notifications from the new run in both cases.
 
-The current implementation intentionally targets ACP v1, because that is the
-stable schema and the version `pi-acp` speaks by default. v2 negotiation remains
-a separate follow-up once the v2 schema feature is enabled end to end.
+The current implementation negotiates ACP v2 first and falls back to v1 through
+the SDK connector. The v2 schema is still unstable, so v1 remains a required
+compatibility path and the v2-specific shapes are contained in the daemon
+adapter. The default Pi path can therefore continue to negotiate v1 while native
+agents that support v2 use message patches, terminal updates and idle
+completion.
 
 ## Decisions taken
 
@@ -349,7 +354,7 @@ a separate follow-up once the v2 schema feature is enabled end to end.
 | --- | --- |
 | One protocol or several? | **ACP only.** Pi is not special-cased at the client. |
 | How is Pi reached? | **`pi-acp` embedded as a library**, over `Channel::duplex()`. |
-| ACP version | **v1 currently.** `pi-acp` speaks v1 by default; v2 negotiation is not yet wired in loom. |
+| ACP version | **v2 first, v1 fallback.** The SDK connector selects the highest configured protocol that the agent accepts; v1 remains for stable agents and the default Pi path. |
 | Resume entry point | **`loom resume <thread>`** — `session/resume` under v2, which replays nothing since loom has the log; `session/load` under v1, where it is the only restore method. |
 | Unsupported capability | **Reported, never worked around.** |
 | `CurrentModeUpdate` under v2 | **Skipped.** v2 replaced modes with config options, so v1's mode update has no v2 equivalent and the conversion layer errors on it. Omitting it follows v2's design rather than papering over a gap. |
