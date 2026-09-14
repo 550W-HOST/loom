@@ -20,7 +20,7 @@ use loom_domain::{
     HostId, Interaction, InteractionId, MessageRole, NewInteraction, NewQueuedMessage, NewThread,
     Project, ProjectId, ProjectKind, ProjectSourceId, ProviderSessionBinding, QueuedMessage,
     QueuedMessageId, QueuedMessageStatus, Resolution, RunId, Thread, ThreadId, ThreadOriginKind,
-    ThreadStatus, ThreadTrigger, ThreadUpdate,
+    ThreadSection, ThreadSectionId, ThreadStatus, ThreadTrigger, ThreadUpdate,
 };
 use serde::{Deserialize, Serialize};
 
@@ -159,6 +159,26 @@ fn normalize_queued_order_keys(messages: &mut HashMap<QueuedMessageId, QueuedMes
     }
 }
 
+/// Orders projects the way the sidebar renders them.
+///
+/// Active before archived, then the client's explicit rank, then creation time
+/// and id. A project whose rank was never set sorts after every ranked one but
+/// still by creation time, so the list is deterministic without a migration
+/// step: an unranked workspace looks exactly as it did before `projects.reorder`
+/// existed.
+fn compare_projects(left: &Project, right: &Project) -> std::cmp::Ordering {
+    left.is_archived()
+        .cmp(&right.is_archived())
+        .then_with(|| match (&left.sort_key, &right.sort_key) {
+            (Some(left_key), Some(right_key)) => left_key.cmp(right_key),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => std::cmp::Ordering::Equal,
+        })
+        .then_with(|| left.created_at_ms.cmp(&right.created_at_ms))
+        .then_with(|| left.id.cmp(&right.id))
+}
+
 /// A command failed either because the target does not exist or because the
 /// domain rejected the change.
 #[derive(Debug, PartialEq, Eq)]
@@ -226,6 +246,9 @@ pub struct RegistrySnapshot {
     /// Every interaction, in any status.
     #[serde(default)]
     pub interactions: Vec<Interaction>,
+    /// Every sidebar section, in any state.
+    #[serde(default)]
+    pub thread_sections: Vec<ThreadSection>,
 }
 
 #[derive(Debug)]
@@ -237,6 +260,7 @@ struct RegistryInner {
     environments: HashMap<EnvironmentId, Environment>,
     queued_messages: HashMap<QueuedMessageId, QueuedMessage>,
     interactions: HashMap<InteractionId, Interaction>,
+    thread_sections: HashMap<ThreadSectionId, ThreadSection>,
 }
 
 impl DomainRegistry {
@@ -256,6 +280,7 @@ impl DomainRegistry {
                 environments: HashMap::new(),
                 queued_messages: HashMap::new(),
                 interactions: HashMap::new(),
+                thread_sections: HashMap::new(),
             }),
         }
     }
@@ -294,17 +319,28 @@ impl DomainRegistry {
 
     /// Every known project, in a stable order.
     ///
-    /// Sorted by creation time and then id, so the list is deterministic and
-    /// does not depend on `HashMap` iteration order. Active projects come
-    /// first; archived ones follow, still sorted the same way.
+    /// Sorted by the client's explicit rank when it set one, then by creation
+    /// time and id. Active projects come first; archived ones follow, still
+    /// sorted the same way. Deleted projects are omitted: a tombstone keeps the
+    /// id resolvable for replay and for threads that still name it, but it is
+    /// not part of the list a client renders.
     pub fn projects(&self) -> Vec<Project> {
+        let mut projects: Vec<Project> = self
+            .lock()
+            .projects
+            .values()
+            .filter(|project| !project.is_deleted())
+            .cloned()
+            .collect();
+        projects.sort_by(compare_projects);
+        projects
+    }
+
+    /// Every project including deleted tombstones, for the sidebar's own
+    /// lookups and for tests.
+    pub fn all_projects(&self) -> Vec<Project> {
         let mut projects: Vec<Project> = self.lock().projects.values().cloned().collect();
-        projects.sort_by(|left, right| {
-            left.is_archived()
-                .cmp(&right.is_archived())
-                .then_with(|| left.created_at_ms.cmp(&right.created_at_ms))
-                .then_with(|| left.id.cmp(&right.id))
-        });
+        projects.sort_by(compare_projects);
         projects
     }
 
@@ -418,6 +454,347 @@ impl DomainRegistry {
         }
         let event = project.archive(now_ms)?;
         Ok((project.clone(), event))
+    }
+
+    /// Soft-deletes a project and returns the update event.
+    ///
+    /// Like [`DomainRegistry::archive_project`] the busy check is the
+    /// registry's, not the domain's. The rule is the same — refuse, never
+    /// cascade — but a delete also refuses while *any* thread still belongs to
+    /// the project, not only a running one: deleting a project whose idle
+    /// threads would be stranded leaves those threads naming a project the
+    /// client can no longer open. Archived threads are the exception, because
+    /// they are already filed away and their history stays resolvable.
+    ///
+    /// Environments bound to the project get the same treatment as threads.
+    pub fn delete_project(
+        &self,
+        project_id: &ProjectId,
+        now_ms: u64,
+    ) -> Result<(Project, DomainEvent), CommandError> {
+        let mut inner = self.lock();
+        let live_threads = inner
+            .threads
+            .values()
+            .filter(|thread| &thread.project_id == project_id)
+            .filter(|thread| thread.deleted_at_ms.is_none())
+            .filter(|thread| thread.status != ThreadStatus::Archived)
+            .count();
+        let live_environments = inner
+            .environments
+            .values()
+            .filter(|environment| &environment.project_id == project_id)
+            .filter(|environment| environment.status != EnvironmentStatus::Destroyed)
+            .count();
+        if live_threads > 0 || live_environments > 0 {
+            return Err(CommandError::Conflict(format!(
+                "project {project_id} still has {live_threads} live thread(s) and \
+                 {live_environments} live environment(s); archive or destroy them first"
+            )));
+        }
+        let project = inner
+            .projects
+            .get_mut(project_id)
+            .ok_or_else(|| CommandError::NotFound(format!("project {project_id} is not known")))?;
+        if project.is_deleted() {
+            return Err(CommandError::NotFound(format!(
+                "project {project_id} is not known"
+            )));
+        }
+        let event = project.delete(now_ms)?;
+        Ok((project.clone(), event))
+    }
+
+    /// Updates one project source and returns the update event.
+    ///
+    /// `Ok(None)` means the source is not part of the project, which the HTTP
+    /// layer reports as a `404`. `is_default` follows the contract's shape: the
+    /// field is only ever `true`, so it promotes the source rather than
+    /// demoting it, and the previous default steps down.
+    pub fn update_project_source(
+        &self,
+        project_id: &ProjectId,
+        source_id: &ProjectSourceId,
+        path: Option<String>,
+        is_default: bool,
+        now_ms: u64,
+    ) -> Result<Option<(Project, DomainEvent)>, CommandError> {
+        let mut inner = self.lock();
+        let project = inner
+            .projects
+            .get_mut(project_id)
+            .ok_or_else(|| CommandError::NotFound(format!("project {project_id} is not known")))?;
+        match project.update_source(source_id, path, is_default, now_ms)? {
+            Some(event) => Ok(Some((project.clone(), event))),
+            None => Ok(None),
+        }
+    }
+
+    /// Moves a project between two ranked neighbours.
+    ///
+    /// A sparse base-62 key lets an insert between two rows rewrite one record
+    /// instead of renumbering the list — but only when the neighbours already
+    /// carry keys. A project that has never been reordered has none, and
+    /// synthesising a key for it would place the new rank *before* every
+    /// unranked project rather than between the two rows the client named. So
+    /// the first reorder, and any reorder whose neighbours are unranked, falls
+    /// back to rewriting the whole visible list; after that every project holds
+    /// a key and the cheap path applies.
+    ///
+    /// A neighbour that is not in the current order, or a pair already in the
+    /// requested order, is a conflict rather than a silent no-op the caller
+    /// cannot detect.
+    ///
+    /// Returns the newly ordered projects and the events a subscriber needs.
+    pub fn reorder_project(
+        &self,
+        project_id: &ProjectId,
+        previous_project_id: Option<&ProjectId>,
+        next_project_id: Option<&ProjectId>,
+        now_ms: u64,
+    ) -> Result<(Vec<Project>, Vec<DomainEvent>), CommandError> {
+        let mut inner = self.lock();
+        let moved = inner
+            .projects
+            .get(project_id)
+            .ok_or_else(|| CommandError::NotFound(format!("project {project_id} is not known")))?;
+        if moved.is_deleted() {
+            return Err(CommandError::NotFound(format!(
+                "project {project_id} is not known"
+            )));
+        }
+        let archived = moved.is_archived();
+        // Only projects a client can actually see and drag: archived projects
+        // are rendered in their own group, so ordering one against an active
+        // neighbour has no meaning.
+        let mut ordered: Vec<Project> = inner
+            .projects
+            .values()
+            .filter(|project| project.is_archived() == archived && !project.is_deleted())
+            .cloned()
+            .collect();
+        ordered.sort_by(compare_projects);
+
+        let neighbor = |id: Option<&ProjectId>| -> Result<Option<&Project>, CommandError> {
+            let Some(id) = id else {
+                return Ok(None);
+            };
+            if id == project_id {
+                return Err(CommandError::Conflict(
+                    "a project cannot be its own neighbor".into(),
+                ));
+            }
+            ordered
+                .iter()
+                .find(|project| project.id == *id)
+                .map(Some)
+                .ok_or_else(|| CommandError::Conflict("project neighbor is stale".into()))
+        };
+        let previous = neighbor(previous_project_id)?;
+        let next = neighbor(next_project_id)?;
+        if previous.is_some_and(|left| next.is_some_and(|right| left.id >= right.id)) {
+            return Err(CommandError::Conflict(
+                "the requested neighbors are not ordered".into(),
+            ));
+        }
+
+        // The order the client asked for, computed without touching anything:
+        // the current list minus the moved project, with it re-inserted between
+        // its two named neighbours.
+        let mut desired_ids: Vec<ProjectId> = ordered
+            .iter()
+            .filter(|project| project.id != *project_id)
+            .map(|project| project.id.clone())
+            .collect();
+        let insert_index = match desired_ids
+            .iter()
+            .position(|id| Some(id) == previous_project_id)
+        {
+            Some(index) => index + 1,
+            None => desired_ids
+                .iter()
+                .position(|id| Some(id) == next_project_id)
+                .unwrap_or_default(),
+        };
+        desired_ids.insert(insert_index, project_id.clone());
+
+        // The projects bounding the insertion point, from the list the moved
+        // project was removed from.
+        let bounding_previous = insert_index
+            .checked_sub(1)
+            .and_then(|index| desired_ids.get(index))
+            .and_then(|id| inner.projects.get(id))
+            .cloned();
+        let bounding_next = desired_ids
+            .get(insert_index + 1)
+            .and_then(|id| inner.projects.get(id))
+            .cloned();
+
+        let mut events = Vec::new();
+        let cheap = create_order_key_between(
+            bounding_previous
+                .as_ref()
+                .and_then(|p| p.sort_key.as_deref()),
+            bounding_next.as_ref().and_then(|p| p.sort_key.as_deref()),
+        );
+        // The cheap path is only sound when both bounding projects already hold
+        // keys (a missing bound is the list edge, which is always fine): a
+        // synthesised key for an unranked neighbour would sort before every
+        // unranked project rather than between the two named rows.
+        let bounding_ranked = bounding_previous
+            .as_ref()
+            .is_none_or(|p| p.sort_key.is_some())
+            && bounding_next.as_ref().is_none_or(|p| p.sort_key.is_some());
+        let cheap_key = match cheap {
+            Ok(key) if bounding_ranked => Some(key),
+            _ => None,
+        };
+
+        if let Some(key) = cheap_key {
+            let moved = inner
+                .projects
+                .get_mut(project_id)
+                .expect("the project was present in the registry");
+            if let Some(event) = moved.set_sort_key(Some(key), now_ms)? {
+                events.push(event);
+            }
+        } else {
+            // A full rebalance: every visible project is rewritten into the
+            // desired order. After this every one of them carries a key, so the
+            // next reorder takes the cheap path.
+            let keys = rebalance_order_keys(desired_ids.len())?;
+            for (id, key) in desired_ids.iter().zip(keys) {
+                let project = inner
+                    .projects
+                    .get_mut(id)
+                    .expect("the project was collected");
+                if let Some(event) = project.set_sort_key(Some(key), now_ms)? {
+                    events.push(event);
+                }
+            }
+        }
+
+        let mut reordered: Vec<Project> = inner
+            .projects
+            .values()
+            .filter(|project| project.is_archived() == archived && !project.is_deleted())
+            .cloned()
+            .collect();
+        reordered.sort_by(compare_projects);
+        Ok((reordered, events))
+    }
+
+    /// Creates a section and returns it with its event.
+    ///
+    /// A name that is already taken is a conflict, not a second row: the
+    /// contract declares `409` for exactly this case.
+    pub fn create_thread_section(
+        &self,
+        name: String,
+        now_ms: u64,
+    ) -> Result<(ThreadSection, DomainEvent), CommandError> {
+        let mut inner = self.lock();
+        let (section, event) = ThreadSection::create(name, now_ms)?;
+        if let Some(existing) = inner
+            .thread_sections
+            .values()
+            .find(|candidate| candidate.name == section.name)
+        {
+            return Err(CommandError::Conflict(format!(
+                "a section named {:?} already exists ({})",
+                section.name, existing.id
+            )));
+        }
+        inner
+            .thread_sections
+            .insert(section.id.clone(), section.clone());
+        Ok((section, event))
+    }
+
+    /// Renames a section and returns the updated section with its event.
+    ///
+    /// Renaming to a name another section already holds is the contract's
+    /// `409`; renaming to the section's own name is an idempotent success.
+    pub fn update_thread_section(
+        &self,
+        section_id: &ThreadSectionId,
+        name: String,
+        now_ms: u64,
+    ) -> Result<(ThreadSection, DomainEvent), CommandError> {
+        let mut inner = self.lock();
+        let section_name = {
+            let section = inner.thread_sections.get_mut(section_id).ok_or_else(|| {
+                CommandError::NotFound(format!("section {section_id} is not known"))
+            })?;
+            section.rename(name, now_ms)?;
+            section.name.clone()
+        };
+        let taken = inner
+            .thread_sections
+            .values()
+            .any(|candidate| candidate.id != *section_id && candidate.name == section_name);
+        if taken {
+            return Err(CommandError::Conflict(format!(
+                "a section named {section_name:?} already exists"
+            )));
+        }
+        let section = inner
+            .thread_sections
+            .get(section_id)
+            .expect("the section was checked above")
+            .clone();
+        let event = DomainEvent::ThreadSectionUpdated {
+            section: section.clone(),
+        };
+        Ok((section, event))
+    }
+
+    /// Deletes a section and returns what it was, with how many threads
+    /// referenced it.
+    ///
+    /// The threads are counted, not rewritten: a delete re-filing every thread
+    /// would mutate an entity the client did not ask about. See
+    /// [`crate::b7`] and `docs/projects.md`.
+    pub fn delete_thread_section(
+        &self,
+        section_id: &ThreadSectionId,
+        now_ms: u64,
+    ) -> Result<(ThreadSection, usize, DomainEvent), CommandError> {
+        let mut inner = self.lock();
+        let section = inner
+            .thread_sections
+            .remove(section_id)
+            .ok_or_else(|| CommandError::NotFound(format!("section {section_id} is not known")))?;
+        let section_key = section.id.to_string();
+        let updated_thread_count = inner
+            .threads
+            .values()
+            .filter(|thread| thread.deleted_at_ms.is_none())
+            .filter(|thread| thread.section_id.as_deref() == Some(section_key.as_str()))
+            .count();
+        let event = DomainEvent::ThreadSectionDeleted {
+            section_id: section.id.clone(),
+            name: section.name.clone(),
+        };
+        let _ = now_ms;
+        Ok((section, updated_thread_count, event))
+    }
+
+    /// Every known section, newest first and then by id.
+    pub fn thread_sections(&self) -> Vec<ThreadSection> {
+        let mut sections: Vec<ThreadSection> =
+            self.lock().thread_sections.values().cloned().collect();
+        sections.sort_by(|left, right| {
+            left.created_at_ms
+                .cmp(&right.created_at_ms)
+                .then_with(|| left.id.cmp(&right.id))
+        });
+        sections
+    }
+
+    /// One section by id.
+    pub fn thread_section(&self, section_id: &ThreadSectionId) -> Option<ThreadSection> {
+        self.lock().thread_sections.get(section_id).cloned()
     }
 
     /// Creates a thread and returns it with its creation event.
@@ -2290,6 +2667,9 @@ impl DomainRegistry {
         queued_messages.sort_by(|left, right| left.id.cmp(&right.id));
         let mut interactions: Vec<Interaction> = inner.interactions.values().cloned().collect();
         interactions.sort_by(|left, right| left.id.cmp(&right.id));
+        let mut thread_sections: Vec<ThreadSection> =
+            inner.thread_sections.values().cloned().collect();
+        thread_sections.sort_by(|left, right| left.id.cmp(&right.id));
         RegistrySnapshot {
             personal_project_id: inner.personal_project_id.clone(),
             projects,
@@ -2298,6 +2678,7 @@ impl DomainRegistry {
             environments,
             queued_messages,
             interactions,
+            thread_sections,
         }
     }
 
@@ -2372,6 +2753,15 @@ impl DomainRegistry {
             DomainEvent::HostRegistered { host } => {
                 inner.hosts.insert(host.id.clone(), host.clone());
             }
+            DomainEvent::ThreadSectionCreated { section }
+            | DomainEvent::ThreadSectionUpdated { section } => {
+                inner
+                    .thread_sections
+                    .insert(section.id.clone(), section.clone());
+            }
+            DomainEvent::ThreadSectionDeleted { section_id, .. } => {
+                inner.thread_sections.remove(section_id);
+            }
             DomainEvent::HostStatusChanged {
                 host_id, to, at_ms, ..
             } => {
@@ -2440,6 +2830,11 @@ impl RegistryInner {
             .into_iter()
             .map(|interaction| (interaction.id.clone(), interaction))
             .collect();
+        let thread_sections = snapshot
+            .thread_sections
+            .into_iter()
+            .map(|section| (section.id.clone(), section))
+            .collect();
         let personal_project_id = snapshot.personal_project_id;
         // Defensive: a snapshot that lost its personal project still has to
         // resolve a default, so the id stays stable and a placeholder is
@@ -2453,6 +2848,8 @@ impl RegistryInner {
                 git_remote_url: None,
                 sources: Vec::new(),
                 archived_at_ms: None,
+                deleted_at_ms: None,
+                sort_key: None,
                 created_at_ms: 0,
                 updated_at_ms: 0,
             });
@@ -2468,6 +2865,7 @@ impl RegistryInner {
             environments,
             queued_messages,
             interactions,
+            thread_sections,
         }
     }
 }

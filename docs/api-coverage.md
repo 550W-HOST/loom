@@ -18,9 +18,9 @@
 
 - 契约快照：`fa1f44ebe9e5676004b669e48c99b3c7606466b6`，共 **167 条**路由。
 - 已决策不实现：**18 条**（desktopBrowsers 11 条，skill/CLI skill 7 条）。
-- 当前源码包含 **96 个 `.route` 声明、108 个 HTTP 方法入口**；其中只有 91 个匹配 bb 契约，另有 17 个契约外入口。契约当前没有 plugin/marketplace 路由条目。
-- 有效总数：**149 条**；当前已实现 **91 条**，待实现 **58 条**。
-- 当前有效覆盖率：**91/149（61.1%）**。
+- 当前源码包含 **106 个 `.route` 声明、122 个 HTTP 方法入口**；其中只有 105 个匹配 bb 契约，另有 17 个契约外入口。契约当前没有 plugin/marketplace 路由条目。
+- 有效总数：**149 条**；当前已实现 **105 条**，待实现 **44 条**。
+- 当前有效覆盖率：**105/149（70.5%）**。
 - B0 是现有实现基线；B1-B10 是建议的后续交付批次，每批 14、14、14、14、10、14、14、14、17、13 条，均在 10-20 条范围内。
 
 ## threads.send 判定
@@ -61,7 +61,7 @@ bb UI 用契约格式发起写请求时会 422，而 CI 与一致性测试全绿
 
 | 批次 | 主题 | 路由数 | 依赖 | UI 交付边界 |
 | --- | --- | ---: | --- | --- |
-| B0 | 当前基础覆盖（基线） | 91 | - | 项目/线程基础读写、环境读取和主机列表已存在 |
+| B0 | 当前基础覆盖（基线） | 105 | - | 项目/线程基础读写、环境读取和主机列表已存在 |
 | B1 | 启动、导航与首个 threads 流程 | 14 | B0 | 启动探活、侧栏初始化、项目/线程列表后的线程打开、时间线读取与发送 |
 | B2 | 线程控制与辅助视图 | 14 | B1 | 活动线程的默认执行选项、运行状态、搜索、历史、编辑、停止/重试和压缩 |
 | B3 | 交互、计划与队列发送 | 14 | B1 + B2 | 线程中的交互请求、计划控制和 queued message 的查看/创建/发送 |
@@ -156,32 +156,32 @@ bb UI 用契约格式发起写请求时会 422，而 CI 与一致性测试全绿
 | `hosts.retryUpdate` | `POST` | `/api/v1/hosts/:id/retry-update` | 待实现 | - | B8 | - |
 | `hosts.update` | `PATCH` | `/api/v1/hosts/:id` | 待实现 | - | B8 | - |
 | `hosts.updatePermissionCeiling` | `PATCH` | `/api/v1/hosts/:id/permission-ceiling` | 待实现 | - | B8 | - |
-| `projects.attachmentContent` | `GET` | `/api/v1/projects/:id/attachments/content` | 待实现 | - | B7 | - |
+| `projects.attachmentContent` | `GET` | `/api/v1/projects/:id/attachments/content` | 已实现 | `GET /api/v1/projects/{id}/attachments/content` | B0 | 契约路径与方法已匹配 |
 | `projects.branches` | `GET` | `/api/v1/projects/:id/branches` | 已实现 | `GET /api/v1/projects/{id}/branches` | B0 | 契约路径与方法已匹配 |
 | `projects.branchOptions` | `GET` | `/api/v1/projects/:id/branch-options` | 已实现 | `GET /api/v1/projects/{id}/branch-options` | B0 | 契约路径与方法已匹配 |
-| `projects.commands` | `GET` | `/api/v1/projects/:id/commands` | 待实现 | - | B7 | - |
-| `projects.copyAttachments` | `POST` | `/api/v1/projects/:id/attachments/copy` | 待实现 | - | B7 | - |
+| `projects.commands` | `GET` | `/api/v1/projects/:id/commands` | 已实现 | `GET /api/v1/projects/{id}/commands` | B0 | 契约路径与方法已匹配 |
+| `projects.copyAttachments` | `POST` | `/api/v1/projects/:id/attachments/copy` | 已实现 | `POST /api/v1/projects/{id}/attachments/copy` | B0 | 契约路径与方法已匹配 |
 | `projects.create` | `POST` | `/api/v1/projects` | 已实现 | `POST /api/v1/projects` | B0 | 契约路径与方法已匹配 |
 | `projects.createSource` | `POST` | `/api/v1/projects/:id/sources` | 已实现 | `POST /api/v1/projects/{id}/sources` | B0 | 契约路径与方法已匹配 |
 | `projects.defaultExecutionOptions` | `GET` | `/api/v1/projects/:id/default-execution-options` | 已实现 | `GET /api/v1/projects/{id}/default-execution-options` | B0 | 契约路径与方法已匹配 |
-| `projects.delete` | `DELETE` | `/api/v1/projects/:id` | 待实现 | - | B7 | - |
+| `projects.delete` | `DELETE` | `/api/v1/projects/:id` | 已实现 | `DELETE /api/v1/projects/{id}` | B0 | 契约路径与方法已匹配 |
 | `projects.deleteSkill` | `DELETE` | `/api/v1/projects/:id/skills` | 不适用（已决策） | - | - | 已决策：skill/CLI skill 不实现 |
 | `projects.deleteSource` | `DELETE` | `/api/v1/projects/:id/sources/:sourceId` | 已实现 | `DELETE /api/v1/projects/{id}/sources/{source_id}` | B0 | 契约路径与方法已匹配 |
-| `projects.fileContent` | `GET` | `/api/v1/projects/:id/files/content` | 待实现 | - | B7 | - |
-| `projects.files` | `GET` | `/api/v1/projects/:id/files` | 待实现 | - | B7 | - |
+| `projects.fileContent` | `GET` | `/api/v1/projects/:id/files/content` | 已实现 | `GET /api/v1/projects/{id}/files/content` | B0 | 契约路径与方法已匹配 |
+| `projects.files` | `GET` | `/api/v1/projects/:id/files` | 已实现 | `GET /api/v1/projects/{id}/files` | B0 | 契约路径与方法已匹配 |
 | `projects.get` | `GET` | `/api/v1/projects/:id` | 已实现 | `GET /api/v1/projects/{id}` | B0 | 契约路径与方法已匹配 |
 | `projects.list` | `GET` | `/api/v1/projects` | 已实现 | `GET /api/v1/projects` | B0 | 契约路径与方法已匹配 |
-| `projects.paths` | `GET` | `/api/v1/projects/:id/paths` | 待实现 | - | B7 | - |
-| `projects.promptHistory` | `GET` | `/api/v1/projects/:id/prompt-history` | 待实现 | - | B7 | - |
-| `projects.reorder` | `PATCH` | `/api/v1/projects/:id/order` | 待实现 | - | B7 | - |
+| `projects.paths` | `GET` | `/api/v1/projects/:id/paths` | 已实现 | `GET /api/v1/projects/{id}/paths` | B0 | 契约路径与方法已匹配 |
+| `projects.promptHistory` | `GET` | `/api/v1/projects/:id/prompt-history` | 已实现 | `GET /api/v1/projects/{id}/prompt-history` | B0 | 契约路径与方法已匹配 |
+| `projects.reorder` | `PATCH` | `/api/v1/projects/:id/order` | 已实现 | `PATCH /api/v1/projects/{id}/order` | B0 | 契约路径与方法已匹配 |
 | `projects.sidebarBootstrap` | `GET` | `/api/v1/sidebar-bootstrap` | 已实现 | `GET /api/v1/sidebar-bootstrap` | B0 | 契约路径与方法已匹配 |
 | `projects.skillContent` | `GET` | `/api/v1/projects/:id/skills/content` | 不适用（已决策） | - | - | 已决策：skill/CLI skill 不实现 |
 | `projects.skillFiles` | `GET` | `/api/v1/projects/:id/skills/files` | 不适用（已决策） | - | - | 已决策：skill/CLI skill 不实现 |
 | `projects.skills` | `GET` | `/api/v1/projects/:id/skills` | 不适用（已决策） | - | - | 已决策：skill/CLI skill 不实现 |
 | `projects.update` | `PATCH` | `/api/v1/projects/:id` | 已实现 | `PATCH /api/v1/projects/{id}` | B0 | 契约路径与方法已匹配 |
 | `projects.updateSkill` | `PATCH` | `/api/v1/projects/:id/skills/content` | 不适用（已决策） | - | - | 已决策：skill/CLI skill 不实现 |
-| `projects.updateSource` | `PATCH` | `/api/v1/projects/:id/sources/:sourceId` | 待实现 | - | B7 | - |
-| `projects.uploadAttachment` | `POST` | `/api/v1/projects/:id/attachments` | 待实现 | - | B7 | - |
+| `projects.updateSource` | `PATCH` | `/api/v1/projects/:id/sources/:sourceId` | 已实现 | `PATCH /api/v1/projects/{id}/sources/{source_id}` | B0 | 契约路径与方法已匹配 |
+| `projects.uploadAttachment` | `POST` | `/api/v1/projects/:id/attachments` | 已实现 | `POST /api/v1/projects/{id}/attachments` | B0 | 契约路径与方法已匹配 |
 | `queue.list` | `GET` | `/api/v1/queued-messages` | 已实现 | `GET /api/v1/queued-messages` | B0 | 契约路径与方法已匹配 |
 | `system.appearance` | `PUT` | `/api/v1/settings/appearance` | 待实现 | - | B10 | - |
 | `system.attention` | `GET` | `/api/v1/system/attention` | 待实现 | - | B8 | - |
@@ -273,9 +273,9 @@ bb UI 用契约格式发起写请求时会 422，而 CI 与一致性测试全绿
 | `threads.updateQueuedMessage` | `PATCH` | `/api/v1/threads/:id/queued-messages/:queuedMessageId` | 已实现 | `PATCH /api/v1/threads/{id}/queued-messages/{queued_message_id}` | B0 | 契约路径与方法已匹配 |
 | `threads.updateTabs` | `PUT` | `/api/v1/threads/:id/tabs` | 已实现 | `PUT /api/v1/threads/{id}/tabs` | B0 | 契约路径与方法已匹配 |
 | `threads.worktreeFile` | `GET` | `/api/v1/threads/:id/worktree/files/:filePath{.+}` | 已实现 | `GET /api/v1/threads/{id}/worktree/files/{*file_path}` | B0 | 契约路径与方法已匹配 |
-| `threadSections.create` | `POST` | `/api/v1/thread-sections` | 待实现 | - | B7 | - |
-| `threadSections.delete` | `DELETE` | `/api/v1/thread-sections` | 待实现 | - | B7 | - |
-| `threadSections.update` | `PATCH` | `/api/v1/thread-sections` | 待实现 | - | B7 | - |
+| `threadSections.create` | `POST` | `/api/v1/thread-sections` | 已实现 | `POST /api/v1/thread-sections` | B0 | 契约路径与方法已匹配 |
+| `threadSections.delete` | `DELETE` | `/api/v1/thread-sections` | 已实现 | `DELETE /api/v1/thread-sections` | B0 | 契约路径与方法已匹配 |
+| `threadSections.update` | `PATCH` | `/api/v1/thread-sections` | 已实现 | `PATCH /api/v1/thread-sections` | B0 | 契约路径与方法已匹配 |
 
 ## 复核命令
 

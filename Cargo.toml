@@ -33,7 +33,7 @@ agent-client-protocol = { version = "=2.0.0", default-features = false, features
 # tag once one contains them.
 pi-acp = { git = "https://github.com/AndPuQing/pi-acp", rev = "b3e7e8f", features = ["protocol-v2"] }
 agent-client-protocol-schema = { version = "=1.5.0", default-features = false, features = ["unstable_protocol_v2"] }
-axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio", "ws"] }
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio", "ws", "multipart"] }
 base64 = "0.22"
 bytes = "1.6"
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }

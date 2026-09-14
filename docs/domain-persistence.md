@@ -41,18 +41,24 @@ DomainSnapshot
   watermark      Option<EventId> — newest event the view incorporates
   registry       RegistrySnapshot { personal_project_id, projects, threads,
                                     hosts, environments, queued_messages,
-                                    interactions }
+                                    interactions, thread_sections }
   runs           in-flight RunRecord list
 ```
 
 One atomic write covers both the entity view and its watermark, which is the
 "atomic commit of both" the design note worried about.
 
-`queued_messages` and `interactions` (batch B3) are `#[serde(default)]`, which
-is the whole compatibility story for this file: a snapshot written by a build
-that predates them still loads, with an empty queue and no pending interaction —
-precisely the view that build would have held. Bumping `SNAPSHOT_VERSION` for an
-additive field would force every deployment to discard a recoverable snapshot.
+`queued_messages` and `interactions` (batch B3) and `thread_sections` (batch B7)
+are `#[serde(default)]`, which is the whole compatibility story for this file: a
+snapshot written by a build that predates them still loads, with an empty queue,
+no pending interaction and no sections — precisely the view that build would
+have held. Bumping `SNAPSHOT_VERSION` for an additive field would force every
+deployment to discard a recoverable snapshot.
+
+Two project fields added in B7 are also `#[serde(default)]`: `deleted_at_ms`,
+the tombstone that keeps a deleted project from being resurrected by replay, and
+`sort_key`, the client's explicit rank. A project from an older snapshot loads
+with neither, which sorts it by creation time exactly as that build did.
 
 Both sets are stored **in every status**, not only the open ones. A sent queued
 message and a resolved interaction are part of what a client renders (a retry

@@ -101,6 +101,68 @@ There is deliberately **no unarchive command** in this change. Archiving being
 one-way keeps the state machine small; if a real need appears, an `unarchive`
 transition is additive.
 
+## Deleting
+
+`DELETE /api/v1/projects/{id}` is a **tombstone**, not a removal, and it is
+stronger than archiving:
+
+- An archived project is still listed and still resolves by id; a deleted one is
+  in neither `projects.list` nor the sidebar bootstrap, and a route that resolves
+  it by id answers `404 project_not_found`.
+- The record stays in the registry and in snapshots (`deleted_at_ms`), so
+  replaying an older `project_created` cannot resurrect it — the same reason a
+  thread has a `deleted_at_ms`.
+- It refuses while the project still holds a **live thread or a live
+  environment** (`409 conflict`). Archiving only refuses a *running* thread
+  because those threads keep referencing the project and their history still
+  resolves; a delete would leave them naming a project the client can no longer
+  open.
+- Archiving being the weaker state, an archived project can still be deleted —
+  refusing that would strand it as undeletable.
+
+## Ordering
+
+`PATCH /api/v1/projects/{id}/order` moves a project between two neighbours, both
+nullable: `previousProjectId: null` means "first" and `nextProjectId: null`
+means "last". `Project.sort_key` is a sparse base-62 rank, and the list orders by
+archived status, then the rank, then creation time and id.
+
+A project that has never been reordered has no rank and still sorts by creation
+time, so an existing workspace looks unchanged. The first reorder (and any
+reorder whose bounding neighbours are unranked) rewrites the whole visible list
+into contiguous ranks; after that every project holds one and later moves take
+the cheap single-row path. A reorder with a stale neighbour, or between a pair
+already in the requested order, is a `409 conflict` rather than a silent no-op.
+
+## Prompt history, commands and attachments
+
+- `projects.promptHistory` aggregates the user prompts of the project's threads
+  from the same `thread_message_added` events `threads.promptHistory` reads, so
+  the two cannot disagree about what a prompt is.
+- `projects.commands` asks the project's source host (`host.list_commands`),
+  because a prompt-command list is a property of the workspace on disk. The rows
+  are discovered by `pi-acp` and projected into bb's contract shape.
+- `projects.files`, `projects.paths` and `projects.fileContent` read the
+  project's workspace on its host. `projects.uploadAttachment` writes into
+  `<host data_dir>/project-attachments/<project_id>`, and
+  `projects.copyAttachments` copies between two projects' directories. A host
+  that never reported a data directory answers `501 not_configured` rather than
+  guessing a path. See [`contract.md`](contract.md) ("B7").
+
+## Thread sections
+
+A `ThreadSection` (`sec_…`) is a durable sidebar group, persisted in the domain
+snapshot and listed in `sidebarBootstrap.sections`. Names are unique after
+trimming (`409 section_name_conflict`); an unknown id is `404 section_not_found`.
+
+The relationship is **one-sided**: `Thread.section_id` holds the section's id as
+an opaque string, and nothing enforces that the section exists. Deleting a
+section counts the threads that referenced it (`updatedThreadCount`) and does
+**not** rewrite them — the thread's grouping is the client's last write, and a
+delete that re-filed every thread would be an unrequested mutation of a
+different entity. A client that wants its threads back in the default group
+sends `threads.update` itself.
+
 ## HTTP surface
 
 The read/write routes are bb's, in the contract's shapes: camelCase bodies, bare
@@ -111,26 +173,45 @@ GET    /api/v1/projects                 → [projectSchema, …]
 POST   /api/v1/projects                 { name, source: { type, hostId, path } } → 201 projectSchema
 GET    /api/v1/projects/{id}            → projectSchema
 PATCH  /api/v1/projects/{id}            { name? } → projectSchema
+DELETE /api/v1/projects/{id}            → { ok } (tombstone)
 POST   /api/v1/projects/{id}/sources    { type, hostId, path } → 201 projectSourceSchema
+PATCH  /api/v1/projects/{id}/sources/{sourceId}  { type, path?, isDefault? } → projectSourceSchema
 DELETE /api/v1/projects/{id}/sources/{sourceId}
+PATCH  /api/v1/projects/{id}/order      { previousProjectId, nextProjectId } → [projectSchema, …]
+GET    /api/v1/projects/{id}/files      → { files, truncated }
+GET    /api/v1/projects/{id}/paths      → { paths, truncated }
+GET    /api/v1/projects/{id}/files/content?path=…  → bytes
+GET    /api/v1/projects/{id}/commands   → { commands }
+GET    /api/v1/projects/{id}/prompt-history → [promptHistoryEntry, …]
+POST   /api/v1/projects/{id}/attachments (form) → 201 uploadedAttachment
+GET    /api/v1/projects/{id}/attachments/content?path=… → bytes
+POST   /api/v1/projects/{id}/attachments/copy → { ok }
 POST   /api/v1/projects/{id}/archive    (loom-native) → Project
+POST   /api/v1/thread-sections          { name } → 201 threadSection
+PATCH  /api/v1/thread-sections          { id, name } → { id, name, updatedThreadCount }
+DELETE /api/v1/thread-sections          { id } → { id, name, updatedThreadCount }
 ```
 
-The list is sorted by creation time and then id (active projects first,
-archived last), so it never depends on `HashMap` iteration order. `hostId` is
-required on both create calls: a project or source names the machine its code
-lives on, and a host that was never enrolled is a `404` rather than an unhosted
-source.
+The list is sorted by archived status, then by the client's explicit rank when
+it set one, then by creation time and id. It never depends on `HashMap`
+iteration order, and a project that has never been reordered looks exactly as it
+did before `projects.reorder` existed. Deleted projects are omitted entirely.
+`hostId` is required on both create calls: a project or source names the machine
+its code lives on, and a host that was never enrolled is a `404` rather than an
+unhosted source.
 
 ## Relationship to bb's contract
 
 `projects.list`, `projects.create`, `projects.get`, `projects.update`,
-`projects.createSource` and `projects.deleteSource` are implemented in bb's
-shapes, so a bb client's project calls reach them unchanged. Two things stay
-loom's own: the archive verb, which bb does not have (that is why it is the one
-route above returning the domain `Project`), and the routes this repository has
-not implemented yet — branches, files, attachments, skills — which are tracked
-per route in [`api-coverage.md`](api-coverage.md).
+`projects.createSource`, `projects.deleteSource`, the workspace file routes,
+`projects.updateSource`, `projects.reorder`, `projects.delete`,
+`projects.promptHistory`, `projects.commands`, the attachment routes and
+`threadSections.*` are implemented in bb's shapes, so a bb client's project
+calls reach them unchanged. Archive is the one route above returning the domain
+`Project` instead of bb's `{ ok }`: bb has no archive verb, so there is no
+contract shape to match. The remaining unimplemented project routes are skills
+(decided out of scope) and nothing else; per-route status is tracked in
+[`api-coverage.md`](api-coverage.md).
 
 Archive is one of the loom-native control endpoints that
 [`contract.md`](contract.md) says must move off the `/api/v1/*` prefix bb's

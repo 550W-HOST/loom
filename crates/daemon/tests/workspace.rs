@@ -252,3 +252,67 @@ async fn committing_a_clean_workspace_returns_no_changes() {
     );
     assert_eq!(code, "no_changes");
 }
+
+#[tokio::test]
+async fn listing_commands_reports_the_projects_and_the_agents_own() {
+    let directory = repository();
+    // A project prompt is discovered from the workspace itself, which is what
+    // makes this a host-side question rather than a control-plane one.
+    let prompts = directory.path().join(".pi/prompts");
+    std::fs::create_dir_all(&prompts).unwrap();
+    std::fs::write(
+        prompts.join("review.md"),
+        "---\ndescription: Review the diff\n---\nReview this diff.\n",
+    )
+    .unwrap();
+
+    let report = answer(request(HostRpcOperation::ListCommands {
+        cwd: directory.path().to_string_lossy().into_owned(),
+    }))
+    .await;
+    let value = result(report);
+    let commands = value["commands"].as_array().expect("a command list");
+    let review = commands
+        .iter()
+        .find(|command| command["name"] == "review")
+        .expect("the project prompt was not listed");
+    assert_eq!(review["origin"], "project");
+    // pi-acp appends the `(source)` label to a file command's description, which
+    // is bb's own convention; the daemon passes it through unchanged.
+    assert!(
+        review["description"]
+            .as_str()
+            .unwrap()
+            .starts_with("Review the diff"),
+        "unexpected description: {}",
+        review["description"]
+    );
+    // The agent's own headless commands are always available, and are reported
+    // as built-ins rather than as files the project provides.
+    let compact = commands
+        .iter()
+        .find(|command| command["name"] == "compact")
+        .expect("a built-in command was not listed");
+    assert_eq!(compact["origin"], "builtin");
+    // Names are unique: a project prompt and a built-in of the same name would
+    // otherwise appear twice.
+    let mut names = commands
+        .iter()
+        .map(|command| command["name"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    let count = names.len();
+    names.sort();
+    names.dedup();
+    assert_eq!(names.len(), count);
+}
+
+#[tokio::test]
+async fn listing_commands_rejects_a_relative_working_directory() {
+    let (code, _) = failure(
+        answer(request(HostRpcOperation::ListCommands {
+            cwd: "relative/path".into(),
+        }))
+        .await,
+    );
+    assert_eq!(code, "invalid_path");
+}

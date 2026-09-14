@@ -733,10 +733,15 @@ pub async fn environment_paths(
         }))
         .into_response(),
         HostFileOutcome::Failed { code, message } => host_file_failure(&code, &message),
-        HostFileOutcome::Content(_) => api_error(
+        HostFileOutcome::Content(_) | HostFileOutcome::Written(_) => api_error(
             StatusCode::BAD_GATEWAY,
             "host_unavailable",
             "host answered a path request with file content",
+        ),
+        HostFileOutcome::Copied { .. } => api_error(
+            StatusCode::BAD_GATEWAY,
+            "host_unavailable",
+            "host answered a path request with a copy result",
         ),
     }
 }

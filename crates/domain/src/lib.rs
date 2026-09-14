@@ -65,6 +65,7 @@ pub mod provider_event;
 pub mod queue;
 pub mod run;
 pub mod scope;
+pub mod section;
 pub mod thread;
 
 pub use environment::{Environment, EnvironmentKind, EnvironmentStatus};
@@ -72,10 +73,10 @@ pub use error::DomainError;
 pub use event::DomainEvent;
 pub use host::{select_primary_host, Host, HostKind, HostStatus};
 pub use id::{
-    is_turn_request_id, mint_turn_request_id, Entity, EnvironmentId, EnvironmentTag, HostId,
-    HostTag, Id, InteractionId, InteractionTag, MessageId, MessageTag, ProjectId, ProjectSourceId,
-    ProjectSourceTag, ProjectTag, QueuedMessageId, QueuedMessageTag, RunId, RunTag, ThreadId,
-    ThreadTag, UserId, UserTag,
+    is_turn_request_id, mint_turn_request_id, AttachmentId, AttachmentTag, Entity, EnvironmentId,
+    EnvironmentTag, HostId, HostTag, Id, InteractionId, InteractionTag, MessageId, MessageTag,
+    ProjectId, ProjectSourceId, ProjectSourceTag, ProjectTag, QueuedMessageId, QueuedMessageTag,
+    RunId, RunTag, ThreadId, ThreadSectionId, ThreadSectionTag, ThreadTag, UserId, UserTag,
 };
 pub use interaction::{
     Interaction, InteractionKind, InteractionOrigin, InteractionPayload, InteractionStatus,
@@ -97,6 +98,7 @@ pub use queue::{
 };
 pub use run::{RunEvent, RunOutcome};
 pub use scope::DomainScope;
+pub use section::{ThreadSection, MAX_SECTION_NAME_LEN};
 pub use thread::{
     MessageRole, NewThread, ProviderSessionBinding, ReasoningLevel, Thread, ThreadMessage,
     ThreadOriginKind, ThreadStatus, ThreadTrigger, ThreadUpdate, ThreadVisibility,

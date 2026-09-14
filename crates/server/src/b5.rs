@@ -449,6 +449,13 @@ fn content_from_outcome(outcome: HostFileOutcome, relative: Option<&str>) -> Res
             "the host answered a content request with a listing",
         ),
         HostFileOutcome::Failed { code, message } => host_failure_response(&code, &message),
+        // Write and copy exist for B7's attachment routes; a read route can
+        // never legitimately receive one, so it is a host protocol mistake.
+        HostFileOutcome::Written(_) | HostFileOutcome::Copied { .. } => api_error(
+            StatusCode::BAD_GATEWAY,
+            "host_unavailable",
+            "the host answered a content request with a write result",
+        ),
     }
 }
 
@@ -895,10 +902,15 @@ pub async fn thread_storage_files(
             "storageRootPath": root,
         }))
         .into_response(),
-        HostFileOutcome::Content(_) => api_error(
+        HostFileOutcome::Content(_) | HostFileOutcome::Written(_) => api_error(
             StatusCode::BAD_GATEWAY,
             "host_unavailable",
             "the host answered a listing request with content",
+        ),
+        HostFileOutcome::Copied { .. } => api_error(
+            StatusCode::BAD_GATEWAY,
+            "host_unavailable",
+            "the host answered a listing request with a copy result",
         ),
         HostFileOutcome::Failed { code, message } => host_failure_response(&code, &message),
     }
@@ -955,10 +967,15 @@ pub async fn thread_storage_paths(
             "storageRootPath": root,
         }))
         .into_response(),
-        HostFileOutcome::Content(_) => api_error(
+        HostFileOutcome::Content(_) | HostFileOutcome::Written(_) => api_error(
             StatusCode::BAD_GATEWAY,
             "host_unavailable",
             "the host answered a listing request with content",
+        ),
+        HostFileOutcome::Copied { .. } => api_error(
+            StatusCode::BAD_GATEWAY,
+            "host_unavailable",
+            "the host answered a listing request with a copy result",
         ),
         HostFileOutcome::Failed { code, message } => host_failure_response(&code, &message),
     }
@@ -1024,9 +1041,39 @@ fn public_thread(state: &AppState, thread_id: &ThreadId) -> Result<Thread, Respo
     }
 }
 
+/// Standard base64 (RFC 4648) encoding, so an upload can carry binary bytes
+/// across the JSON host protocol.
+///
+/// Hand-rolled for the same reason the decoder is: the control plane needs two
+/// directions of one encoding, and a dependency for that is not worth the
+/// supply-chain surface. The daemon has its own copy on the other side of the
+/// wire.
+pub(crate) fn base64_encode(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut encoded = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let first = chunk[0];
+        let second = chunk.get(1).copied().unwrap_or(0);
+        let third = chunk.get(2).copied().unwrap_or(0);
+        encoded.push(ALPHABET[(first >> 2) as usize] as char);
+        encoded.push(ALPHABET[(((first & 0b11) << 4) | (second >> 4)) as usize] as char);
+        encoded.push(if chunk.len() > 1 {
+            ALPHABET[(((second & 0b1111) << 2) | (third >> 6)) as usize] as char
+        } else {
+            '='
+        });
+        encoded.push(if chunk.len() > 2 {
+            ALPHABET[(third & 0b11_1111) as usize] as char
+        } else {
+            '='
+        });
+    }
+    encoded
+}
+
 /// Standard base64 (RFC 4648) decoding, used to turn a daemon's binary payload
 /// back into bytes.
-fn base64_decode(raw: &str) -> Option<Vec<u8>> {
+pub(crate) fn base64_decode(raw: &str) -> Option<Vec<u8>> {
     let mut decoded = Vec::with_capacity(raw.len() / 4 * 3);
     let mut buffer = 0u32;
     let mut bits = 0u32;
@@ -1113,37 +1160,11 @@ mod tests {
     #[test]
     fn base64_round_trips_binary_content() {
         let bytes: Vec<u8> = (0u8..=255).collect();
-        let encoded = encode_base64(&bytes);
+        let encoded = base64_encode(&bytes);
         assert_eq!(base64_decode(&encoded).unwrap(), bytes);
         // Padding: a two-byte tail decodes without trailing garbage.
         assert_eq!(base64_decode("YQ==").unwrap(), b"a");
         assert_eq!(base64_decode("YWI=").unwrap(), b"ab");
         assert!(base64_decode("not base64!").is_none());
-    }
-
-    /// The encoding half, used only to round-trip the decoder in tests. The
-    /// daemon is the side that produces base64 in production.
-    fn encode_base64(bytes: &[u8]) -> String {
-        const ALPHABET: &[u8; 64] =
-            b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-        let mut encoded = String::new();
-        for chunk in bytes.chunks(3) {
-            let first = chunk[0];
-            let second = chunk.get(1).copied().unwrap_or(0);
-            let third = chunk.get(2).copied().unwrap_or(0);
-            encoded.push(ALPHABET[(first >> 2) as usize] as char);
-            encoded.push(ALPHABET[(((first & 0b11) << 4) | (second >> 4)) as usize] as char);
-            encoded.push(if chunk.len() > 1 {
-                ALPHABET[(((second & 0b1111) << 2) | (third >> 6)) as usize] as char
-            } else {
-                '='
-            });
-            encoded.push(if chunk.len() > 2 {
-                ALPHABET[(third & 0b11_1111) as usize] as char
-            } else {
-                '='
-            });
-        }
-        encoded
     }
 }

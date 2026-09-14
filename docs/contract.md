@@ -537,6 +537,118 @@ and nothing else — and this is recorded rather than silently approximated.
 Adding a hash to the host protocol is the change that would make `304`
 implementable.
 
+## B7: project workspace, attachments and thread sections
+
+Batch B7 added fourteen routes: the project workspace's files, paths and
+content; its prompt commands, prompt history, attachment upload/read/copy,
+source update, reorder and delete; and the three thread-section routes.
+
+### Project files are a host question, and the resolver is three-way
+
+`projects.files`, `projects.paths` and `projects.fileContent` are B5's rule
+applied to a project: the bytes live on the machine that holds the project's
+code, so the control plane asks that machine through `HostFileOperation` and
+never reads its own disk. No new protocol was needed for the reads.
+
+The contract's query parameters make the resolution three-way, and the order is
+the decision:
+
+1. `environmentId` names an environment; its host and path win, because a
+   client that opened a specific worktree means *that* workspace.
+2. Otherwise `hostId` picks the project's source on that machine, so a
+   multi-host project can be read on the machine the client is looking at.
+3. Otherwise the project's **default** source is used — the one a workspace is
+   provisioned from — and a project with no source is a `404 not_found`.
+
+A source with an empty path (a repository declared but not yet checked out) is
+a `409 conflict`, not an empty directory: those are different facts. As in B5,
+relative paths are refused with `400 invalid_path` before a request is built,
+and the daemon re-resolves the real path against the workspace root.
+
+### Attachments are written by the host, inside a root it enforces
+
+`projects.uploadAttachment` is a **multipart** body, so the runtime request
+validator is a no-op for it and the handler owns the whole validation surface.
+Axum's `multipart` feature was already enabled for the routing layer; the
+handler rejects a missing file part, an empty file, a file over 16 MB, and a
+name that reduces to nothing. Only the final path segment of a client-supplied
+name survives, so `../../etc/passwd` cannot name a destination.
+
+Storing one is a `HostFileOperation::Write` the daemon confines to
+`<data_dir>/project-attachments/<project_id>` — the sibling of B5's thread
+storage, named from the same reported data directory, with the same `501
+not_configured` when a host never reported one. The bytes travel base64-encoded
+so binary uploads survive the JSON hop. The daemon resolves the target's
+**parent** against the root before joining the file name, because the target
+does not exist yet and a symlinked parent is exactly the escape a prefix
+comparison would miss.
+
+`projects.copyAttachments` copies one project's attachments into another's, so
+`HostFileOperation::Copy` carries **two** roots: sources are confined to the
+source project's directory and the destination to the target's. A copy across
+two different hosts is refused with `409 conflict` rather than silently moving
+bytes through the control plane. A source that is missing or oversized is
+reported per path, and a colliding destination name is suffixed (`a-2.png`)
+rather than overwriting: a copy must never lose a file the user still had.
+
+### `projects.commands` is a host RPC with a projected result
+
+A prompt-command list is a property of the workspace on disk — project prompts
+live under `<cwd>/.pi/prompts` — so this is a `HostRpcOperation::ListCommands`
+against the project's source. The discovery itself is `pi-acp`'s
+(`load_slash_commands` plus the built-in command list), so loom does not
+maintain a second, drifting notion of where a slash command lives. The daemon
+answers raw rows and the control plane projects them into bb's
+`projectCommandSchema`: a file command is `origin: project`, a built-in is
+`origin: builtin`, and `source` is always `command`. The contract's `provider`
+parameter is required, and a value naming a provider this server does not run is
+a `400` rather than a silently different answer.
+
+### `projects.reorder` needed a real project order
+
+`Project` gained an optional `sort_key`, and the list orders by archived status,
+then the key, then creation time and id. A project that has never been reordered
+has no key and still sorts by creation time, so an existing workspace looks
+exactly as it did.
+
+The first reorder — or any reorder whose bounding neighbours are unranked —
+rewrites the whole visible list into a contiguous key range. That is deliberate:
+synthesising a key for an unranked neighbour would place the new rank *before*
+every unranked project rather than between the two rows the client named. After
+one reorder every project holds a key, and later inserts take the cheap
+single-row path. A stale neighbour or a pair already in the requested order is a
+`409`, not a silent no-op.
+
+### `projects.delete` is a tombstone, and refuses rather than cascades
+
+Deletion sets `deleted_at_ms`, exactly like a thread's tombstone, so replaying
+an older `project_created` cannot resurrect it. A deleted project is absent from
+`projects.list` and the sidebar bootstrap, and resolving it by id is a `404`. It
+is refused while the project still holds a live thread or a live environment
+(`409 conflict`): those threads would otherwise name a project the client can no
+longer open. Archiving being weaker than deleting, an archived project *can* be
+deleted — refusing that would strand it.
+
+### Thread sections are durable now
+
+`ThreadSection` is an entity (`sec_…`), persisted in the domain snapshot and
+listed in `sidebarBootstrap.sections`, which previously hardcoded `[]`. Names
+are unique after trimming, which is what makes the contract's `409` meaningful;
+the routes use the contract's own `section_not_found` and
+`section_name_conflict` codes.
+
+Deleting a section **counts** the threads that referenced it and does not
+rewrite them. The thread's stored grouping is the client's last write, and
+re-filing every thread would be an unrequested mutation of a different entity.
+A client that wants its threads back in the default group sends `threads.update`
+itself, which is the only path that already owns that field.
+
+### Error codes: no `project_source_not_found`
+
+A project with no source on the named host, or with no source at all, answers
+`404 not_found`. The contract lists no `project_source_not_found`, and inventing
+a code a client cannot branch on is worse than the generic one.
+
 ## Known limits
 
 - **Error codes are best-effort.** bb's contract package types the error body

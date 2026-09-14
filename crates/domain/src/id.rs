@@ -99,6 +99,18 @@ entity_marker!(
     "interaction",
     "Marker type for interaction identifiers."
 );
+entity_marker!(
+    ThreadSectionTag,
+    "sec",
+    "thread section",
+    "Marker type for thread-section identifiers."
+);
+entity_marker!(
+    AttachmentTag,
+    "att",
+    "attachment",
+    "Marker type for project-attachment identifiers."
+);
 
 /// A project id, `proj_…`.
 pub type ProjectId = Id<ProjectTag>;
@@ -126,6 +138,10 @@ pub type UserId = Id<UserTag>;
 pub type QueuedMessageId = Id<QueuedMessageTag>;
 /// An interaction id, `intr_…`.
 pub type InteractionId = Id<InteractionTag>;
+/// A thread-section id, `sec_…`.
+pub type ThreadSectionId = Id<ThreadSectionTag>;
+/// A project-attachment id, `att_…`.
+pub type AttachmentId = Id<AttachmentTag>;
 
 /// A prefixed identifier for entity kind `T`.
 ///

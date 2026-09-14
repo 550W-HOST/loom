@@ -24,6 +24,7 @@
 pub mod artifacts;
 pub mod b5;
 pub mod b6;
+pub mod b7;
 pub mod build_info;
 pub mod domain_state;
 pub mod environments;
@@ -47,6 +48,7 @@ pub use artifacts::{
     INSTALL_DAEMON_PATH, INSTALL_VERSION_PATH,
 };
 pub use b5::{MAX_FILE_CONTENT_BYTES, MAX_HTML_PREVIEW_BYTES, THREAD_COUNT_ROOT_PARENT};
+pub use b7::MAX_ATTACHMENT_BYTES;
 pub use build_info::{version_line, COMMIT, TARGET, VERSION};
 pub use domain_state::{CommandError, DomainRegistry};
 pub use environments::{EnvironmentReportOutcome, ProvisionOutcome};
