@@ -210,7 +210,9 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/projects", get(list_projects).post(create_project))
         .route(
             "/api/v1/projects/{id}",
-            get(get_project).patch(update_project),
+            get(get_project)
+                .patch(update_project)
+                .delete(crate::b7::project_delete),
         )
         .route(
             "/api/v1/projects/{id}/default-execution-options",
@@ -220,7 +222,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/projects/{id}/sources", post(add_project_source))
         .route(
             "/api/v1/projects/{id}/sources/{source_id}",
-            axum::routing::delete(remove_project_source),
+            axum::routing::delete(remove_project_source).patch(crate::b7::project_update_source),
         )
         .route(
             "/api/v1/projects/{id}/branches",
@@ -229,6 +231,42 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/v1/projects/{id}/branch-options",
             get(crate::b6::project_branch_options),
+        )
+        .route("/api/v1/projects/{id}/files", get(crate::b7::project_files))
+        .route(
+            "/api/v1/projects/{id}/files/content",
+            get(crate::b7::project_file_content),
+        )
+        .route("/api/v1/projects/{id}/paths", get(crate::b7::project_paths))
+        .route(
+            "/api/v1/projects/{id}/commands",
+            get(crate::b7::project_commands),
+        )
+        .route(
+            "/api/v1/projects/{id}/attachments",
+            post(crate::b7::project_upload_attachment),
+        )
+        .route(
+            "/api/v1/projects/{id}/attachments/content",
+            get(crate::b7::project_attachment_content),
+        )
+        .route(
+            "/api/v1/projects/{id}/attachments/copy",
+            post(crate::b7::project_copy_attachments),
+        )
+        .route(
+            "/api/v1/projects/{id}/prompt-history",
+            get(crate::b7::project_prompt_history),
+        )
+        .route(
+            "/api/v1/projects/{id}/order",
+            axum::routing::patch(crate::b7::project_reorder),
+        )
+        .route(
+            "/api/v1/thread-sections",
+            post(crate::b7::create_thread_section)
+                .patch(crate::b7::update_thread_section)
+                .delete(crate::b7::delete_thread_section),
         )
         .route(
             "/api/v1/environments",
@@ -554,8 +592,16 @@ fn configured_execution_options(state: &AppState) -> Value {
 }
 
 /// Returns the project/thread data needed to hydrate the sidebar in one call.
+#[allow(clippy::result_large_err)]
 async fn sidebar_bootstrap(State(state): State<AppState>) -> Json<Value> {
-    let projects = state.registry.projects();
+    // A deleted project is a tombstone: it still resolves by id for threads
+    // and events, but it is not part of the list a client renders.
+    let projects = state
+        .registry
+        .projects()
+        .into_iter()
+        .filter(|project| !project.is_deleted())
+        .collect::<Vec<_>>();
     let personal_id = state.registry.personal_project_id();
     let personal_project = projects
         .iter()
@@ -578,8 +624,16 @@ async fn sidebar_bootstrap(State(state): State<AppState>) -> Json<Value> {
         .iter()
         .map(|project| project_detail_value(&state, project))
         .collect::<Vec<_>>();
+    // Sections are durable entities now (`threadSections.*`), so the sidebar's
+    // own list is read from the registry rather than hardcoded empty.
+    let sections = state
+        .registry
+        .thread_sections()
+        .iter()
+        .map(crate::b7::section_value)
+        .collect::<Vec<_>>();
     Json(json!({
-        "sections": [],
+        "sections": sections,
         "projects": projects,
         "personalProject": personal_project
     }))
@@ -696,7 +750,7 @@ async fn system_version(Query(_query): Query<SystemVersionQuery>) -> Json<Value>
     }))
 }
 
-fn project_source_value(source: &loom_domain::ProjectSource) -> Value {
+pub(crate) fn project_source_value(source: &loom_domain::ProjectSource) -> Value {
     json!({
         "id": source.id.to_string(),
         "projectId": source.project_id.to_string(),
@@ -714,7 +768,7 @@ fn project_source_value(source: &loom_domain::ProjectSource) -> Value {
 /// The contract names the fields in camelCase and omits loom's
 /// `archived_at_ms`; archiving is carried by `projects.list`'s own filter, so
 /// this projection is the whole representation.
-fn project_value(project: &Project) -> Value {
+pub(crate) fn project_value(project: &Project) -> Value {
     json!({
         "id": project.id.to_string(),
         "kind": project.kind,
@@ -1151,7 +1205,7 @@ fn parse_thread_id(raw: &str) -> Result<ThreadId, Response> {
 }
 
 #[allow(clippy::result_large_err)]
-fn thread_domain_events(
+pub(crate) fn thread_domain_events(
     state: &AppState,
     thread_id: &ThreadId,
 ) -> Result<Vec<(String, u64, u64, DomainEvent)>, Response> {

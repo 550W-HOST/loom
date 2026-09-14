@@ -91,6 +91,24 @@ pub struct Project {
     /// environments and events that reference it keep resolving.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub archived_at_ms: Option<u64>,
+    /// When the project was deleted, if it is. `None` means live.
+    ///
+    /// Deletion is a **tombstone**, exactly like
+    /// [`Thread::deleted_at_ms`](crate::Thread::deleted_at_ms): the record stays
+    /// in the registry and in snapshots so replaying an older `project_created`
+    /// cannot resurrect a project whose delete event is still in the log. A
+    /// deleted project is absent from `projects.list` and is refused by every
+    /// route that resolves it by id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deleted_at_ms: Option<u64>,
+    /// The project's rank in the sidebar, when a client reordered it.
+    ///
+    /// A sparse base-62 key rather than an index, so inserting between two
+    /// neighbours rewrites one row instead of renumbering the list. `None`
+    /// means the project has never been reordered and sorts by creation time;
+    /// see [`crate::event`] and the registry's `projects` ordering.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sort_key: Option<String>,
     /// Wall-clock milliseconds when the project was created.
     pub created_at_ms: u64,
     /// Wall-clock milliseconds of the last mutation.
@@ -132,6 +150,8 @@ impl Project {
             git_remote_url: normalise_remote(git_remote_url),
             sources: Vec::new(),
             archived_at_ms: None,
+            deleted_at_ms: None,
+            sort_key: None,
             created_at_ms: now_ms,
             updated_at_ms: now_ms,
         };
@@ -144,6 +164,11 @@ impl Project {
     /// Whether the project is archived, and therefore read-only.
     pub fn is_archived(&self) -> bool {
         self.archived_at_ms.is_some()
+    }
+
+    /// Whether the project is deleted, and therefore invisible.
+    pub fn is_deleted(&self) -> bool {
+        self.deleted_at_ms.is_some()
     }
 
     /// Renames the project and returns the update event.
@@ -258,6 +283,96 @@ impl Project {
         self.archived_at_ms = Some(now_ms);
         self.touch(now_ms);
         Ok(self.updated_event())
+    }
+
+    /// Deletes the project as a tombstone and returns the update event.
+    ///
+    /// Like [`Project::archive`] this is terminal for the record, but stronger:
+    /// an archived project is still listed and still resolvable, while a
+    /// deleted one is neither. It refuses a second delete, and it is **not**
+    /// the domain's job to check for live threads — that needs the thread
+    /// registry, so the server enforces it before calling this. See
+    /// `docs/projects.md`.
+    pub fn delete(&mut self, now_ms: u64) -> Result<DomainEvent, DomainError> {
+        if self.is_deleted() {
+            return Err(DomainError::InvalidField {
+                field: "project",
+                reason: "is already deleted".into(),
+            });
+        }
+        self.deleted_at_ms = Some(now_ms);
+        self.touch(now_ms);
+        Ok(self.updated_event())
+    }
+
+    /// Sets (or clears) the project's sort key, returning the update event.
+    ///
+    /// Idempotent: writing the key it already holds produces no event, so a
+    /// repeated reorder does not churn the log.
+    pub fn set_sort_key(
+        &mut self,
+        sort_key: Option<String>,
+        now_ms: u64,
+    ) -> Result<Option<DomainEvent>, DomainError> {
+        self.require_active()?;
+        if self.sort_key == sort_key {
+            return Ok(None);
+        }
+        self.sort_key = sort_key;
+        self.touch(now_ms);
+        Ok(Some(self.updated_event()))
+    }
+
+    /// Updates one of the project's sources and returns the update event.
+    ///
+    /// Two fields are editable, matching the contract: the path, and whether
+    /// the source is the project's default. Making a source the default clears
+    /// the flag on every other source, because a project with sources always
+    /// has exactly one default — the invariant [`Project::add_source`]
+    /// establishes and [`Project::remove_source`] maintains.
+    ///
+    /// Returns `Ok(None)` when the source is not part of this project, and no
+    /// event when the requested values already hold.
+    pub fn update_source(
+        &mut self,
+        source_id: &ProjectSourceId,
+        path: Option<String>,
+        is_default: bool,
+        now_ms: u64,
+    ) -> Result<Option<DomainEvent>, DomainError> {
+        self.require_active()?;
+        let Some(index) = self
+            .sources
+            .iter()
+            .position(|source| &source.id == source_id)
+        else {
+            return Ok(None);
+        };
+        let mut changed = false;
+        if let Some(path) = path {
+            let path = path.trim().to_owned();
+            if path.is_empty() && self.sources[index].git_remote_url.is_none() {
+                return Err(DomainError::InvalidField {
+                    field: "path",
+                    reason: "a source with no git remote needs a path".into(),
+                });
+            }
+            changed |= self.sources[index].path != path;
+            self.sources[index].path = path;
+        }
+        if is_default && !self.sources[index].is_default {
+            for source in self.sources.iter_mut() {
+                source.is_default = source.id == *source_id;
+                source.updated_at_ms = now_ms;
+            }
+            changed = true;
+        }
+        if !changed {
+            return Ok(None);
+        }
+        self.sources[index].updated_at_ms = now_ms;
+        self.touch(now_ms);
+        Ok(Some(self.updated_event()))
     }
 
     fn require_active(&self) -> Result<(), DomainError> {
@@ -405,6 +520,107 @@ mod tests {
 
         project.set_git_remote_url(Some("   ".into()), 3).unwrap();
         assert_eq!(project.git_remote_url, None);
+    }
+
+    #[test]
+    fn deleting_is_terminal_and_invisible_rather_than_removed() {
+        let (mut project, _) = Project::create("loom", ProjectKind::Standard, 1).unwrap();
+        let event = project.delete(5).unwrap();
+        assert!(project.is_deleted());
+        assert_eq!(project.deleted_at_ms, Some(5));
+        assert!(matches!(event, DomainEvent::ProjectUpdated { .. }));
+        // The record is a tombstone, not a removal: its fields survive.
+        assert_eq!(project.name, "loom");
+
+        assert!(project.delete(6).is_err());
+    }
+
+    #[test]
+    fn a_source_can_be_reparked_and_made_default() {
+        let (mut project, _) = Project::create("loom", ProjectKind::Standard, 1).unwrap();
+        project
+            .add_source(HostId::mint(), "/srv/a", None, 2)
+            .unwrap();
+        project
+            .add_source(HostId::mint(), "/srv/b", None, 3)
+            .unwrap();
+        let second = project.sources[1].id.clone();
+
+        let event = project
+            .update_source(&second, Some("/srv/b2".into()), true, 4)
+            .unwrap()
+            .unwrap();
+        assert!(matches!(event, DomainEvent::ProjectUpdated { .. }));
+        assert_eq!(project.sources[1].path, "/srv/b2");
+        assert!(project.sources[1].is_default);
+        assert!(!project.sources[0].is_default);
+        assert_eq!(project.updated_at_ms, 4);
+    }
+
+    #[test]
+    fn a_source_update_that_changes_nothing_publishes_nothing() {
+        let (mut project, _) = Project::create("loom", ProjectKind::Standard, 1).unwrap();
+        project
+            .add_source(HostId::mint(), "/srv/a", None, 2)
+            .unwrap();
+        let first = project.sources[0].id.clone();
+        // It is already the default and the path already holds.
+        assert!(project
+            .update_source(&first, Some("/srv/a".into()), true, 3)
+            .unwrap()
+            .is_none());
+        assert_eq!(project.updated_at_ms, 2);
+
+        // An unknown source is not this project's, which is `None`, not an
+        // error: the caller distinguishes "no such source" from "no change".
+        assert!(project
+            .update_source(&ProjectSourceId::mint(), None, true, 4)
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn a_source_with_no_remote_cannot_have_its_path_cleared() {
+        let (mut project, _) = Project::create("loom", ProjectKind::Standard, 1).unwrap();
+        project
+            .add_source(HostId::mint(), "/srv/a", None, 2)
+            .unwrap();
+        let first = project.sources[0].id.clone();
+        assert!(matches!(
+            project.update_source(&first, Some("  ".into()), false, 3),
+            Err(DomainError::InvalidField { field: "path", .. })
+        ));
+        assert_eq!(project.sources[0].path, "/srv/a");
+    }
+
+    #[test]
+    fn an_archived_project_rejects_a_delete_and_a_source_update() {
+        let (mut project, _) = Project::create("loom", ProjectKind::Standard, 1).unwrap();
+        project
+            .add_source(HostId::mint(), "/srv/a", None, 2)
+            .unwrap();
+        let source = project.sources[0].id.clone();
+        project.archive(3).unwrap();
+
+        assert!(matches!(
+            project.update_source(&source, Some("/srv/b".into()), false, 4),
+            Err(DomainError::Archived { entity: "project" })
+        ));
+        // Delete is deliberately *not* gated on archiving: a deleted project
+        // is the stronger state, and refusing it would strand an archived
+        // project as undeletable.
+        assert!(project.delete(5).is_ok());
+    }
+
+    #[test]
+    fn a_sort_key_is_written_once_and_repeating_it_is_a_noop() {
+        let (mut project, _) = Project::create("loom", ProjectKind::Standard, 1).unwrap();
+        assert!(project.sort_key.is_none());
+        let event = project.set_sort_key(Some("V".into()), 2).unwrap();
+        assert!(event.is_some());
+        assert_eq!(project.sort_key.as_deref(), Some("V"));
+        assert!(project.set_sort_key(Some("V".into()), 3).unwrap().is_none());
+        assert_eq!(project.updated_at_ms, 2);
     }
 
     #[test]

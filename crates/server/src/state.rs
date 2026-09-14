@@ -322,7 +322,10 @@ impl AppState {
     }
 
     /// The provider the control plane asks execution machines to run.
-    pub(crate) fn provider_spec(&self) -> &ProviderSpec {
+    ///
+    /// `pub` because a route's response (`projects.commands`) names the
+    /// provider it runs, and an integration test exercises that route.
+    pub fn provider_spec(&self) -> &ProviderSpec {
         &self.provider_spec
     }
 

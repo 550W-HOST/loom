@@ -13,12 +13,12 @@ guessing.
 | --- | --- |
 | Branch | `main`, in sync with `origin/main` (`f3a1c15`) |
 | Working tree | clean |
-| Tests | **461 passing**, 0 failing (`cargo test --workspace --locked`) |
-| Route coverage | **53 / 149** (35.6%) — `docs/api-coverage.md` |
+| Tests | **624 passing**, 0 failing (`cargo test --workspace --locked`) |
+| Route coverage | **105 / 149** (70.5%) — `docs/api-coverage.md` |
 | Crates | `relay`, `relay-hub`, `server`, `daemon`, `domain`, `provider-protocol`, `contract` |
 | UI | `ui/` workspace, 18 tests, typecheck clean |
 | CI | fmt + clippy `-D warnings` + test + MSRV + contract reproducibility + UI + pi |
-| Test count history | 253 → 416 (B2) → **461** (B3, +45) |
+| Test count history | 253 → 416 (B2) → 461 (B3) → … → **624** (B7) |
 
 ## Unverified: a commit I cannot find
 
@@ -316,8 +316,8 @@ Same shape of gap for two neighbouring things, though the details differ:
 | B3 | Interactions, plans, queue sending | 14 | done (W-557) |
 | B4 | Thread lifecycle and queue management | 14 | done (W-568) |
 | B5 | Thread files and storage helpers | 10 | done (W-565) |
-| B6 | Environment lifecycle and repo status | 14 | |
-| B7 | Project workspace, attachments, sections | 14 | |
+| B6 | Environment lifecycle and repo status | 14 | done (W-573) |
+| B7 | Project workspace, attachments, sections | 14 | done (W-569) |
 | B8 | Host and environment connectivity | 14 | |
 | B9 | Files and terminals | 17 | |
 | B10 | Settings and system preferences | 13 | |
@@ -328,6 +328,12 @@ depends on B1 and B4, both of which are done. Its one protocol addition is
 host, published through the relay, so the control plane never reads its own disk
 and calls the result a thread's file. See `docs/contract.md` ("B5") for the
 permission scopes and the two-half traversal defence.
+
+B7 applies the same rule to a project: its workspace files are read from the
+project's source host, and an upload is a `HostFileOperation::Write` the daemon
+confines to the host's own `project-attachments/<project_id>` directory. It also
+made `Project` orderable (`sort_key`), `Project` deletable (a tombstone) and
+`ThreadSection` a real entity; see `docs/contract.md` ("B7").
 
 **Before assigning B4**, note that file overlap is what actually causes merge
 pain — each multica task gets its own worktree and conflicts surface only at

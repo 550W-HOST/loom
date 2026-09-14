@@ -306,6 +306,255 @@ fn the_report_carries_the_request_identity_it_answers() {
 }
 
 /* ------------------------------------------------------------------ */
+/* Writes and copies (B7 attachments)                                  */
+/* ------------------------------------------------------------------ */
+
+/// Encodes bytes the way the control plane does, so a write can be exercised
+/// end to end without reaching into either crate's private encoder.
+fn encode_base64(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut encoded = String::new();
+    for chunk in bytes.chunks(3) {
+        let first = chunk[0];
+        let second = chunk.get(1).copied().unwrap_or(0);
+        let third = chunk.get(2).copied().unwrap_or(0);
+        encoded.push(ALPHABET[(first >> 2) as usize] as char);
+        encoded.push(ALPHABET[(((first & 0b11) << 4) | (second >> 4)) as usize] as char);
+        encoded.push(if chunk.len() > 1 {
+            ALPHABET[(((second & 0b1111) << 2) | (third >> 6)) as usize] as char
+        } else {
+            '='
+        });
+        encoded.push(if chunk.len() > 2 {
+            ALPHABET[(third & 0b11_1111) as usize] as char
+        } else {
+            '='
+        });
+    }
+    encoded
+}
+
+fn write_file(
+    path: &Path,
+    root: &Path,
+    contents: &[u8],
+    max_bytes: u64,
+    overwrite: bool,
+) -> HostFileOutcome {
+    answer(request(HostFileOperation::Write {
+        path: path.to_string_lossy().into_owned(),
+        root_path: root.to_string_lossy().into_owned(),
+        content: encode_base64(contents),
+        max_bytes,
+        overwrite,
+    }))
+    .outcome
+}
+
+#[test]
+fn a_write_creates_parent_directories_and_decodes_the_bytes() {
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("nested/deeper/notes.txt");
+    let outcome = write_file(&target, dir.path(), b"hello", 1024, false);
+    let HostFileOutcome::Written(written) = outcome else {
+        panic!("expected a write, got {outcome:?}");
+    };
+    assert_eq!(written.size_bytes, 5);
+    assert_eq!(std::fs::read(&target).unwrap(), b"hello");
+    assert_eq!(written.mime_type.as_deref(), Some("text/plain"));
+    // The response names the real path, which is what a client must send back.
+    assert!(written.path.ends_with("nested/deeper/notes.txt"));
+}
+
+#[test]
+fn a_write_suffixes_a_collision_instead_of_clobbering() {
+    let dir = tempfile::tempdir().unwrap();
+    let target = write(dir.path(), "a.txt", b"original");
+    let outcome = write_file(&target, dir.path(), b"replacement", 1024, false);
+    let HostFileOutcome::Written(written) = outcome else {
+        panic!("expected a write, got {outcome:?}");
+    };
+    // The original survives; the new bytes land at a suffixed sibling.
+    assert_eq!(std::fs::read(&target).unwrap(), b"original");
+    assert!(written.path.ends_with("a-2.txt"));
+    assert_eq!(
+        std::fs::read(dir.path().join("a-2.txt")).unwrap(),
+        b"replacement"
+    );
+
+    // With `overwrite`, the same path is replaced in place.
+    let overwritten = write_file(&target, dir.path(), b"replacement", 1024, true);
+    let HostFileOutcome::Written(written) = overwritten else {
+        panic!("expected a write, got {overwritten:?}");
+    };
+    assert_eq!(written.path, target.to_string_lossy());
+    assert_eq!(std::fs::read(&target).unwrap(), b"replacement");
+}
+
+#[test]
+fn a_write_outside_the_root_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("root");
+    std::fs::create_dir_all(&root).unwrap();
+    // The target's parent is outside the root, and the parent is what is
+    // resolved: the target does not exist yet.
+    let escape = dir.path().join("outside/escaped.txt");
+    let outcome = write_file(&escape, &root, b"x", 1024, false);
+    let HostFileOutcome::Failed { code, .. } = outcome else {
+        panic!("expected a refusal, got {outcome:?}");
+    };
+    assert_eq!(code, "invalid_path");
+    assert!(!escape.exists());
+}
+
+#[test]
+fn a_write_larger_than_the_limit_is_refused_not_truncated() {
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("big.bin");
+    let outcome = write_file(&target, dir.path(), &[7u8; 2048], 1024, false);
+    let HostFileOutcome::Failed { code, .. } = outcome else {
+        panic!("expected a refusal, got {outcome:?}");
+    };
+    assert_eq!(code, "file_too_large");
+    assert!(
+        !target.exists(),
+        "a refused write must leave nothing behind"
+    );
+}
+
+#[test]
+fn a_write_of_malformed_base64_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let outcome = answer(request(HostFileOperation::Write {
+        path: dir.path().join("x.bin").to_string_lossy().into_owned(),
+        root_path: dir.path().to_string_lossy().into_owned(),
+        content: "not base64!".into(),
+        max_bytes: 1024,
+        overwrite: false,
+    }))
+    .outcome;
+    let HostFileOutcome::Failed { code, .. } = outcome else {
+        panic!("expected a refusal, got {outcome:?}");
+    };
+    assert_eq!(code, "invalid_request");
+}
+
+fn copy(
+    paths: &[&Path],
+    source_root: &Path,
+    destination: &Path,
+    destination_root: &Path,
+) -> HostFileOutcome {
+    answer(request(HostFileOperation::Copy {
+        paths: paths
+            .iter()
+            .map(|path| path.to_string_lossy().into_owned())
+            .collect(),
+        source_root: source_root.to_string_lossy().into_owned(),
+        destination: destination.to_string_lossy().into_owned(),
+        destination_root: destination_root.to_string_lossy().into_owned(),
+        max_bytes: 1024,
+    }))
+    .outcome
+}
+
+#[test]
+fn a_copy_takes_each_path_and_reports_only_the_failures() {
+    let dir = tempfile::tempdir().unwrap();
+    let source_root = dir.path().join("source");
+    let destination_root = dir.path().join("destination");
+    std::fs::create_dir_all(&source_root).unwrap();
+    std::fs::create_dir_all(&destination_root).unwrap();
+    let present = write(&source_root, "a.txt", b"a");
+    let missing = source_root.join("gone.txt");
+
+    let outcome = copy(
+        &[&present, &missing],
+        &source_root,
+        &destination_root,
+        &destination_root,
+    );
+    let HostFileOutcome::Copied { files, failures } = outcome else {
+        panic!("expected a copy, got {outcome:?}");
+    };
+    assert_eq!(files.len(), 1);
+    assert_eq!(failures.len(), 1);
+    assert_eq!(failures[0].code, "not_found");
+    assert!(failures[0].path.ends_with("gone.txt"));
+    assert_eq!(std::fs::read(destination_root.join("a.txt")).unwrap(), b"a");
+}
+
+#[test]
+fn a_copy_never_loses_an_existing_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let source_root = dir.path().join("source");
+    let destination_root = dir.path().join("destination");
+    std::fs::create_dir_all(&source_root).unwrap();
+    std::fs::create_dir_all(&destination_root).unwrap();
+    let source = write(&source_root, "a.txt", b"incoming");
+    write(&destination_root, "a.txt", b"already here");
+
+    let outcome = copy(
+        &[&source],
+        &source_root,
+        &destination_root,
+        &destination_root,
+    );
+    let HostFileOutcome::Copied { files, .. } = outcome else {
+        panic!("expected a copy, got {outcome:?}");
+    };
+    // The collision is suffixed rather than overwritten.
+    assert_eq!(
+        std::fs::read(destination_root.join("a.txt")).unwrap(),
+        b"already here"
+    );
+    assert!(files[0].path.ends_with("a-2.txt"));
+    assert_eq!(
+        std::fs::read(destination_root.join("a-2.txt")).unwrap(),
+        b"incoming"
+    );
+}
+
+#[test]
+fn a_copy_out_of_the_source_root_is_reported_per_path() {
+    let dir = tempfile::tempdir().unwrap();
+    let source_root = dir.path().join("source");
+    let destination_root = dir.path().join("destination");
+    std::fs::create_dir_all(&source_root).unwrap();
+    std::fs::create_dir_all(&destination_root).unwrap();
+    let outside = write(dir.path(), "secret.txt", b"secret");
+
+    let outcome = copy(
+        &[&outside],
+        &source_root,
+        &destination_root,
+        &destination_root,
+    );
+    let HostFileOutcome::Copied { files, failures } = outcome else {
+        panic!("expected a copy, got {outcome:?}");
+    };
+    assert!(files.is_empty());
+    assert_eq!(failures[0].code, "invalid_path");
+}
+
+#[test]
+fn a_copy_to_a_destination_outside_its_root_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let source_root = dir.path().join("source");
+    std::fs::create_dir_all(&source_root).unwrap();
+    let source = write(&source_root, "a.txt", b"a");
+    let destination = dir.path().join("somewhere-else");
+    let destination_root = dir.path().join("declared-root");
+    std::fs::create_dir_all(&destination_root).unwrap();
+
+    let outcome = copy(&[&source], &source_root, &destination, &destination_root);
+    let HostFileOutcome::Failed { code, .. } = outcome else {
+        panic!("expected a refusal, got {outcome:?}");
+    };
+    assert_eq!(code, "invalid_path");
+}
+
+/* ------------------------------------------------------------------ */
 /* Helpers                                                             */
 /* ------------------------------------------------------------------ */
 

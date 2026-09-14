@@ -26,8 +26,8 @@
 use std::path::{Component, Path, PathBuf};
 
 use loom_provider_protocol::{
-    HostFileContent, HostFileEncoding, HostFileEntry, HostFileOperation, HostFileOutcome,
-    HostFileReport, HostFileRequest, HostPathKind,
+    HostFileContent, HostFileEncoding, HostFileEntry, HostFileFailure, HostFileOperation,
+    HostFileOutcome, HostFileReport, HostFileRequest, HostPathKind,
 };
 
 use crate::Daemon;
@@ -37,6 +37,9 @@ use crate::Daemon;
 /// `.git` is excluded unconditionally, like bb's `ALWAYS_EXCLUDED_NAMES`: its
 /// object store is enormous and never what a file picker wants.
 const ALWAYS_EXCLUDED_NAMES: [&str; 1] = [".git"];
+
+/// How many files one copy may take.
+const MAX_COPY_FILES: usize = 100;
 
 /// The daemon's answer, ready to be sent up the socket.
 ///
@@ -63,6 +66,26 @@ pub fn answer(request: HostFileRequest) -> HostFileReport {
             *include_files,
             *include_directories,
             *include_hidden,
+        ),
+        HostFileOperation::Write {
+            path,
+            root_path,
+            content,
+            max_bytes,
+            overwrite,
+        } => write_file(path, root_path, content, *max_bytes, *overwrite),
+        HostFileOperation::Copy {
+            paths,
+            source_root,
+            destination,
+            destination_root,
+            max_bytes,
+        } => copy_files(
+            paths,
+            source_root,
+            destination,
+            destination_root,
+            *max_bytes,
         ),
     };
     HostFileReport {
@@ -144,12 +167,292 @@ fn read_resolved(path: &Path, max_bytes: u64) -> HostFileOutcome {
         content_encoding,
         size_bytes: metadata.len(),
         mime_type: mime_type_for(path),
-        modified_at_ms: metadata.modified().ok().and_then(|time| {
-            time.duration_since(std::time::UNIX_EPOCH)
-                .ok()
-                .map(|since| since.as_millis() as u64)
-        }),
+        modified_at_ms: modified_at_ms(&metadata),
     })
+}
+
+/// The file's modification time, when the platform reports one.
+fn modified_at_ms(metadata: &std::fs::Metadata) -> Option<u64> {
+    metadata
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|since| since.as_millis() as u64)
+}
+
+/// Resolves an existing path and checks it against `root`, following symlinks.
+fn confined_existing(path: &Path, root: &Path) -> Result<PathBuf, HostFileOutcome> {
+    let real_root = match std::fs::canonicalize(root) {
+        Ok(path) => path,
+        Err(error) => {
+            return Err(failed(
+                "invalid_path",
+                format!("root is not readable: {error}"),
+            ))
+        }
+    };
+    let real_path = match std::fs::canonicalize(path) {
+        Ok(path) => path,
+        Err(error) => return Err(failed("not_found", format!("{error}"))),
+    };
+    if !real_path.starts_with(&real_root) {
+        return Err(failed("invalid_path", "path escapes the workspace root"));
+    }
+    Ok(real_path)
+}
+
+/// Writes one file inside `root_path`, creating parent directories.
+///
+/// The path does **not** exist yet, so it is confined by resolving its parent
+/// against the root and then re-joining the file name: canonicalising a path
+/// that is not there fails, and a symlinked parent is exactly the escape a
+/// plain prefix comparison would miss.
+fn write_file(
+    path: &str,
+    root_path: &str,
+    content: &str,
+    max_bytes: u64,
+    overwrite: bool,
+) -> HostFileOutcome {
+    let path = PathBuf::from(path);
+    let root = PathBuf::from(root_path);
+    if !path.is_absolute() || !root.is_absolute() {
+        return failed("invalid_path", "path and root_path must be absolute");
+    }
+    let Some(file_name) = path.file_name() else {
+        return failed("invalid_path", "path has no file name");
+    };
+    let Some(parent) = path.parent() else {
+        return failed("invalid_path", "path has no parent directory");
+    };
+    // The parent is the part that must already resolve inside the root. Create
+    // it first so a fresh upload's directory chain can be canonicalised.
+    if let Err(error) = std::fs::create_dir_all(parent) {
+        return failed(
+            "invalid_path",
+            format!("could not create {parent:?}: {error}"),
+        );
+    }
+    let real_parent = match confined_existing(parent, &root) {
+        Ok(parent) => parent,
+        Err(outcome) => return outcome,
+    };
+    let bytes = match base64_decode(content) {
+        Some(bytes) => bytes,
+        None => return failed("invalid_request", "content is not valid base64"),
+    };
+    if bytes.len() as u64 > max_bytes {
+        return failed(
+            "file_too_large",
+            format!(
+                "upload is {} bytes, over the {} byte limit",
+                bytes.len(),
+                max_bytes
+            ),
+        );
+    }
+    let target = if overwrite {
+        real_parent.join(file_name)
+    } else {
+        unique_target(&real_parent, file_name)
+    };
+    if let Err(error) = std::fs::write(&target, &bytes) {
+        return failed(
+            "invalid_path",
+            format!("could not write {target:?}: {error}"),
+        );
+    }
+    let metadata = std::fs::metadata(&target).ok();
+    HostFileOutcome::Written(HostFileContent {
+        path: target.to_string_lossy().into_owned(),
+        content: String::new(),
+        content_encoding: HostFileEncoding::Utf8,
+        size_bytes: bytes.len() as u64,
+        mime_type: mime_type_for(&target),
+        modified_at_ms: metadata.as_ref().and_then(modified_at_ms),
+    })
+}
+
+/// Copies files into a destination directory, each side confined to its root.
+///
+/// A source that cannot be copied is reported per path and does not sink the
+/// rest: a client copying several attachments needs to know which ones made it,
+/// not that the batch failed as a whole.
+fn copy_files(
+    paths: &[String],
+    source_root: &str,
+    destination: &str,
+    destination_root: &str,
+    max_bytes: u64,
+) -> HostFileOutcome {
+    let source_root = PathBuf::from(source_root);
+    let destination = PathBuf::from(destination);
+    let destination_root = PathBuf::from(destination_root);
+    if !source_root.is_absolute() || !destination.is_absolute() || !destination_root.is_absolute() {
+        return failed(
+            "invalid_path",
+            "source_root, destination and destination_root must be absolute",
+        );
+    }
+    if let Err(error) = std::fs::create_dir_all(&destination) {
+        return failed(
+            "invalid_path",
+            format!("could not create {destination:?}: {error}"),
+        );
+    }
+    let real_destination = match confined_existing(&destination, &destination_root) {
+        Ok(destination) => destination,
+        Err(outcome) => return outcome,
+    };
+    let mut files = Vec::new();
+    let mut failures = Vec::new();
+    for raw in paths {
+        if files.len() >= MAX_COPY_FILES {
+            failures.push(HostFileFailure {
+                path: raw.clone(),
+                code: "invalid_request".into(),
+                message: format!("at most {MAX_COPY_FILES} files may be copied at once"),
+            });
+            continue;
+        }
+        let source = PathBuf::from(raw);
+        if !source.is_absolute() {
+            failures.push(HostFileFailure {
+                path: raw.clone(),
+                code: "invalid_path".into(),
+                message: "source path must be absolute".into(),
+            });
+            continue;
+        }
+        let real_source = match confined_existing(&source, &source_root) {
+            Ok(source) => source,
+            Err(HostFileOutcome::Failed { code, message }) => {
+                failures.push(HostFileFailure {
+                    path: raw.clone(),
+                    code,
+                    message,
+                });
+                continue;
+            }
+            Err(_) => continue,
+        };
+        let metadata = match std::fs::metadata(&real_source) {
+            Ok(metadata) => metadata,
+            Err(error) => {
+                failures.push(HostFileFailure {
+                    path: raw.clone(),
+                    code: "not_found".into(),
+                    message: error.to_string(),
+                });
+                continue;
+            }
+        };
+        if !metadata.is_file() {
+            failures.push(HostFileFailure {
+                path: raw.clone(),
+                code: "invalid_path".into(),
+                message: "source is not a regular file".into(),
+            });
+            continue;
+        }
+        if metadata.len() > max_bytes {
+            failures.push(HostFileFailure {
+                path: raw.clone(),
+                code: "file_too_large".into(),
+                message: format!(
+                    "file is {} bytes, over the {} byte limit",
+                    metadata.len(),
+                    max_bytes
+                ),
+            });
+            continue;
+        }
+        let Some(name) = real_source.file_name() else {
+            failures.push(HostFileFailure {
+                path: raw.clone(),
+                code: "invalid_path".into(),
+                message: "source has no file name".into(),
+            });
+            continue;
+        };
+        let target = unique_target(&real_destination, name);
+        if let Err(error) = std::fs::copy(&real_source, &target) {
+            failures.push(HostFileFailure {
+                path: raw.clone(),
+                code: "invalid_path".into(),
+                message: format!("could not copy to {target:?}: {error}"),
+            });
+            continue;
+        }
+        let copied = std::fs::metadata(&target).ok();
+        files.push(HostFileContent {
+            path: target.to_string_lossy().into_owned(),
+            content: String::new(),
+            content_encoding: HostFileEncoding::Utf8,
+            size_bytes: copied
+                .as_ref()
+                .map(|meta| meta.len())
+                .unwrap_or(metadata.len()),
+            mime_type: mime_type_for(&target),
+            modified_at_ms: copied.as_ref().and_then(modified_at_ms),
+        });
+    }
+    HostFileOutcome::Copied { files, failures }
+}
+
+/// The destination path for `name`, suffixed rather than overwriting.
+///
+/// A copy that silently replaced an existing attachment would lose a file the
+/// user still had. `name-2.ext` is what a file manager does, and it keeps a
+/// repeated copy idempotent in the only sense that matters: nothing is lost.
+fn unique_target(directory: &Path, name: &std::ffi::OsStr) -> PathBuf {
+    let candidate = directory.join(name);
+    if !candidate.exists() {
+        return candidate;
+    }
+    let path = Path::new(name);
+    let stem = path
+        .file_stem()
+        .map(|stem| stem.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let extension = path.extension().map(|extension| extension.to_os_string());
+    for index in 2..=MAX_COPY_FILES as u32 {
+        let mut candidate_name = format!("{stem}-{index}");
+        if let Some(extension) = &extension {
+            candidate_name.push('.');
+            candidate_name.push_str(&extension.to_string_lossy());
+        }
+        let candidate = directory.join(candidate_name);
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+    candidate
+}
+
+/// Standard base64 (RFC 4648) decoding, so a write can accept binary uploads.
+fn base64_decode(raw: &str) -> Option<Vec<u8>> {
+    let mut decoded = Vec::with_capacity(raw.len() / 4 * 3);
+    let mut buffer = 0u32;
+    let mut bits = 0u32;
+    for byte in raw.bytes() {
+        let value = match byte {
+            b'A'..=b'Z' => byte - b'A',
+            b'a'..=b'z' => byte - b'a' + 26,
+            b'0'..=b'9' => byte - b'0' + 52,
+            b'+' => 62,
+            b'/' => 63,
+            b'=' | b'\n' | b'\r' => continue,
+            _ => return None,
+        };
+        buffer = (buffer << 6) | u32::from(value);
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            decoded.push((buffer >> bits) as u8);
+        }
+    }
+    Some(decoded)
 }
 
 /// Lists a directory tree, relative to `path`.

@@ -27,6 +27,7 @@
 //! | connect/disconnect a host | `host_status_changed` | `host:{id}` |
 //! | create an environment | `environment_created` | `project:{project_id}` |
 //! | provision/ready/teardown | `environment_status_changed` | `project:{project_id}` |
+//! | create/rename/delete a section | `thread_section_created` / `thread_section_updated` / `thread_section_deleted` | `global` |
 //!
 //! Posting a user message to an `idle` thread emits **two** events in order:
 //! `thread_message_added`, then `thread_status_changed` (see
@@ -43,6 +44,7 @@ use crate::project::Project;
 use crate::queue::QueuedMessage;
 use crate::run::RunEvent;
 use crate::scope::DomainScope;
+use crate::section::ThreadSection;
 use crate::thread::{Thread, ThreadMessage, ThreadStatus};
 
 /// A fact about one entity change.
@@ -181,6 +183,32 @@ pub enum DomainEvent {
         /// Wall-clock milliseconds of the change.
         at_ms: u64,
     },
+    /// A sidebar section now exists.
+    ///
+    /// Sections are not project-scoped: the sidebar lists them for the whole
+    /// workspace, so the event goes to `global` exactly as
+    /// [`DomainEvent::ProjectCreated`] does.
+    ThreadSectionCreated {
+        /// The section.
+        section: ThreadSection,
+    },
+    /// A section's name changed.
+    ThreadSectionUpdated {
+        /// The section after the change.
+        section: ThreadSection,
+    },
+    /// A section was deleted.
+    ///
+    /// Carries the name it had, so a consumer removing it can report what
+    /// disappeared without a lookup the record no longer supports. Threads that
+    /// referenced it are deliberately **not** rewritten; see
+    /// [`crate::section`].
+    ThreadSectionDeleted {
+        /// The section that is gone.
+        section_id: crate::id::ThreadSectionId,
+        /// The name it had.
+        name: String,
+    },
 }
 
 impl DomainEvent {
@@ -201,6 +229,9 @@ impl DomainEvent {
             DomainEvent::EnvironmentCreated { .. } => "environment_created",
             DomainEvent::EnvironmentUpdated { .. } => "environment_updated",
             DomainEvent::EnvironmentStatusChanged { .. } => "environment_status_changed",
+            DomainEvent::ThreadSectionCreated { .. } => "thread_section_created",
+            DomainEvent::ThreadSectionUpdated { .. } => "thread_section_updated",
+            DomainEvent::ThreadSectionDeleted { .. } => "thread_section_deleted",
         }
     }
 
@@ -248,6 +279,12 @@ impl DomainEvent {
             DomainEvent::EnvironmentStatusChanged { project_id, .. } => {
                 DomainScope::Project(project_id.clone())
             }
+            // The sidebar lists sections workspace-wide, so there is no
+            // narrower room to publish to: `global` is the one scope that
+            // reaches every client that renders the list.
+            DomainEvent::ThreadSectionCreated { .. }
+            | DomainEvent::ThreadSectionUpdated { .. }
+            | DomainEvent::ThreadSectionDeleted { .. } => DomainScope::Global,
         }
     }
 }

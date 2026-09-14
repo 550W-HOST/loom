@@ -81,7 +81,8 @@ pub async fn answer(request: HostRpcRequest) -> HostRpcReport {
 fn workspace_path(operation: &HostRpcOperation) -> &str {
     match operation {
         HostRpcOperation::InspectGitSource { path, .. }
-        | HostRpcOperation::ListBranchOptions { path, .. } => path,
+        | HostRpcOperation::ListBranchOptions { path, .. }
+        | HostRpcOperation::ListCommands { cwd: path } => path,
         HostRpcOperation::WorkspaceStatus {
             workspace_context, ..
         }
@@ -215,6 +216,7 @@ async fn execute(workspace: PathBuf, operation: HostRpcOperation) -> Result<Valu
             "pull_request_unavailable",
             "pull request actions are unavailable: no host provider is configured",
         )),
+        HostRpcOperation::ListCommands { cwd } => list_commands(&cwd).await,
     }
 }
 
@@ -275,6 +277,16 @@ fn validate_operation(operation: &HostRpcOperation) -> Result<(), Failure> {
             Ok(())
         }
         HostRpcOperation::WorkspacePullRequest { .. } => Ok(()),
+        HostRpcOperation::ListCommands { cwd } => {
+            if cwd.is_empty() || cwd.contains('\0') || !Path::new(cwd).is_absolute() {
+                Err(Failure::new(
+                    "invalid_path",
+                    format!("commands cwd is not an absolute path: {cwd:?}"),
+                ))
+            } else {
+                Ok(())
+            }
+        }
         HostRpcOperation::WorkspaceCommit { message, .. } => {
             if message.trim().is_empty() {
                 Err(Failure::new(
@@ -1735,6 +1747,63 @@ fn mime_type(path: &str) -> Option<&'static str> {
         "pdf" => "application/pdf",
         _ => return None,
     })
+}
+
+/// The most prompt commands one workspace may advertise.
+const MAX_LISTED_COMMANDS: usize = 500;
+
+/// Lists the prompt commands a workspace makes available.
+///
+/// The discovery itself belongs to `pi-acp` — the same code the ACP adapter
+/// runs when it advertises commands to a client — so loom does not maintain a
+/// second, drifting notion of where a slash command lives. The daemon answers
+/// plain rows; the control plane projects them into bb's contract shape.
+///
+/// The project directories are scanned first so a project's command shadows a
+/// user command of the same name, which is what a per-repository prompt file is
+/// for.
+async fn list_commands(cwd: &str) -> Result<Value, Failure> {
+    let cwd = PathBuf::from(cwd);
+    let commands = tokio::task::spawn_blocking(move || {
+        let file_commands = pi_acp::commands::load_slash_commands(&cwd);
+        let mut names: Vec<String> = file_commands
+            .iter()
+            .map(|command| command.name.clone())
+            .collect();
+        names.extend(
+            pi_acp::commands::builtin_available_commands()
+                .into_iter()
+                .map(|command| command.name),
+        );
+        names.sort();
+        names.dedup();
+        names.truncate(MAX_LISTED_COMMANDS);
+        let rows = names
+            .into_iter()
+            .map(|name| {
+                let file = file_commands.iter().find(|command| command.name == name);
+                json!({
+                    "name": name,
+                    // A project prompt is `origin: project`; a built-in is the
+                    // agent's own, which the contract calls `builtin`. loom has
+                    // no user-level prompt directory of its own, so nothing is
+                    // ever reported as `user`.
+                    "origin": if file.is_some() { "project" } else { "builtin" },
+                    "description": file.map(|command| command.description.clone()),
+                    "argumentHint": Value::Null,
+                })
+            })
+            .collect::<Vec<_>>();
+        rows
+    })
+    .await
+    .map_err(|error| {
+        Failure::new(
+            "internal_error",
+            format!("command listing panicked: {error}"),
+        )
+    })?;
+    Ok(json!({ "commands": commands }))
 }
 
 #[cfg(test)]

@@ -363,8 +363,12 @@ pub struct ProviderReport {
 
 /// What a host was asked to do with its filesystem.
 ///
-/// Deliberately two operations. Both route through one code path so the
+/// Deliberately a small set of operations over one code path, so the
 /// containment, hidden-file and limit policies cannot drift between them.
+/// Write and copy live here rather than in their own request/report pair
+/// because they answer the same question — "operate on a file on the machine
+/// that owns it" — and share the same correlation, host-ownership and size
+/// bounds. See `docs/contract.md` ("B7").
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "operation", rename_all = "snake_case")]
 pub enum HostFileOperation {
@@ -400,9 +404,57 @@ pub enum HostFileOperation {
         /// Whether dotfiles are candidates.
         include_hidden: bool,
     },
+    /// Write one file inside `root_path`, creating parent directories.
+    ///
+    /// The root is **required and absolute**. An upload lands inside a
+    /// directory the control plane derived from the project's own workspace, so
+    /// a caller cannot name an arbitrary path on the host: the daemon resolves
+    /// the real path and refuses anything outside the root, exactly as a read
+    /// does. `content` is base64, so binary uploads survive the JSON hop.
+    ///
+    /// When `overwrite` is false and the target exists, the write succeeds at a
+    /// suffixed sibling (`name-2.ext`) instead of clobbering it; the answer
+    /// names the path actually written. That is what the read side already does
+    /// for a colliding copy, and an upload that silently replaced a file the
+    /// user still had would be the same data loss.
+    Write {
+        /// Absolute path to write.
+        path: String,
+        /// Absolute directory the resolved path must stay inside.
+        root_path: String,
+        /// The bytes, base64-encoded.
+        content: String,
+        /// Upper bound on the decoded size, refused rather than truncated.
+        max_bytes: u64,
+        /// Whether an existing file is replaced. `false` writes a suffixed
+        /// sibling instead.
+        overwrite: bool,
+    },
+    /// Copy existing files into a destination directory.
+    ///
+    /// Two roots, deliberately: a project-to-project attachment copy reads
+    /// from one project's attachment directory and writes into another's, and
+    /// a single root cannot describe both. Every source must resolve inside
+    /// `source_root` and the destination inside `destination_root`, so a copy
+    /// can never read or write outside the two attachment directories it was
+    /// told about. Sources that are missing or oversized are reported per path
+    /// rather than failing the whole request, because a client copying several
+    /// attachments should be told which ones did not make it.
+    Copy {
+        /// Absolute paths to copy, in order.
+        paths: Vec<String>,
+        /// Absolute directory the sources must stay inside.
+        source_root: String,
+        /// Absolute destination directory; created if absent.
+        destination: String,
+        /// Absolute directory the destination must stay inside.
+        destination_root: String,
+        /// Per-file upper bound, refused rather than truncated.
+        max_bytes: u64,
+    },
 }
 
-/// A request for a host to read or list its own filesystem.
+/// A request for a host to read, list or write its own filesystem.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HostFileRequest {
     /// Correlation token; the server is waiting on exactly this value.
@@ -456,7 +508,6 @@ pub enum HostPathKind {
     /// A directory.
     Directory,
 }
-
 /// One listed entry, relative to the listed root.
 ///
 /// `score` and `positions` exist for the contract's fuzzy path list; with no
@@ -488,6 +539,15 @@ pub enum HostFileOutcome {
         /// Whether entries were dropped to honour the limit.
         truncated: bool,
     },
+    /// A file was written; the entry describes what now exists on disk.
+    Written(HostFileContent),
+    /// Files were copied, and the entries describe the copies.
+    Copied {
+        /// The copies that were made, in the order they were asked for.
+        files: Vec<HostFileContent>,
+        /// Sources that could not be copied, with the reason.
+        failures: Vec<HostFileFailure>,
+    },
     /// The request could not be carried out.
     Failed {
         /// A stable machine-readable code, in the vocabulary the HTTP layer
@@ -496,6 +556,17 @@ pub enum HostFileOutcome {
         /// A human-readable explanation.
         message: String,
     },
+}
+
+/// One source that a bounded copy could not take.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HostFileFailure {
+    /// The source path that failed, echoed verbatim.
+    pub path: String,
+    /// A stable machine-readable code.
+    pub code: String,
+    /// A human-readable explanation.
+    pub message: String,
 }
 
 /// A host's answer to one [`HostFileRequest`].
@@ -677,6 +748,19 @@ pub enum HostRpcOperation {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         method: Option<String>,
     },
+    /// List the prompt commands available in a project workspace.
+    ///
+    /// A command list is a property of the **workspace on disk** — project
+    /// prompts live under `<cwd>/.pi/prompts`, user prompts under the agent
+    /// data directory — so the machine that owns the workspace is the only one
+    /// that can answer it. The result is projected into bb's
+    /// `projectCommandSchema` shape by the control plane; this operation
+    /// carries only the working directory and answers raw command rows.
+    #[serde(rename = "host.list_commands")]
+    ListCommands {
+        #[serde(rename = "cwd")]
+        cwd: String,
+    },
 }
 
 /// A host-scoped workspace request.
@@ -730,6 +814,18 @@ pub fn thread_storage_root(data_dir: &str, thread_id: &str) -> String {
     // every client is a browser that renders `/`.
     let trimmed = data_dir.trim_end_matches(['/', '\\']);
     format!("{trimmed}/thread-storage/{thread_id}")
+}
+
+/// Where a project's uploaded attachments live under a host's data directory.
+///
+/// The sibling of [`thread_storage_root`], for the same reason: the layout
+/// belongs to the daemon, and the control plane can only name it from the data
+/// directory the host *reported*. `<data_dir>/project-attachments/<project_id>`
+/// keeps every attachment under the machine that owns the project, so an
+/// upload can never land on the server's own disk.
+pub fn project_attachments_root(data_dir: &str, project_id: &str) -> String {
+    let trimmed = data_dir.trim_end_matches(['/', '\\']);
+    format!("{trimmed}/project-attachments/{project_id}")
 }
 
 #[cfg(test)]
