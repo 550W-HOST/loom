@@ -205,6 +205,12 @@ pub struct QueuedMessage {
     /// Whether the client asked for this message to be grouped with the next.
     #[serde(default)]
     pub group_with_next: bool,
+    /// Stable fractional ordering key within this thread's queue.
+    ///
+    /// Older snapshots did not have an order key; the server assigns one when
+    /// restoring those rows before accepting a reorder.
+    #[serde(default)]
+    pub sort_key: String,
     /// When the client wants it sent; `None` means as soon as the thread allows.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub send_at: Option<u64>,
@@ -273,6 +279,7 @@ impl QueuedMessage {
             permission_mode: new.permission_mode,
             service_tier: new.service_tier,
             group_with_next: new.group_with_next,
+            sort_key: String::new(),
             send_at: new.send_at,
             payload: new.payload,
             status: QueuedMessageStatus::Queued,
@@ -318,6 +325,39 @@ impl QueuedMessage {
     pub fn clear_failure(&mut self, now_ms: u64) {
         if self.failure_reason.take().is_some() {
             self.updated_at_ms = now_ms;
+        }
+    }
+
+    /// Replaces the prompt text while the row is still queued.
+    pub fn update_text(&mut self, text: String, now_ms: u64) -> Result<(), DomainError> {
+        if !self.status.is_open() {
+            return Err(DomainError::IllegalQueuedMessageTransition {
+                from: self.status,
+                to: self.status,
+            });
+        }
+        if text.trim().is_empty() {
+            return Err(DomainError::InvalidField {
+                field: "input",
+                reason: "must contain text".into(),
+            });
+        }
+        self.text = text;
+        self.updated_at_ms = now_ms.max(self.updated_at_ms.saturating_add(1));
+        Ok(())
+    }
+
+    /// Changes the durable queue order key.
+    pub fn set_sort_key(&mut self, sort_key: String, now_ms: u64) {
+        self.sort_key = sort_key;
+        self.updated_at_ms = now_ms.max(self.updated_at_ms.saturating_add(1));
+    }
+
+    /// Changes the edge that groups this row with the following row.
+    pub fn set_group_with_next(&mut self, group_with_next: bool, now_ms: u64) {
+        if self.group_with_next != group_with_next {
+            self.group_with_next = group_with_next;
+            self.updated_at_ms = now_ms.max(self.updated_at_ms.saturating_add(1));
         }
     }
 

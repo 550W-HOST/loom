@@ -99,5 +99,5 @@ pub use run::{RunEvent, RunOutcome};
 pub use scope::DomainScope;
 pub use thread::{
     MessageRole, NewThread, ProviderSessionBinding, ReasoningLevel, Thread, ThreadMessage,
-    ThreadStatus, ThreadTrigger, ThreadUpdate, ThreadVisibility,
+    ThreadOriginKind, ThreadStatus, ThreadTrigger, ThreadUpdate, ThreadVisibility,
 };

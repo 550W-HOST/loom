@@ -52,12 +52,33 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/publish", post(publish))
         .route("/api/v1/replay", get(replay))
         .route("/api/v1/threads", get(list_threads).post(create_thread))
+        .route("/api/v1/threads/fork", post(fork_thread))
+        .route(
+            "/api/v1/threads/resolve-mentions",
+            post(resolve_thread_mentions),
+        )
         .route("/api/v1/threads/running", get(running_threads))
         .route("/api/v1/threads/search", get(search_threads))
         .route("/api/v1/threads/{id}/events", get(thread_events))
-        .route("/api/v1/threads/{id}", get(get_thread).patch(update_thread))
+        .route(
+            "/api/v1/threads/{id}",
+            get(get_thread).patch(update_thread).delete(delete_thread),
+        )
         .route("/api/v1/threads/{id}/output", get(thread_output))
         .route("/api/v1/threads/{id}/read", post(read_thread))
+        .route("/api/v1/threads/{id}/unread", post(mark_thread_unread))
+        .route("/api/v1/threads/{id}/archive", post(archive_thread))
+        .route(
+            "/api/v1/threads/{id}/archive-all",
+            post(archive_all_threads),
+        )
+        .route("/api/v1/threads/{id}/unarchive", post(unarchive_thread))
+        .route("/api/v1/threads/{id}/pin", post(pin_thread))
+        .route("/api/v1/threads/{id}/unpin", post(unpin_thread))
+        .route(
+            "/api/v1/threads/{id}/pin-order",
+            axum::routing::patch(reorder_pinned_thread),
+        )
         .route("/api/v1/threads/{id}/send", post(send_thread))
         .route(
             "/api/v1/threads/{id}/child-summary",
@@ -126,6 +147,18 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/v1/threads/{id}/queued-messages/{queued_message_id}/send",
             post(send_queued_message),
+        )
+        .route(
+            "/api/v1/threads/{id}/queued-messages/{queued_message_id}",
+            axum::routing::delete(delete_queued_message).patch(update_queued_message),
+        )
+        .route(
+            "/api/v1/threads/{id}/queued-messages/{queued_message_id}/order",
+            axum::routing::patch(reorder_queued_message),
+        )
+        .route(
+            "/api/v1/threads/{id}/queued-messages/group-boundary",
+            axum::routing::patch(set_queued_message_group_boundary),
         )
         .route("/api/v1/queued-messages", get(list_queued_messages))
         .route("/api/v1/threads/{id}/messages", post(post_thread_message))
@@ -703,16 +736,16 @@ fn thread_summary_value(state: &AppState, thread: &Thread) -> Value {
         "sectionId": thread.section_id,
         "status": bb_thread_status(thread.status),
         "parentThreadId": thread.parent_thread_id.as_ref().map(ToString::to_string),
-        "sourceThreadId": null,
-        "originKind": null,
-        "originPluginId": null,
+        "sourceThreadId": thread.source_thread_id.as_ref().map(ToString::to_string),
+        "originKind": thread.origin_kind.map(|origin| origin.as_str()),
+        "originPluginId": thread.origin_plugin_id,
         // A stored field, not a function of `status`: bb's archived and hidden
         // flags are independent, so archiving a thread does not hide it and
         // hiding one does not archive it.
         "visibility": thread.visibility.as_str(),
         "archivedAt": thread.archived_at_ms,
-        "pinnedAt": null,
-        "deletedAt": null,
+        "pinnedAt": thread.pinned_at_ms,
+        "deletedAt": thread.deleted_at_ms,
         "lastReadAt": thread.last_read_at_ms,
         "latestAttentionAt": thread.updated_at_ms,
         "createdAt": thread.created_at_ms,
@@ -776,7 +809,13 @@ fn thread_list_entry_value(state: &AppState, thread: &Thread) -> Value {
             "none"
         }),
     );
-    object.insert("pinSortKey".into(), Value::Null);
+    object.insert(
+        "pinSortKey".into(),
+        thread
+            .pin_sort_key
+            .clone()
+            .map_or(Value::Null, Value::String),
+    );
     object.insert(
         "hasPendingInteraction".into(),
         Value::Bool(state.registry.has_pending_interaction(&thread.id)),
@@ -873,6 +912,23 @@ fn error_response(status: StatusCode, message: String) -> Response {
 
 fn error_response_with_code(status: StatusCode, code: &'static str, message: String) -> Response {
     (status, Json(json!({ "code": code, "message": message }))).into_response()
+}
+
+fn error_response_with_details(
+    status: StatusCode,
+    code: &'static str,
+    message: String,
+    details: Value,
+) -> Response {
+    (
+        status,
+        Json(json!({
+            "code": code,
+            "message": message,
+            "details": details,
+        })),
+    )
+        .into_response()
 }
 
 /// Body of a create-thread request.
@@ -1066,11 +1122,8 @@ async fn thread_events(
         Ok(thread_id) => thread_id,
         Err(response) => return response,
     };
-    if state.registry.thread(&thread_id).is_none() {
-        return error_response(
-            StatusCode::NOT_FOUND,
-            format!("thread {thread_id} is not known"),
-        );
+    if let Err(response) = public_thread_or_response(&state, &thread_id) {
+        return response;
     }
     let after = match parse_query_sequence(query.after_seq.as_ref(), "afterSeq") {
         Ok(value) => value,
@@ -1137,12 +1190,9 @@ async fn get_thread(
         Ok(thread_id) => thread_id,
         Err(response) => return response,
     };
-    match state.registry.thread(&thread_id) {
-        Some(thread) => Json(thread_summary_value(&state, &thread)).into_response(),
-        None => error_response(
-            StatusCode::NOT_FOUND,
-            format!("thread {thread_id} is not known"),
-        ),
+    match public_thread_or_response(&state, &thread_id) {
+        Ok(thread) => Json(thread_summary_value(&state, &thread)).into_response(),
+        Err(response) => response,
     }
 }
 
@@ -1154,11 +1204,8 @@ async fn thread_output(
         Ok(thread_id) => thread_id,
         Err(response) => return response,
     };
-    if state.registry.thread(&thread_id).is_none() {
-        return error_response(
-            StatusCode::NOT_FOUND,
-            format!("thread {thread_id} is not known"),
-        );
+    if let Err(response) = public_thread_or_response(&state, &thread_id) {
+        return response;
     }
 
     let mut delta_output = String::new();
@@ -1209,13 +1256,405 @@ async fn read_thread(State(state): State<AppState>, Path(raw_thread_id): Path<St
         Ok(thread_id) => thread_id,
         Err(response) => return response,
     };
+    if let Err(response) = public_thread_or_response(&state, &thread_id) {
+        return response;
+    }
     match state
         .registry
         .mark_thread_read(&thread_id, loom_relay::now_ms())
     {
-        Ok(thread) => Json(thread_summary_value(&state, &thread)).into_response(),
+        Ok((thread, event)) => {
+            if let Some(event) = event {
+                let _ = state.publish_domain_event(&event);
+            }
+            Json(thread_summary_value(&state, &thread)).into_response()
+        }
         Err(error) => command_error_response(error),
     }
+}
+
+/// The lifecycle acknowledgement shared by archive, unarchive and delete.
+fn lifecycle_ok() -> Response {
+    Json(json!({ "ok": true })).into_response()
+}
+
+/// A deleted thread is retained for replay, but is no longer a client resource.
+#[allow(clippy::result_large_err)]
+fn public_thread_or_response(state: &AppState, thread_id: &ThreadId) -> Result<Thread, Response> {
+    match state.registry.thread(thread_id) {
+        Some(thread) if thread.deleted_at_ms.is_none() => Ok(thread),
+        Some(_) => Err(error_response_with_code(
+            StatusCode::NOT_FOUND,
+            "thread_not_found",
+            format!("thread {thread_id} has been deleted"),
+        )),
+        None => Err(error_response(
+            StatusCode::NOT_FOUND,
+            format!("thread {thread_id} is not known"),
+        )),
+    }
+}
+
+/// Archives one thread. Archiving is idempotent; the event is only published
+/// when the status actually changes.
+async fn archive_thread(
+    State(state): State<AppState>,
+    Path(raw_thread_id): Path<String>,
+) -> Response {
+    let thread_id = match parse_thread_id(&raw_thread_id) {
+        Ok(thread_id) => thread_id,
+        Err(response) => return response,
+    };
+    if let Err(response) = public_thread_or_response(&state, &thread_id) {
+        return response;
+    }
+    match state
+        .registry
+        .archive_thread(&thread_id, loom_relay::now_ms())
+    {
+        Ok((_thread, event)) => {
+            if let Some(event) = event {
+                if let Err(error) = state.publish_domain_event(&event) {
+                    return error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string());
+                }
+            }
+            lifecycle_ok()
+        }
+        Err(error) => command_error_response(error),
+    }
+}
+
+/// Archives a thread and its direct child/source-fork threads.
+async fn archive_all_threads(
+    State(state): State<AppState>,
+    Path(raw_thread_id): Path<String>,
+) -> Response {
+    let thread_id = match parse_thread_id(&raw_thread_id) {
+        Ok(thread_id) => thread_id,
+        Err(response) => return response,
+    };
+    if let Err(response) = public_thread_or_response(&state, &thread_id) {
+        return response;
+    }
+    match state
+        .registry
+        .archive_all_threads(&thread_id, loom_relay::now_ms())
+    {
+        Ok((archived_ids, events)) => {
+            if let Err(error) = publish_all(&state, &events) {
+                return error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string());
+            }
+            Json(json!({
+                "ok": true,
+                "archivedThreadIds": archived_ids
+                    .into_iter()
+                    .map(|id| id.to_string())
+                    .collect::<Vec<_>>(),
+            }))
+            .into_response()
+        }
+        Err(error) => command_error_response(error),
+    }
+}
+
+/// Restores an archived thread to the domain's idle state.
+async fn unarchive_thread(
+    State(state): State<AppState>,
+    Path(raw_thread_id): Path<String>,
+) -> Response {
+    let thread_id = match parse_thread_id(&raw_thread_id) {
+        Ok(thread_id) => thread_id,
+        Err(response) => return response,
+    };
+    if let Err(response) = public_thread_or_response(&state, &thread_id) {
+        return response;
+    }
+    match state
+        .registry
+        .unarchive_thread(&thread_id, loom_relay::now_ms())
+    {
+        Ok((_thread, event)) => {
+            if let Some(event) = event {
+                if let Err(error) = state.publish_domain_event(&event) {
+                    return error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string());
+                }
+            }
+            lifecycle_ok()
+        }
+        Err(error) => command_error_response(error),
+    }
+}
+
+/// The request body for `threads.delete`.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DeleteThreadRequest {
+    child_threads_confirmed: bool,
+}
+
+/// Deletes a thread as a tombstone. Child threads require an explicit client
+/// confirmation because their parent reference is part of the visible model.
+async fn delete_thread(
+    State(state): State<AppState>,
+    Path(raw_thread_id): Path<String>,
+    Json(request): Json<DeleteThreadRequest>,
+) -> Response {
+    let thread_id = match parse_thread_id(&raw_thread_id) {
+        Ok(thread_id) => thread_id,
+        Err(response) => return response,
+    };
+    if let Err(response) = public_thread_or_response(&state, &thread_id) {
+        return response;
+    }
+    let child_count = state.registry.child_count(&thread_id);
+    if child_count > 0 && !request.child_threads_confirmed {
+        return error_response_with_details(
+            StatusCode::CONFLICT,
+            "child_threads_confirmation_required",
+            format!("thread {thread_id} has {child_count} child thread(s); confirm deletion"),
+            json!({ "childThreadCount": child_count }),
+        );
+    }
+    match state
+        .registry
+        .delete_thread(&thread_id, loom_relay::now_ms())
+    {
+        Ok((_thread, event)) => {
+            if let Some(event) = event {
+                if let Err(error) = state.publish_domain_event(&event) {
+                    return error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string());
+                }
+            }
+            lifecycle_ok()
+        }
+        Err(error) => command_error_response(error),
+    }
+}
+
+/// The fork request is intentionally opaque after `sourceThreadId`: the
+/// contract validates the input/environment seed, while loom cannot yet pass
+/// either to ACP's session/fork capability.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ForkThreadRequest {
+    source_thread_id: String,
+    #[serde(flatten)]
+    _options: std::collections::BTreeMap<String, Value>,
+}
+
+/// Forks a provider session when the execution plane supports it.
+async fn fork_thread(
+    State(state): State<AppState>,
+    Json(request): Json<ForkThreadRequest>,
+) -> Response {
+    let source_thread_id = match parse_thread_id(&request.source_thread_id) {
+        Ok(thread_id) => thread_id,
+        Err(response) => return response,
+    };
+    let source = match public_thread_or_response(&state, &source_thread_id) {
+        Ok(thread) => thread,
+        Err(response) => return response,
+    };
+    if source.status == ThreadStatus::Archived {
+        return error_response_with_details(
+            StatusCode::CONFLICT,
+            "thread_not_writable",
+            format!("thread {source_thread_id} is archived and cannot be forked"),
+            json!({
+                "reason": "archived",
+                "archivedAt": source.archived_at_ms,
+                "threadStatus": bb_thread_status(source.status),
+            }),
+        );
+    }
+    if source.provider_session_id.is_none() {
+        return error_response_with_code(
+            StatusCode::BAD_REQUEST,
+            "fork_source_session_unavailable",
+            format!("thread {source_thread_id} has no provider session to use as a fork source"),
+        );
+    }
+    error_response_with_code(
+        StatusCode::NOT_IMPLEMENTED,
+        "not_configured",
+        format!("ACP session/fork is not configured for source thread {source_thread_id}"),
+    )
+}
+
+/// Pins a thread at the front of the pinned order.
+async fn pin_thread(State(state): State<AppState>, Path(raw_thread_id): Path<String>) -> Response {
+    let thread_id = match parse_thread_id(&raw_thread_id) {
+        Ok(thread_id) => thread_id,
+        Err(response) => return response,
+    };
+    if let Err(response) = public_thread_or_response(&state, &thread_id) {
+        return response;
+    }
+    match state.registry.pin_thread(&thread_id, loom_relay::now_ms()) {
+        Ok((thread, events)) => {
+            if let Err(error) = publish_all(&state, &events) {
+                return error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string());
+            }
+            Json(thread_summary_value(&state, &thread)).into_response()
+        }
+        Err(error) => command_error_response(error),
+    }
+}
+
+/// Removes a thread from the pinned order.
+async fn unpin_thread(
+    State(state): State<AppState>,
+    Path(raw_thread_id): Path<String>,
+) -> Response {
+    let thread_id = match parse_thread_id(&raw_thread_id) {
+        Ok(thread_id) => thread_id,
+        Err(response) => return response,
+    };
+    if let Err(response) = public_thread_or_response(&state, &thread_id) {
+        return response;
+    }
+    match state
+        .registry
+        .unpin_thread(&thread_id, loom_relay::now_ms())
+    {
+        Ok((thread, event)) => {
+            if let Some(event) = event {
+                if let Err(error) = state.publish_domain_event(&event) {
+                    return error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string());
+                }
+            }
+            Json(thread_summary_value(&state, &thread)).into_response()
+        }
+        Err(error) => command_error_response(error),
+    }
+}
+
+/// Clears the read marker without touching timeline events.
+async fn mark_thread_unread(
+    State(state): State<AppState>,
+    Path(raw_thread_id): Path<String>,
+) -> Response {
+    let thread_id = match parse_thread_id(&raw_thread_id) {
+        Ok(thread_id) => thread_id,
+        Err(response) => return response,
+    };
+    if let Err(response) = public_thread_or_response(&state, &thread_id) {
+        return response;
+    }
+    match state
+        .registry
+        .mark_thread_unread(&thread_id, loom_relay::now_ms())
+    {
+        Ok((thread, event)) => {
+            if let Some(event) = event {
+                if let Err(error) = state.publish_domain_event(&event) {
+                    return error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string());
+                }
+            }
+            Json(thread_summary_value(&state, &thread)).into_response()
+        }
+        Err(error) => command_error_response(error),
+    }
+}
+
+/// Request body for `threads.pinOrder`.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ReorderPinnedThreadRequest {
+    previous_thread_id: Option<String>,
+    next_thread_id: Option<String>,
+}
+
+#[allow(clippy::result_large_err)]
+fn parse_optional_thread_id(raw: Option<&str>) -> Result<Option<ThreadId>, Response> {
+    raw.filter(|value| !value.is_empty())
+        .map(|value| {
+            value
+                .parse::<ThreadId>()
+                .map_err(|error| error_response(StatusCode::BAD_REQUEST, error.to_string()))
+        })
+        .transpose()
+}
+
+/// Reorders one pinned thread between the requested neighbors.
+async fn reorder_pinned_thread(
+    State(state): State<AppState>,
+    Path(raw_thread_id): Path<String>,
+    Json(request): Json<ReorderPinnedThreadRequest>,
+) -> Response {
+    let thread_id = match parse_thread_id(&raw_thread_id) {
+        Ok(thread_id) => thread_id,
+        Err(response) => return response,
+    };
+    if let Err(response) = public_thread_or_response(&state, &thread_id) {
+        return response;
+    }
+    let previous_thread_id = match parse_optional_thread_id(request.previous_thread_id.as_deref()) {
+        Ok(id) => id,
+        Err(response) => return response,
+    };
+    let next_thread_id = match parse_optional_thread_id(request.next_thread_id.as_deref()) {
+        Ok(id) => id,
+        Err(response) => return response,
+    };
+    match state.registry.reorder_pinned_thread(
+        &thread_id,
+        previous_thread_id.as_ref(),
+        next_thread_id.as_ref(),
+        loom_relay::now_ms(),
+    ) {
+        Ok((threads, events)) => {
+            if let Err(error) = publish_all(&state, &events) {
+                return error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string());
+            }
+            Json(
+                threads
+                    .iter()
+                    .map(|thread| thread_list_entry_value(&state, thread))
+                    .collect::<Vec<_>>(),
+            )
+            .into_response()
+        }
+        Err(error) => command_error_response(error),
+    }
+}
+
+/// Request body for `threads.resolveMentions`.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ResolveThreadMentionsRequest {
+    thread_ids: Vec<String>,
+}
+
+/// Resolves live thread ids into the labels used by prompt mentions.
+async fn resolve_thread_mentions(
+    State(state): State<AppState>,
+    Json(request): Json<ResolveThreadMentionsRequest>,
+) -> Response {
+    let mut thread_ids = Vec::with_capacity(request.thread_ids.len());
+    for raw_thread_id in request.thread_ids {
+        match raw_thread_id.parse::<ThreadId>() {
+            Ok(thread_id) => thread_ids.push(thread_id),
+            Err(error) => return error_response(StatusCode::BAD_REQUEST, error.to_string()),
+        }
+    }
+    Json(
+        state
+            .registry
+            .resolve_mention_threads(&thread_ids)
+            .into_iter()
+            .map(|thread| {
+                json!({
+                    "threadId": thread.id.to_string(),
+                    "projectId": thread.project_id.to_string(),
+                    "label": thread
+                        .title
+                        .unwrap_or_else(|| format!("Thread {}", thread.id)),
+                })
+            })
+            .collect::<Vec<_>>(),
+    )
+    .into_response()
 }
 
 /// Body of a `threads.send` request.
@@ -1309,11 +1748,9 @@ async fn send_thread(
         Ok(thread_id) => thread_id,
         Err(response) => return response,
     };
-    let Some(thread) = state.registry.thread(&thread_id) else {
-        return error_response(
-            StatusCode::NOT_FOUND,
-            format!("thread {thread_id} is not known"),
-        );
+    let thread = match public_thread_or_response(&state, &thread_id) {
+        Ok(thread) => thread,
+        Err(response) => return response,
     };
     let Some(content) = text_from_send_input(&request.input) else {
         return error_response(
@@ -1455,16 +1892,13 @@ async fn thread_tabs(State(state): State<AppState>, Path(raw_thread_id): Path<St
         Ok(thread_id) => thread_id,
         Err(response) => return response,
     };
-    match state.registry.thread(&thread_id) {
-        Some(thread) => Json(json!({
+    match public_thread_or_response(&state, &thread_id) {
+        Ok(thread) => Json(json!({
             "revision": thread.tabs_revision,
             "tabs": thread.tabs,
         }))
         .into_response(),
-        None => error_response(
-            StatusCode::NOT_FOUND,
-            format!("thread {thread_id} is not known"),
-        ),
+        Err(response) => response,
     }
 }
 
@@ -1496,6 +1930,9 @@ async fn update_thread_tabs(
         Ok(thread_id) => thread_id,
         Err(response) => return response,
     };
+    if let Err(response) = public_thread_or_response(&state, &thread_id) {
+        return response;
+    }
     match state.registry.set_thread_tabs(
         &thread_id,
         request.tabs,
@@ -1539,6 +1976,9 @@ async fn update_thread(
         Ok(thread_id) => thread_id,
         Err(response) => return response,
     };
+    if let Err(response) = public_thread_or_response(&state, &thread_id) {
+        return response;
+    }
     match state
         .registry
         .update_thread(&thread_id, &update, loom_relay::now_ms())
@@ -1567,11 +2007,8 @@ async fn thread_child_summary(
         Ok(thread_id) => thread_id,
         Err(response) => return response,
     };
-    if state.registry.thread(&thread_id).is_none() {
-        return error_response(
-            StatusCode::NOT_FOUND,
-            format!("thread {thread_id} is not known"),
-        );
+    if let Err(response) = public_thread_or_response(&state, &thread_id) {
+        return response;
     }
     Json(json!({ "nonDeletedChildCount": state.registry.child_count(&thread_id) })).into_response()
 }
@@ -1618,11 +2055,9 @@ async fn thread_default_execution_options(
         Ok(thread_id) => thread_id,
         Err(response) => return response,
     };
-    let Some(thread) = state.registry.thread(&thread_id) else {
-        return error_response(
-            StatusCode::NOT_FOUND,
-            format!("thread {thread_id} is not known"),
-        );
+    let thread = match public_thread_or_response(&state, &thread_id) {
+        Ok(thread) => thread,
+        Err(response) => return response,
     };
     if thread.model.is_none() && thread.reasoning_level.is_none() {
         return Json(Value::Null).into_response();
@@ -1699,11 +2134,8 @@ async fn thread_conversation_outline(
         Ok(thread_id) => thread_id,
         Err(response) => return response,
     };
-    if state.registry.thread(&thread_id).is_none() {
-        return error_response(
-            StatusCode::NOT_FOUND,
-            format!("thread {thread_id} is not known"),
-        );
+    if let Err(response) = public_thread_or_response(&state, &thread_id) {
+        return response;
     }
     let entries = match thread_domain_events(&state, &thread_id) {
         Ok(entries) => entries,
@@ -1758,11 +2190,8 @@ async fn thread_prompt_history(
         Ok(thread_id) => thread_id,
         Err(response) => return response,
     };
-    if state.registry.thread(&thread_id).is_none() {
-        return error_response(
-            StatusCode::NOT_FOUND,
-            format!("thread {thread_id} is not known"),
-        );
+    if let Err(response) = public_thread_or_response(&state, &thread_id) {
+        return response;
     }
     let limit = match parse_query_sequence(query.limit.as_ref(), "limit") {
         Ok(Some(limit)) => limit.clamp(1, PROMPT_HISTORY_MAX_LIMIT) as usize,
@@ -2051,11 +2480,8 @@ async fn open_thread(
         Ok(thread_id) => thread_id,
         Err(response) => return response,
     };
-    if state.registry.thread(&thread_id).is_none() {
-        return error_response(
-            StatusCode::NOT_FOUND,
-            format!("thread {thread_id} is not known"),
-        );
+    if let Err(response) = public_thread_or_response(&state, &thread_id) {
+        return response;
     }
     let scope = Scope::Thread(thread_id.to_string());
     let frame = json!({
@@ -2098,11 +2524,8 @@ async fn compact_thread(
         Ok(thread_id) => thread_id,
         Err(response) => return response,
     };
-    if state.registry.thread(&thread_id).is_none() {
-        return error_response(
-            StatusCode::NOT_FOUND,
-            format!("thread {thread_id} is not known"),
-        );
+    if let Err(response) = public_thread_or_response(&state, &thread_id) {
+        return response;
     }
     error_response_with_code(
         StatusCode::NOT_IMPLEMENTED,
@@ -2134,11 +2557,8 @@ async fn edit_thread_message(
         Ok(thread_id) => thread_id,
         Err(response) => return response,
     };
-    if state.registry.thread(&thread_id).is_none() {
-        return error_response(
-            StatusCode::NOT_FOUND,
-            format!("thread {thread_id} is not known"),
-        );
+    if let Err(response) = public_thread_or_response(&state, &thread_id) {
+        return response;
     }
     error_response_with_code(
         StatusCode::NOT_IMPLEMENTED,
@@ -2207,11 +2627,9 @@ async fn retry_thread(
         Ok(thread_id) => thread_id,
         Err(response) => return response,
     };
-    let Some(thread) = state.registry.thread(&thread_id) else {
-        return error_response(
-            StatusCode::NOT_FOUND,
-            format!("thread {thread_id} is not known"),
-        );
+    let thread = match public_thread_or_response(&state, &thread_id) {
+        Ok(thread) => thread,
+        Err(response) => return response,
     };
     if thread.status.is_archived() {
         return error_response_with_code(
@@ -2353,7 +2771,7 @@ async fn retry_thread(
         Err(error) => return command_error_response(error),
     }
 
-    let Some(thread) = state.registry.thread(&thread_id) else {
+    let Some(thread) = state.registry.public_thread(&thread_id) else {
         return error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("thread {thread_id} disappeared during its retry"),
@@ -2398,11 +2816,8 @@ async fn stop_thread_route(
         Ok(thread_id) => thread_id,
         Err(response) => return response,
     };
-    if state.registry.thread(&thread_id).is_none() {
-        return error_response(
-            StatusCode::NOT_FOUND,
-            format!("thread {thread_id} is not known"),
-        );
+    if let Err(response) = public_thread_or_response(&state, &thread_id) {
+        return response;
     }
     state.stop_thread(&thread_id);
     Json(json!({ "ok": true })).into_response()
@@ -2563,11 +2978,8 @@ async fn thread_timeline(
         Ok(thread_id) => thread_id,
         Err(response) => return response,
     };
-    if state.registry.thread(&thread_id).is_none() {
-        return error_response(
-            StatusCode::NOT_FOUND,
-            format!("thread {thread_id} is not known"),
-        );
+    if let Err(response) = public_thread_or_response(&state, &thread_id) {
+        return response;
     }
     let after = match parse_query_sequence(query.after_sequence.as_ref(), "afterSequence") {
         Ok(value) => value,
@@ -2812,11 +3224,8 @@ async fn list_queued_messages(
         },
     };
     if let Some(thread_id) = &thread_id {
-        if state.registry.thread(thread_id).is_none() {
-            return error_response(
-                StatusCode::NOT_FOUND,
-                format!("thread {thread_id} is not known"),
-            );
+        if let Err(response) = public_thread_or_response(&state, thread_id) {
+            return response;
         }
     }
     let now = loom_relay::now_ms();
@@ -2841,11 +3250,8 @@ async fn thread_queued_messages(
         Ok(thread_id) => thread_id,
         Err(response) => return response,
     };
-    if state.registry.thread(&thread_id).is_none() {
-        return error_response(
-            StatusCode::NOT_FOUND,
-            format!("thread {thread_id} is not known"),
-        );
+    if let Err(response) = public_thread_or_response(&state, &thread_id) {
+        return response;
     }
     let now = loom_relay::now_ms();
     Json(
@@ -2896,6 +3302,9 @@ async fn create_queued_message(
         Ok(thread_id) => thread_id,
         Err(response) => return response,
     };
+    if let Err(response) = public_thread_or_response(&state, &thread_id) {
+        return response;
+    }
     let text = match text_from_queued_input(&request.input) {
         Ok(text) => text,
         Err(message) => {
@@ -2987,11 +3396,8 @@ async fn send_queued_message(
         Ok(thread_id) => thread_id,
         Err(response) => return response,
     };
-    if state.registry.thread(&thread_id).is_none() {
-        return error_response(
-            StatusCode::NOT_FOUND,
-            format!("thread {thread_id} is not known"),
-        );
+    if let Err(response) = public_thread_or_response(&state, &thread_id) {
+        return response;
     }
     let queued_message_id = match raw_queued_message_id.parse::<QueuedMessageId>() {
         Ok(id) => id,
@@ -3064,6 +3470,278 @@ async fn send_queued_message(
             "queued_message_claim_lost",
             format!("queued message {queued_message_id} is no longer queued"),
         ),
+    }
+}
+
+#[allow(clippy::result_large_err)]
+fn parse_queued_message_id(raw: &str) -> Result<QueuedMessageId, Response> {
+    raw.parse::<QueuedMessageId>()
+        .map_err(|error| error_response(StatusCode::BAD_REQUEST, error.to_string()))
+}
+
+#[allow(clippy::result_large_err)]
+fn parse_optional_queued_message_id(
+    raw: Option<&str>,
+) -> Result<Option<QueuedMessageId>, Response> {
+    raw.filter(|value| !value.is_empty())
+        .map(parse_queued_message_id)
+        .transpose()
+}
+
+#[allow(clippy::result_large_err)]
+fn queued_message_for_thread(
+    state: &AppState,
+    thread_id: &ThreadId,
+    queued_message_id: &QueuedMessageId,
+) -> Result<QueuedMessage, Response> {
+    let Some(message) = state.registry.queued_message(queued_message_id) else {
+        return Err(error_response(
+            StatusCode::NOT_FOUND,
+            format!("queued message {queued_message_id} is not known"),
+        ));
+    };
+    if message.thread_id != *thread_id {
+        return Err(error_response(
+            StatusCode::NOT_FOUND,
+            format!("queued message {queued_message_id} belongs to another thread"),
+        ));
+    }
+    Ok(message)
+}
+
+/// Deletes a queued row by moving it to the durable `cancelled` terminal
+/// state. The row remains in snapshots and replay even though queue reads omit
+/// terminal messages.
+async fn delete_queued_message(
+    State(state): State<AppState>,
+    Path((raw_thread_id, raw_queued_message_id)): Path<(String, String)>,
+) -> Response {
+    let thread_id = match parse_thread_id(&raw_thread_id) {
+        Ok(thread_id) => thread_id,
+        Err(response) => return response,
+    };
+    if let Err(response) = public_thread_or_response(&state, &thread_id) {
+        return response;
+    }
+    let queued_message_id = match parse_queued_message_id(&raw_queued_message_id) {
+        Ok(id) => id,
+        Err(response) => return response,
+    };
+    let message = match queued_message_for_thread(&state, &thread_id, &queued_message_id) {
+        Ok(message) => message,
+        Err(response) => return response,
+    };
+    if !message.status.is_open() {
+        return error_response_with_code(
+            StatusCode::CONFLICT,
+            "queued_message_claim_lost",
+            format!(
+                "queued message {queued_message_id} is already {}",
+                message.status
+            ),
+        );
+    }
+    match state
+        .registry
+        .cancel_queued_message(&queued_message_id, loom_relay::now_ms())
+    {
+        Ok((_message, event)) => match state.publish_domain_event(&event) {
+            Ok(_) => lifecycle_ok(),
+            Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+        },
+        Err(error) => command_error_response(error),
+    }
+}
+
+/// Body of `threads.updateQueuedMessage`.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateQueuedMessageRequest {
+    expected_updated_at: u64,
+    input: Value,
+}
+
+/// Updates a still-queued prompt under the timestamp CAS supplied by the UI.
+async fn update_queued_message(
+    State(state): State<AppState>,
+    Path((raw_thread_id, raw_queued_message_id)): Path<(String, String)>,
+    Json(request): Json<UpdateQueuedMessageRequest>,
+) -> Response {
+    let thread_id = match parse_thread_id(&raw_thread_id) {
+        Ok(thread_id) => thread_id,
+        Err(response) => return response,
+    };
+    if let Err(response) = public_thread_or_response(&state, &thread_id) {
+        return response;
+    }
+    let queued_message_id = match parse_queued_message_id(&raw_queued_message_id) {
+        Ok(id) => id,
+        Err(response) => return response,
+    };
+    let message = match queued_message_for_thread(&state, &thread_id, &queued_message_id) {
+        Ok(message) => message,
+        Err(response) => return response,
+    };
+    if !message.status.is_open() {
+        return error_response_with_code(
+            StatusCode::CONFLICT,
+            "queued_message_claim_lost",
+            format!(
+                "queued message {queued_message_id} is already {}",
+                message.status
+            ),
+        );
+    }
+    let text = match text_from_queued_input(&request.input) {
+        Ok(text) => text,
+        Err(message) => {
+            return error_response_with_code(StatusCode::BAD_REQUEST, "invalid_request", message)
+        }
+    };
+    match state.registry.update_queued_message(
+        &thread_id,
+        &queued_message_id,
+        request.expected_updated_at,
+        text,
+        loom_relay::now_ms(),
+    ) {
+        Ok((message, event)) => match state.publish_domain_event(&event) {
+            Ok(_) => {
+                Json(queued_message_row(&state, &message, loom_relay::now_ms())).into_response()
+            }
+            Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+        },
+        Err(CommandError::Conflict(message)) => {
+            error_response_with_code(StatusCode::CONFLICT, "conflict", message)
+        }
+        Err(error) => command_error_response(error),
+    }
+}
+
+/// Body of `threads.reorderQueuedMessage`.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ReorderQueuedMessageRequest {
+    #[serde(default)]
+    group_boundary_queued_message_id: Option<String>,
+    previous_queued_message_id: Option<String>,
+    next_queued_message_id: Option<String>,
+}
+
+/// Reorders one queued row while retaining its grouping edges.
+async fn reorder_queued_message(
+    State(state): State<AppState>,
+    Path((raw_thread_id, raw_queued_message_id)): Path<(String, String)>,
+    Json(request): Json<ReorderQueuedMessageRequest>,
+) -> Response {
+    let thread_id = match parse_thread_id(&raw_thread_id) {
+        Ok(thread_id) => thread_id,
+        Err(response) => return response,
+    };
+    if let Err(response) = public_thread_or_response(&state, &thread_id) {
+        return response;
+    }
+    let queued_message_id = match parse_queued_message_id(&raw_queued_message_id) {
+        Ok(id) => id,
+        Err(response) => return response,
+    };
+    let previous_id =
+        match parse_optional_queued_message_id(request.previous_queued_message_id.as_deref()) {
+            Ok(id) => id,
+            Err(response) => return response,
+        };
+    let next_id = match parse_optional_queued_message_id(request.next_queued_message_id.as_deref())
+    {
+        Ok(id) => id,
+        Err(response) => return response,
+    };
+    let group_boundary_id =
+        match parse_optional_queued_message_id(request.group_boundary_queued_message_id.as_deref())
+        {
+            Ok(id) => id,
+            Err(response) => return response,
+        };
+    match state.registry.reorder_queued_message(
+        &thread_id,
+        &queued_message_id,
+        previous_id.as_ref(),
+        next_id.as_ref(),
+        group_boundary_id.as_ref(),
+        loom_relay::now_ms(),
+    ) {
+        Ok((messages, events)) => {
+            if let Err(error) = publish_all(&state, &events) {
+                return error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string());
+            }
+            let now = loom_relay::now_ms();
+            Json(
+                messages
+                    .iter()
+                    .map(|message| queued_message_row(&state, message, now))
+                    .collect::<Vec<_>>(),
+            )
+            .into_response()
+        }
+        Err(error) => command_error_response(error),
+    }
+}
+
+/// Body of `threads.setQueuedMessageGroupBoundary`.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SetQueuedMessageGroupBoundaryRequest {
+    expected_grouped_prefix_queued_message_ids: Vec<String>,
+    group_boundary_queued_message_id: String,
+}
+
+/// Changes the grouped prefix under an optimistic prefix check.
+async fn set_queued_message_group_boundary(
+    State(state): State<AppState>,
+    Path(raw_thread_id): Path<String>,
+    Json(request): Json<SetQueuedMessageGroupBoundaryRequest>,
+) -> Response {
+    let thread_id = match parse_thread_id(&raw_thread_id) {
+        Ok(thread_id) => thread_id,
+        Err(response) => return response,
+    };
+    if let Err(response) = public_thread_or_response(&state, &thread_id) {
+        return response;
+    }
+    let mut expected_ids =
+        Vec::with_capacity(request.expected_grouped_prefix_queued_message_ids.len());
+    for raw_id in request.expected_grouped_prefix_queued_message_ids {
+        match parse_queued_message_id(&raw_id) {
+            Ok(id) => expected_ids.push(id),
+            Err(response) => return response,
+        }
+    }
+    let boundary_id = match parse_queued_message_id(&request.group_boundary_queued_message_id) {
+        Ok(id) => id,
+        Err(response) => return response,
+    };
+    match state.registry.set_queued_message_group_boundary(
+        &thread_id,
+        &expected_ids,
+        &boundary_id,
+        loom_relay::now_ms(),
+    ) {
+        Ok((messages, events)) => {
+            if let Err(error) = publish_all(&state, &events) {
+                return error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string());
+            }
+            let now = loom_relay::now_ms();
+            Json(
+                messages
+                    .iter()
+                    .map(|message| queued_message_row(&state, message, now))
+                    .collect::<Vec<_>>(),
+            )
+            .into_response()
+        }
+        Err(CommandError::Conflict(message)) => {
+            error_response_with_code(StatusCode::CONFLICT, "conflict", message)
+        }
+        Err(error) => command_error_response(error),
     }
 }
 
@@ -3144,11 +3822,8 @@ async fn thread_interactions(
         Ok(thread_id) => thread_id,
         Err(response) => return response,
     };
-    if state.registry.thread(&thread_id).is_none() {
-        return error_response(
-            StatusCode::NOT_FOUND,
-            format!("thread {thread_id} is not known"),
-        );
+    if let Err(response) = public_thread_or_response(&state, &thread_id) {
+        return response;
     }
     Json(
         state
@@ -3195,6 +3870,9 @@ async fn thread_interaction(
         Ok(thread_id) => thread_id,
         Err(response) => return response,
     };
+    if let Err(response) = public_thread_or_response(&state, &thread_id) {
+        return response;
+    }
     match interaction_in_thread(&state, &thread_id, &raw_interaction_id) {
         Ok(interaction) => Json(interaction_value(&state, &interaction)).into_response(),
         Err(response) => response,
@@ -3225,6 +3903,9 @@ async fn respond_to_thread_interaction(
         Ok(thread_id) => thread_id,
         Err(response) => return response,
     };
+    if let Err(response) = public_thread_or_response(&state, &thread_id) {
+        return response;
+    }
     let interaction = match interaction_in_thread(&state, &thread_id, &raw_interaction_id) {
         Ok(interaction) => interaction,
         Err(response) => return response,
@@ -3379,6 +4060,9 @@ async fn resolve_thread_interaction(
         Ok(thread_id) => thread_id,
         Err(response) => return response,
     };
+    if let Err(response) = public_thread_or_response(&state, &thread_id) {
+        return response;
+    }
     let interaction = match interaction_in_thread(&state, &thread_id, &raw_interaction_id) {
         Ok(interaction) => interaction,
         Err(response) => return response,
@@ -3444,6 +4128,9 @@ async fn cancel_thread_interaction(
         Ok(thread_id) => thread_id,
         Err(response) => return response,
     };
+    if let Err(response) = public_thread_or_response(&state, &thread_id) {
+        return response;
+    }
     let interaction = match interaction_in_thread(&state, &thread_id, &raw_interaction_id) {
         Ok(interaction) => interaction,
         Err(response) => return response,
@@ -3517,11 +4204,8 @@ async fn thread_event_wait(
         Ok(thread_id) => thread_id,
         Err(response) => return response,
     };
-    if state.registry.thread(&thread_id).is_none() {
-        return error_response(
-            StatusCode::NOT_FOUND,
-            format!("thread {thread_id} is not known"),
-        );
+    if let Err(response) = public_thread_or_response(&state, &thread_id) {
+        return response;
     }
     let after = match parse_query_sequence(query.after_seq.as_ref(), "afterSeq") {
         Ok(value) => value,
@@ -3613,11 +4297,8 @@ async fn thread_turn_summary_details(
         Ok(thread_id) => thread_id,
         Err(response) => return response,
     };
-    if state.registry.thread(&thread_id).is_none() {
-        return error_response(
-            StatusCode::NOT_FOUND,
-            format!("thread {thread_id} is not known"),
-        );
+    if let Err(response) = public_thread_or_response(&state, &thread_id) {
+        return response;
     }
     let source_start = match parse_query_sequence(query.source_seq_start.as_ref(), "sourceSeqStart")
     {
@@ -3729,27 +4410,19 @@ async fn clear_thread_goal(
         Ok(thread_id) => thread_id,
         Err(response) => return response,
     };
-    if state.registry.thread(&thread_id).is_none() {
-        return error_response(
-            StatusCode::NOT_FOUND,
-            format!("thread {thread_id} is not known"),
-        );
-    }
-    let run_id = state
-        .registry
-        .thread(&thread_id)
-        .and_then(|thread| thread.active_run_id)
+    let thread = match public_thread_or_response(&state, &thread_id) {
+        Ok(thread) => thread,
+        Err(response) => return response,
+    };
+    let run_id = thread
+        .active_run_id
         // A goal is thread-level metadata, so it needs no active run. The run
         // id is only the turn scope on the event; a settled thread scopes the
         // clearing to the thread, which is what `thread/goal/cleared` means.
         .unwrap_or_else(loom_domain::RunId::mint);
     let event = loom_domain::RunEvent::new(
         thread_id.clone(),
-        state
-            .registry
-            .thread(&thread_id)
-            .map(|thread| thread.project_id)
-            .unwrap_or_else(loom_domain::ProjectId::mint),
+        thread.project_id,
         run_id,
         loom_relay::now_ms(),
         loom_domain::ProviderEvent::ThreadGoalCleared {
@@ -3782,11 +4455,8 @@ async fn clear_thread_context(
         Ok(thread_id) => thread_id,
         Err(response) => return response,
     };
-    if state.registry.thread(&thread_id).is_none() {
-        return error_response(
-            StatusCode::NOT_FOUND,
-            format!("thread {thread_id} is not known"),
-        );
+    if let Err(response) = public_thread_or_response(&state, &thread_id) {
+        return response;
     }
     error_response_with_code(
         StatusCode::NOT_IMPLEMENTED,
@@ -3815,11 +4485,8 @@ async fn cancel_thread_plan(
         Ok(thread_id) => thread_id,
         Err(response) => return response,
     };
-    if state.registry.thread(&thread_id).is_none() {
-        return error_response(
-            StatusCode::NOT_FOUND,
-            format!("thread {thread_id} is not known"),
-        );
+    if let Err(response) = public_thread_or_response(&state, &thread_id) {
+        return response;
     }
     error_response_with_code(
         StatusCode::NOT_IMPLEMENTED,
@@ -4038,7 +4705,7 @@ fn append_thread_message(
         .iter()
         .any(|event| event.event_type == "thread_status_changed")
     {
-        if let Some(thread) = state.registry.thread(thread_id) {
+        if let Some(thread) = state.registry.public_thread(thread_id) {
             state.dispatch_thread(&thread, &content);
         }
     }
