@@ -13,7 +13,8 @@ Read `provider-strategy.md` first for *why* ACP; this document is *what* and
                      ┌─────────────────────────────────────────┐
   ACP agent  ──ACP──▶│            ACP adapter                  │
   (pi-acp or         │                                         │
-   native)           │  · initialize ACP v1 and capture caps   │
+   native)           │  · negotiate v2 first, then v1 fallback │
+                     │  · capture identity and capabilities    │
                      │  · own the session lifecycle            │
                      │  · translate updates → ProviderEvent     │
                      └──────────────┬──────────────────────────┘
@@ -32,8 +33,8 @@ run record, relay, projection and UI — is unchanged.
 | Responsibility | Detail |
 | --- | --- |
 | Transport | Spawn a native ACP agent (`Stdio`), or drive an embedded `pi-acp` (`Channel::duplex()`) |
-| Handshake | `initialize` with ACP v1; capability capture |
-| Session lifecycle | `session/new`, `session/resume`/`session/load`, `session/cancel`, `session/delete` |
+| Handshake | SDK protocol connector: v2 first, v1 fallback; capture identity and capability snapshot |
+| Session lifecycle | `session/new`, v2 `session/resume` or v1 `session/load`, `session/cancel`, `session/delete` |
 | Update translation | `SessionUpdate` → `ProviderEvent`, with the state that requires |
 | Client callbacks | Answer `session/request_permission`; declare `fs`/`terminal` capabilities it actually implements |
 | Unmapped updates | Log with the discriminator; never coerce |
@@ -63,7 +64,7 @@ must not invent detail.
 | `AgentThoughtChunk` | `ItemReasoningTextDelta` | thought ≈ reasoning |
 | `ToolCall` | `ItemStarted` | first sight of a `toolCallId` |
 | `ToolCallUpdate` | `ItemToolCallProgress` + `ItemCompleted` | status decides which |
-| `Plan` | `TurnPlanUpdated` | v1's only plan update |
+| `Plan` / `PlanUpdate` | `TurnPlanUpdated` | v1 and v2 plan shapes |
 | `UsageUpdate` | `ThreadTokenUsageUpdated` | field-for-field |
 | `SessionInfoUpdate` | `ThreadNameUpdated` when titled | |
 | `CurrentModeUpdate` | *none* | v2 has no equivalent; see below |
@@ -82,7 +83,7 @@ synthesizes the missing ones** in `crates/daemon/src/acp/session.rs`:
 | `thread/identity` | the ACP `sessionId`, emitted once when it is known |
 | `turn/started` | a `session/prompt` was sent |
 | `turn/input/accepted` | the prompt was accepted (`PromptResponse` under v1) |
-| `turn/completed` | v1's `PromptResponse.stop_reason` (v2 will use `StateUpdate::Idle`) |
+| `turn/completed` | v1's `PromptResponse.stop_reason` or v2's `StateUpdate::Idle` |
 | `thread/started` | **not emitted** — the contract scopes it to thread creation, which the domain already recorded |
 
 ACP v1 and v2 signal completion differently, and this is the one place the
@@ -273,22 +274,33 @@ features, never inferred and never worked around:
 
 | Capability | Effect |
 | --- | --- |
-| `agentCapabilities.loadSession` | a resumed run needs it; without it an explicit resume **fails** rather than silently starting a fresh conversation |
-| `agentCapabilities.sessionCapabilities.list` | gates session import; absent means `Unsupported`, and loom does **not** scan the agent's storage in its place |
+| v1 `agentCapabilities.loadSession` | a resumed run needs it; without it an explicit resume **fails** rather than silently starting a fresh conversation |
+| v1 `agentCapabilities.sessionCapabilities.list` | gates session import; absent means `Unsupported`, and loom does **not** scan the agent's storage in its place |
+| v2 `capabilities.session` | gates the baseline `session/new`, `session/resume` and `session/list` surface |
+| initialize identity and capabilities | captured as a stable agent identity, negotiated protocol version and opaque capability snapshot for the adapter's caller |
 
 ## Version handling
 
-The current Rust adapter speaks ACP v1, which is the stable version used by the
-pinned `pi-acp` dependency. v1 completion arrives in `PromptResponse.stop_reason`;
-`session/load` is used for restore. ACP v2 negotiation and its `session/resume`
-shape are deliberately not enabled yet.
+The Rust adapter uses the SDK protocol connector with v2 first and v1 fallback.
+It does not infer protocol behavior from an agent name or a version string:
+the selected version is the one returned by `initialize`. v2 completion arrives
+as `StateUpdate::Idle` and resume uses `session/resume` without
+`replayFrom`; v1 completion arrives in `PromptResponse.stop_reason` and
+restore uses `session/load`.
+
+ACP v2 remains an unstable draft in the pinned SDK. The adapter keeps its v2
+schema types, message patch handling, terminal lifecycle and capability shape
+behind the ACP boundary so the domain and server only see the existing
+`ProviderEvent` contract. v1 remains supported for the stable ecosystem and
+for agents such as the default Pi path that negotiate v1.
 
 ## The session mapping
 
-The session mapping is stored on the thread as the opaque provider session id;
-the current implementation records v1 as the protocol. A future version-aware
-adapter can add the negotiated protocol without changing the thread-to-session
-relationship.
+The session mapping is stored on the thread as the opaque provider session id.
+The adapter's capability result also carries the initialize identity, selected
+protocol version and opaque capability snapshot; these are adapter metadata and
+do not leak ACP schema types into the domain or server. The thread-to-session
+relationship remains keyed by the provider binding and workspace.
 
 **The binding is the other half of the mapping.** A provider session id is the
 *agent's* identifier, unique only within that agent, and a session belongs to
@@ -303,7 +315,7 @@ holds, and the daemon refuses before opening a session when it does not:
 
 | Condition | Outcome |
 | --- | --- |
-| agent and workspace match | `session/load <id>` |
+| agent and workspace match | v2: `session/resume <id>`; v1: `session/load <id>` |
 | agent differs | fresh session — the id means nothing to this agent |
 | workspace differs | fresh session — the conversation is about another project |
 | no binding (an older snapshot) | fresh session; "cannot prove it is the same conversation" is not a reason to resume |
@@ -364,7 +376,7 @@ no direct Pi JSON-RPC launch arm.
 The adapter is testable without a real agent, which is why this boundary is
 worth defining before writing it:
 
-1. **Golden mapping tests** — feed recorded ACP v1 frames, assert the
+1. **Golden mapping tests** — feed recorded ACP v1 and v2 frames, assert the
    `ProviderEvent` sequence.
 2. **Item lifecycle** — a tool call start→update→complete produces one
    `ItemStarted` and one `ItemCompleted` with the merged shape.
@@ -373,8 +385,11 @@ worth defining before writing it:
    This is the rule most likely to rot.
 4. **Terminal invariant** — every path ends in exactly one `TurnCompleted`,
    including cancelled and failed.
-5. **Embedded pi-acp** — the whole thing over `Channel::duplex()` against a mock
-   Pi, no child adapter process.
+5. **Protocol negotiation** — fake v1 and v2 agents complete initialize,
+   new/resume, prompt, streaming and completion without duplicate terminal
+   events.
+6. **Embedded pi-acp** — the whole thing over `Channel::duplex()` against a
+   mock Pi, no child adapter process.
 
 ## Open questions
 
