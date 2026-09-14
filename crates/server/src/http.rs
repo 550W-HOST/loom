@@ -328,9 +328,56 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/v1/runs", get(list_runs))
         .route("/api/v1/hosts", get(list_hosts).post(register_host))
+        .route(
+            "/api/v1/hosts/join-codes",
+            post(crate::b8::create_join_code),
+        )
         .route("/api/v1/hosts/primary", get(primary_host))
         .route("/api/v1/hosts/{id}/heartbeat", post(host_heartbeat))
         .route("/api/v1/hosts/{id}/disconnect", post(disconnect_host))
+        .route(
+            "/api/v1/hosts/{id}",
+            get(crate::b8::host_get)
+                .patch(crate::b8::host_update)
+                .delete(crate::b8::host_delete),
+        )
+        .route(
+            "/api/v1/hosts/{id}/permission-ceiling",
+            axum::routing::patch(crate::b8::host_permission_ceiling),
+        )
+        .route(
+            "/api/v1/hosts/{id}/directory",
+            get(crate::b8::host_directory),
+        )
+        .route(
+            "/api/v1/hosts/{id}/paths/exist",
+            post(crate::b8::host_paths_exist),
+        )
+        .route(
+            "/api/v1/hosts/{id}/pick-folder",
+            post(crate::b8::host_pick_folder),
+        )
+        .route(
+            "/api/v1/hosts/{id}/clone-default-path",
+            get(crate::b8::host_clone_default_path),
+        )
+        .route(
+            "/api/v1/hosts/{id}/provider-clis/status",
+            get(crate::b8::provider_cli_status),
+        )
+        .route(
+            "/api/v1/hosts/{id}/provider-clis/install",
+            post(crate::b8::provider_cli_install),
+        )
+        .route(
+            "/api/v1/hosts/{id}/retry-update",
+            post(crate::b8::host_retry_update),
+        )
+        .route("/api/v1/system/attention", get(crate::b8::system_attention))
+        .route(
+            "/api/v1/file-previews/{id}/{*file_path}",
+            get(crate::b8::file_preview_content),
+        )
         .route("/ws", get(ws::client_socket))
         // Daemon self-update: the version to compare against, and the binary
         // that matches it. Deliberately not behind the `/api` namespace — a
@@ -841,7 +888,7 @@ fn host_value(host: &Host) -> Value {
         "name": host.name,
         "type": "persistent",
         "status": host.status,
-        "maxPermissionMode": "full",
+        "maxPermissionMode": host.max_permission_mode.as_str(),
         "lastSeenAt": host.last_seen_at_ms,
         "lastRejectedProtocolVersion": null,
         "createdAt": host.created_at_ms,

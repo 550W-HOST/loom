@@ -67,6 +67,7 @@ pub fn answer(request: HostFileRequest) -> HostFileReport {
             *include_directories,
             *include_hidden,
         ),
+        HostFileOperation::Exists { paths } => paths_exist(paths),
         HostFileOperation::Write {
             path,
             root_path,
@@ -199,6 +200,31 @@ fn confined_existing(path: &Path, root: &Path) -> Result<PathBuf, HostFileOutcom
         return Err(failed("invalid_path", "path escapes the workspace root"));
     }
     Ok(real_path)
+}
+
+fn paths_exist(paths: &[String]) -> HostFileOutcome {
+    HostFileOutcome::Listing {
+        entries: paths
+            .iter()
+            .filter(|raw| Path::new(raw).is_absolute() && std::fs::metadata(raw).is_ok())
+            .map(|raw| HostFileEntry {
+                path: raw.clone(),
+                name: Path::new(raw)
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or_default()
+                    .to_owned(),
+                kind: if std::fs::metadata(raw).is_ok_and(|metadata| metadata.is_dir()) {
+                    HostPathKind::Directory
+                } else {
+                    HostPathKind::File
+                },
+                score: 0.0,
+                positions: Vec::new(),
+            })
+            .collect(),
+        truncated: false,
+    }
 }
 
 /// Writes one file inside `root_path`, creating parent directories.

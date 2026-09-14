@@ -1966,6 +1966,57 @@ impl DomainRegistry {
         Ok(())
     }
 
+    /// Renames a host and returns the updated value.
+    pub fn rename_host(
+        &self,
+        host_id: &HostId,
+        name: String,
+        now_ms: u64,
+    ) -> Result<Host, CommandError> {
+        let mut inner = self.lock();
+        let host = inner
+            .hosts
+            .get_mut(host_id)
+            .ok_or_else(|| CommandError::NotFound(format!("host {host_id} is not known")))?;
+        host.rename(name, now_ms)?;
+        Ok(host.clone())
+    }
+
+    /// Updates the host's ACP permission ceiling.
+    pub fn update_host_permission_ceiling(
+        &self,
+        host_id: &HostId,
+        mode: loom_domain::HostPermissionMode,
+        now_ms: u64,
+    ) -> Result<Host, CommandError> {
+        let mut inner = self.lock();
+        let host = inner
+            .hosts
+            .get_mut(host_id)
+            .ok_or_else(|| CommandError::NotFound(format!("host {host_id} is not known")))?;
+        host.set_permission_ceiling(mode, now_ms);
+        Ok(host.clone())
+    }
+
+    /// Removes a host record after the caller has decided it is safe to do so.
+    pub fn delete_host(&self, host_id: &HostId) -> Result<(), CommandError> {
+        let mut inner = self.lock();
+        inner
+            .hosts
+            .remove(host_id)
+            .map(|_| ())
+            .ok_or_else(|| CommandError::NotFound(format!("host {host_id} is not known")))
+    }
+
+    /// Returns whether at least one interaction is waiting for user attention.
+    pub fn has_pending_interactions(&self) -> bool {
+        !self
+            .lock()
+            .interactions
+            .values()
+            .all(|interaction| !interaction.status.is_open())
+    }
+
     /// Looks up a host.
     pub fn host(&self, host_id: &HostId) -> Option<Host> {
         self.lock().hosts.get(host_id).cloned()

@@ -430,6 +430,11 @@ pub enum HostFileOperation {
         /// sibling instead.
         overwrite: bool,
     },
+    /// Check whether a bounded set of absolute paths exists on the host.
+    Exists {
+        /// Absolute paths to inspect.
+        paths: Vec<String>,
+    },
     /// Copy existing files into a destination directory.
     ///
     /// Two roots, deliberately: a project-to-project attachment copy reads
