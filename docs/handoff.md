@@ -3,27 +3,66 @@
 State of the work, what is verified, and what is next. Written for whoever picks
 this up — including a future session with no memory of the reasoning.
 
-Everything below was measured in this checkout on 2026-09-13 unless a line says
-otherwise. Where something could not be confirmed, it says so rather than
-guessing.
+The current WIP acceptance was measured in this checkout on 2026-09-14 at
+`93a4e8f` (`origin/main`) unless a section is explicitly marked historical.
+Where something could not be confirmed, it says so rather than guessing.
 
 ## Where things stand
 
 | | |
 | --- | --- |
-| Branch | `main`, in sync with `origin/main` (`f3a1c15`) |
-| Working tree | clean |
-| Tests | **624 passing**, 0 failing (`cargo test --workspace --locked`) |
-| Route coverage | **105 / 149** (70.5%) — `docs/api-coverage.md` |
+| Branch | `agent/openai/77a282b20835`, based on `origin/main` (`93a4e8f`) |
+| Working tree | clean at start of W-582; this handoff update is the only product change |
+| Rust tests | **696 passing**, 0 failing, **6 ignored** (`cargo test --workspace --locked`) |
+| Route coverage | **149 / 149** (100%), pending 0 (`node scripts/check-api-coverage.mjs`) |
 | Crates | `relay`, `relay-hub`, `server`, `daemon`, `domain`, `provider-protocol`, `contract` |
-| UI | `ui/` workspace, 18 tests, typecheck clean |
-| CI | fmt + clippy `-D warnings` + test + MSRV + contract reproducibility + UI + pi |
-| Test count history | 253 → 416 (B2) → 461 (B3) → … → **624** (B7) |
+| UI | `pnpm install --frozen-lockfile`; build, typecheck and **18 tests** pass |
+| Rust quality | `cargo fmt --all -- --check` and clippy `-D warnings` pass |
+| Release | `cargo build --workspace --release --locked` passes; release server/daemon started on x86_64 GNU |
+| Current WIP decision | **BLOCKED**: core UI environment binding, error projection and permission controls are P1 gaps; W-583, W-584 and W-585 track them |
 
-## Unverified: a commit I cannot find
+The six ignored Rust tests are not passes: one ACP provider-e2e test, two real
+Pi tests requiring the `pi` CLI and configured model credentials, and three
+self-update tests requiring a real daemon binary and fake network endpoint.
+The real Pi path remains unverified in this environment.
 
-`d7fbf72` was mentioned as a documentation commit that needs an amendment. **It
-does not exist.** Checked in this checkout and against the remotes:
+## W-582 WIP acceptance (2026-09-14)
+
+The release build was exercised with a real server and independently started
+daemon processes. The ACP provider in the socket-path run was an explicit JSON-RPC
+ACP stub, not Pi; the repository's ACP stub tests and daemon integration tests
+were counted separately from the real-Pi ignored tests.
+
+| Scenario | Result | Evidence |
+| --- | --- | --- |
+| Release server, daemon and UI build | **PASS** | `cargo build --workspace --release --locked`; `pnpm build` |
+| API coverage | **PASS** | 149/149 effective routes, pending 0 |
+| Rust/UI quality gates | **PASS** | fmt, clippy, 696 Rust tests, 18 UI tests, typecheck |
+| Server-only bind and embedded UI | **PASS** | release binary on `127.0.0.1`; `/health`, `/api/v1/version`, `/`, `/app.js` all answered |
+| Project/source/environment/thread setup | **PASS via API** | two real daemon identities, two host-bound unmanaged environments and threads |
+| ACP first turn, streamed timeline and same-session resume | **PASS with ACP stub** | output deltas, one terminal event, provider session `verify-session` reused after server + daemon restart |
+| Permission allow/deny/cancel in UI | **FAIL / P1** | no UI interaction surface; tracked by W-585 |
+| Browser project/thread/send flow | **FAIL / P1** | reference UI always creates `project-default` threads with no environment; tracked by W-583 |
+| Browser error rendering | **FAIL / P1** | clean browser run shows `Timeline projection failed ... turn/completed without turn/started`; tracked by W-584 |
+| Desktop/mobile layout | **PASS for checked shell** | Chromium 1280x720 and 390x844; no horizontal overflow or viewport overlap in captured states |
+| Relay replay and domain persistence | **PASS** | 9 thread frames before and after server restart; server rebuilt 27 events from disk log |
+| Host identity and host routing | **PASS** | daemon state file reused the same host id; disconnected second host returned `502 host_unavailable` without fallback |
+| Filesystem read/write/conflict/containment | **PASS** | real daemon workspace read, optimistic conflict, write and `../` rejection |
+| Terminal create/input/output/resize/restart/close | **PASS** | real daemon PTY flow; output cursor returned bounded chunks and `truncated: false` |
+| Real Pi provider | **UNVERIFIED** | credentials/CLI unavailable; ignored tests were not counted as pass |
+| systemd install/self-update/release publication | **UNVERIFIED** | no production systemd host or published release was available |
+
+The socket-path evidence is intentionally narrower than a real Pi acceptance:
+the server, relay, daemon, ACP translation, persistence and host boundaries are
+production code, while the provider executable was a transparent ACP stub. The
+backend permission tests pass, but that does not substitute for a browser UI.
+
+## Historical: an unverified commit reference
+
+The previous handoff mentioned `d7fbf72` as a documentation commit that needed
+an amendment. **It does not exist.** The reference remains historical, not a
+current baseline. It was checked in the earlier checkout and against the
+remotes:
 
 - `bb`: not in the object database, no reflog entry, no dangling object, not in
   any local or remote branch, not among the `refs/pull/*` heads
@@ -34,9 +73,9 @@ does not exist.** Checked in this checkout and against the remotes:
 - Every git repository under `/data/workspace/ljm/dev/`
 - Every multica workspace checkout under `/home/ljm/multica_workspaces/`
 
-The newest commit on `origin/main` is `f3a1c15` (2026-09-13 02:25). The most
-recent docs commit is `7be3f72` ("Document the provider strategy"), written in
-the previous session.
+The current `origin/main` baseline for this handoff is `93a4e8f` (W-571,
+2026-09-14). The old `f3a1c15` reference belonged to the prior handoff and is
+not the revision accepted here.
 
 Conclusion: **the hash is stale or invented — there is no such commit to
 amend.** It is not a case of sitting in a checkout this environment cannot see,
@@ -242,57 +281,23 @@ Pointer-precise messages (`missing required property mode`,
 `value "queue" is not one of the allowed values`) until the body matched
 `{"mode":"auto"}`.
 
-### The gap: nothing in loom produces an interaction (the source exists upstream)
+### Interaction producer: backend bridge done, browser UI remains
 
-`record_interaction` and `create_interaction` have **no callers outside tests**.
-Verified in this repository:
+The earlier claim that loom could not produce an interaction is stale. W-566
+added the real ACP permission bridge: the daemon sends an `InteractionRequest`,
+the server validates its host, run and thread ownership, persists and de-duplicates
+the pending `Interaction`, and publishes the resolution back to the requesting
+host. Pending requests are cancelled when their run ends, and the bridge has
+server, daemon and persistence coverage.
 
-```
-$ grep -rn "record_interaction\|create_interaction" crates/ --include=*.rs | grep -v "/tests/"
-crates/server/src/interactions.rs:63:    pub fn record_interaction(
-crates/server/src/interactions.rs:75:        let (interaction, event) = self.registry.create_interaction(
-crates/server/src/domain_state.rs:914:    pub fn create_interaction(
-```
+The remaining acceptance gap is entirely on the browser side. The current UI does
+not render pending interactions or provide allow, deny and cancel controls, so the
+backend permission path is covered but the browser permission scenario is still
+**FAIL / P1** (W-585). The capability-gated `session/list` probe may cancel a
+request because it has no thread that can answer it; that is separate from a run's
+permission request and is intentional.
 
-And loom's provider protocol cannot express one either — `provider-protocol` has
-`ProviderSpec`, `RunDispatch`, `EnvironmentProvision`,
-`EnvironmentProvisionOutcome`, `EnvironmentProvisionReport`, `ProviderReport`,
-`GuardedLine`, and no interaction frame. So the five interaction routes are
-implemented, contract-shaped, persisted and tested, but **loom never creates an
-interaction to serve**.
-
-What I got wrong when this was first written: I recorded that ACP would supply
-the producer, as if it were future work. **It already exists, and loom is
-actively suppressing it.** `crates/daemon/src/provider.rs` declines these
-requests on the Pi path:
-
-```rust
-// A dialog request blocks the provider until answered. There is no UI
-// on this path yet, so decline it explicitly rather than hang, and tell
-// the client what was declined.
-if let Some(response) = auto_cancel_response(&frame) {
-    ...
-}
-```
-
-So the producer is not missing from the system — it is reachable and
-deliberately answered with `cancelled`. Three consequences worth stating:
-
-1. **The `auto_cancel_response` path is a real, exercised producer** and its
-   refusals are a product decision ("no UI on this path yet"), not an accident.
-   Once interactions have somewhere to render, this is the call site that should
-   create them instead of cancelling.
-2. **`pi-acp` already maps pi's dialog requests onto real ACP permission
-   requests.** `handle_extension_ui_request` turns pi's `select` into
-   `session/request_permission` with one `PermissionOption` per choice, and
-   `confirm` into Yes/No options, with the answer flowing back to pi
-   (`session/session.rs:2791`, `:2883`). So the ACP adapter path does not need a
-   producer built — it needs loom to interpret the request it already receives.
-3. The interaction gap is therefore **a UI/projection gap, not a protocol gap**.
-   That reframes the work: it belongs with the front end, not with the provider
-   migration.
-
-Same shape of gap for two neighbouring things, though the details differ:
+The neighbouring event gaps are narrower:
 
 - `ProviderEvent::ThreadGoalUpdated` — **no producer at all.** A goal is a
   projection of the run log (`crates/server/src/http.rs:3706` explains the
@@ -300,11 +305,10 @@ Same shape of gap for two neighbouring things, though the details differ:
   `ThreadGoalCleared`, *does* have exactly one producer: the `goal/clear` route
   itself publishes it. So `goal/clear` clears a projection that nothing sets —
   idempotent and honest, but not yet useful.
-- `ProviderEvent::Plan`, `PlanSteps`, `TurnPlanUpdated`, `ItemPlanDelta` — same
-  as `ThreadGoalUpdated`: defined, mapped to contract event names, never
-  constructed outside tests. Note that **`pi-acp` emits no plan updates at all**
-  (verified: no `SessionUpdate::Plan*` anywhere in its source), so this one
-  genuinely has no upstream source on the Pi path yet.
+- `ProviderEvent::TurnPlanUpdated` is now mapped from ACP v2 `PlanUpdate`.
+  `Plan`, `PlanSteps` and `ItemPlanDelta` still have no provider producer, and
+  the default Pi/v1 path does not emit plan updates. The plan routes therefore
+  remain explicit about unsupported operations rather than inventing events.
 
 ## Route batches
 
@@ -318,9 +322,9 @@ Same shape of gap for two neighbouring things, though the details differ:
 | B5 | Thread files and storage helpers | 10 | done (W-565) |
 | B6 | Environment lifecycle and repo status | 14 | done (W-573) |
 | B7 | Project workspace, attachments, sections | 14 | done (W-569) |
-| B8 | Host and environment connectivity | 14 | |
-| B9 | Files and terminals | 17 | |
-| B10 | Settings and system preferences | 13 | |
+| B8 | Host and environment connectivity | 14 | done (W-570) |
+| B9 | Files and terminals | 17 | done (W-572) |
+| B10 | Settings and system preferences | 13 | done (W-571) |
 
 B5 covers thread counts, pane actions, and host file / thread storage reads. It
 depends on B1 and B4, both of which are done. Its one protocol addition is
@@ -335,15 +339,11 @@ confines to the host's own `project-attachments/<project_id>` directory. It also
 made `Project` orderable (`sort_key`), `Project` deletable (a tombstone) and
 `ThreadSection` a real entity; see `docs/contract.md` ("B7").
 
-**Before assigning B4**, note that file overlap is what actually causes merge
-pain — each multica task gets its own worktree and conflicts surface only at
-merge. B1/B2/B3 all touch `crates/server/src/http.rs` (the B3 commit alone adds
-1,568 lines there) and `docs/api-coverage.md`. Batching 14 routes per issue is
-what caused W-557 to blow the 200k context limit at least once. Consider
-splitting a batch into two issues of 7 if the routes touch disjoint modules.
-
-`W-541` is the parent tracker for all batches and is still `todo`; it closes when
-B10 does.
+The batch history also records why later work should stay scoped: B1/B2/B3 all
+touched `crates/server/src/http.rs`, and W-557 once exceeded the 200k context
+limit. That is historical planning context now; B1-B10 are complete and the
+coverage checker reports the current 149 / 149 effective routes. `W-541`, the
+parent tracker, is **done**.
 
 ## The ACP migration: state
 
@@ -353,41 +353,45 @@ B10 does.
 | --- | --- |
 | One protocol or several? | **ACP only.** Pi is not special-cased at the client. |
 | How is Pi reached? | **`pi-acp` embedded as a library**, over `Channel::duplex()`. |
-| ACP version | **v1 currently.** The pinned `pi-acp` default and loom adapter use v1; v2 negotiation is a follow-up. |
-| Resume entry point | The next run carries the stored provider session id and uses `session/load` under v1. |
+| ACP version | **v2 first, v1 fallback.** The SDK connector negotiates the highest protocol the agent accepts; v1 remains required for stable agents and the default Pi path. |
+| Resume entry point | The next run carries the stored provider session binding and uses `session/resume` under v2 or `session/load` under v1. |
 | Unsupported capability | **Reported, never worked around.** |
-| Unmapped update type | An unmapped v1 update is ignored by the typed schema and logged by the adapter; no synthetic event is emitted. |
+| Unmapped update type | **Stored and logged, not rendered.** v2 uses `SessionUpdate::Other`; v1 intercepts the raw JSON-RPC frame because its typed schema has no catch-all. No synthetic event is emitted. |
 
-loom now depends on `pi-acp` and the ACP SDK. `ProviderLaunch` has only two
-ACP forms: `AcpEmbeddedPi` for Pi and `AcpStdio` for native agents. The old
-`effective_argv`/`--session-dir`/`--session-id` path and direct Pi JSON-RPC
-mapper have been removed.
+W-564 delivered the stateful event translator, W-566 delivered the permission
+bridge, session import boundary and recovery checks, and W-567 delivered v2
+negotiation and multi-agent capability handling. loom now depends on `pi-acp`
+and the ACP SDK. `ProviderLaunch` has only two ACP forms: `AcpEmbeddedPi` for Pi
+and `AcpStdio` for native agents. The old `effective_argv`/`--session-dir`/
+`--session-id` path and direct Pi JSON-RPC mapper have been removed.
 
-The current ACP v1 flow is:
+The current ACP negotiation and resume flow is:
 
 ```text
-first run:  session/new → returned sessionId → thread/identity → persist id
-next run:   dispatch id → session/load(id, cwd) → suppress history replay → prompt
+first run:  initialize → session/new → returned sessionId → thread/identity → persist id + agent/cwd binding
+next run:   dispatch binding → session/resume (v2) or session/load (v1) → suppress history replay → prompt
+permission: session/request_permission → durable Interaction → allow/deny/cancel → resolution frame to host
+import:    capability-gated session/list; Unsupported is omitted, not treated as an empty list
 ```
 
-The server stores the opaque id with the thread and includes it in the next
-`RunDispatch`; loom never reads an agent session file. The adapter serializes
-construction/report ordering, checks `loadSession` before resuming, and treats a
+The server stores the opaque id and its agent/cwd binding with the thread and
+includes it in the next `RunDispatch` only when the binding still matches. loom
+never reads an agent session file. The adapter serializes construction/report
+ordering, checks the negotiated restore capability before resuming, and treats a
 missing workspace or unsupported restore as an explicit run failure. A real
 second-run regression test is in `crates/daemon/tests/acp_session.rs`.
 
-The ACP v2 schema and negotiation are not enabled in this checkout yet. The
-stable v1 path is deliberate: it is the default protocol implemented by the
-pinned `pi-acp` dependency.
+ACP v2 remains an unstable draft in the pinned SDK, but negotiation and its
+adapter mapping are enabled. v1 remains the stable compatibility path; the
+acceptance matrix above deliberately used an explicit ACP stub and therefore
+does not claim that a real Pi run passed.
 
 Open questions carried forward:
 
-- Does every target agent implement `session/list`? It is a capability, so no —
-  the import flow must omit rather than guess.
-- Version policy for the `agent-client-protocol` crate (distinct axis from the
-  protocol version).
 - Does the embedded `pi-acp` need process isolation? A panic in the translator
   would take the daemon with it; a spawned process would not.
+- How long to keep the v1 path? v2 is still a draft and may rename things again;
+  deprecate v1 only when stable agents stop speaking it.
 
 ## Environment notes
 
@@ -427,19 +431,16 @@ Gotchas found:
 
 ## Immediate next steps
 
-1. **Start migration step 1 (ACP adapter boundary)** — unblocked. The
-   `SessionUpdate` → event mapping must handle both protocol versions, including
-   the `CurrentModeUpdate` asymmetry and v1's lack of a typed `Other`.
-2. **Wire interactions up, as a projection/UI task rather than a protocol one.**
-   The requests already arrive; loom answers them with `cancelled`
-   (`auto_cancel_response` on the Pi path). Replacing that with a real
-   `Interaction` is what makes the five B3 routes serve data. Not part of the
-   provider migration.
-3. **Plan events have no upstream source on the Pi path** — `pi-acp` emits none.
-   Either add them there or leave the plan routes refusing; do not invent a
-   producer.
-4. Then B4, ideally split into two smaller issues given the context-limit
-   experience on B3.
+1. **Resolve the three P1 browser gaps**: bind UI-created threads to a runnable
+   environment (W-583), project pre-run and terminal errors honestly (W-584),
+   and render permission interactions with allow/deny/cancel controls (W-585).
+2. **Repeat the W-582 acceptance after those fixes**, including the browser
+   send/stream/error/permission flows and both checked viewports. W-582 stays
+   blocked while any of these core paths is open.
+3. **Run the remaining environment-dependent checks** when available: a real Pi
+   first turn and resume, systemd installation, self-update and release
+   publication. Ignored tests and unavailable infrastructure remain
+   **UNVERIFIED**, not passes.
 
-Documentation defects are fixed and `d7fbf72` is confirmed non-existent, so
-neither blocks anything.
+The route batches and ACP migration are complete. Documentation defects are
+fixed and `d7fbf72` is confirmed non-existent, so neither blocks anything.
