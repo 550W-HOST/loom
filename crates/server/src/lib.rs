@@ -22,9 +22,11 @@
 #![forbid(unsafe_code)]
 
 pub mod artifacts;
+pub mod b5;
 pub mod build_info;
 pub mod domain_state;
 pub mod environments;
+pub mod host_files;
 pub mod http;
 pub mod hub_actor;
 pub mod interactions;
@@ -42,9 +44,11 @@ pub use artifacts::{
     ArtifactClient, ArtifactDownload, Artifacts, InstallVersion, DIGEST_HEADER,
     INSTALL_DAEMON_PATH, INSTALL_VERSION_PATH,
 };
+pub use b5::{MAX_FILE_CONTENT_BYTES, MAX_HTML_PREVIEW_BYTES, THREAD_COUNT_ROOT_PARENT};
 pub use build_info::{version_line, COMMIT, TARGET, VERSION};
 pub use domain_state::{CommandError, DomainRegistry};
 pub use environments::{EnvironmentReportOutcome, ProvisionOutcome};
+pub use host_files::{HostFileBroker, HostFileTransportError, HOST_FILE_TIMEOUT};
 pub use hub_actor::{HubCommand, HubHandle};
 pub use interactions::DeliverOutcome;
 pub use persistence::{DomainSnapshot, SnapshotError, SNAPSHOT_FILE};

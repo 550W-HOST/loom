@@ -314,16 +314,20 @@ Same shape of gap for two neighbouring things, though the details differ:
 | B1 | Startup, navigation, first threads flow | 14 | done (W-548) |
 | B2 | Thread control and auxiliary views | 14 | done (W-556) |
 | B3 | Interactions, plans, queue sending | 14 | done (W-557) |
-| B4 | Thread lifecycle and queue management | 14 | next |
-| B5 | Thread files and storage helpers | 10 | |
+| B4 | Thread lifecycle and queue management | 14 | done (W-568) |
+| B5 | Thread files and storage helpers | 10 | done (W-565) |
 | B6 | Environment lifecycle and repo status | 14 | |
 | B7 | Project workspace, attachments, sections | 14 | |
 | B8 | Host and environment connectivity | 14 | |
 | B9 | Files and terminals | 17 | |
 | B10 | Settings and system preferences | 13 | |
 
-B4 covers archive, delete, fork, pin/unread, and queued-message delete / reorder
-/ update. It depends on B3, which is now done.
+B5 covers thread counts, pane actions, and host file / thread storage reads. It
+depends on B1 and B4, both of which are done. Its one protocol addition is
+`HostFileRequest` / `HostFileReport`: a file read is a request to the thread's
+host, published through the relay, so the control plane never reads its own disk
+and calls the result a thread's file. See `docs/contract.md` ("B5") for the
+permission scopes and the two-half traversal defence.
 
 **Before assigning B4**, note that file overlap is what actually causes merge
 pain — each multica task gets its own worktree and conflicts surface only at

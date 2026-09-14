@@ -50,6 +50,21 @@ pub struct Host {
     pub created_at_ms: u64,
     /// Wall-clock milliseconds of the last mutation.
     pub updated_at_ms: u64,
+    /// The daemon's own data directory on this machine, as it reported at
+    /// enrollment.
+    ///
+    /// Thread storage is a directory the **daemon** owns
+    /// (`<data_dir>/thread-storage/<thread_id>`), so the control plane can only
+    /// name it if the machine told it where its data lives. Recorded at
+    /// enrollment and kept across a disconnect on purpose: a
+    /// `threads.storageLocation` read is a question about the layout, and it
+    /// should not start failing merely because the daemon is briefly away.
+    ///
+    /// `None` means the host never reported one — an older daemon, or a host
+    /// enrolled through a test or the reference HTTP endpoint. A storage route
+    /// then answers `501 not_configured` rather than inventing a path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data_dir: Option<String>,
 }
 
 impl Host {
@@ -76,6 +91,19 @@ impl Host {
         name: impl Into<String>,
         now_ms: u64,
     ) -> Result<(Self, DomainEvent), DomainError> {
+        Self::register_with_data_dir(id, name, None, now_ms)
+    }
+
+    /// Registers a host together with the data directory its daemon reported.
+    ///
+    /// Separate from [`Host::register_as`] so the many existing callers that
+    /// do not know (or care) where a machine keeps its data stay unchanged.
+    pub fn register_with_data_dir(
+        id: Option<HostId>,
+        name: impl Into<String>,
+        data_dir: Option<String>,
+        now_ms: u64,
+    ) -> Result<(Self, DomainEvent), DomainError> {
         let name = name.into().trim().to_owned();
         if name.is_empty() {
             return Err(DomainError::InvalidField {
@@ -89,6 +117,9 @@ impl Host {
             kind: HostKind::Persistent,
             status: HostStatus::Connected,
             last_seen_at_ms: Some(now_ms),
+            data_dir: data_dir
+                .map(|dir| dir.trim().to_owned())
+                .filter(|dir| !dir.is_empty()),
             created_at_ms: now_ms,
             updated_at_ms: now_ms,
         };
@@ -101,6 +132,26 @@ impl Host {
     pub fn heartbeat(&mut self, now_ms: u64) {
         self.last_seen_at_ms = Some(now_ms);
         self.updated_at_ms = now_ms;
+    }
+
+    /// Records the data directory a daemon reported, returning whether it
+    /// changed.
+    ///
+    /// An enrollment is where a daemon describes itself, and a daemon that
+    /// moves its data directory (a new `--state` path on the same machine)
+    /// re-enrolls with the new value. Clearing it is not possible: an absent
+    /// report leaves the recorded one alone, so a transient enrollment that
+    /// omitted it cannot erase what a storage route depends on.
+    pub fn record_data_dir(&mut self, data_dir: Option<&str>, now_ms: u64) -> bool {
+        let Some(data_dir) = data_dir.map(str::trim).filter(|dir| !dir.is_empty()) else {
+            return false;
+        };
+        if self.data_dir.as_deref() == Some(data_dir) {
+            return false;
+        }
+        self.data_dir = Some(data_dir.to_owned());
+        self.updated_at_ms = now_ms;
+        true
     }
 
     /// Marks the daemon attached, returning an event on an actual change.
@@ -242,6 +293,47 @@ mod tests {
         assert_eq!(host.status, HostStatus::Connected);
         assert_eq!(host.last_seen_at_ms, Some(5));
         assert!(matches!(event, DomainEvent::HostRegistered { .. }));
+    }
+
+    #[test]
+    fn a_reported_data_directory_is_recorded_and_never_cleared_by_omission() {
+        let (mut host, _) = Host::register("laptop", 1).unwrap();
+        // A host that never reported one can never name thread storage.
+        assert_eq!(host.data_dir, None);
+
+        assert!(host.record_data_dir(Some("/var/lib/loom"), 2));
+        assert_eq!(host.data_dir.as_deref(), Some("/var/lib/loom"));
+        // The same value again is not a change, so no timestamp moves.
+        assert!(!host.record_data_dir(Some("/var/lib/loom"), 3));
+        assert_eq!(host.updated_at_ms, 2);
+
+        // A daemon that moved its data directory re-enrolls with the new value.
+        assert!(host.record_data_dir(Some("/srv/loom"), 4));
+        assert_eq!(host.data_dir.as_deref(), Some("/srv/loom"));
+
+        // An enrollment that omits it must not erase a recorded layout: a
+        // storage route would then stop answering for a machine that has not
+        // moved anything.
+        assert!(!host.record_data_dir(None, 5));
+        assert!(!host.record_data_dir(Some("   "), 6));
+        assert_eq!(host.data_dir.as_deref(), Some("/srv/loom"));
+    }
+
+    #[test]
+    fn register_with_a_data_directory_carries_it_on_the_event() {
+        let (host, event) =
+            Host::register_with_data_dir(None, "laptop", Some("/var/lib/loom".into()), 7).unwrap();
+        assert_eq!(host.data_dir.as_deref(), Some("/var/lib/loom"));
+        match event {
+            DomainEvent::HostRegistered { host: event_host } => {
+                assert_eq!(event_host.data_dir.as_deref(), Some("/var/lib/loom"));
+            }
+            other => panic!("expected a registration, got {other:?}"),
+        }
+        // An empty report is normalised to `None` rather than stored as `""`.
+        let (blank, _) =
+            Host::register_with_data_dir(None, "laptop", Some("  ".into()), 8).unwrap();
+        assert_eq!(blank.data_dir, None);
     }
 
     #[test]

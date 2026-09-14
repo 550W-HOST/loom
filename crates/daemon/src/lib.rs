@@ -44,6 +44,7 @@
 //! [`RunDispatch`]: loom_provider_protocol::RunDispatch
 
 pub mod acp;
+pub mod host_files;
 pub mod provider;
 pub mod session;
 pub mod update;
@@ -55,7 +56,7 @@ use std::time::Duration;
 use futures_util::{SinkExt, StreamExt};
 use loom_domain::{HostId, RunId};
 use loom_provider_protocol::{
-    EnvironmentProvision, EnvironmentProvisionOutcome, EnvironmentProvisionReport,
+    EnvironmentProvision, EnvironmentProvisionOutcome, EnvironmentProvisionReport, HostFileRequest,
     InteractionRequest, InteractionResolutionFrame, ProviderSpec, RunDispatch,
 };
 use loom_relay::dedup::SeenSet;
@@ -93,6 +94,11 @@ pub const DEFAULT_PERMISSION_TIMEOUT: Duration = crate::acp::permission::DEFAULT
 /// `LOOM_WORKSPACE_ROOT` overrides it; otherwise `$HOME/.loom/workspaces`, or
 /// the system temp directory when there is no home. The daemon owns this
 /// layout: the control plane only learns the resulting path from the report.
+///
+/// Deliberately independent of [`default_data_dir`]: a data directory is where
+/// a machine's *own* data lives, a workspace root is where work happens, and
+/// defaulting one from the other would silently relocate every existing
+/// deployment's workspaces the moment `LOOM_DATA_DIR` was set.
 pub fn default_environment_root() -> PathBuf {
     if let Some(root) = std::env::var_os("LOOM_WORKSPACE_ROOT") {
         return PathBuf::from(root);
@@ -101,6 +107,22 @@ pub fn default_environment_root() -> PathBuf {
         return PathBuf::from(home).join(".loom").join("workspaces");
     }
     std::env::temp_dir().join("loom-workspaces")
+}
+
+/// The daemon's own data directory on this machine.
+///
+/// `LOOM_DATA_DIR` overrides it; otherwise `$HOME/.loom`, or the system temp
+/// directory when there is no home. This is the root the daemon reports at
+/// enrollment and the one thread storage is named from, so the control plane
+/// never has to guess where a machine keeps its data.
+pub fn default_data_dir() -> PathBuf {
+    if let Some(root) = std::env::var_os("LOOM_DATA_DIR") {
+        return PathBuf::from(root);
+    }
+    if let Some(home) = std::env::var_os("HOME") {
+        return PathBuf::from(home).join(".loom");
+    }
+    std::env::temp_dir().join("loom-data")
 }
 
 /// A daemon could not connect, could not speak the protocol, or was rejected.
@@ -225,6 +247,12 @@ pub struct DaemonConfig {
     /// daemon owns the directory layout and reports the resulting path; the ACP
     /// agent owns its own session storage.
     pub environment_root: PathBuf,
+    /// The daemon's own data directory, reported at enrollment.
+    ///
+    /// Thread storage is named from it (`<data_dir>/thread-storage/<thread>`),
+    /// so a daemon that does not report one leaves those routes answering `501`
+    /// rather than reading a path the control plane invented.
+    pub data_dir: PathBuf,
     /// The host-scope event id to resume from. `None` replays the retained
     /// window and relies on dispatch dedup.
     pub resume_cursor: Option<EventId>,
@@ -271,6 +299,7 @@ impl DaemonConfig {
             run_timeout: DEFAULT_RUN_TIMEOUT,
             permission_timeout: DEFAULT_PERMISSION_TIMEOUT,
             environment_root: default_environment_root(),
+            data_dir: default_data_dir(),
             resume_cursor: None,
             replay_limit: 500,
             update,
@@ -367,6 +396,14 @@ pub struct Daemon {
     /// Environment-provisioning reports waiting to be forwarded to the server.
     env_reports: mpsc::Receiver<EnvironmentProvisionReport>,
     env_reports_tx: mpsc::Sender<EnvironmentProvisionReport>,
+    /// Host file answers waiting to be forwarded to the server.
+    ///
+    /// A read or listing runs off the socket loop (see
+    /// [`crate::host_files`]) and its answer comes back here for the loop to
+    /// forward, because the loop is the only thing that may write to the
+    /// server socket.
+    host_file_reports: mpsc::Receiver<loom_provider_protocol::HostFileReport>,
+    host_file_reports_tx: mpsc::Sender<loom_provider_protocol::HostFileReport>,
     /// Runs with a provider task in flight, keyed by run id.
     running: HashSet<RunId>,
 }
@@ -386,6 +423,8 @@ impl Daemon {
                 let (reports_tx, reports) = mpsc::channel(REPORT_CHANNEL_CAPACITY);
                 let (interactions_tx, interactions) = mpsc::channel(REPORT_CHANNEL_CAPACITY);
                 let (env_reports_tx, env_reports) = mpsc::channel(REPORT_CHANNEL_CAPACITY);
+                let (host_file_reports_tx, host_file_reports) =
+                    mpsc::channel(REPORT_CHANNEL_CAPACITY);
                 Ok(Self {
                     socket,
                     cursor: config.resume_cursor,
@@ -400,6 +439,8 @@ impl Daemon {
                     permissions: crate::acp::permission::PermissionRegistry::new(),
                     env_reports,
                     env_reports_tx,
+                    host_file_reports,
+                    host_file_reports_tx,
                     running: HashSet::new(),
                 })
             }
@@ -419,6 +460,10 @@ impl Daemon {
         self.send(&ClientCommand::EnrollHost {
             host_id: self.config.host_id.clone(),
             name: self.config.name.clone(),
+            // The machine says where its data lives; the control plane never
+            // guesses it. An empty value is normalised away rather than sent.
+            data_dir: Some(self.config.data_dir.to_string_lossy().into_owned())
+                .filter(|dir| !dir.trim().is_empty()),
         })
         .await?;
 
@@ -513,6 +558,10 @@ impl Daemon {
                     let Some(report) = report else { continue };
                     self.send(&ClientCommand::EnvironmentReport { report }).await?;
                 }
+                report = self.host_file_reports.recv() => {
+                    let Some(report) = report else { continue };
+                    self.send(&ClientCommand::HostFileReport { report }).await?;
+                }
             }
         }
     }
@@ -601,15 +650,17 @@ impl Daemon {
             return Ok(());
         }
 
-        // Only a dispatch, an interaction resolution, or a provisioning
-        // request parses as one; host domain events in the same room
-        // (registration, status changes) are none of them.
+        // Only a dispatch, an interaction resolution, a provisioning request,
+        // or a host file request parses as one; host domain events in the same
+        // room (registration, status changes) are none of them.
         if let Ok(dispatch) = serde_json::from_str::<RunDispatch>(payload) {
             self.start_dispatch(dispatch);
         } else if let Ok(resolution) = serde_json::from_str::<InteractionResolutionFrame>(payload) {
             self.resolve_interaction(resolution);
         } else if let Ok(provision) = serde_json::from_str::<EnvironmentProvision>(payload) {
             self.start_provision(provision);
+        } else if let Ok(request) = serde_json::from_str::<HostFileRequest>(payload) {
+            self.start_host_file_request(request);
         }
         Ok(())
     }

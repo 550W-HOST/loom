@@ -336,6 +336,197 @@ pub struct ProviderReport {
     pub event: RunEvent,
 }
 
+// ---------------------------------------------------------------------------
+// Host file access
+// ---------------------------------------------------------------------------
+//
+// A thread's files live on the machine that owns its environment, and the
+// control plane must not read its *own* disk and call it a host file. So a file
+// read or a directory listing is a request to the host, and it travels the two
+// paths the daemon already has:
+//
+// ```text
+//   server ── HostFileRequest ──▶ relay host:{id} ──▶ daemon
+//   server ◀── HostFileReport ── daemon socket
+// ```
+//
+// The request goes through the relay for the same reason a dispatch does: a
+// daemon that was reconnecting still receives it on replay, and a replayed
+// read is harmless because reading is idempotent. The report comes back up the
+// daemon's own socket, because it answers exactly one request and must not be
+// fanned out to every client watching the room.
+//
+// `request_id` is a correlation token, not a domain id: the server mints it,
+// keeps the waiting HTTP request keyed by it, and drops a report whose token it
+// no longer knows (a redelivered or abandoned request).
+
+/// What a host was asked to do with its filesystem.
+///
+/// Deliberately two operations. Both route through one code path so the
+/// containment, hidden-file and limit policies cannot drift between them.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "operation", rename_all = "snake_case")]
+pub enum HostFileOperation {
+    /// Read one file, at most `max_bytes` of it.
+    Read {
+        /// Absolute path on the host.
+        path: String,
+        /// When set, the *real* resolved path must stay inside this root.
+        ///
+        /// The control plane joins a root and a client-supplied relative path
+        /// before sending it, so this is the second half of the traversal
+        /// defence: the daemon re-checks containment against symlinks that
+        /// neither side could see when the path was assembled.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        root_path: Option<String>,
+        /// Upper bound on the file size. A larger file is refused, not
+        /// truncated: half a file is not the file the client asked for.
+        max_bytes: u64,
+    },
+    /// List the entries under one directory, recursively.
+    List {
+        /// Absolute path of the directory on the host.
+        path: String,
+        /// Fuzzy filter; `None` lists everything up to `limit`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        query: Option<String>,
+        /// Maximum entries returned. Truncation is reported, never silent.
+        limit: usize,
+        /// Whether files are candidates.
+        include_files: bool,
+        /// Whether directories are candidates.
+        include_directories: bool,
+        /// Whether dotfiles are candidates.
+        include_hidden: bool,
+    },
+}
+
+/// A request for a host to read or list its own filesystem.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HostFileRequest {
+    /// Correlation token; the server is waiting on exactly this value.
+    pub request_id: String,
+    /// The host expected to answer.
+    pub host_id: HostId,
+    /// What to do.
+    pub operation: HostFileOperation,
+    /// Wall-clock milliseconds when the control plane minted the request.
+    pub created_at_ms: u64,
+}
+
+/// How a file's bytes were encoded for transport.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HostFileEncoding {
+    /// The bytes are valid UTF-8, so they travel as the string itself.
+    Utf8,
+    /// The bytes are not UTF-8; they travel base64-encoded.
+    Base64,
+}
+
+/// One file's contents.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HostFileContent {
+    /// Absolute path that was read, echoed so the caller cannot confuse it with
+    /// the root-relative path it asked for.
+    pub path: String,
+    /// The bytes, in [`HostFileContent::content_encoding`].
+    pub content: String,
+    /// How to decode [`HostFileContent::content`].
+    pub content_encoding: HostFileEncoding,
+    /// Size of the file in bytes, which is *not* the length of `content` when
+    /// it is base64.
+    pub size_bytes: u64,
+    /// Best-effort media type from the path's extension, so the caller can set
+    /// a `content-type` without a second guess.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mime_type: Option<String>,
+    /// Wall-clock milliseconds of the file's last modification.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub modified_at_ms: Option<u64>,
+}
+
+/// Whether a listed entry is a file or a directory.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HostPathKind {
+    /// A regular file.
+    File,
+    /// A directory.
+    Directory,
+}
+
+/// One listed entry, relative to the listed root.
+///
+/// `score` and `positions` exist for the contract's fuzzy path list; with no
+/// query they are `0` and empty, exactly as bb reports an unfiltered listing.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct HostFileEntry {
+    /// Path relative to the listed root, with `/` separators on every platform.
+    pub path: String,
+    /// The final path segment.
+    pub name: String,
+    /// File or directory.
+    pub kind: HostPathKind,
+    /// Relevance for the query, higher first. `0` when there was no query.
+    pub score: f64,
+    /// Character offsets in `path` that matched, for highlighting.
+    pub positions: Vec<usize>,
+}
+
+/// What a host answered.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "outcome", rename_all = "snake_case")]
+pub enum HostFileOutcome {
+    /// One file's contents.
+    Content(HostFileContent),
+    /// A directory listing.
+    Listing {
+        /// Matching entries, best-first when a query was given.
+        entries: Vec<HostFileEntry>,
+        /// Whether entries were dropped to honour the limit.
+        truncated: bool,
+    },
+    /// The request could not be carried out.
+    Failed {
+        /// A stable machine-readable code, in the vocabulary the HTTP layer
+        /// already uses (`not_found`, `invalid_path`, `file_too_large`, …).
+        code: String,
+        /// A human-readable explanation.
+        message: String,
+    },
+}
+
+/// A host's answer to one [`HostFileRequest`].
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct HostFileReport {
+    /// The host answering.
+    pub host_id: HostId,
+    /// The request being answered, echoed verbatim.
+    pub request_id: String,
+    /// What happened.
+    pub outcome: HostFileOutcome,
+}
+
+/// Where a thread's storage directory lives under a host's data directory.
+///
+/// The layout is bb's, verbatim: `<data_dir>/thread-storage/<thread_id>`, and
+/// it lives in this crate because it is the one thing the control plane and a
+/// daemon must agree on without either importing the other. The daemon creates
+/// and owns the directory; the control plane composes the same path from the
+/// data directory the host *reported* at enrollment, so `storageRootPath` is a
+/// real location on a real machine rather than a guess.
+///
+/// `data_dir` is a machine-local path string, not a `PathBuf`, because that is
+/// how it crosses the wire.
+pub fn thread_storage_root(data_dir: &str, thread_id: &str) -> String {
+    // `/` separators rather than `Path::join`: a data directory reported by a
+    // Windows daemon is still a string the control plane must describe, and
+    // every client is a browser that renders `/`.
+    let trimmed = data_dir.trim_end_matches(['/', '\\']);
+    format!("{trimmed}/thread-storage/{thread_id}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -21,6 +21,7 @@ use loom_relay::{now_ms, Relay, Result as RelayResult};
 
 use crate::artifacts::Artifacts;
 use crate::domain_state::DomainRegistry;
+use crate::host_files::HostFileBroker;
 use crate::hub_actor::HubHandle;
 use crate::persistence::{self, DomainSnapshot, SNAPSHOT_VERSION};
 use crate::pump::{Pump, PumpConfig};
@@ -166,6 +167,8 @@ pub struct AppState {
     pub ui: Ui,
     /// The daemon binaries this server hosts for self-update.
     pub artifacts: Arc<Artifacts>,
+    /// HTTP requests waiting on a host's answer to a file read or listing.
+    pub host_files: Arc<HostFileBroker>,
     local_host_id: Option<HostId>,
     run_timeout_ms: u64,
     host_stale_after_ms: u64,
@@ -230,6 +233,7 @@ impl AppState {
             runs: Arc::new(RunRegistry::new()),
             ui,
             artifacts,
+            host_files: Arc::new(HostFileBroker::new()),
             local_host_id: config.local_host_id,
             run_timeout_ms: config.run_timeout.as_millis().min(u128::from(u64::MAX)) as u64,
             host_stale_after_ms: config

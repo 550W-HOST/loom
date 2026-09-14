@@ -182,11 +182,17 @@ async fn handle_command(
             })
         }
         ClientCommand::Ping => Some(ServerMessage::Pong),
-        ClientCommand::EnrollHost { host_id, name } => {
-            match state
-                .registry
-                .enroll_host(host_id, name, loom_relay::now_ms())
-            {
+        ClientCommand::EnrollHost {
+            host_id,
+            name,
+            data_dir,
+        } => {
+            match state.registry.enroll_host_with_data_dir(
+                host_id,
+                name,
+                data_dir,
+                loom_relay::now_ms(),
+            ) {
                 Ok((host, events)) => {
                     *enrolled_host = Some(host.id.clone());
                     Some(ServerMessage::HostEnrolled {
@@ -323,6 +329,27 @@ async fn handle_command(
                 accepted,
                 detail,
             })
+        }
+        ClientCommand::HostFileReport { report } => {
+            // Like every other host-scoped upload, the report must come from the
+            // connection enrolled as that host: one machine must not answer a
+            // read another machine was asked to perform.
+            let Some(host_id) = enrolled_host.clone() else {
+                return Some(ServerMessage::Error {
+                    message: "host file reports require an enrolled host".into(),
+                });
+            };
+            if host_id != report.host_id {
+                return Some(ServerMessage::Error {
+                    message: "report names a different host than this connection enrolled as"
+                        .into(),
+                });
+            }
+            // An answer nobody is waiting for is dropped, not an error: a
+            // request whose client gave up, or a redelivered answer, is normal
+            // and telling the daemon about it would only make it retry.
+            state.host_files.resolve(report);
+            None
         }
         ClientCommand::Replay {
             scope,
