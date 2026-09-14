@@ -53,6 +53,10 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/replay", get(replay))
         .route("/api/v1/threads", get(list_threads).post(create_thread))
         .route("/api/v1/threads/fork", post(fork_thread))
+        // B5: thread files, pane actions and thread storage. Declared with
+        // literal paths, in contract order, so `check-api-coverage.mjs` can
+        // parse them and the routes stay next to their siblings.
+        .route("/api/v1/threads/count", get(crate::b5::thread_count))
         .route(
             "/api/v1/threads/resolve-mentions",
             post(resolve_thread_mentions),
@@ -74,6 +78,47 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/v1/threads/{id}/unarchive", post(unarchive_thread))
         .route("/api/v1/threads/{id}/pin", post(pin_thread))
+        .route(
+            "/api/v1/threads/{id}/pane-action",
+            post(crate::b5::thread_pane_action),
+        )
+        .route(
+            "/api/v1/threads/{id}/files/raw",
+            get(crate::b5::thread_raw_file),
+        )
+        .route(
+            "/api/v1/threads/{id}/host-files/content",
+            get(crate::b5::thread_host_file_content),
+        )
+        .route(
+            "/api/v1/threads/{id}/thread-storage/location",
+            get(crate::b5::thread_storage_location),
+        )
+        .route(
+            "/api/v1/threads/{id}/thread-storage/files",
+            get(crate::b5::thread_storage_files),
+        )
+        .route(
+            "/api/v1/threads/{id}/thread-storage/paths",
+            get(crate::b5::thread_storage_paths),
+        )
+        .route(
+            "/api/v1/threads/{id}/thread-storage/content",
+            get(crate::b5::thread_storage_content),
+        )
+        // The two path-in-URL reads are declared with axum's `{*path}`
+        // wildcard, which consumes every remaining segment including
+        // separators — the same capture the contract writes as
+        // `:filePath{.+}`. `check-api-coverage.mjs` normalises any braced
+        // segment to a parameter, so the two spellings match.
+        .route(
+            "/api/v1/threads/{id}/thread-storage/files/{*file_path}",
+            get(crate::b5::thread_storage_file),
+        )
+        .route(
+            "/api/v1/threads/{id}/worktree/files/{*file_path}",
+            get(crate::b5::thread_worktree_file),
+        )
         .route("/api/v1/threads/{id}/unpin", post(unpin_thread))
         .route(
             "/api/v1/threads/{id}/pin-order",

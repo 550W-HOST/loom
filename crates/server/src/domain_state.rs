@@ -696,23 +696,41 @@ impl DomainRegistry {
     ///   daemon still recognises it.
     /// * `host_id: None` — a fresh identity is minted, for a daemon that has
     ///   never enrolled before.
+    ///
+    /// `data_dir` is the machine's own data directory. It is recorded — never
+    /// cleared by an omission — because thread storage is named from it and a
+    /// storage read should not start failing because one enrollment left it
+    /// out.
     pub fn enroll_host(
         &self,
         host_id: Option<HostId>,
         name: String,
         now_ms: u64,
     ) -> Result<(Host, Vec<DomainEvent>), CommandError> {
+        self.enroll_host_with_data_dir(host_id, name, None, now_ms)
+    }
+
+    /// [`DomainRegistry::enroll_host`] with the daemon's reported data
+    /// directory.
+    pub fn enroll_host_with_data_dir(
+        &self,
+        host_id: Option<HostId>,
+        name: String,
+        data_dir: Option<String>,
+        now_ms: u64,
+    ) -> Result<(Host, Vec<DomainEvent>), CommandError> {
         let mut inner = self.lock();
         if let Some(id) = host_id {
             if let Some(existing) = inner.hosts.get_mut(&id) {
+                existing.record_data_dir(data_dir.as_deref(), now_ms);
                 let events = existing.mark_connected(now_ms).into_iter().collect();
                 return Ok((existing.clone(), events));
             }
-            let (host, event) = Host::register_as(Some(id), name, now_ms)?;
+            let (host, event) = Host::register_with_data_dir(Some(id), name, data_dir, now_ms)?;
             inner.hosts.insert(host.id.clone(), host.clone());
             return Ok((host, vec![event]));
         }
-        let (host, event) = Host::register(name, now_ms)?;
+        let (host, event) = Host::register_with_data_dir(None, name, data_dir, now_ms)?;
         inner.hosts.insert(host.id.clone(), host.clone());
         Ok((host, vec![event]))
     }

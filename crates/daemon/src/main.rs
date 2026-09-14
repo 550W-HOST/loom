@@ -13,8 +13,8 @@
 //! Everything is also settable through the environment (`LOOM_SERVER_URL`,
 //! `LOOM_HOST_NAME`, `LOOM_HOST_ID`, `LOOM_HEARTBEAT_MS`, `LOOM_DAEMON_STATE`,
 //! `LOOM_PROVIDER_CMD`, `LOOM_PROVIDER_ARGS`,
-//! `LOOM_RUN_TIMEOUT_MS`, `LOOM_WORKSPACE_ROOT`, `LOOM_AUTO_UPDATE`) so a
-//! systemd unit needs no command line.
+//! `LOOM_RUN_TIMEOUT_MS`, `LOOM_DATA_DIR`, `LOOM_WORKSPACE_ROOT`,
+//! `LOOM_AUTO_UPDATE`) so a systemd unit needs no command line.
 //!
 //! # Lifecycle
 //!
@@ -63,6 +63,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     config.permission_timeout = options.permission_timeout;
     if let Some(root) = &options.workspace_root {
         config.environment_root = root.clone();
+    }
+    if let Some(dir) = &options.data_dir {
+        config.data_dir = dir.clone();
     }
     config.provider = options.provider.clone();
     config.update = options.update_config()?;
@@ -223,6 +226,7 @@ struct Options {
     permission_timeout: Duration,
     provider: Option<ProviderSpec>,
     workspace_root: Option<PathBuf>,
+    data_dir: Option<PathBuf>,
     state: Option<PathBuf>,
     auto_update: bool,
 }
@@ -240,6 +244,7 @@ impl Options {
         let mut provider_cmd = std::env::var("LOOM_PROVIDER_CMD").ok();
         let mut provider_args = std::env::var("LOOM_PROVIDER_ARGS").ok();
         let mut workspace_root = std::env::var("LOOM_WORKSPACE_ROOT").ok();
+        let mut data_dir = std::env::var("LOOM_DATA_DIR").ok();
         // `--auto-update` is the affirmative of bb's flag: loom's default is on,
         // because a daemon that cannot follow a server upgrade is the
         // operational trap this exists to remove. `LOOM_AUTO_UPDATE=0` (or any
@@ -262,6 +267,7 @@ impl Options {
                 "--provider-cmd" => provider_cmd = args.next(),
                 "--provider-args" => provider_args = args.next(),
                 "--workspace-root" => workspace_root = args.next(),
+                "--data-dir" => data_dir = args.next(),
                 // bb spells the switch `--auto-update`; loom keeps the spelling
                 // and defaults it on. Both flags are accepted so a unit written
                 // for either spelling works, and the disabled reason is logged.
@@ -323,6 +329,9 @@ impl Options {
             permission_timeout,
             provider,
             workspace_root: workspace_root
+                .filter(|value| !value.trim().is_empty())
+                .map(PathBuf::from),
+            data_dir: data_dir
                 .filter(|value| !value.trim().is_empty())
                 .map(PathBuf::from),
             state: state.map(PathBuf::from),
@@ -390,6 +399,11 @@ FLAGS:
                              Env: LOOM_PROVIDER_CMD
     --provider-args <ARGS>   Space-separated arguments for the ACP agent
                              override. Env: LOOM_PROVIDER_ARGS
+    --data-dir <PATH>        This machine's data directory. Thread storage lives
+                             here as <dir>/thread-storage/<thread_id>, and the
+                             server names it from what this daemon reports at
+                             enrollment. Default: $HOME/.loom.
+                             Env: LOOM_DATA_DIR
     --workspace-root <PATH>  Root under which managed environments' workspaces
                              are created as <root>/<env_id>. Default:
                              $HOME/.loom/workspaces. Env: LOOM_WORKSPACE_ROOT

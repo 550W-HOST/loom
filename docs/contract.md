@@ -420,6 +420,123 @@ skipping a blocked message to deliver a later one would reorder the conversation
 against the client's arrangement — so exactly one message follows one finished
 run, which is what a queue means.
 
+## B5: thread files and storage helpers
+
+Batch B5 (thread counts, pane actions and thread file access) added ten routes.
+Seven of them read a filesystem, and the interesting decision is **whose**
+filesystem that is.
+
+### A file read is a request to the host, not a local read
+
+A thread's workspace and its thread storage live on the host its environment
+names. The control plane must never open its own disk and present the result as
+that thread's file: on a multi-machine deployment the two are different
+machines, and on a single-machine one the answer would be right by accident and
+wrong by design. So `loom-provider-protocol` gained a third request/report pair:
+
+```text
+  server ── HostFileRequest ──▶ relay host:{id} ──▶ daemon
+  server ◀── HostFileReport ── daemon socket (host_file_report)
+```
+
+The request travels **through the relay** for the same reason a dispatch does: a
+daemon that was reconnecting receives it on replay, and replaying a read is
+harmless because reading is idempotent. The answer comes back **up the daemon's
+own socket**, not through the room, because it satisfies exactly one waiting
+HTTP request — fanning a file's contents out to every client watching the host
+would be a leak with no reader.
+
+Because the relay is one-way by design (a producer never learns who is
+subscribed), the waiting HTTP request is parked in `crate::host_files::HostFileBroker`
+under a fresh correlation token and woken by the socket task when the report
+arrives. A report whose token is unknown is dropped rather than treated as an
+error: a timeout, a redelivery and a client that hung up all produce one.
+
+`AppState::request_host_file` is the **only** way any route reads a host file,
+and it refuses a host that is not enrolled before publishing — a request into a
+room nobody is in could only time out. The timeout is `30 s`, matching bb's
+`COMMAND_TIMEOUT_MS`.
+
+### Thread storage is named from the host's own data directory
+
+`<data_dir>/thread-storage/<thread_id>` is bb's layout, and it is the **daemon**
+that owns it. The control plane cannot know a machine's data directory unless
+that machine says so, so `enroll_host` gained an additive `data_dir` field, and
+`Host` records it. `threads.storageLocation` is then answered from the entity
+view without asking the host at all: it is a question about the layout, and a
+client opening a storage panel should not fail because the daemon is briefly
+away.
+
+A host that never reported a data directory — an older daemon, or a host
+enrolled through the reference HTTP endpoint — answers **`501 not_configured`**
+on the storage routes. Inventing a path on a machine the server does not own is
+the failure this refuses to commit. The value survives a reconnect and is only
+replaced by a *new* report: an enrollment that omits it cannot erase it.
+
+### Three permission scopes, and the traversal defence has two halves
+
+The routes are not interchangeable, and their roots differ on purpose:
+
+| scope | routes | root |
+| --- | --- | --- |
+| workspace | `worktreeFile` | the environment's own workspace path |
+| storage | `storageContent`, `storageFile`, `storageFiles`, `storagePaths`, `storageLocation` | the host's data directory plus the storage layout |
+| absolute host | `hostFileContent`, `rawFile` | none — the client names an absolute path |
+
+Relative paths are validated **before** a request is built: NUL, a leading `/`,
+a backslash, and any `.`/`..`/empty segment are refused with `400 invalid_path`,
+mirroring bb's `parseSafeRelativeRoutePath`. That check cannot see symlinks and
+cannot see through a path assembled on another machine, so a read that names a
+root is re-checked on the host, which resolves both sides and refuses anything
+that escapes. Both halves are tested: the server test proves a `..` never
+reaches the host, and the daemon test proves a symlink out of the root is
+refused.
+
+The absolute-host scope is deliberately **not** root-confined — the client is
+pointing at a file it already knows the location of (an image in a timeline, a
+tool's log) — but it is still confined to the thread's own host. A relative
+path is refused there, because it cannot name a file the client meant.
+
+### A thread with no environment is refused, not defaulted
+
+Every file route resolves the thread's environment first. A thread bound to no
+environment answers `409 thread_environment_unavailable` and a workspace read on
+an environment with no path answers `409 environment_not_ready`, both of which
+the contract declares. Falling back to the thread's project, to the primary host
+or to the server's own directory would each answer a different question than the
+one asked.
+
+### `threads.count` is a count over the entity view
+
+It is computed from the same rows `threads.list` would return, so the sidebar
+count and the sidebar list cannot disagree. `includeArchived` and
+`includeHidden` are independent, deleted threads never count, and `providerId`
+amounts to the one configured provider rather than a per-thread field nothing
+sets. `parentThreadId` is three-valued as the contract specifies: omitted does
+not filter, `none` is roots only, and any other value is that parent's id.
+`groupBy=host` keys a thread with no environment under `null`, which is what the
+contract's nullable key is for.
+
+### `threads.paneAction` publishes, like `threads.open`
+
+The request travels the only path the control plane has — into the thread's
+relay room — and `delivered` counts that room's local subscribers. It is a
+fan-out count, not an acknowledgement, and it is idempotent for a client that
+receives it twice. The frame is `thread_pane_action_requested`, carrying the
+thread, its project and the action.
+
+### `If-None-Match` is ignored on file content
+
+bb's daemon returns an entity tag derived from the file's SHA-256 and answers a
+matching `If-None-Match` with `304`. Loom's `HostFileContent` carries no content
+hash, and a tag synthesised from the size and path would be wrong in the
+direction that matters: a same-length edit in place would keep the old tag and a
+client would render stale bytes. So every content read is a `200` with the
+bytes. The route stays shape-compatible — the contract declares a binary `200`
+and nothing else — and this is recorded rather than silently approximated.
+Adding a hash to the host protocol is the change that would make `304`
+implementable.
+
 ## Known limits
 
 - **Error codes are best-effort.** bb's contract package types the error body

@@ -149,3 +149,127 @@ async fn a_reconnecting_daemon_keeps_its_identity() {
     second.disconnect().await.unwrap();
     state.shutdown();
 }
+
+/// A real daemon answers a real server's file request over the relay.
+///
+/// This is the end-to-end proof for B5: the enrollment reports the machine's
+/// data directory, the server composes thread storage from it, publishes a read
+/// to the host room, and the daemon's own filesystem work comes back up the
+/// socket. The stored bytes are the ones the test wrote on disk — the server
+/// never touched them itself.
+#[tokio::test]
+async fn a_daemon_answers_thread_storage_reads_from_its_own_disk() {
+    let temp = tempfile::tempdir().unwrap();
+    let data_dir = temp.path().join("data");
+    std::fs::create_dir_all(&data_dir).unwrap();
+
+    let (url, state) = spawn_server(AppConfig::default()).await;
+    let mut config = DaemonConfig::new(&url, "files");
+    config.data_dir = data_dir.clone();
+    config.heartbeat_interval = Duration::from_millis(25);
+    let mut daemon = Daemon::connect(config).await.unwrap();
+    let host_id = daemon.enroll().await.unwrap();
+    let daemon = tokio::spawn(async move {
+        let _ = daemon.run().await;
+    });
+
+    // The server learned the machine's layout from the enrollment, and the
+    // composed root is the real directory on this disk.
+    let now = loom_relay::now_ms();
+    let (project, _) = state
+        .registry
+        .create_project(
+            "files".into(),
+            loom_domain::ProjectKind::Standard,
+            None,
+            now,
+        )
+        .unwrap();
+    let (environment, _) = state
+        .registry
+        .create_environment(
+            Some(project.id.clone()),
+            host_id.clone(),
+            loom_domain::EnvironmentKind::Unmanaged,
+            Some(temp.path().join("workspace").to_string_lossy().into_owned()),
+            now,
+        )
+        .unwrap();
+    let (thread, _) = state
+        .registry
+        .create_thread(
+            Some(project.id.clone()),
+            Some("files".into()),
+            Some(environment.id.clone()),
+            now,
+        )
+        .unwrap();
+
+    let storage = data_dir.join("thread-storage").join(thread.id.to_string());
+    std::fs::create_dir_all(&storage).unwrap();
+    std::fs::write(storage.join("notes.md"), b"# from the daemon\n").unwrap();
+
+    // A read of a file only the daemon's disk has.
+    let outcome = state
+        .request_host_file(
+            &host_id,
+            loom_provider_protocol::HostFileOperation::Read {
+                path: storage.join("notes.md").to_string_lossy().into_owned(),
+                root_path: Some(storage.to_string_lossy().into_owned()),
+                max_bytes: 4096,
+            },
+        )
+        .await
+        .unwrap();
+    let loom_provider_protocol::HostFileOutcome::Content(content) = outcome else {
+        panic!("expected content, got {outcome:?}");
+    };
+    assert_eq!(content.content, "# from the daemon\n");
+    assert_eq!(content.mime_type.as_deref(), Some("text/markdown"));
+
+    // A listing of the same directory, relative to it.
+    let outcome = state
+        .request_host_file(
+            &host_id,
+            loom_provider_protocol::HostFileOperation::List {
+                path: storage.to_string_lossy().into_owned(),
+                query: None,
+                limit: 100,
+                include_files: true,
+                include_directories: false,
+                include_hidden: false,
+            },
+        )
+        .await
+        .unwrap();
+    let loom_provider_protocol::HostFileOutcome::Listing { entries, truncated } = outcome else {
+        panic!("expected a listing, got {outcome:?}");
+    };
+    assert!(!truncated);
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].path, "notes.md");
+
+    // A thread whose environment names a host that is not enrolled is refused
+    // before a room nobody is in is published to.
+    let absent = HostId::mint();
+    let outcome = state
+        .request_host_file(
+            &absent,
+            loom_provider_protocol::HostFileOperation::List {
+                path: "/tmp".into(),
+                query: None,
+                limit: 10,
+                include_files: true,
+                include_directories: false,
+                include_hidden: false,
+            },
+        )
+        .await;
+    assert!(matches!(
+        outcome,
+        Err(loom_server::HostFileTransportError::UnknownHost(_))
+    ));
+
+    daemon.abort();
+    state.shutdown();
+}

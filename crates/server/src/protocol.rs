@@ -59,6 +59,15 @@ pub enum ClientCommand {
         host_id: Option<loom_domain::HostId>,
         /// The machine's display name.
         name: String,
+        /// The daemon's own data directory on this machine.
+        ///
+        /// Thread storage is layout the **daemon** owns
+        /// (`<data_dir>/thread-storage/<thread_id>`), so the control plane can
+        /// only name it when the machine says where its data lives. Additive
+        /// on the wire: an older daemon sends nothing and a storage route
+        /// answers `501` rather than guessing a path.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        data_dir: Option<String>,
     },
     /// A daemon reports that it is still alive.
     HostHeartbeat {
@@ -106,6 +115,16 @@ pub enum ClientCommand {
     EnvironmentReport {
         /// The provisioning observation.
         report: EnvironmentProvisionReport,
+    },
+    /// A daemon answers one [`loom_provider_protocol::HostFileRequest`].
+    ///
+    /// The request itself arrives through the relay (see
+    /// [`crate::protocol`] and `docs/contract.md`); the answer comes back up
+    /// this socket because it satisfies exactly one waiting HTTP request and
+    /// must not be fanned out to every client watching the host's room.
+    HostFileReport {
+        /// The read or listing result, tagged with the request it answers.
+        report: loom_provider_protocol::HostFileReport,
     },
     /// Ask the server to replay retained frames for a scope to this
     /// connection.
@@ -289,7 +308,8 @@ mod tests {
             fresh,
             ClientCommand::EnrollHost {
                 host_id: None,
-                name: "laptop".into()
+                name: "laptop".into(),
+                data_dir: None,
             }
         );
 
@@ -302,7 +322,23 @@ mod tests {
             returning,
             ClientCommand::EnrollHost {
                 host_id: Some(host_id),
-                name: "laptop".into()
+                name: "laptop".into(),
+                data_dir: None,
+            }
+        );
+
+        // The data directory is additive on the wire: an older daemon omits it
+        // and the server records nothing, rather than failing to enroll.
+        let reporting: ClientCommand = serde_json::from_str(
+            r#"{"type":"enroll_host","name":"laptop","data_dir":"/var/lib/loom"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            reporting,
+            ClientCommand::EnrollHost {
+                host_id: None,
+                name: "laptop".into(),
+                data_dir: Some("/var/lib/loom".into()),
             }
         );
     }
