@@ -48,6 +48,7 @@ pub mod host_files;
 pub mod provider;
 pub mod session;
 pub mod update;
+pub mod workspace;
 
 use std::collections::{HashSet, VecDeque};
 use std::path::{Path, PathBuf};
@@ -57,7 +58,8 @@ use futures_util::{SinkExt, StreamExt};
 use loom_domain::{HostId, RunId};
 use loom_provider_protocol::{
     EnvironmentProvision, EnvironmentProvisionOutcome, EnvironmentProvisionReport, HostFileRequest,
-    InteractionRequest, InteractionResolutionFrame, ProviderSpec, RunDispatch,
+    HostRpcReport, HostRpcRequest, InteractionRequest, InteractionResolutionFrame, ProviderSpec,
+    RunDispatch,
 };
 use loom_relay::dedup::SeenSet;
 use loom_relay::{EventId, Scope};
@@ -404,6 +406,9 @@ pub struct Daemon {
     /// server socket.
     host_file_reports: mpsc::Receiver<loom_provider_protocol::HostFileReport>,
     host_file_reports_tx: mpsc::Sender<loom_provider_protocol::HostFileReport>,
+    /// Workspace and git answers waiting to be forwarded to the server.
+    host_rpc_reports: mpsc::Receiver<HostRpcReport>,
+    host_rpc_reports_tx: mpsc::Sender<HostRpcReport>,
     /// Runs with a provider task in flight, keyed by run id.
     running: HashSet<RunId>,
 }
@@ -425,6 +430,8 @@ impl Daemon {
                 let (env_reports_tx, env_reports) = mpsc::channel(REPORT_CHANNEL_CAPACITY);
                 let (host_file_reports_tx, host_file_reports) =
                     mpsc::channel(REPORT_CHANNEL_CAPACITY);
+                let (host_rpc_reports_tx, host_rpc_reports) =
+                    mpsc::channel(REPORT_CHANNEL_CAPACITY);
                 Ok(Self {
                     socket,
                     cursor: config.resume_cursor,
@@ -441,6 +448,8 @@ impl Daemon {
                     env_reports_tx,
                     host_file_reports,
                     host_file_reports_tx,
+                    host_rpc_reports,
+                    host_rpc_reports_tx,
                     running: HashSet::new(),
                 })
             }
@@ -562,6 +571,10 @@ impl Daemon {
                     let Some(report) = report else { continue };
                     self.send(&ClientCommand::HostFileReport { report }).await?;
                 }
+                report = self.host_rpc_reports.recv() => {
+                    let Some(report) = report else { continue };
+                    self.send(&ClientCommand::HostRpcReport { report }).await?;
+                }
             }
         }
     }
@@ -651,8 +664,8 @@ impl Daemon {
         }
 
         // Only a dispatch, an interaction resolution, a provisioning request,
-        // or a host file request parses as one; host domain events in the same
-        // room (registration, status changes) are none of them.
+        // a host file request, or a workspace request parses as one; host
+        // domain events in the same room are none of them.
         if let Ok(dispatch) = serde_json::from_str::<RunDispatch>(payload) {
             self.start_dispatch(dispatch);
         } else if let Ok(resolution) = serde_json::from_str::<InteractionResolutionFrame>(payload) {
@@ -661,8 +674,22 @@ impl Daemon {
             self.start_provision(provision);
         } else if let Ok(request) = serde_json::from_str::<HostFileRequest>(payload) {
             self.start_host_file_request(request);
+        } else if let Ok(request) = serde_json::from_str::<HostRpcRequest>(payload) {
+            self.start_host_rpc_request(request);
         }
         Ok(())
+    }
+
+    /// Executes one workspace operation on the daemon's machine.
+    fn start_host_rpc_request(&self, request: HostRpcRequest) {
+        if self.host_id.as_ref() != Some(&request.host_id) {
+            return;
+        }
+        let reports = self.host_rpc_reports_tx.clone();
+        tokio::spawn(async move {
+            let report = workspace::answer(request).await;
+            let _ = reports.send(report).await;
+        });
     }
 
     /// Hands a permission answer to the provider task waiting for it.

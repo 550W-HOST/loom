@@ -159,32 +159,26 @@ impl AppState {
             return EnvironmentReportOutcome::Stale;
         }
 
-        match report.outcome {
-            EnvironmentProvisionOutcome::Provisioned { path } => {
-                if let Err(error) =
-                    self.registry
-                        .set_environment_path(&report.environment_id, path, now)
-                {
-                    return EnvironmentReportOutcome::Mismatch(error.to_string());
-                }
-                if let Ok((_, event)) = self.registry.set_environment_status(
-                    &report.environment_id,
-                    EnvironmentStatus::Ready,
-                    now,
-                ) {
-                    let _ = self.publish_domain_event(&event);
-                }
-            }
+        let result = match report.outcome {
+            EnvironmentProvisionOutcome::Provisioned { path } => self
+                .registry
+                .complete_environment_provisioning(&report.environment_id, path, now),
             EnvironmentProvisionOutcome::Failed { error } => {
-                if let Ok((_, event)) =
-                    self.registry
-                        .fail_environment(&report.environment_id, error, now)
-                {
-                    let _ = self.publish_domain_event(&event);
-                }
+                self.registry
+                    .fail_environment(&report.environment_id, error, now)
             }
+        };
+        match result {
+            Ok((_, event)) => {
+                let _ = self.publish_domain_event(&event);
+                EnvironmentReportOutcome::Applied
+            }
+            Err(crate::CommandError::NotFound(_)) => EnvironmentReportOutcome::Unknown,
+            Err(crate::CommandError::Domain(
+                loom_domain::DomainError::IllegalEnvironmentTransition { .. },
+            )) => EnvironmentReportOutcome::Stale,
+            Err(error) => EnvironmentReportOutcome::Mismatch(error.to_string()),
         }
-        EnvironmentReportOutcome::Applied
     }
 }
 

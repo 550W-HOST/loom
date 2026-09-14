@@ -23,10 +23,12 @@
 
 pub mod artifacts;
 pub mod b5;
+pub mod b6;
 pub mod build_info;
 pub mod domain_state;
 pub mod environments;
 pub mod host_files;
+pub mod host_rpc;
 pub mod http;
 pub mod hub_actor;
 pub mod interactions;
@@ -49,6 +51,7 @@ pub use build_info::{version_line, COMMIT, TARGET, VERSION};
 pub use domain_state::{CommandError, DomainRegistry};
 pub use environments::{EnvironmentReportOutcome, ProvisionOutcome};
 pub use host_files::{HostFileBroker, HostFileTransportError, HOST_FILE_TIMEOUT};
+pub use host_rpc::{HostRpcBroker, HostRpcTransportError, HOST_RPC_TIMEOUT};
 pub use hub_actor::{HubCommand, HubHandle};
 pub use interactions::DeliverOutcome;
 pub use persistence::{DomainSnapshot, SnapshotError, SNAPSHOT_FILE};

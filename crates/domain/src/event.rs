@@ -161,6 +161,11 @@ pub enum DomainEvent {
         /// The environment.
         environment: Environment,
     },
+    /// An environment's editable metadata changed.
+    EnvironmentUpdated {
+        /// The environment after the change.
+        environment: Environment,
+    },
     /// An environment's provisioning status moved.
     EnvironmentStatusChanged {
         /// The environment.
@@ -194,6 +199,7 @@ impl DomainEvent {
             DomainEvent::ThreadQueuedMessageChanged { .. } => "thread_queued_message_changed",
             DomainEvent::ThreadInteractionChanged { .. } => "thread_interaction_changed",
             DomainEvent::EnvironmentCreated { .. } => "environment_created",
+            DomainEvent::EnvironmentUpdated { .. } => "environment_updated",
             DomainEvent::EnvironmentStatusChanged { .. } => "environment_status_changed",
         }
     }
@@ -234,6 +240,9 @@ impl DomainEvent {
             DomainEvent::HostRegistered { host } => DomainScope::Host(host.id.clone()),
             DomainEvent::HostStatusChanged { host_id, .. } => DomainScope::Host(host_id.clone()),
             DomainEvent::EnvironmentCreated { environment } => {
+                DomainScope::Project(environment.project_id.clone())
+            }
+            DomainEvent::EnvironmentUpdated { environment } => {
                 DomainScope::Project(environment.project_id.clone())
             }
             DomainEvent::EnvironmentStatusChanged { project_id, .. } => {

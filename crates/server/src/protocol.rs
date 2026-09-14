@@ -20,7 +20,7 @@
 
 use bytes::Bytes;
 use loom_domain::{EnvironmentId, Host, RunId};
-use loom_provider_protocol::{EnvironmentProvisionReport, ProviderReport};
+use loom_provider_protocol::{EnvironmentProvisionReport, HostRpcReport, ProviderReport};
 use loom_relay::envelope::Envelope;
 use loom_relay::event_id::EventId;
 use loom_relay::scope::Scope;
@@ -125,6 +125,15 @@ pub enum ClientCommand {
     HostFileReport {
         /// The read or listing result, tagged with the request it answers.
         report: loom_provider_protocol::HostFileReport,
+    },
+    /// A daemon answers one host workspace RPC.
+    ///
+    /// The report is consumed by the server-side broker and is not fanned out
+    /// to UI clients: it satisfies the one HTTP request that owns its
+    /// correlation id.
+    HostRpcReport {
+        /// The workspace operation result.
+        report: HostRpcReport,
     },
     /// Ask the server to replay retained frames for a scope to this
     /// connection.
