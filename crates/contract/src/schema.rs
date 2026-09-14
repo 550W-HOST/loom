@@ -5,6 +5,8 @@
 //! resolve is a local JSON pointer. The supported keywords are exactly those
 //! the exporter can produce; anything else is ignored rather than guessed at.
 
+use std::collections::BTreeSet;
+
 use serde_json::Value;
 
 /// One failure of an instance against a schema, with a JSON-ish path.
@@ -165,9 +167,34 @@ fn check(root: &Value, schema: &Value, instance: &Value, path: &str, out: &mut V
     }
 
     if let Some(Value::Array(branches)) = map.get("allOf") {
+        let object_composition =
+            instance.is_object() && branches.iter().all(|branch| is_object_schema(root, branch));
+        let mut branch_violations = Vec::new();
         for branch in branches {
-            check(root, branch, instance, path, out);
+            check(root, branch, instance, path, &mut branch_violations);
         }
+        if object_composition {
+            // The contract exporter emits object extensions as `allOf` parts,
+            // each with `additionalProperties: false`. JSON Schema evaluates
+            // those literally, but the generated bb response schemas use the
+            // parts as one merged object shape. Properties declared by a
+            // sibling part must therefore be allowed while retaining all
+            // value and required-field checks from each part.
+            let mut properties = BTreeSet::new();
+            for branch in branches {
+                collect_object_properties(root, branch, &mut properties);
+            }
+            branch_violations.retain(|violation| {
+                if violation.message != "property is not allowed here" {
+                    return true;
+                }
+                violation
+                    .path
+                    .strip_prefix(&format!("{path}."))
+                    .is_none_or(|name| !properties.contains(name))
+            });
+        }
+        out.extend(branch_violations);
     }
 
     if let Some(Value::Array(branches)) = map.get("oneOf") {
@@ -198,6 +225,46 @@ fn check(root: &Value, schema: &Value, instance: &Value, path: &str, out: &mut V
         Value::String(text) => check_string(map, text, path, out),
         Value::Number(number) => check_number(map, number, path, out),
         _ => {}
+    }
+}
+
+fn is_object_schema(root: &Value, schema: &Value) -> bool {
+    let Some(map) = schema.as_object() else {
+        return false;
+    };
+    if let Some(reference) = map.get("$ref").and_then(Value::as_str) {
+        return resolve_pointer(root, reference)
+            .is_some_and(|target| is_object_schema(root, target));
+    }
+    if map.get("type").and_then(Value::as_str) == Some("object")
+        || map.contains_key("properties")
+        || map.contains_key("required")
+        || map.contains_key("additionalProperties")
+    {
+        return true;
+    }
+    map.get("allOf")
+        .and_then(Value::as_array)
+        .is_some_and(|branches| branches.iter().all(|branch| is_object_schema(root, branch)))
+}
+
+fn collect_object_properties(root: &Value, schema: &Value, properties: &mut BTreeSet<String>) {
+    let Some(map) = schema.as_object() else {
+        return;
+    };
+    if let Some(reference) = map.get("$ref").and_then(Value::as_str) {
+        if let Some(target) = resolve_pointer(root, reference) {
+            collect_object_properties(root, target, properties);
+        }
+        return;
+    }
+    if let Some(object) = map.get("properties").and_then(Value::as_object) {
+        properties.extend(object.keys().cloned());
+    }
+    if let Some(branches) = map.get("allOf").and_then(Value::as_array) {
+        for branch in branches {
+            collect_object_properties(root, branch, properties);
+        }
     }
 }
 

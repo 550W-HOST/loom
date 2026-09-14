@@ -37,6 +37,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::domain_state::RegistrySnapshot;
 use crate::runs::RunRecord;
+use crate::settings::SettingsSnapshot;
 
 /// Name of the snapshot file inside the data directory.
 pub const SNAPSHOT_FILE: &str = "domain.snapshot";
@@ -65,6 +66,13 @@ pub struct DomainSnapshot {
     pub registry: RegistrySnapshot,
     /// Runs that were in flight when the snapshot was taken.
     pub runs: Vec<RunRecord>,
+    /// Server-local settings and UI preferences.
+    ///
+    /// `#[serde(default)]` is the migration path for snapshots written before
+    /// B10: those snapshots still restore their domain entities and receive
+    /// the current settings defaults.
+    #[serde(default)]
+    pub settings: Option<SettingsSnapshot>,
 }
 
 /// Why a snapshot could not be read or written.
@@ -211,6 +219,7 @@ mod tests {
             watermark: Some(EventId::new()),
             registry: registry.export(),
             runs: Vec::new(),
+            settings: Some(SettingsSnapshot::default()),
         }
     }
 

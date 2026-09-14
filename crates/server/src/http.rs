@@ -8,7 +8,7 @@ use axum::extract::{Path, Query, Request, State};
 use axum::http::StatusCode;
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use http_body_util::BodyExt;
 use loom_domain::{
@@ -38,6 +38,42 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/version", get(version))
         .route("/api/v1/sidebar-bootstrap", get(sidebar_bootstrap))
         .route("/api/v1/system/config", get(system_config))
+        .route(
+            "/api/v1/settings/appearance",
+            put(crate::b10::update_appearance),
+        )
+        .route(
+            "/api/v1/settings/experiments",
+            put(crate::b10::update_experiments),
+        )
+        .route("/api/v1/settings/general", put(crate::b10::update_general))
+        .route(
+            "/api/v1/settings/keyboard",
+            put(crate::b10::update_keyboard),
+        )
+        .route(
+            "/api/v1/settings/themes/{id}",
+            get(crate::b10::resolve_theme),
+        )
+        .route("/api/v1/settings/themes", get(crate::b10::themes))
+        .route("/api/v1/preferences/ui", get(crate::b10::ui_preferences))
+        .route(
+            "/api/v1/preferences/ui/{key}",
+            put(crate::b10::update_ui_preference).delete(crate::b10::reset_ui_preference),
+        )
+        .route(
+            "/api/v1/system/providers/{id}/logo",
+            get(crate::b10::provider_logo),
+        )
+        .route(
+            "/api/v1/system/config/reload",
+            post(crate::b10::reload_config),
+        )
+        .route("/api/v1/system/usage-limits", get(crate::b10::usage_limits))
+        .route(
+            "/api/v1/system/voice-transcription",
+            post(crate::b10::voice_transcription),
+        )
         .route(
             "/api/v1/system/environment-providers",
             get(environment_providers),
@@ -730,36 +766,14 @@ async fn sidebar_bootstrap(State(state): State<AppState>) -> Json<Value> {
 
 /// Returns the static configuration surface required by the bb client.
 async fn system_config(State(state): State<AppState>) -> Json<Value> {
-    let provider_id = configured_provider_id(&state);
+    let settings = state.settings.export();
     Json(json!({
-        "generalSettings": {
-            "showKeyboardHints": true,
-            "steerActiveThreadOnEnter": true,
-            "showDiagnosticEvents": false,
-            "providerOrder": [provider_id],
-            "defaultProviderId": configured_provider_id(&state),
-            "streamerMode": false,
-            "managedBranchPrefix": ""
-        },
-        "keybindings": [],
+        "generalSettings": crate::settings::general_value(&settings.general),
+        "keybindings": settings.keyboard,
         "defaultKeybindings": [],
         "keybindingOverrides": [],
-        "experiments": {
-            "changelogPreview": false,
-            "mobileApp": false,
-            "sidebarProgressiveDisclosure": false,
-            "timelineWindowing": true
-        },
-        "appearance": {
-            "themeId": "default",
-            "customCss": null,
-            "faviconColor": "default",
-            "resolvedCodeTheme": {
-                "dark": "",
-                "light": "",
-                "files": {}
-            }
-        },
+        "experiments": crate::settings::experiments_value(&settings.experiments),
+        "appearance": crate::settings::appearance_value(&settings.appearance),
         "customThemes": [],
         "pluginThemes": [],
         "featureFlags": {

@@ -1,0 +1,282 @@
+//! B10 conformance and persistence tests.
+//!
+//! The settings surface is server-local state: successful mutations must be
+//! contract-shaped, survive a durable restart, and leave the relay untouched.
+
+use axum::body::Body;
+use axum::http::{Request, StatusCode};
+use axum::Router;
+use http_body_util::BodyExt;
+use loom_contract::shared;
+use loom_server::http::router;
+use loom_server::state::{AppConfig, AppState};
+use serde_json::{json, Value};
+use tempfile::TempDir;
+use tower::ServiceExt;
+
+async fn body_json(response: axum::response::Response) -> Value {
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    serde_json::from_slice(&bytes)
+        .unwrap_or_else(|error| panic!("response was not JSON: {error}; body={:?}", bytes))
+}
+
+async fn get(app: &Router, path: &str) -> axum::response::Response {
+    app.clone()
+        .oneshot(Request::get(path).body(Body::empty()).unwrap())
+        .await
+        .unwrap()
+}
+
+async fn put(app: &Router, path: &str, body: Value) -> axum::response::Response {
+    app.clone()
+        .oneshot(
+            Request::put(path)
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+}
+
+async fn post_empty(app: &Router, path: &str) -> axum::response::Response {
+    app.clone()
+        .oneshot(Request::post(path).body(Body::empty()).unwrap())
+        .await
+        .unwrap()
+}
+
+async fn delete(app: &Router, path: &str) -> axum::response::Response {
+    app.clone()
+        .oneshot(Request::delete(path).body(Body::empty()).unwrap())
+        .await
+        .unwrap()
+}
+
+#[track_caller]
+fn assert_response(route_id: &str, status: u16, body: &Value) {
+    let contract = shared();
+    let route = contract
+        .route_by_id(route_id)
+        .unwrap_or_else(|| panic!("missing contract route {route_id}"));
+    let violations = contract.validate_response(route, status, body);
+    assert!(
+        violations.is_empty(),
+        "{route_id} response is not contract-shaped: {violations:?}\n{body}"
+    );
+}
+
+#[track_caller]
+fn assert_error(status: StatusCode, body: &Value) {
+    let contract = shared();
+    assert!(
+        contract.validate_error_body(body).is_empty(),
+        "error body is not contract-shaped: {body}"
+    );
+    let code = body["code"].as_str().expect("error code");
+    assert!(
+        contract
+            .error_statuses(code)
+            .contains(&u64::from(status.as_u16())),
+        "error code {code:?} is not declared at {}",
+        status.as_u16()
+    );
+}
+
+#[tokio::test]
+async fn b10_routes_validate_requests_and_responses() {
+    let state = AppState::build(AppConfig::default()).unwrap();
+    let app = router(state.clone());
+    let contract = shared();
+
+    let appearance = json!({ "themeId": "default", "faviconColor": "blue" });
+    assert!(contract
+        .validate_request_by_id("system.appearance", &appearance)
+        .is_empty());
+    let response = put(&app, "/api/v1/settings/appearance", appearance).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response).await;
+    assert_response("system.appearance", 200, &body);
+    assert_eq!(body["faviconColor"], "blue");
+
+    let experiments = json!({
+        "changelogPreview": true,
+        "mobileApp": false,
+        "sidebarProgressiveDisclosure": true,
+        "timelineWindowing": false
+    });
+    assert!(contract
+        .validate_request_by_id("system.experiments", &experiments)
+        .is_empty());
+    let response = put(&app, "/api/v1/settings/experiments", experiments).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_response("system.experiments", 200, &body_json(response).await);
+
+    let general = json!({
+        "showKeyboardHints": false,
+        "steerActiveThreadOnEnter": false,
+        "showDiagnosticEvents": true,
+        "providerOrder": ["pi"],
+        "defaultProviderId": "pi",
+        "streamerMode": true,
+        "managedBranchPrefix": "loom/"
+    });
+    assert!(contract
+        .validate_request_by_id("system.generalSettings", &general)
+        .is_empty());
+    let response = put(&app, "/api/v1/settings/general", general).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_response("system.generalSettings", 200, &body_json(response).await);
+
+    let keyboard = json!([]);
+    assert!(contract
+        .validate_request_by_id("system.keyboardSettings", &keyboard)
+        .is_empty());
+    let response = put(&app, "/api/v1/settings/keyboard", keyboard).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_response("system.keyboardSettings", 200, &body_json(response).await);
+
+    let response = get(&app, "/api/v1/settings/themes").await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_response("system.themes", 200, &body_json(response).await);
+    let response = get(&app, "/api/v1/settings/themes/default").await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_response("system.resolveTheme", 200, &body_json(response).await);
+
+    let response = get(&app, "/api/v1/preferences/ui").await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let preferences = body_json(response).await;
+    assert_response("system.uiPreferences", 200, &preferences);
+    assert_eq!(
+        preferences["preferences"]["sidebar.sortDirection"]["revision"],
+        0
+    );
+
+    let update = json!({ "expectedRevision": 0, "value": "ascending" });
+    assert!(contract
+        .validate_request_by_id("system.updateUiPreference", &update)
+        .is_empty());
+    let response = put(&app, "/api/v1/preferences/ui/sidebar.sortDirection", update).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let updated = body_json(response).await;
+    assert_response("system.updateUiPreference", 200, &updated);
+    assert_eq!(updated["revision"], 1);
+
+    let stale = put(
+        &app,
+        "/api/v1/preferences/ui/sidebar.sortDirection",
+        json!({ "expectedRevision": 0, "value": "descending" }),
+    )
+    .await;
+    assert_eq!(stale.status(), StatusCode::CONFLICT);
+    let stale_body = body_json(stale).await;
+    assert_error(StatusCode::CONFLICT, &stale_body);
+
+    let response = delete(&app, "/api/v1/preferences/ui/sidebar.sortDirection").await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let reset = body_json(response).await;
+    assert_response("system.resetUiPreference", 200, &reset);
+    assert_eq!(reset["value"], "default");
+
+    let response = post_empty(&app, "/api/v1/system/config/reload").await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_response("system.reloadConfig", 200, &body_json(response).await);
+
+    let response = get(&app, "/api/v1/system/usage-limits").await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let limits = body_json(response).await;
+    assert_response("system.usageLimits", 200, &limits);
+    assert_eq!(limits["pi"]["status"], "error");
+
+    let logo = get(&app, "/api/v1/system/providers/pi/logo").await;
+    assert_eq!(logo.status(), StatusCode::NOT_IMPLEMENTED);
+    assert_error(StatusCode::NOT_IMPLEMENTED, &body_json(logo).await);
+
+    let unknown_theme = get(&app, "/api/v1/settings/themes/no-such-theme").await;
+    assert_eq!(unknown_theme.status(), StatusCode::NOT_FOUND);
+    assert_error(StatusCode::NOT_FOUND, &body_json(unknown_theme).await);
+
+    // Settings never become public relay events.
+    assert_eq!(state.relay.retained().unwrap(), 0);
+    state.shutdown();
+}
+
+#[tokio::test]
+async fn b10_settings_survive_a_durable_server_restart() {
+    let dir = TempDir::new().unwrap();
+    let config = AppConfig {
+        backend_path: Some(dir.path().to_path_buf()),
+        reconcile_interval: std::time::Duration::ZERO,
+        snapshot_interval: std::time::Duration::ZERO,
+        ..AppConfig::default()
+    };
+    let state = AppState::build(config.clone()).unwrap();
+    let app = router(state.clone());
+
+    let response = put(
+        &app,
+        "/api/v1/settings/appearance",
+        json!({ "themeId": "default", "faviconColor": "teal" }),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let response = put(
+        &app,
+        "/api/v1/preferences/ui/sidebar.organizationMode",
+        json!({ "expectedRevision": 0, "value": "machine" }),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let response = put(
+        &app,
+        "/api/v1/settings/general",
+        json!({
+            "showKeyboardHints": true,
+            "steerActiveThreadOnEnter": true,
+            "showDiagnosticEvents": false,
+            "providerOrder": [],
+            "defaultProviderId": null,
+            "streamerMode": false,
+            "managedBranchPrefix": ""
+        }),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    state.shutdown();
+
+    let restored = AppState::build(config).unwrap();
+    let app = router(restored.clone());
+    let appearance = body_json(get(&app, "/api/v1/settings/themes").await).await;
+    assert_eq!(appearance["active"]["faviconColor"], "teal");
+    let preferences = body_json(get(&app, "/api/v1/preferences/ui").await).await;
+    assert_eq!(
+        preferences["preferences"]["sidebar.organizationMode"]["value"],
+        "machine"
+    );
+    assert_eq!(
+        preferences["preferences"]["sidebar.organizationMode"]["revision"],
+        1
+    );
+    let config = body_json(get(&app, "/api/v1/system/config").await).await;
+    assert_eq!(config["generalSettings"]["providerOrder"], json!([]));
+    assert!(config["generalSettings"]["defaultProviderId"].is_null());
+    restored.shutdown();
+}
+
+#[tokio::test]
+async fn b10_voice_transcription_reports_missing_capability() {
+    let state = AppState::build(AppConfig::default()).unwrap();
+    let app = router(state.clone());
+    let response = app
+        .oneshot(
+            Request::post("/api/v1/system/voice-transcription")
+                .header("content-type", "multipart/form-data; boundary=b10-boundary")
+                .body(Body::from("--b10-boundary--\r\n".as_bytes().to_vec()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
+    assert_error(StatusCode::NOT_IMPLEMENTED, &body_json(response).await);
+    state.shutdown();
+}

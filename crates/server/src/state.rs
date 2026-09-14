@@ -8,7 +8,7 @@
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use loom_domain::{
@@ -29,6 +29,7 @@ use crate::join_codes::JoinCodeRegistry;
 use crate::persistence::{self, DomainSnapshot, SNAPSHOT_VERSION};
 use crate::pump::{Pump, PumpConfig};
 use crate::runs::{RunRecord, RunRegistry};
+use crate::settings::SettingsRegistry;
 use crate::ui::Ui;
 
 /// How the server is wired.
@@ -166,6 +167,8 @@ pub struct AppState {
     pub registry: Arc<DomainRegistry>,
     /// Provider runs that have been dispatched and not yet terminated.
     pub runs: Arc<RunRegistry>,
+    /// Server-local settings and UI preferences.
+    pub settings: Arc<SettingsRegistry>,
     /// The static UI source the fallback route serves.
     pub ui: Ui,
     /// The daemon binaries this server hosts for self-update.
@@ -188,6 +191,7 @@ pub struct AppState {
     provider_spec: ProviderSpec,
     reconcile_stop: Arc<AtomicBool>,
     snapshot_stop: Arc<AtomicBool>,
+    snapshot_lock: Arc<Mutex<()>>,
     snapshot_root: Option<PathBuf>,
     started_at: Instant,
     started_at_ms: u64,
@@ -237,6 +241,7 @@ impl AppState {
         // in-process backends leave the entity view ephemeral (see
         // `docs/domain-persistence.md`).
         let snapshot_root = config.backend_path.clone();
+        let provider_id = config.provider_spec.name.clone();
 
         let state = Self {
             relay,
@@ -244,6 +249,7 @@ impl AppState {
             pump,
             registry: Arc::new(DomainRegistry::new(started_at_ms)),
             runs: Arc::new(RunRegistry::new()),
+            settings: Arc::new(SettingsRegistry::new(&provider_id)),
             ui,
             artifacts,
             file_previews: Arc::new(FilePreviewRegistry::new()),
@@ -261,6 +267,7 @@ impl AppState {
             provider_spec: config.provider_spec,
             reconcile_stop: Arc::new(AtomicBool::new(false)),
             snapshot_stop: Arc::new(AtomicBool::new(false)),
+            snapshot_lock: Arc::new(Mutex::new(())),
             snapshot_root,
             started_at: Instant::now(),
             started_at_ms,
@@ -416,6 +423,9 @@ impl AppState {
                 let watermark = snapshot.watermark;
                 let runs = snapshot.runs.clone();
                 self.registry.restore(snapshot.registry);
+                if let Some(settings) = snapshot.settings {
+                    self.settings.restore(settings, &self.provider_spec.name);
+                }
                 let replayed = self.replay_domain_events(watermark);
                 let failed = self.fail_in_flight_runs(runs, now);
                 eprintln!(
@@ -569,6 +579,10 @@ impl AppState {
         let Some(root) = &self.snapshot_root else {
             return Ok(());
         };
+        let _snapshot_guard = self
+            .snapshot_lock
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
         let watermark = self
             .relay
             .high_watermark()
@@ -578,6 +592,7 @@ impl AppState {
             watermark,
             registry: self.registry.export(),
             runs: self.runs.all(),
+            settings: Some(self.settings.export()),
         };
         persistence::write_snapshot(root, &snapshot)
     }
