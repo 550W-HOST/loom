@@ -35,6 +35,7 @@
 
 use loom_domain::{EnvironmentId, HostId, ProjectId, RunEvent, RunId, ThreadId};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 /// How to reach an ACP agent.
 ///
@@ -506,6 +507,210 @@ pub struct HostFileReport {
     pub request_id: String,
     /// What happened.
     pub outcome: HostFileOutcome,
+}
+
+// ---------------------------------------------------------------------------
+// Host workspace RPCs
+// ---------------------------------------------------------------------------
+//
+// Workspace state belongs to the machine that owns the environment. These
+// requests use the same relay-plus-report shape as host file access, but keep
+// git execution and provider credentials entirely on that machine.
+
+/// The workspace path a host RPC is allowed to inspect.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkspaceContext {
+    /// Absolute path on the enrolled host.
+    #[serde(rename = "workspacePath")]
+    pub workspace_path: String,
+}
+
+/// A git comparison target shared by workspace diff operations.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum WorkspaceDiffTarget {
+    /// Changes in the working tree relative to `HEAD`.
+    Uncommitted,
+    /// Commits on the current branch relative to a merge-base branch.
+    BranchCommitted {
+        #[serde(rename = "mergeBaseBranch")]
+        merge_base_branch: String,
+    },
+    /// Both committed and uncommitted changes relative to a merge-base branch.
+    All {
+        #[serde(rename = "mergeBaseBranch")]
+        merge_base_branch: String,
+    },
+    /// One commit, compared with its first parent when one exists.
+    Commit { sha: String },
+}
+
+/// Which side of a diff file is requested.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkspaceDiffFileSide {
+    Old,
+    New,
+}
+
+/// A request sent to the host that owns a workspace.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum HostRpcOperation {
+    /// Inspect a repository source used by a project.
+    #[serde(rename = "host.inspect_git_source")]
+    InspectGitSource {
+        path: String,
+        #[serde(rename = "remoteRefresh")]
+        remote_refresh: String,
+    },
+    /// List local and remote branches for a repository source.
+    #[serde(rename = "host.list_branch_options")]
+    ListBranchOptions {
+        path: String,
+        limit: usize,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        query: Option<String>,
+        #[serde(
+            rename = "selectedBranch",
+            default,
+            skip_serializing_if = "Option::is_none"
+        )]
+        selected_branch: Option<String>,
+        #[serde(rename = "remoteRefresh")]
+        remote_refresh: String,
+    },
+    /// Read the complete workspace status.
+    #[serde(rename = "workspace.status")]
+    WorkspaceStatus {
+        #[serde(rename = "environmentId")]
+        environment_id: EnvironmentId,
+        #[serde(rename = "workspaceContext")]
+        workspace_context: WorkspaceContext,
+        #[serde(
+            rename = "mergeBaseBranch",
+            default,
+            skip_serializing_if = "Option::is_none"
+        )]
+        merge_base_branch: Option<String>,
+        #[serde(rename = "maxUntrackedLineStatFiles")]
+        max_untracked_line_stat_files: u64,
+        #[serde(rename = "maxUntrackedLineStatBytes")]
+        max_untracked_line_stat_bytes: u64,
+    },
+    /// Read an aggregate diff.
+    #[serde(rename = "workspace.diff")]
+    WorkspaceDiff {
+        #[serde(rename = "environmentId")]
+        environment_id: EnvironmentId,
+        #[serde(rename = "workspaceContext")]
+        workspace_context: WorkspaceContext,
+        target: WorkspaceDiffTarget,
+        #[serde(rename = "maxDiffBytes")]
+        max_diff_bytes: u64,
+        #[serde(rename = "maxFileListBytes")]
+        max_file_list_bytes: u64,
+        #[serde(rename = "maxUntrackedFiles")]
+        max_untracked_files: u64,
+    },
+    /// Read changed-file metadata.
+    #[serde(rename = "workspace.diffFiles")]
+    WorkspaceDiffFiles {
+        #[serde(rename = "environmentId")]
+        environment_id: EnvironmentId,
+        #[serde(rename = "workspaceContext")]
+        workspace_context: WorkspaceContext,
+        target: WorkspaceDiffTarget,
+        #[serde(rename = "maxFiles")]
+        max_files: u64,
+    },
+    /// Read patches for a bounded set of paths.
+    #[serde(rename = "workspace.diffPatch")]
+    WorkspaceDiffPatch {
+        #[serde(rename = "environmentId")]
+        environment_id: EnvironmentId,
+        #[serde(rename = "workspaceContext")]
+        workspace_context: WorkspaceContext,
+        target: WorkspaceDiffTarget,
+        paths: Vec<String>,
+        #[serde(rename = "maxBytesPerFile")]
+        max_bytes_per_file: u64,
+    },
+    /// Read one side of one changed file.
+    #[serde(rename = "workspace.diffFile")]
+    WorkspaceDiffFile {
+        #[serde(rename = "environmentId")]
+        environment_id: EnvironmentId,
+        #[serde(rename = "workspaceContext")]
+        workspace_context: WorkspaceContext,
+        target: WorkspaceDiffTarget,
+        path: String,
+        side: WorkspaceDiffFileSide,
+        #[serde(rename = "maxBytes")]
+        max_bytes: u64,
+    },
+    /// Inspect the pull request associated with the checked-out branch.
+    #[serde(rename = "workspace.pull_request")]
+    WorkspacePullRequest {
+        #[serde(rename = "environmentId")]
+        environment_id: EnvironmentId,
+        #[serde(rename = "workspaceContext")]
+        workspace_context: WorkspaceContext,
+    },
+    /// Commit all current workspace changes.
+    #[serde(rename = "workspace.commit")]
+    WorkspaceCommit {
+        #[serde(rename = "environmentId")]
+        environment_id: EnvironmentId,
+        #[serde(rename = "workspaceContext")]
+        workspace_context: WorkspaceContext,
+        message: String,
+    },
+    /// Change the associated pull request's draft/ready/merge state.
+    #[serde(rename = "workspace.pull_request_action")]
+    WorkspacePullRequestAction {
+        #[serde(rename = "environmentId")]
+        environment_id: EnvironmentId,
+        #[serde(rename = "workspaceContext")]
+        workspace_context: WorkspaceContext,
+        operation: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        method: Option<String>,
+    },
+}
+
+/// A host-scoped workspace request.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct HostRpcRequest {
+    /// Correlation token minted by the server.
+    pub request_id: String,
+    /// The host expected to execute the operation.
+    pub host_id: HostId,
+    /// The operation and its bounded arguments.
+    pub operation: HostRpcOperation,
+    /// Wall-clock milliseconds when the request was created.
+    pub created_at_ms: u64,
+}
+
+/// What a host returned for a workspace request.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "outcome", rename_all = "snake_case")]
+pub enum HostRpcOutcome {
+    /// JSON result in the operation's declared result shape.
+    Result { result: Value },
+    /// A bounded, machine-readable failure.
+    Failed { code: String, message: String },
+}
+
+/// A host's answer to one [`HostRpcRequest`].
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct HostRpcReport {
+    /// The host answering.
+    pub host_id: HostId,
+    /// The request being answered.
+    pub request_id: String,
+    /// The result or failure.
+    pub outcome: HostRpcOutcome,
 }
 
 /// Where a thread's storage directory lives under a host's data directory.

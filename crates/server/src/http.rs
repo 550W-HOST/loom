@@ -223,10 +223,63 @@ pub fn router(state: AppState) -> Router {
             axum::routing::delete(remove_project_source),
         )
         .route(
+            "/api/v1/projects/{id}/branches",
+            get(crate::b6::project_branches),
+        )
+        .route(
+            "/api/v1/projects/{id}/branch-options",
+            get(crate::b6::project_branch_options),
+        )
+        .route(
             "/api/v1/environments",
             get(list_environments).post(create_environment),
         )
-        .route("/api/v1/environments/{id}", get(get_environment))
+        .route(
+            "/api/v1/environments/{id}",
+            get(get_environment)
+                .patch(crate::b6::update_environment)
+                .delete(crate::b6::delete_environment),
+        )
+        .route(
+            "/api/v1/environments/{id}/actions",
+            post(crate::b6::environment_actions),
+        )
+        .route(
+            "/api/v1/environments/{id}/archive-threads",
+            post(crate::b6::archive_environment_threads),
+        )
+        .route(
+            "/api/v1/environments/{id}/paths",
+            get(crate::b6::environment_paths),
+        )
+        .route(
+            "/api/v1/environments/{id}/status",
+            get(crate::b6::environment_status),
+        )
+        .route(
+            "/api/v1/environments/{id}/diff",
+            get(crate::b6::environment_diff),
+        )
+        .route(
+            "/api/v1/environments/{id}/diff/branches",
+            get(crate::b6::environment_diff_branches),
+        )
+        .route(
+            "/api/v1/environments/{id}/diff/file",
+            get(crate::b6::environment_diff_file),
+        )
+        .route(
+            "/api/v1/environments/{id}/diff/files",
+            get(crate::b6::environment_diff_files),
+        )
+        .route(
+            "/api/v1/environments/{id}/diff/patch",
+            post(crate::b6::environment_diff_patch),
+        )
+        .route(
+            "/api/v1/environments/{id}/pull-request",
+            get(crate::b6::environment_pull_request),
+        )
         .route(
             "/api/v1/environments/{id}/provision",
             post(provision_environment),
@@ -694,7 +747,12 @@ fn project_detail_value(state: &AppState, project: &Project) -> Value {
 /// Fields bb computes from git state that loom does not track yet are `null`
 /// rather than omitted: the contract requires them, and a client reads `null`
 /// as "unknown", which is the truth.
-fn environment_value(environment: &Environment) -> Value {
+pub(crate) fn environment_value(environment: &Environment) -> Value {
+    let lifecycle_phase = if environment.status == EnvironmentStatus::Destroyed {
+        "destroyed"
+    } else {
+        "active"
+    };
     json!({
         "id": environment.id.to_string(),
         "name": environment.name,
@@ -706,10 +764,10 @@ fn environment_value(environment: &Environment) -> Value {
         "branchName": null,
         "baseBranch": null,
         "defaultBranch": null,
-        "mergeBaseBranch": null,
+        "mergeBaseBranch": environment.merge_base_branch,
         "status": environment.status,
         "environmentProviderId": null,
-        "lifecycle": { "phase": "active", "retireAt": null, "teardown": null },
+        "lifecycle": { "phase": lifecycle_phase, "retireAt": null, "teardown": null },
         "environmentProviderSelection": null,
         "environmentProviderInstanceKey": null,
         "managed": environment.kind == EnvironmentKind::Managed,
@@ -5445,7 +5503,7 @@ async fn primary_host(State(state): State<AppState>) -> Json<PrimaryHostResponse
 }
 
 /// Publishes each domain event to the scope the domain assigned it, in order.
-fn publish_all(
+pub(crate) fn publish_all(
     state: &AppState,
     events: &[DomainEvent],
 ) -> loom_relay::Result<Vec<PublishedEvent>> {
@@ -5463,7 +5521,7 @@ fn publish_all(
 }
 
 /// Maps a command failure onto an HTTP status.
-fn command_error_response(error: CommandError) -> Response {
+pub(crate) fn command_error_response(error: CommandError) -> Response {
     match error {
         CommandError::NotFound(message) => error_response(StatusCode::NOT_FOUND, message),
         CommandError::Conflict(message) => error_response(StatusCode::CONFLICT, message),

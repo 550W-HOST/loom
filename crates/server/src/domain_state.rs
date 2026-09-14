@@ -649,6 +649,149 @@ impl DomainRegistry {
         Ok(environment.clone())
     }
 
+    /// Records a daemon-provided workspace path and reaches `ready` while the
+    /// registry lock is held. This prevents deletion or a second report from
+    /// landing between the path write and the lifecycle transition.
+    pub fn complete_environment_provisioning(
+        &self,
+        environment_id: &EnvironmentId,
+        path: String,
+        now_ms: u64,
+    ) -> Result<(Environment, DomainEvent), CommandError> {
+        let mut inner = self.lock();
+        let environment = inner.environments.get_mut(environment_id).ok_or_else(|| {
+            CommandError::NotFound(format!("environment {environment_id} is not known"))
+        })?;
+        let event = environment.complete_provisioning(path, now_ms)?;
+        Ok((environment.clone(), event))
+    }
+
+    /// Updates environment metadata and returns the project-scoped event.
+    pub fn update_environment(
+        &self,
+        environment_id: &EnvironmentId,
+        name: Option<Option<String>>,
+        merge_base_branch: Option<Option<String>>,
+        now_ms: u64,
+    ) -> Result<(Environment, DomainEvent), CommandError> {
+        let mut inner = self.lock();
+        let environment = inner.environments.get_mut(environment_id).ok_or_else(|| {
+            CommandError::NotFound(format!("environment {environment_id} is not known"))
+        })?;
+        if environment.status == EnvironmentStatus::Destroyed {
+            return Err(CommandError::Conflict(format!(
+                "environment {environment_id} is destroyed"
+            )));
+        }
+        let event = environment.update(name, merge_base_branch, now_ms)?;
+        Ok((environment.clone(), event))
+    }
+
+    /// Archives every non-deleted thread bound to an environment.
+    ///
+    /// A running thread is refused as a unit: archiving it would leave an
+    /// in-flight provider pointed at an environment the caller is trying to
+    /// retire. Already archived rows are omitted from the returned ids.
+    pub fn archive_environment_threads(
+        &self,
+        environment_id: &EnvironmentId,
+        now_ms: u64,
+    ) -> Result<(Vec<ThreadId>, Vec<DomainEvent>), CommandError> {
+        let mut inner = self.lock();
+        let environment = inner.environments.get(environment_id).ok_or_else(|| {
+            CommandError::NotFound(format!("environment {environment_id} is not known"))
+        })?;
+        if environment.status == EnvironmentStatus::Destroyed {
+            return Err(CommandError::Conflict(format!(
+                "environment {environment_id} is destroyed"
+            )));
+        }
+        let busy = inner
+            .threads
+            .values()
+            .filter(|thread| {
+                thread.deleted_at_ms.is_none()
+                    && thread.environment_id.as_ref() == Some(environment_id)
+                    && matches!(thread.status, ThreadStatus::Working | ThreadStatus::Waiting)
+            })
+            .count();
+        if busy > 0 {
+            return Err(CommandError::Conflict(format!(
+                "environment {environment_id} has {busy} thread(s) with a run in flight"
+            )));
+        }
+
+        let mut ids: Vec<ThreadId> = inner
+            .threads
+            .values()
+            .filter(|thread| {
+                thread.deleted_at_ms.is_none()
+                    && thread.environment_id.as_ref() == Some(environment_id)
+                    && thread.status != ThreadStatus::Archived
+            })
+            .map(|thread| thread.id.clone())
+            .collect();
+        ids.sort();
+        let mut archived_ids = Vec::with_capacity(ids.len());
+        let mut events = Vec::with_capacity(ids.len());
+        for id in ids {
+            let thread = inner
+                .threads
+                .get_mut(&id)
+                .expect("thread ids were collected from the map");
+            let event = thread.transition(ThreadTrigger::Archive, now_ms)?;
+            archived_ids.push(id);
+            events.push(event);
+        }
+        Ok((archived_ids, events))
+    }
+
+    /// Retires an environment after its bound threads have been archived.
+    ///
+    /// The record remains as a destroyed tombstone so replay and snapshots do
+    /// not resurrect a workspace the caller explicitly removed. Filesystem
+    /// teardown is host-owned and is intentionally a separate RPC concern.
+    pub fn delete_environment(
+        &self,
+        environment_id: &EnvironmentId,
+        now_ms: u64,
+    ) -> Result<(Environment, Option<DomainEvent>), CommandError> {
+        let mut inner = self.lock();
+        let current_status = inner
+            .environments
+            .get(environment_id)
+            .ok_or_else(|| {
+                CommandError::NotFound(format!("environment {environment_id} is not known"))
+            })?
+            .status;
+        if current_status == EnvironmentStatus::Destroyed {
+            return Ok((
+                inner
+                    .environments
+                    .get(environment_id)
+                    .expect("environment was checked above")
+                    .clone(),
+                None,
+            ));
+        }
+        let has_bound_threads = inner.threads.values().any(|thread| {
+            thread.deleted_at_ms.is_none()
+                && thread.environment_id.as_ref() == Some(environment_id)
+                && thread.status != ThreadStatus::Archived
+        });
+        if has_bound_threads {
+            return Err(CommandError::Conflict(format!(
+                "environment {environment_id} still has active threads; archive them first"
+            )));
+        }
+        let environment = inner
+            .environments
+            .get_mut(environment_id)
+            .expect("environment was checked above");
+        let event = environment.set_status(EnvironmentStatus::Destroyed, now_ms)?;
+        Ok((environment.clone(), Some(event)))
+    }
+
     /// Appends a message to a thread and returns the events it produced.
     pub fn post_message(
         &self,
@@ -2238,6 +2381,11 @@ impl DomainRegistry {
                 }
             }
             DomainEvent::EnvironmentCreated { environment } => {
+                inner
+                    .environments
+                    .insert(environment.id.clone(), environment.clone());
+            }
+            DomainEvent::EnvironmentUpdated { environment } => {
                 inner
                     .environments
                     .insert(environment.id.clone(), environment.clone());

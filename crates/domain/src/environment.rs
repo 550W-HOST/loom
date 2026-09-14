@@ -94,6 +94,9 @@ pub struct Environment {
     pub host_id: HostId,
     /// Managed or unmanaged.
     pub kind: EnvironmentKind,
+    /// The branch used when comparing this workspace with its project.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub merge_base_branch: Option<String>,
     /// Absolute workspace path. `None` until a managed environment is
     /// provisioned; always `Some` for an unmanaged one.
     pub path: Option<String>,
@@ -151,6 +154,7 @@ impl Environment {
             project_id,
             host_id,
             kind,
+            merge_base_branch: None,
             path,
             status,
             error: None,
@@ -161,6 +165,47 @@ impl Environment {
             environment: environment.clone(),
         };
         Ok((environment, event))
+    }
+
+    /// Updates the display name and/or merge-base branch.
+    ///
+    /// The double options distinguish an omitted field from an explicit null,
+    /// matching the PATCH contract. Updating an environment is observable on
+    /// the project scope as a whole-value event.
+    pub fn update(
+        &mut self,
+        name: Option<Option<String>>,
+        merge_base_branch: Option<Option<String>>,
+        now_ms: u64,
+    ) -> Result<DomainEvent, DomainError> {
+        // Normalize and validate the whole patch before touching `self`. A
+        // malformed second field must not leave the first field committed.
+        let name = name.map(|name| name.map(|name| name.trim().to_owned()));
+        if name.as_ref().and_then(Option::as_deref) == Some("") {
+            return Err(DomainError::InvalidField {
+                field: "name",
+                reason: "must not be empty".into(),
+            });
+        }
+        let merge_base_branch =
+            merge_base_branch.map(|branch| branch.map(|branch| branch.trim().to_owned()));
+        if merge_base_branch.as_ref().and_then(Option::as_deref) == Some("") {
+            return Err(DomainError::InvalidField {
+                field: "merge_base_branch",
+                reason: "must not be empty".into(),
+            });
+        }
+
+        if let Some(name) = name {
+            self.name = name;
+        }
+        if let Some(branch) = merge_base_branch {
+            self.merge_base_branch = branch;
+        }
+        self.updated_at_ms = now_ms;
+        Ok(DomainEvent::EnvironmentUpdated {
+            environment: self.clone(),
+        })
     }
 
     /// Moves the environment to `to` and returns the status-change event.
@@ -225,6 +270,23 @@ impl Environment {
         self.path = Some(path);
         self.updated_at_ms = now_ms;
         Ok(())
+    }
+
+    /// Records a provisioned path and advances the environment to `ready` as
+    /// one state-machine operation.
+    pub fn complete_provisioning(
+        &mut self,
+        path: impl Into<String>,
+        now_ms: u64,
+    ) -> Result<DomainEvent, DomainError> {
+        if self.status != EnvironmentStatus::Provisioning {
+            return Err(DomainError::IllegalEnvironmentTransition {
+                from: self.status,
+                to: EnvironmentStatus::Ready,
+            });
+        }
+        self.set_provisioned_path(path, now_ms)?;
+        self.set_status(EnvironmentStatus::Ready, now_ms)
     }
 }
 
@@ -354,6 +416,33 @@ mod tests {
     }
 
     #[test]
+    fn an_invalid_field_does_not_partially_apply_an_environment_update() {
+        let (mut environment, _) = Environment::create(
+            ProjectId::mint(),
+            HostId::mint(),
+            EnvironmentKind::Unmanaged,
+            Some("/srv/loom".into()),
+            1,
+        )
+        .unwrap();
+        environment
+            .update(Some(Some("before".into())), Some(Some("main".into())), 2)
+            .unwrap();
+
+        let result = environment.update(Some(Some("after".into())), Some(Some("   ".into())), 3);
+        assert!(matches!(
+            result,
+            Err(DomainError::InvalidField {
+                field: "merge_base_branch",
+                ..
+            })
+        ));
+        assert_eq!(environment.name.as_deref(), Some("before"));
+        assert_eq!(environment.merge_base_branch.as_deref(), Some("main"));
+        assert_eq!(environment.updated_at_ms, 2);
+    }
+
+    #[test]
     fn a_destroyed_environment_rejects_a_late_failure_report() {
         let (mut unmanaged, _) = Environment::create(
             ProjectId::mint(),
@@ -372,5 +461,25 @@ mod tests {
         ));
         assert_eq!(unmanaged.status, EnvironmentStatus::Destroyed);
         assert_eq!(unmanaged.error, None);
+    }
+
+    #[test]
+    fn completing_provisioning_is_atomic_when_the_path_is_invalid() {
+        let (mut managed, _) = Environment::create(
+            ProjectId::mint(),
+            HostId::mint(),
+            EnvironmentKind::Managed,
+            None,
+            1,
+        )
+        .unwrap();
+        managed
+            .set_status(EnvironmentStatus::Provisioning, 2)
+            .unwrap();
+
+        assert!(managed.complete_provisioning("   ", 3).is_err());
+        assert_eq!(managed.status, EnvironmentStatus::Provisioning);
+        assert_eq!(managed.path, None);
+        assert_eq!(managed.updated_at_ms, 2);
     }
 }

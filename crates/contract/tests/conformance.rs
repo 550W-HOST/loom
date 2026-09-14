@@ -568,6 +568,43 @@ fn request_validation_accepts_contract_shapes() {
     assert!(contract
         .validate_request_by_id("projects.update", &json!({ "name": "loom-2" }))
         .is_empty());
+
+    for action in [
+        json!({ "action": "commit" }),
+        json!({ "action": "pull_request_ready" }),
+        json!({ "action": "pull_request_draft" }),
+        json!({
+            "action": "pull_request_merge",
+            "options": { "method": "squash" },
+        }),
+    ] {
+        assert!(
+            contract
+                .validate_request_by_id("environments.actions", &action)
+                .is_empty(),
+            "environments.actions must accept a contract-shaped action: {action}"
+        );
+    }
+
+    assert!(contract
+        .validate_request_by_id(
+            "environments.update",
+            &json!({
+                "name": "feature workspace",
+                "mergeBaseBranch": "main",
+            })
+        )
+        .is_empty());
+
+    assert!(contract
+        .validate_request_by_id(
+            "environments.diffPatch",
+            &json!({
+                "target": { "type": "uncommitted" },
+                "paths": ["src/main.rs"],
+            })
+        )
+        .is_empty());
 }
 
 /// The pre-contract snake_case shape is rejected. This is the regression guard
@@ -601,6 +638,31 @@ fn request_validation_rejects_the_legacy_shape() {
     // A project update with the wrong type for the only declared field.
     assert!(!contract
         .validate_request_by_id("projects.update", &json!({ "name": 7 }))
+        .is_empty());
+
+    assert!(!contract
+        .validate_request_by_id(
+            "environments.actions",
+            &json!({ "action": "pull_request_merge" }),
+        )
+        .is_empty());
+    assert!(!contract
+        .validate_request_by_id(
+            "environments.actions",
+            &json!({ "action": "commit", "extra": true }),
+        )
+        .is_empty());
+    assert!(!contract
+        .validate_request_by_id("environments.update", &json!({ "name": 7 }))
+        .is_empty());
+    assert!(!contract
+        .validate_request_by_id(
+            "environments.diffPatch",
+            &json!({
+                "target": { "type": "uncommitted" },
+                "paths": [],
+            })
+        )
         .is_empty());
 
     let wrong_type = json!({

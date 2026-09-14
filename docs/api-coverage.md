@@ -18,9 +18,9 @@
 
 - 契约快照：`fa1f44ebe9e5676004b669e48c99b3c7606466b6`，共 **167 条**路由。
 - 已决策不实现：**18 条**（desktopBrowsers 11 条，skill/CLI skill 7 条）。
-- 当前源码包含 **84 个 `.route` 声明、94 个 HTTP 方法入口**；其中只有 77 个匹配 bb 契约，另有 17 个契约外入口。契约当前没有 plugin/marketplace 路由条目。
-- 有效总数：**149 条**；当前已实现 **77 条**，待实现 **72 条**。
-- 当前有效覆盖率：**77/149（51.7%）**。
+- 当前源码包含 **96 个 `.route` 声明、108 个 HTTP 方法入口**；其中只有 91 个匹配 bb 契约，另有 17 个契约外入口。契约当前没有 plugin/marketplace 路由条目。
+- 有效总数：**149 条**；当前已实现 **91 条**，待实现 **58 条**。
+- 当前有效覆盖率：**91/149（61.1%）**。
 - B0 是现有实现基线；B1-B10 是建议的后续交付批次，每批 14、14、14、14、10、14、14、14、17、13 条，均在 10-20 条范围内。
 
 ## threads.send 判定
@@ -61,7 +61,7 @@ bb UI 用契约格式发起写请求时会 422，而 CI 与一致性测试全绿
 
 | 批次 | 主题 | 路由数 | 依赖 | UI 交付边界 |
 | --- | --- | ---: | --- | --- |
-| B0 | 当前基础覆盖（基线） | 77 | - | 项目/线程基础读写、环境读取和主机列表已存在 |
+| B0 | 当前基础覆盖（基线） | 91 | - | 项目/线程基础读写、环境读取和主机列表已存在 |
 | B1 | 启动、导航与首个 threads 流程 | 14 | B0 | 启动探活、侧栏初始化、项目/线程列表后的线程打开、时间线读取与发送 |
 | B2 | 线程控制与辅助视图 | 14 | B1 | 活动线程的默认执行选项、运行状态、搜索、历史、编辑、停止/重试和压缩 |
 | B3 | 交互、计划与队列发送 | 14 | B1 + B2 | 线程中的交互请求、计划控制和 queued message 的查看/创建/发送 |
@@ -120,20 +120,20 @@ bb UI 用契约格式发起写请求时会 422，而 CI 与一致性测试全绿
 | `desktopBrowsers.openConnection` | `POST` | `/api/v1/desktop-browsers/connection` | 不适用（已决策） | - | - | 已决策：desktopBrowsers 不实现 |
 | `desktopBrowsers.releaseControl` | `POST` | `/api/v1/desktop-browsers/release` | 不适用（已决策） | - | - | 已决策：desktopBrowsers 不实现 |
 | `desktopBrowsers.revealTab` | `POST` | `/api/v1/desktop-browsers/reveal` | 不适用（已决策） | - | - | 已决策：desktopBrowsers 不实现 |
-| `environments.actions` | `POST` | `/api/v1/environments/:id/actions` | 待实现 | - | B6 | - |
-| `environments.archiveThreads` | `POST` | `/api/v1/environments/:id/archive-threads` | 待实现 | - | B6 | - |
-| `environments.delete` | `DELETE` | `/api/v1/environments/:id` | 待实现 | - | B6 | - |
-| `environments.diff` | `GET` | `/api/v1/environments/:id/diff` | 待实现 | - | B6 | - |
-| `environments.diffBranches` | `GET` | `/api/v1/environments/:id/diff/branches` | 待实现 | - | B6 | - |
-| `environments.diffFile` | `GET` | `/api/v1/environments/:id/diff/file` | 待实现 | - | B6 | - |
-| `environments.diffFiles` | `GET` | `/api/v1/environments/:id/diff/files` | 待实现 | - | B6 | - |
-| `environments.diffPatch` | `POST` | `/api/v1/environments/:id/diff/patch` | 待实现 | - | B6 | - |
+| `environments.actions` | `POST` | `/api/v1/environments/:id/actions` | 已实现 | `POST /api/v1/environments/{id}/actions` | B0 | 契约路径与方法已匹配 |
+| `environments.archiveThreads` | `POST` | `/api/v1/environments/:id/archive-threads` | 已实现 | `POST /api/v1/environments/{id}/archive-threads` | B0 | 契约路径与方法已匹配 |
+| `environments.delete` | `DELETE` | `/api/v1/environments/:id` | 已实现 | `DELETE /api/v1/environments/{id}` | B0 | 契约路径与方法已匹配 |
+| `environments.diff` | `GET` | `/api/v1/environments/:id/diff` | 已实现 | `GET /api/v1/environments/{id}/diff` | B0 | 契约路径与方法已匹配 |
+| `environments.diffBranches` | `GET` | `/api/v1/environments/:id/diff/branches` | 已实现 | `GET /api/v1/environments/{id}/diff/branches` | B0 | 契约路径与方法已匹配 |
+| `environments.diffFile` | `GET` | `/api/v1/environments/:id/diff/file` | 已实现 | `GET /api/v1/environments/{id}/diff/file` | B0 | 契约路径与方法已匹配 |
+| `environments.diffFiles` | `GET` | `/api/v1/environments/:id/diff/files` | 已实现 | `GET /api/v1/environments/{id}/diff/files` | B0 | 契约路径与方法已匹配 |
+| `environments.diffPatch` | `POST` | `/api/v1/environments/:id/diff/patch` | 已实现 | `POST /api/v1/environments/{id}/diff/patch` | B0 | 契约路径与方法已匹配 |
 | `environments.get` | `GET` | `/api/v1/environments/:id` | 已实现 | `GET /api/v1/environments/{id}` | B0 | 契约路径与方法已匹配 |
 | `environments.list` | `GET` | `/api/v1/environments` | 已实现 | `GET /api/v1/environments` | B0 | 契约路径与方法已匹配 |
-| `environments.paths` | `GET` | `/api/v1/environments/:id/paths` | 待实现 | - | B6 | - |
-| `environments.pullRequest` | `GET` | `/api/v1/environments/:id/pull-request` | 待实现 | - | B6 | - |
-| `environments.status` | `GET` | `/api/v1/environments/:id/status` | 待实现 | - | B6 | - |
-| `environments.update` | `PATCH` | `/api/v1/environments/:id` | 待实现 | - | B6 | - |
+| `environments.paths` | `GET` | `/api/v1/environments/:id/paths` | 已实现 | `GET /api/v1/environments/{id}/paths` | B0 | 契约路径与方法已匹配 |
+| `environments.pullRequest` | `GET` | `/api/v1/environments/:id/pull-request` | 已实现 | `GET /api/v1/environments/{id}/pull-request` | B0 | 契约路径与方法已匹配 |
+| `environments.status` | `GET` | `/api/v1/environments/:id/status` | 已实现 | `GET /api/v1/environments/{id}/status` | B0 | 契约路径与方法已匹配 |
+| `environments.update` | `PATCH` | `/api/v1/environments/:id` | 已实现 | `PATCH /api/v1/environments/{id}` | B0 | 契约路径与方法已匹配 |
 | `filePreviews.content` | `GET` | `/api/v1/file-previews/:id/:filePath{.+}` | 待实现 | - | B8 | - |
 | `files.createPreview` | `POST` | `/api/v1/files/previews` | 待实现 | - | B9 | - |
 | `files.list` | `POST` | `/api/v1/files/list` | 待实现 | - | B9 | - |
@@ -157,8 +157,8 @@ bb UI 用契约格式发起写请求时会 422，而 CI 与一致性测试全绿
 | `hosts.update` | `PATCH` | `/api/v1/hosts/:id` | 待实现 | - | B8 | - |
 | `hosts.updatePermissionCeiling` | `PATCH` | `/api/v1/hosts/:id/permission-ceiling` | 待实现 | - | B8 | - |
 | `projects.attachmentContent` | `GET` | `/api/v1/projects/:id/attachments/content` | 待实现 | - | B7 | - |
-| `projects.branches` | `GET` | `/api/v1/projects/:id/branches` | 待实现 | - | B6 | - |
-| `projects.branchOptions` | `GET` | `/api/v1/projects/:id/branch-options` | 待实现 | - | B6 | - |
+| `projects.branches` | `GET` | `/api/v1/projects/:id/branches` | 已实现 | `GET /api/v1/projects/{id}/branches` | B0 | 契约路径与方法已匹配 |
+| `projects.branchOptions` | `GET` | `/api/v1/projects/:id/branch-options` | 已实现 | `GET /api/v1/projects/{id}/branch-options` | B0 | 契约路径与方法已匹配 |
 | `projects.commands` | `GET` | `/api/v1/projects/:id/commands` | 待实现 | - | B7 | - |
 | `projects.copyAttachments` | `POST` | `/api/v1/projects/:id/attachments/copy` | 待实现 | - | B7 | - |
 | `projects.create` | `POST` | `/api/v1/projects` | 已实现 | `POST /api/v1/projects` | B0 | 契约路径与方法已匹配 |

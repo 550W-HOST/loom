@@ -22,6 +22,7 @@ use loom_relay::{now_ms, Relay, Result as RelayResult};
 use crate::artifacts::Artifacts;
 use crate::domain_state::DomainRegistry;
 use crate::host_files::HostFileBroker;
+use crate::host_rpc::HostRpcBroker;
 use crate::hub_actor::HubHandle;
 use crate::persistence::{self, DomainSnapshot, SNAPSHOT_VERSION};
 use crate::pump::{Pump, PumpConfig};
@@ -169,6 +170,8 @@ pub struct AppState {
     pub artifacts: Arc<Artifacts>,
     /// HTTP requests waiting on a host's answer to a file read or listing.
     pub host_files: Arc<HostFileBroker>,
+    /// HTTP requests waiting on a host's answer to a workspace RPC.
+    pub host_rpc: Arc<HostRpcBroker>,
     local_host_id: Option<HostId>,
     run_timeout_ms: u64,
     host_stale_after_ms: u64,
@@ -234,6 +237,7 @@ impl AppState {
             ui,
             artifacts,
             host_files: Arc::new(HostFileBroker::new()),
+            host_rpc: Arc::new(HostRpcBroker::new()),
             local_host_id: config.local_host_id,
             run_timeout_ms: config.run_timeout.as_millis().min(u128::from(u64::MAX)) as u64,
             host_stale_after_ms: config

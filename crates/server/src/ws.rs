@@ -351,6 +351,24 @@ async fn handle_command(
             state.host_files.resolve(report);
             None
         }
+        ClientCommand::HostRpcReport { report } => {
+            let Some(host_id) = enrolled_host.clone() else {
+                return Some(ServerMessage::Error {
+                    message: "host RPC reports require an enrolled host".into(),
+                });
+            };
+            if host_id != report.host_id {
+                return Some(ServerMessage::Error {
+                    message: "report names a different host than this connection enrolled as"
+                        .into(),
+                });
+            }
+            // Workspace answers are private to the HTTP request that minted
+            // the correlation id. Late or duplicate answers are normal after
+            // a request timeout and are deliberately ignored.
+            state.host_rpc.resolve(report);
+            None
+        }
         ClientCommand::Replay {
             scope,
             since,
