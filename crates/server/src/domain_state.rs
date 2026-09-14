@@ -18,9 +18,9 @@ use std::sync::{Mutex, MutexGuard};
 use loom_domain::{
     DomainError, DomainEvent, Environment, EnvironmentId, EnvironmentKind, EnvironmentStatus, Host,
     HostId, Interaction, InteractionId, MessageRole, NewInteraction, NewQueuedMessage, NewThread,
-    Project, ProjectId, ProjectKind, ProjectSourceId, QueuedMessage, QueuedMessageId,
-    QueuedMessageStatus, Resolution, RunId, Thread, ThreadId, ThreadOriginKind, ThreadStatus,
-    ThreadTrigger, ThreadUpdate,
+    Project, ProjectId, ProjectKind, ProjectSourceId, ProviderSessionBinding, QueuedMessage,
+    QueuedMessageId, QueuedMessageStatus, Resolution, RunId, Thread, ThreadId, ThreadOriginKind,
+    ThreadStatus, ThreadTrigger, ThreadUpdate,
 };
 use serde::{Deserialize, Serialize};
 
@@ -1397,7 +1397,8 @@ impl DomainRegistry {
         Ok(())
     }
 
-    /// Records the agent's identifier for a thread's conversation.
+    /// Records the agent's identifier for a thread's conversation, and what it
+    /// is bound to.
     ///
     /// Returns the event when the value changed, and `None` when it did not or
     /// the thread is gone — a report for a thread that no longer exists is not
@@ -1406,13 +1407,14 @@ impl DomainRegistry {
         &self,
         thread_id: &ThreadId,
         session_id: &str,
+        binding: Option<ProviderSessionBinding>,
         now_ms: u64,
     ) -> Option<DomainEvent> {
         let mut inner = self.lock();
         inner
             .threads
             .get_mut(thread_id)
-            .and_then(|thread| thread.set_provider_session_id(session_id, now_ms))
+            .and_then(|thread| thread.set_provider_session_id(session_id, binding, now_ms))
     }
 
     /// Clears a thread's recorded run once it has ended.
@@ -2324,8 +2326,9 @@ mod tests {
             .create_thread(Some(personal(&registry)), Some("acp".into()), None, 2)
             .unwrap();
 
+        let binding = ProviderSessionBinding::new("pi", "/srv/project-a").at(3);
         let event = registry
-            .set_provider_session_id(&thread.id, "acp-session-1", 3)
+            .set_provider_session_id(&thread.id, "acp-session-1", Some(binding.clone()), 3)
             .expect("the first ACP identity changes the thread");
         assert_eq!(
             registry
@@ -2348,6 +2351,16 @@ mod tests {
                 .and_then(|thread| thread.provider_session_id),
             Some("acp-session-1".to_owned())
         );
+        // The binding survives the round trip, which is the whole point of
+        // recording it: it decides whether a later run may resume.
+        let restored_thread = restored.thread(&updated.id).unwrap();
+        assert_eq!(
+            restored_thread.provider_session_binding.as_ref(),
+            Some(&binding)
+        );
+        assert!(restored_thread.may_resume_session("pi", "/srv/project-a"));
+        assert!(!restored_thread.may_resume_session("other-agent", "/srv/project-a"));
+        assert!(!restored_thread.may_resume_session("pi", "/srv/elsewhere"));
     }
 
     #[test]

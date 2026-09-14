@@ -526,6 +526,7 @@ async fn fork_reports_session_and_acp_capability_boundaries_without_creating_a_r
         .set_provider_session_id(
             &fixture.thread_id(),
             "provider-session",
+            Some(loom_domain::ProviderSessionBinding::new("pi", "/srv/b4")),
             loom_relay::now_ms(),
         )
         .unwrap();

@@ -53,6 +53,7 @@ ui/             the reference UI client: buildless, served by loom-server
 deploy/         systemd units, environment templates, install/uninstall scripts,
                 the container images and a compose example
 docs/
+  acp-adapter.md
   api-coverage.md
   architecture.md
   ci.md
@@ -69,11 +70,11 @@ docs/
   redis-backend.md
   releasing.md
   ui.md
+  ui-package-sync.md
   remote-access.md
   mobile.md
   upgrades.md
   deployment-verification.md
-  ui-package-sync.md
 ```
 
 Application code from the bb fork (`apps/`, `packages/`, `plugins/`) lands here

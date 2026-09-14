@@ -191,33 +191,90 @@ better; if not, it is a `ToolCall`.
 and it is the producer the interaction routes were missing.
 
 ```
-agent → adapter: session/request_permission { tool_call, options[] }
-adapter → domain: Interaction { kind: Approval, payload: { options } }
-                 (blocks the turn until answered)
-client → adapter: outcome (option_id | cancelled)
-adapter → agent:  RequestPermissionResponse
+agent ──session/request_permission──▶ adapter
+                                        │  InteractionRequest (up the socket)
+                                        ▼
+                                    server: durable Interaction, published
+                                      to thread:{id}; a client answers
+                                        │  InteractionResolutionFrame
+                                        ▼  (through the relay, to host:{id})
+agent ◀──RequestPermissionResponse──── adapter
 ```
+
+Two frames, in opposite directions, over different transports, and there is
+**no default answer**:
+
+| Hop | Carrier | Why |
+| --- | --- | --- |
+| request | `ClientCommand::InteractionRequest` up the daemon's socket | the daemon cannot record a durable entity; the control plane can |
+| answer | `InteractionResolutionFrame` through the relay to `host:{id}` | the answering client need not be the daemon's peer, and a resolution published while the daemon was reconnecting must replay |
 
 Mapping:
 
 | ACP | loom |
 | --- | --- |
-| `RequestPermissionRequest.tool_call` | `InteractionPayload` subject |
-| `options: Vec<PermissionOption>` | `availableDecisions` |
-| `Selected { option_id }` | `Resolution` for that option |
-| `Cancelled` | interaction cancelled |
-| `PermissionOptionKind::Allow*` / `Reject*` | decision polarity |
+| `RequestPermissionRequest.tool_call` | `InteractionPayload.subject` (`tool_use`) |
+| `options: Vec<PermissionOption>` | `availableDecisions`, derived from option kinds |
+| `PermissionOptionKind::AllowOnce` | `allow_once` |
+| `PermissionOptionKind::AllowAlways` | `allow_for_session` |
+| `PermissionOptionKind::Reject*`, or no options at all | `deny` |
+| `Selected { option_id }` | the ACP response, option id chosen by the daemon |
+| `Cancelled` | interaction cancelled, and the ACP response is `Cancelled` |
 
-Note this **replaces** the old direct-provider auto-cancel path. ACP permission
-requests are handled by the adapter callback and the current policy selects an
-allow option or cancels when none exists.
+### There is no default answer
+
+The previous implementation selected the first allowing option and answered
+with it. That is a policy no user consented to, and it **silently approved
+operations** — the exact failure the old `system/permissionGrant/lifecycle` note
+in `event-model.md` described. It is gone. What replaces it:
+
+* **An unanswered request is cancelled**, after
+  `DaemonConfig::permission_timeout` (default 5 minutes, `--permission-timeout-ms`).
+  ACP reads `Cancelled` as "not granted"; nothing else in the protocol does.
+* **A request the control plane refuses to record is cancelled at once**, rather
+  than held open where no client can reach it. The refusal is a run that is not
+  in flight, or one this host does not own — the same ownership rules a run
+  report gets.
+* **A connection that drops settles every open request as cancelled**, so an
+  agent is never left blocked on a question whose answer can no longer arrive.
+
+### What a permission decision can and cannot express
+
+The contract's answer to an approval is one of three decisions
+(`allow_once` / `allow_for_session` / `deny`), and its response schema rejects an
+opaque resolution there. So the decision travels as a **polarity**, and the
+daemon maps it onto the agent's own options: an `allow` picks the agent's first
+allowing option of the matching strength, a `deny` a rejecting one, and a
+`deny` with no rejecting option is sent as `Cancelled` because loom must never
+answer an allow the user refused.
+
+The lossy case is a permission request whose options are **not distinguishable
+by polarity** — ACP's `select` bridge presents one `AllowOnce` option per
+choice, so "alpha" and "beta" are both `allow_once`. loom cannot name one:
+the contract has no place for an `optionId`, and fabricating a fourth decision
+would be inventing vocabulary. The daemon therefore takes the agent's own first
+matching option, which is the only rule that does not invent a choice the user
+did not make. `crates/daemon/src/acp/permission.rs` states this at the code, and
+`permission::tests::a_multi_choice_request_resolves_by_the_agents_own_ordering`
+pins it. A request with the normal ACP shape (one allowing option, one rejecting
+one) is unaffected, and so is `confirm` (Yes/No).
+
+`providerThreadId` on the interaction is the ACP **session id**, so a client can
+correlate the question with the `providerThreadId` its run events carry.
+`turnId` is the run id, because loom's turn *is* the run.
 
 ## Capabilities the adapter declares
 
-The client capabilities are intentionally left at the SDK defaults for now;
-filesystem and terminal callbacks are not advertised until loom has handlers for
-them. The permission callback is handled locally with the current non-blocking
-policy.
+The client capabilities are intentionally left at the SDK defaults; filesystem
+and terminal callbacks are not advertised until loom has handlers for them.
+
+The **agent's** capabilities are read from `initialize` and used to gate
+features, never inferred and never worked around:
+
+| Capability | Effect |
+| --- | --- |
+| `agentCapabilities.loadSession` | a resumed run needs it; without it an explicit resume **fails** rather than silently starting a fresh conversation |
+| `agentCapabilities.sessionCapabilities.list` | gates session import; absent means `Unsupported`, and loom does **not** scan the agent's storage in its place |
 
 ## Version handling
 
@@ -233,8 +290,46 @@ the current implementation records v1 as the protocol. A future version-aware
 adapter can add the negotiated protocol without changing the thread-to-session
 relationship.
 
-**The `cwd` must exist on resume.** If it does not, fail with an explicit error
-naming the path. Never silently start a fresh session.
+**The binding is the other half of the mapping.** A provider session id is the
+*agent's* identifier, unique only within that agent, and a session belongs to
+the directory it was opened in. loom therefore records
+`ProviderSessionBinding { agent, cwd }` alongside the id, from the same
+`thread/identity` event, taking both values from the run that opened the
+session rather than from the thread's current environment (which can be
+re-bound between runs).
+
+A dispatch only carries the id when `Thread::may_resume_session(agent, cwd)`
+holds, and the daemon refuses before opening a session when it does not:
+
+| Condition | Outcome |
+| --- | --- |
+| agent and workspace match | `session/load <id>` |
+| agent differs | fresh session — the id means nothing to this agent |
+| workspace differs | fresh session — the conversation is about another project |
+| no binding (an older snapshot) | fresh session; "cannot prove it is the same conversation" is not a reason to resume |
+| id present but the agent has no `loadSession` | **explicit failure**, never a silent fresh start |
+| workspace absent on this host | **explicit failure naming the path**, never a silent fresh start |
+
+The last two rows are the difference between "loom did what you asked" and
+"loom quietly did something else". A fresh session is recoverable; a resume that
+was not what it claimed is not.
+
+## Session import is capability-gated
+
+`session/list` is how an agent's existing sessions are enumerated, and it is
+optional. `crate::acp::sessions` runs the probe and returns one of three
+outcomes: `Listed`, `Unsupported` (the agent does not advertise the capability),
+or `Failed` (a missing executable, a refused handshake, a deadline).
+
+**`Unsupported` is not an empty list.** "This agent cannot list" and "this agent
+has no sessions" are different facts, and collapsing them would make an
+unsupported capability look like an empty account. No branch of the probe walks
+an agent's session directory: that knowledge belongs to the adapter that
+already has it. See `docs/provider-sessions-research.md`.
+
+The probe's client cancels any permission request it receives: a listing has no
+thread to record an interaction against and no client that could answer one, and
+cancellation is the only reply that is never an approval.
 
 ## Where the code goes
 

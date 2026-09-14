@@ -55,8 +55,8 @@ use std::time::Duration;
 use futures_util::{SinkExt, StreamExt};
 use loom_domain::{HostId, RunId};
 use loom_provider_protocol::{
-    EnvironmentProvision, EnvironmentProvisionOutcome, EnvironmentProvisionReport, ProviderSpec,
-    RunDispatch,
+    EnvironmentProvision, EnvironmentProvisionOutcome, EnvironmentProvisionReport,
+    InteractionRequest, InteractionResolutionFrame, ProviderSpec, RunDispatch,
 };
 use loom_relay::dedup::SeenSet;
 use loom_relay::{EventId, Scope};
@@ -81,6 +81,12 @@ pub const DISPATCH_DEDUP_CAPACITY: usize = 512;
 
 /// How many reports may be queued before a provider task waits.
 const REPORT_CHANNEL_CAPACITY: usize = 256;
+
+/// How long a permission request waits for a user by default.
+///
+/// Re-exported from the ACP permission bridge, which is where the reasoning
+/// lives; `main.rs` uses it for `--permission-timeout-ms`.
+pub const DEFAULT_PERMISSION_TIMEOUT: Duration = crate::acp::permission::DEFAULT_PERMISSION_TIMEOUT;
 
 /// Where managed environments' workspaces are created by default.
 ///
@@ -210,6 +216,9 @@ pub struct DaemonConfig {
     pub provider: Option<ProviderSpec>,
     /// How long one provider run may take before it is killed.
     pub run_timeout: Duration,
+    /// How long an agent's permission request waits for a user before it is
+    /// cancelled. See [`DEFAULT_PERMISSION_TIMEOUT`].
+    pub permission_timeout: Duration,
     /// Root under which managed environments' workspaces are created.
     ///
     /// A managed environment's directory is `<environment_root>/<env_id>`. The
@@ -260,6 +269,7 @@ impl DaemonConfig {
             heartbeat_interval: DEFAULT_HEARTBEAT_INTERVAL,
             provider: None,
             run_timeout: DEFAULT_RUN_TIMEOUT,
+            permission_timeout: DEFAULT_PERMISSION_TIMEOUT,
             environment_root: default_environment_root(),
             resume_cursor: None,
             replay_limit: 500,
@@ -344,6 +354,16 @@ pub struct Daemon {
     /// Provider reports waiting to be forwarded to the server.
     reports: mpsc::Receiver<loom_provider_protocol::ProviderReport>,
     reports_tx: mpsc::Sender<loom_provider_protocol::ProviderReport>,
+    /// Permission requests raised by providers, waiting to be forwarded.
+    ///
+    /// The socket loop is the only thing that may write to the server socket,
+    /// so a provider's question arrives here and the loop forwards it, exactly
+    /// as a run report does.
+    interactions: mpsc::Receiver<InteractionRequest>,
+    interactions_tx: mpsc::Sender<InteractionRequest>,
+    /// The permission requests currently held open, so an answer arriving on
+    /// the socket can be handed to the provider task waiting for it.
+    permissions: crate::acp::permission::PermissionRegistry,
     /// Environment-provisioning reports waiting to be forwarded to the server.
     env_reports: mpsc::Receiver<EnvironmentProvisionReport>,
     env_reports_tx: mpsc::Sender<EnvironmentProvisionReport>,
@@ -364,6 +384,7 @@ impl Daemon {
                 // A mismatch after enrollment would corrupt dispatch/runs.
                 ensure_compatible_protocol(protocol_version)?;
                 let (reports_tx, reports) = mpsc::channel(REPORT_CHANNEL_CAPACITY);
+                let (interactions_tx, interactions) = mpsc::channel(REPORT_CHANNEL_CAPACITY);
                 let (env_reports_tx, env_reports) = mpsc::channel(REPORT_CHANNEL_CAPACITY);
                 Ok(Self {
                     socket,
@@ -374,6 +395,9 @@ impl Daemon {
                     seen_runs: RunSeen::new(DISPATCH_DEDUP_CAPACITY),
                     reports,
                     reports_tx,
+                    interactions,
+                    interactions_tx,
+                    permissions: crate::acp::permission::PermissionRegistry::new(),
                     env_reports,
                     env_reports_tx,
                     running: HashSet::new(),
@@ -454,9 +478,34 @@ impl Daemon {
                     let Some(report) = report else { continue };
                     if report.event.is_terminal() {
                         self.running.remove(&report.event.run_id);
+                        // A turn that ended cannot still be blocked on a
+                        // question: settle the requests *this run* left open as
+                        // cancelled, so its agent is not left waiting for an
+                        // answer the run no longer has a place for. Scoped by
+                        // run because other threads may be running concurrently.
+                        let settled = self
+                            .permissions
+                            .cancel_run(
+                                &report.event.run_id,
+                                "the run ended before the request was answered",
+                            )
+                            .await;
+                        if settled > 0 {
+                            eprintln!(
+                                "loom-daemon: settled {settled} permission request(s) as cancelled \
+                                 because the run ended"
+                            );
+                        }
                     }
                     self.send(&ClientCommand::RunReport {
                         report: Box::new(report),
+                    })
+                    .await?;
+                }
+                request = self.interactions.recv() => {
+                    let Some(request) = request else { continue };
+                    self.send(&ClientCommand::InteractionRequest {
+                        request: Box::new(request),
                     })
                     .await?;
                 }
@@ -552,14 +601,46 @@ impl Daemon {
             return Ok(());
         }
 
-        // Only a dispatch or a provisioning request parses as one; host domain
-        // events in the same room (registration, status changes) are neither.
+        // Only a dispatch, an interaction resolution, or a provisioning
+        // request parses as one; host domain events in the same room
+        // (registration, status changes) are none of them.
         if let Ok(dispatch) = serde_json::from_str::<RunDispatch>(payload) {
             self.start_dispatch(dispatch);
+        } else if let Ok(resolution) = serde_json::from_str::<InteractionResolutionFrame>(payload) {
+            self.resolve_interaction(resolution);
         } else if let Ok(provision) = serde_json::from_str::<EnvironmentProvision>(payload) {
             self.start_provision(provision);
         }
         Ok(())
+    }
+
+    /// Hands a permission answer to the provider task waiting for it.
+    ///
+    /// A resolution for a request this daemon is not holding is a no-op rather
+    /// than an error: the relay may replay a frame the daemon already applied,
+    /// and a frame for a run that ended while the answer was in flight has
+    /// nowhere to go. Neither is a failure, and treating one as a failure would
+    /// make a redelivered frame fatal.
+    fn resolve_interaction(&self, resolution: InteractionResolutionFrame) {
+        // A frame addressed to a different host is not this daemon's: the relay
+        // room should make that impossible, but checking costs nothing and a
+        // panic on an unexpected frame would take the whole connection down.
+        if self.host_id.as_ref() != Some(&resolution.host_id) {
+            return;
+        }
+        let registry = self.permissions.clone();
+        tokio::spawn(async move {
+            if !registry
+                .resolve(&resolution.request_id, resolution.answer)
+                .await
+            {
+                eprintln!(
+                    "loom-daemon: an answer for permission request {} arrived with nothing \
+                     waiting for it; dropping it",
+                    resolution.request_id
+                );
+            }
+        });
     }
 
     /// Starts a provider for a dispatch unless it was already started.
@@ -582,24 +663,43 @@ impl Daemon {
             }
             None => dispatch.provider.clone(),
         };
-        let run = ProviderRun::from_dispatch(&dispatch, spec, self.config.run_timeout);
+        let run = ProviderRun::from_dispatch(
+            &dispatch,
+            spec,
+            self.config.run_timeout,
+            self.config.permission_timeout,
+        );
         // ACP is the only provider protocol. Pi uses the embedded adapter;
         // native agents use the same client over their stdio transport. The
         // dispatch, reconciliation and relay remain unaware of that detail.
+        let permissions = self.permissions.clone();
+        let interactions = self.interactions_tx.clone();
         match run.spec.launch {
             loom_provider_protocol::ProviderLaunch::AcpStdio => {
                 let transport = crate::acp::session::Transport::Stdio {
                     command: run.spec.command.clone(),
                     args: run.spec.args.clone(),
                 };
-                crate::acp::session::spawn(run, transport, self.reports_tx.clone());
+                crate::acp::session::spawn(
+                    run,
+                    transport,
+                    self.reports_tx.clone(),
+                    permissions,
+                    interactions,
+                );
             }
             loom_provider_protocol::ProviderLaunch::AcpEmbeddedPi => {
                 let transport = crate::acp::session::Transport::EmbeddedPi {
                     command: run.spec.command.clone(),
                     args: run.spec.args.clone(),
                 };
-                crate::acp::session::spawn(run, transport, self.reports_tx.clone());
+                crate::acp::session::spawn(
+                    run,
+                    transport,
+                    self.reports_tx.clone(),
+                    permissions,
+                    interactions,
+                );
             }
         }
     }

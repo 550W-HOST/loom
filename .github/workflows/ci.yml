@@ -281,6 +281,15 @@ jobs:
         if: steps.pi.outputs.configured == 'true'
         run: cargo test -p loom-daemon --test provider_e2e --locked -- --ignored
 
+      # The real Pi first-turn and cross-run resume, through the embedded
+      # adapter. `provider_e2e`'s ignored test already drives the real CLI; this
+      # one adds the property that test cannot: that `session/load` on a second
+      # run continues the *same* conversation, which is what the thread's
+      # provider-session binding exists for.
+      - name: cargo test -p loom-daemon --test real_pi -- --ignored
+        if: steps.pi.outputs.configured == 'true'
+        run: cargo test -p loom-daemon --test real_pi --locked -- --ignored
+
   # The daemon's self-update, end to end: a real daemon process, a fake server
   # that speaks a newer protocol, a real install over the running executable,
   # and the reinstalled binary running a real turn. `#[ignore]`d because it

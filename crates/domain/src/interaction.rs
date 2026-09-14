@@ -253,10 +253,18 @@ impl Resolution {
     ///
     /// The check is deliberately one-directional and explicit: a decision
     /// cannot answer a question, a question's answers cannot answer an opaque
-    /// plugin request, and the two opaque forms are mutually acceptable only
-    /// with `Generic`, because loom has no schema to tell them apart. Refusing
-    /// the mismatch is what keeps `resolve` and `respond` from silently
-    /// becoming the same operation.
+    /// plugin request, and a typed answer never answers a kind it does not
+    /// model. Refusing the mismatch is what keeps `resolve` and `respond` from
+    /// silently becoming the same operation.
+    ///
+    /// An approval takes the **typed** decision and nothing else, because the
+    /// contract's response union says so: an approval's `resolution` is one of
+    /// the three decision shapes or `null`, and a `request_answer` there is
+    /// rejected by the exported schema before any client sees it. The
+    /// consequence is that an approval's provider-specific option is chosen by
+    /// its *polarity* (`allow_once` / `allow_for_session` / `deny`) rather than
+    /// named; see `crates/daemon/src/acp/permission.rs` for how a polarity maps
+    /// onto an ACP option and what that costs for a multi-choice request.
     pub fn answers(&self, kind: InteractionKind) -> bool {
         match (self, kind) {
             // A typed permission decision answers an approval.
@@ -265,9 +273,8 @@ impl Resolution {
             (Resolution::UserAnswer { .. }, InteractionKind::UserQuestion) => true,
             // A plugin submission answers a plugin request.
             (Resolution::PluginSubmitted, InteractionKind::Plugin) => true,
-            // An opaque value answers anything loom cannot interpret. It is
-            // also accepted for a plugin interaction, because a plugin body is
-            // opaque to loom in exactly the same way.
+            // An opaque value answers anything loom cannot interpret. A plugin
+            // body is opaque to loom in exactly the same way.
             (
                 Resolution::RequestAnswer { .. },
                 InteractionKind::Generic | InteractionKind::Plugin,
@@ -326,6 +333,15 @@ pub struct Interaction {
     /// Why it is in that status, when there is something to say.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status_reason: Option<String>,
+    /// The agent's own identifier for the conversation that asked.
+    ///
+    /// Set when the request came from a provider that has named a session, so
+    /// a client can correlate the question with the `providerThreadId` its run
+    /// events carry. ACP's session id is the value; a provider that never named
+    /// one leaves this `None` and the projection falls back to loom's thread
+    /// id, which is the only identity such a request has.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_thread_id: Option<String>,
     /// The answer, once there is one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resolution: Option<Resolution>,
@@ -354,6 +370,9 @@ pub struct NewInteraction {
     pub payload: InteractionPayload,
     /// When the request expires, if the provider said so.
     pub expires_at_ms: Option<u64>,
+    /// The agent's identifier for the conversation that asked, when there is
+    /// one. See [`Interaction::provider_thread_id`].
+    pub provider_thread_id: Option<String>,
     /// An identity to reuse instead of minting one.
     ///
     /// A provider repeats its request id across redeliveries; when the caller
@@ -387,6 +406,7 @@ impl Interaction {
             status_reason: None,
             resolution: None,
             expires_at_ms: new.expires_at_ms,
+            provider_thread_id: new.provider_thread_id,
             created_at_ms: now_ms,
             resolved_at_ms: None,
         })
@@ -473,6 +493,7 @@ mod tests {
                 },
                 payload: InteractionPayload::new(kind, serde_json::json!({})),
                 expires_at_ms: None,
+                provider_thread_id: Some("acp-session-1".into()),
                 id: None,
             },
             1,
@@ -503,6 +524,7 @@ mod tests {
                         serde_json::json!({})
                     ),
                     expires_at_ms: None,
+                    provider_thread_id: None,
                     id: None,
                 },
                 1
@@ -547,8 +569,38 @@ mod tests {
         };
         assert!(opaque.answers(InteractionKind::Generic));
         assert!(opaque.answers(InteractionKind::Plugin));
-        assert!(!opaque.answers(InteractionKind::Approval));
         assert!(!opaque.answers(InteractionKind::UserQuestion));
+    }
+
+    #[test]
+    fn an_opaque_value_does_not_answer_an_approval() {
+        // The contract's response union for an approval admits only the three
+        // decision shapes or `null`, so an opaque answer there would be a
+        // response the exported schema rejects. Keeping it out here means the
+        // refusal happens in the domain rather than in a client.
+        let opaque = Resolution::RequestAnswer {
+            value: serde_json::json!({ "optionId": "choice-1" }),
+        };
+        assert!(!opaque.answers(InteractionKind::Approval));
+        assert!(opaque.answers(InteractionKind::Generic));
+        assert!(opaque.answers(InteractionKind::Plugin));
+        assert!(!opaque.answers(InteractionKind::UserQuestion));
+        // The typed verb is the only one, which is what keeps `resolve` and
+        // `respond` from being the same operation.
+        assert!(Resolution::Decision {
+            decision: "deny".into(),
+            granted_permissions: None,
+        }
+        .answers(InteractionKind::Approval));
+    }
+
+    #[test]
+    fn an_interaction_records_the_agents_conversation_id() {
+        let approval = interaction(InteractionKind::Approval);
+        assert_eq!(
+            approval.provider_thread_id.as_deref(),
+            Some("acp-session-1")
+        );
     }
 
     #[test]
