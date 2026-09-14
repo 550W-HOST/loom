@@ -27,15 +27,15 @@ use std::sync::Arc;
 
 use agent_client_protocol::schema::v1::{
     ContentBlock, InitializeRequest, LoadSessionRequest, NewSessionRequest, PromptRequest,
-    RequestPermissionRequest, RequestPermissionResponse, SessionId, SessionNotification,
-    SessionUpdate, TextContent,
+    RequestPermissionRequest, SessionId, SessionNotification, SessionUpdate, TextContent,
 };
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::{on_receive_notification, on_receive_request, Client, ConnectionTo};
 use loom_domain::{ProviderEvent, RunEvent};
-use loom_provider_protocol::ProviderReport;
+use loom_provider_protocol::{InteractionRequest, ProviderReport};
 use tokio::sync::mpsc;
 
+use super::permission::{PermissionBroker, PermissionRegistry};
 use super::{AcpTranslator, RunContext};
 use crate::provider::ProviderRun;
 
@@ -71,6 +71,8 @@ pub async fn drive(
     run: &ProviderRun,
     transport: Transport,
     reports: &mpsc::Sender<ProviderReport>,
+    permissions: PermissionRegistry,
+    interactions: mpsc::Sender<InteractionRequest>,
 ) -> Result<(), String> {
     let cwd = run.spec.cwd.clone().ok_or_else(|| {
         "an ACP session requires a working directory, and the dispatch has none".to_string()
@@ -101,6 +103,12 @@ pub async fn drive(
         reports: reports.clone(),
         report_lock: Arc::new(tokio::sync::Mutex::new(())),
         terminal_sent: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        broker: PermissionBroker::new(
+            run.clone(),
+            interactions,
+            permissions,
+            run.permission_timeout,
+        ),
     };
 
     let operation = async {
@@ -144,7 +152,7 @@ pub async fn drive(
 /// args and environment; it has no working-directory field. On Unix a small
 /// `sh -c` launcher supplies the missing process boundary without changing the
 /// agent's argv or touching the daemon's global current directory.
-fn agent_argv(command: &str, args: &[String], cwd: &str) -> Vec<String> {
+pub(super) fn agent_argv(command: &str, args: &[String], cwd: &str) -> Vec<String> {
     #[cfg(unix)]
     {
         let command = if std::path::Path::new(command).is_absolute() || !command.contains('/') {
@@ -184,7 +192,9 @@ async fn serve(
     cwd: &str,
 ) -> Result<(), String> {
     let notifications = sink.clone();
-    let permissions = sink.clone();
+    // The permission bridge, not the sink's own policy: the decision is the
+    // user's and travels to the control plane.
+    let permissions = sink.broker.clone();
     let conversation = sink.clone();
     let cwd = cwd.to_string();
 
@@ -199,7 +209,7 @@ async fn serve(
         )
         .on_receive_request(
             async move |request: RequestPermissionRequest, responder, _cx| {
-                let response = permissions.on_permission_request(request).await;
+                let response = permissions.ask(request).await;
                 let _ = responder.respond(response);
                 Ok(())
             },
@@ -331,6 +341,12 @@ struct UpdateSink {
     /// Whether the terminal event has been sent, so it is sent exactly once
     /// even when a failure races an ordinary completion.
     terminal_sent: Arc<std::sync::atomic::AtomicBool>,
+    /// Where a permission request goes and how its answer gets back.
+    ///
+    /// A broker rather than the former in-place auto-allow: the ACP client must
+    /// not decide a permission the user has not granted. See
+    /// [`crate::acp::permission`].
+    broker: PermissionBroker,
 }
 
 impl UpdateSink {
@@ -447,40 +463,6 @@ impl UpdateSink {
                 state.translator.on_session_update(&update)
             };
             self.report_all_locked(events, None).await;
-        }
-    }
-
-    /// An agent is asking permission. Answer it, and record the fact.
-    ///
-    /// The interaction is not yet projected to a client, so this answers with
-    /// the first option that allows the action, and declines when there is
-    /// none. That is a placeholder for a policy decision, not a policy: the
-    /// point is that the agent is never left blocked.
-    async fn on_permission_request(
-        &self,
-        request: RequestPermissionRequest,
-    ) -> RequestPermissionResponse {
-        use agent_client_protocol::schema::v1::{
-            PermissionOptionKind, RequestPermissionOutcome, SelectedPermissionOutcome,
-        };
-        let choice = request
-            .options
-            .iter()
-            .find(|option| {
-                matches!(
-                    option.kind,
-                    PermissionOptionKind::AllowOnce | PermissionOptionKind::AllowAlways
-                )
-            })
-            .or_else(|| request.options.first());
-
-        match choice {
-            Some(option) => RequestPermissionResponse::new(RequestPermissionOutcome::Selected(
-                SelectedPermissionOutcome::new(option.option_id.clone()),
-            )),
-            // No options at all: the agent asked something unanswerable, and
-            // cancelling is the only truthful reply.
-            None => RequestPermissionResponse::new(RequestPermissionOutcome::Cancelled),
         }
     }
 
@@ -656,9 +638,11 @@ pub fn spawn(
     run: ProviderRun,
     transport: Transport,
     reports: mpsc::Sender<ProviderReport>,
+    permissions: PermissionRegistry,
+    interactions: mpsc::Sender<InteractionRequest>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        if let Err(message) = drive(&run, transport, &reports).await {
+        if let Err(message) = drive(&run, transport, &reports, permissions, interactions).await {
             let _ = reports
                 .send(ProviderReport {
                     host_id: run.host_id.clone(),

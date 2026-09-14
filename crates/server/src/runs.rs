@@ -50,6 +50,13 @@ pub struct RunRecord {
     pub project_id: ProjectId,
     /// The host that owns the run. Only this host's reports are accepted.
     pub host_id: HostId,
+    /// The workspace the provider was dispatched into.
+    ///
+    /// Recorded because the provider session id a run reports belongs to this
+    /// directory; learning the binding from the environment later would describe
+    /// a re-bound environment, not the run that opened the session. See
+    /// [`AppState::learn_provider_session`].
+    pub cwd: String,
     /// When the dispatch was published.
     pub started_at_ms: u64,
     /// When the run must be terminal, or the server reaps it.
@@ -285,21 +292,33 @@ impl AppState {
             thread_id: thread.id.clone(),
             project_id: thread.project_id.clone(),
             host_id: host.id.clone(),
+            cwd: workspace.clone(),
             started_at_ms: now,
             deadline_ms: now.saturating_add(self.run_timeout_ms()),
         };
         // The dispatched spec carries the working directory. The provider is
         // otherwise exactly the one this server was configured with.
         let mut provider = self.provider_spec().clone();
-        provider.cwd = Some(workspace);
+        provider.cwd = Some(workspace.clone());
+        // Resume only when the recorded session belongs to this agent *and*
+        // this workspace. A provider session id is the agent's own, unique only
+        // within it, and a session is bound to the directory it was opened in —
+        // so resuming across either boundary would either hand an agent an id it
+        // never issued or reopen a conversation about the wrong project. The
+        // binding is what makes that check possible; a thread with none (an
+        // older snapshot, or a session established by another agent) starts
+        // fresh, which is recoverable where a wrong resume is not.
+        let provider_session_id = thread
+            .resumable_session_id(&provider.name, &workspace)
+            .map(str::to_owned);
         let dispatch = RunDispatch {
             run_id: run_id.clone(),
             thread_id: thread.id.clone(),
             // The thread already knows the agent's conversation id once a
             // first run has reported it, so a later turn continues that
             // conversation rather than starting over. `None` means this is
-            // the first run.
-            provider_session_id: thread.provider_session_id.clone(),
+            // the first run, or that the recorded one belongs elsewhere.
+            provider_session_id,
             project_id: thread.project_id.clone(),
             host_id: host.id.clone(),
             prompt: prompt.to_owned(),
@@ -439,6 +458,12 @@ impl AppState {
     /// one-way. The stored id travels back on the next dispatch, which is what
     /// lets a later turn continue this conversation instead of starting over.
     ///
+    /// The **binding** recorded with it is the other half: the agent that
+    /// issued the id and the workspace it was opened in. Without it, a later run
+    /// under a different agent or in a different workspace would be dispatched
+    /// the id anyway, and only the agent could tell that it means nothing there.
+    /// See [`loom_domain::Thread::resumable_session_id`].
+    ///
     /// Idempotent: the agent reports its identity every run, and only a change
     /// produces an event.
     fn learn_provider_session(&self, event: &RunEvent, now: u64) {
@@ -448,9 +473,22 @@ impl AppState {
         let Some(session_id) = event.provider_thread_id() else {
             return;
         };
+        // The binding is read from the *in-flight run*, not the thread's
+        // current environment: the environment can be re-bound between runs,
+        // and the binding must describe the run that actually opened the
+        // session. A run that is no longer in the table (a report after the
+        // deadline reaped it) leaves the binding unknown, which starts the next
+        // turn fresh rather than guessing.
+        let binding = self.runs.get(&event.run_id).map(|record| {
+            loom_domain::ProviderSessionBinding::new(
+                self.provider_spec().name.clone(),
+                record.cwd.clone(),
+            )
+            .at(now)
+        });
         if let Some(learned) =
             self.registry
-                .set_provider_session_id(&event.thread_id, session_id, now)
+                .set_provider_session_id(&event.thread_id, session_id, binding, now)
         {
             // The thread's own record changed, so the sidebar sees it. Nothing
             // in the contract's thread shape carries this value; the event is
@@ -735,6 +773,7 @@ mod tests {
             thread_id: ThreadId::mint(),
             project_id: ProjectId::mint(),
             host_id: HostId::mint(),
+            cwd: "/srv/project-a".into(),
             started_at_ms: 1,
             deadline_ms: 10,
         };
@@ -805,9 +844,12 @@ mod tests {
     async fn the_dispatch_carries_the_environment_workspace() {
         let state = state();
         let (host_id, thread, workspace) = thread_with_workspace(&state, "/srv/project-a");
-        state
-            .registry
-            .set_provider_session_id(&thread.id, "acp-session-1", 2);
+        state.registry.set_provider_session_id(
+            &thread.id,
+            "acp-session-1",
+            Some(loom_domain::ProviderSessionBinding::new("pi", &workspace).at(2)),
+            2,
+        );
         state
             .registry
             .post_message(&thread.id, MessageRole::User, "hi".into(), 3)
@@ -957,6 +999,125 @@ mod tests {
             state.registry.host(&host_id).unwrap().status,
             HostStatus::Disconnected
         );
+        state.shutdown();
+    }
+
+    /// The session a run reports is bound to the agent and workspace that
+    /// opened it, and a dispatch only carries it while both match.
+    ///
+    /// The failure this guards is quiet and expensive: dispatching a session id
+    /// to an agent that never issued it, or resuming a conversation about a
+    /// directory the run is not editing.
+    #[tokio::test]
+    async fn a_provider_session_is_bound_to_its_agent_and_workspace() {
+        let state = state();
+        let (host_id, thread, workspace) = thread_with_workspace(&state, "/srv/project-a");
+        state
+            .registry
+            .post_message(&thread.id, MessageRole::User, "hi".into(), 2)
+            .unwrap();
+        let thread = state.registry.thread(&thread.id).unwrap();
+        let run = match state.dispatch_thread(&thread, "hi") {
+            DispatchOutcome::Dispatched(run) => run,
+            other => panic!("expected a dispatch, got {other:?}"),
+        };
+
+        // The first turn reports its identity, and the binding is taken from
+        // the run that opened the session.
+        let identity = RunEvent::new(
+            thread.id.clone(),
+            thread.project_id.clone(),
+            run.run_id.clone(),
+            3,
+            ProviderEvent::ThreadIdentity {
+                provider_thread_id: "acp-session-1".into(),
+            },
+        );
+        assert_eq!(
+            state.apply_run_report(
+                &host_id,
+                ProviderReport {
+                    host_id: host_id.clone(),
+                    event: identity,
+                }
+            ),
+            ReportOutcome::Applied
+        );
+        let stored = state.registry.thread(&thread.id).unwrap();
+        let binding = stored
+            .provider_session_binding
+            .as_ref()
+            .expect("the identity event records the binding");
+        assert_eq!(binding.agent, state.provider_spec().name);
+        assert_eq!(binding.cwd, workspace);
+        assert_eq!(stored.provider_session_id.as_deref(), Some("acp-session-1"));
+
+        // A completed run, then a second turn: the id travels with it.
+        let terminal = RunEvent::completed(
+            thread.id.clone(),
+            thread.project_id.clone(),
+            run.run_id.clone(),
+            4,
+            None,
+        );
+        state.apply_run_report(
+            &host_id,
+            ProviderReport {
+                host_id: host_id.clone(),
+                event: terminal,
+            },
+        );
+        let follow_up = state
+            .registry
+            .post_message(&thread.id, MessageRole::User, "again".into(), 5)
+            .unwrap();
+        for event in &follow_up {
+            state.publish_domain_event(event).unwrap();
+        }
+        let thread = state.registry.thread(&thread.id).unwrap();
+        assert!(matches!(
+            state.dispatch_thread(&thread, "again"),
+            DispatchOutcome::Dispatched(_)
+        ));
+        let frames = state
+            .relay
+            .replay_scope(&Scope::Host(host_id.to_string()), 10)
+            .unwrap();
+        let last: serde_json::Value = serde_json::from_slice(&frames[1].payload).unwrap();
+        let dispatch: serde_json::Value =
+            serde_json::from_str(last["payload"].as_str().unwrap()).unwrap();
+        assert_eq!(dispatch["provider_session_id"], "acp-session-1");
+
+        // A binding to a different workspace — an environment re-bound between
+        // runs, or a session established elsewhere — invalidates the session:
+        // the id belongs to the old directory.
+        state.registry.set_provider_session_id(
+            &thread.id,
+            "acp-session-1",
+            Some(loom_domain::ProviderSessionBinding::new("pi", "/srv/project-b").at(6)),
+            6,
+        );
+        let thread = state.registry.thread(&thread.id).unwrap();
+        assert_eq!(
+            thread.resumable_session_id(&state.provider_spec().name, "/srv/project-a"),
+            None,
+            "a session opened in one workspace must not be resumed in another"
+        );
+
+        // And so does a different agent, even in the same workspace.
+        state.registry.set_provider_session_id(
+            &thread.id,
+            "acp-session-1",
+            Some(loom_domain::ProviderSessionBinding::new("other-agent", workspace).at(7)),
+            7,
+        );
+        let thread = state.registry.thread(&thread.id).unwrap();
+        assert_eq!(
+            thread.resumable_session_id(&state.provider_spec().name, "/srv/project-a"),
+            None,
+            "a session id is only meaningful to the agent that issued it"
+        );
+
         state.shutdown();
     }
 

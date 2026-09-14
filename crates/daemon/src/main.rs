@@ -60,6 +60,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut config = DaemonConfig::new(&options.server_url, &options.name);
     config.heartbeat_interval = options.heartbeat_interval;
     config.run_timeout = options.run_timeout;
+    config.permission_timeout = options.permission_timeout;
     if let Some(root) = &options.workspace_root {
         config.environment_root = root.clone();
     }
@@ -219,6 +220,7 @@ struct Options {
     host_id: Option<HostId>,
     heartbeat_interval: Duration,
     run_timeout: Duration,
+    permission_timeout: Duration,
     provider: Option<ProviderSpec>,
     workspace_root: Option<PathBuf>,
     state: Option<PathBuf>,
@@ -233,6 +235,7 @@ impl Options {
         let mut host_id = std::env::var("LOOM_HOST_ID").ok();
         let mut heartbeat_ms = std::env::var("LOOM_HEARTBEAT_MS").ok();
         let mut run_timeout_ms = std::env::var("LOOM_RUN_TIMEOUT_MS").ok();
+        let mut permission_timeout_ms = std::env::var("LOOM_PERMISSION_TIMEOUT_MS").ok();
         let mut state = std::env::var("LOOM_DAEMON_STATE").ok();
         let mut provider_cmd = std::env::var("LOOM_PROVIDER_CMD").ok();
         let mut provider_args = std::env::var("LOOM_PROVIDER_ARGS").ok();
@@ -254,6 +257,7 @@ impl Options {
                 }
                 "--heartbeat-ms" => heartbeat_ms = args.next(),
                 "--run-timeout-ms" => run_timeout_ms = args.next(),
+                "--permission-timeout-ms" => permission_timeout_ms = args.next(),
                 "--state" => state = args.next(),
                 "--provider-cmd" => provider_cmd = args.next(),
                 "--provider-args" => provider_args = args.next(),
@@ -289,6 +293,13 @@ impl Options {
                     .map_err(|error| format!("--run-timeout-ms: {error}"))?,
             ),
         };
+        let permission_timeout = match permission_timeout_ms {
+            None => loom_daemon::DEFAULT_PERMISSION_TIMEOUT,
+            Some(raw) => Duration::from_millis(
+                raw.parse::<u64>()
+                    .map_err(|error| format!("--permission-timeout-ms: {error}"))?,
+            ),
+        };
         // Only build an override when the operator actually chose one; an
         // unset command means "run whatever the control plane dispatched".
         let provider = provider_cmd
@@ -309,6 +320,7 @@ impl Options {
             host_id,
             heartbeat_interval,
             run_timeout,
+            permission_timeout,
             provider,
             workspace_root: workspace_root
                 .filter(|value| !value.trim().is_empty())
@@ -351,6 +363,7 @@ fn print_help() {
 USAGE:
     loom-daemon --server-url <URL> [--name <NAME>] [--host-id <HOST_ID>]
                 [--heartbeat-ms <MS>] [--run-timeout-ms <MS>]
+                [--permission-timeout-ms <MS>]
                 [--provider-cmd <CMD>] [--provider-args <ARGS>]
                 [--state <PATH>]
                 [--auto-update | --no-auto-update]
@@ -366,6 +379,11 @@ FLAGS:
                              Env: LOOM_HEARTBEAT_MS
     --run-timeout-ms <MS>    Kill a provider that has not settled by then.
                              Default: 1800000. Env: LOOM_RUN_TIMEOUT_MS
+    --permission-timeout-ms <MS>
+                             Cancel an agent's permission request that no client
+                             answered by then. A cancellation is never an
+                             approval. Default: 300000.
+                             Env: LOOM_PERMISSION_TIMEOUT_MS
     --provider-cmd <CMD>     Override the ACP agent executable. Default: the
                              provider named in the dispatch (Pi uses embedded
                              pi-acp).

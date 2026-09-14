@@ -42,6 +42,7 @@ use loom_relay::now_ms;
 use loom_relay::scope::Scope;
 
 use crate::environments::EnvironmentReportOutcome;
+use crate::interactions::RecordOutcome;
 use crate::protocol::{ClientCommand, ServerMessage};
 use crate::runs::ReportOutcome;
 use crate::state::AppState;
@@ -260,6 +261,37 @@ async fn handle_command(
                 accepted,
                 detail,
             })
+        }
+        ClientCommand::InteractionRequest { request } => {
+            let request = *request;
+            let Some(host_id) = enrolled_host.clone() else {
+                return Some(ServerMessage::Error {
+                    message: "interaction requests require an enrolled host".into(),
+                });
+            };
+            if host_id != request.host_id {
+                return Some(ServerMessage::Error {
+                    message: "request names a different host than this connection enrolled as"
+                        .into(),
+                });
+            }
+            let request_id = request.request_id.clone();
+            match state.record_interaction_request(request, loom_relay::now_ms()) {
+                RecordOutcome::Recorded(interaction) => {
+                    Some(ServerMessage::InteractionRequestAck {
+                        request_id,
+                        interaction_id: Some(interaction.id.to_string()),
+                        accepted: true,
+                        detail: None,
+                    })
+                }
+                RecordOutcome::Unknown(detail) => Some(ServerMessage::InteractionRequestAck {
+                    request_id,
+                    interaction_id: None,
+                    accepted: false,
+                    detail: Some(detail),
+                }),
+            }
         }
         ClientCommand::EnvironmentReport { report } => {
             let Some(host_id) = enrolled_host.clone() else {

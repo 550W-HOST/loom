@@ -29,6 +29,15 @@ pub struct ProviderRun {
     /// Daemon-side deadline. On expiry the ACP session is terminated and the
     /// run is reported as timed out.
     pub timeout: Duration,
+    /// How long an agent's permission request waits for a user before it is
+    /// cancelled.
+    ///
+    /// Tighter than [`ProviderRun::timeout`] on purpose: a run blocked with no
+    /// client attached is a question nobody will answer, and holding it until
+    /// the run deadline would leave the thread `working` far longer than the
+    /// question deserves. Cancellation is the outcome, never an approval — see
+    /// `crate::acp::permission`.
+    pub permission_timeout: Duration,
     /// The agent's identifier for this thread's conversation, when a previous
     /// run already opened one.
     pub provider_session_id: Option<String>,
@@ -36,7 +45,12 @@ pub struct ProviderRun {
 
 impl ProviderRun {
     /// Builds a run from a dispatch and the daemon's local overrides.
-    pub fn from_dispatch(dispatch: &RunDispatch, spec: ProviderSpec, timeout: Duration) -> Self {
+    pub fn from_dispatch(
+        dispatch: &RunDispatch,
+        spec: ProviderSpec,
+        timeout: Duration,
+        permission_timeout: Duration,
+    ) -> Self {
         Self {
             spec,
             prompt: dispatch.prompt.clone(),
@@ -45,6 +59,7 @@ impl ProviderRun {
             project_id: dispatch.project_id.clone(),
             run_id: dispatch.run_id.clone(),
             timeout,
+            permission_timeout,
             provider_session_id: dispatch.provider_session_id.clone(),
         }
     }
