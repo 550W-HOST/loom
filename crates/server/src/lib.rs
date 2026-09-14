@@ -22,6 +22,7 @@
 #![forbid(unsafe_code)]
 
 pub mod artifacts;
+pub mod b10;
 pub mod b5;
 pub mod b6;
 pub mod b7;
@@ -42,6 +43,7 @@ pub mod protocol;
 pub mod pump;
 pub mod queue;
 pub mod runs;
+pub mod settings;
 pub mod state;
 pub mod terminals;
 pub mod transport;

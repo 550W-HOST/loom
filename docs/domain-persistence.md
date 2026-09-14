@@ -43,6 +43,8 @@ DomainSnapshot
                                     hosts, environments, queued_messages,
                                     interactions, thread_sections }
   runs           in-flight RunRecord list
+  settings       SettingsSnapshot { appearance, experiments, general,
+                                    keyboard, ui_preferences }
 ```
 
 One atomic write covers both the entity view and its watermark, which is the
@@ -59,6 +61,14 @@ Two project fields added in B7 are also `#[serde(default)]`: `deleted_at_ms`,
 the tombstone that keeps a deleted project from being resurrected by replay, and
 `sort_key`, the client's explicit rank. A project from an older snapshot loads
 with neither, which sorts it by creation time exactly as that build did.
+
+`settings` is an additive B10 field. A snapshot written before B10 receives
+the current server-local defaults on restore; its settings payload has its own
+version so additive preference keys can be migrated without bumping the outer
+snapshot format. UI preference writes use one mutex-protected
+`expectedRevision` check and increment, then synchronously update the same
+snapshot file. They are not relay events and never belong to a thread or
+provider session.
 
 Both sets are stored **in every status**, not only the open ones. A sent queued
 message and a resolved interaction are part of what a client renders (a retry
@@ -149,6 +159,10 @@ already moved out of `working` is skipped.
 
 - **Enabled** when `LOOM_DATA_DIR` (`AppConfig::backend_path`) names a data
   directory; the snapshot lives beside the shard files.
+- **Settings scope**: appearance, experiments, general/keyboard settings and
+  UI preferences are server-local and shared by clients of that server. They
+  survive restart when `LOOM_DATA_DIR` is configured. The zero-configuration
+  in-process backend remains intentionally ephemeral, including its settings.
 - **Periodic write**: `AppConfig::snapshot_interval`, default 30 s.
   `Duration::ZERO` disables the background writer.
 - **Shutdown write**: `Ctrl-C` drains connections and then writes a final
