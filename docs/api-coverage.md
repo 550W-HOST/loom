@@ -18,9 +18,9 @@
 
 - 契约快照：`fa1f44ebe9e5676004b669e48c99b3c7606466b6`，共 **167 条**路由。
 - 已决策不实现：**18 条**（desktopBrowsers 11 条，skill/CLI skill 7 条）。
-- 当前源码包含 **106 个 `.route` 声明、122 个 HTTP 方法入口**；其中只有 105 个匹配 bb 契约，另有 17 个契约外入口。契约当前没有 plugin/marketplace 路由条目。
-- 有效总数：**149 条**；当前已实现 **105 条**，待实现 **44 条**。
-- 当前有效覆盖率：**105/149（70.5%）**。
+- 当前源码包含 **119 个 `.route` 声明、137 个 HTTP 方法入口**；其中只有 120 个匹配 bb 契约，另有 17 个契约外入口。契约当前没有 plugin/marketplace 路由条目。
+- 有效总数：**149 条**；当前已实现 **120 条**，待实现 **29 条**。
+- 当前有效覆盖率：**120/149（80.5%）**。
 - B0 是现有实现基线；B1-B10 是建议的后续交付批次，每批 14、14、14、14、10、14、14、14、17、13 条，均在 10-20 条范围内。
 
 ## threads.send 判定
@@ -61,7 +61,7 @@ bb UI 用契约格式发起写请求时会 422，而 CI 与一致性测试全绿
 
 | 批次 | 主题 | 路由数 | 依赖 | UI 交付边界 |
 | --- | --- | ---: | --- | --- |
-| B0 | 当前基础覆盖（基线） | 105 | - | 项目/线程基础读写、环境读取和主机列表已存在 |
+| B0 | 当前基础覆盖（基线） | 120 | - | 项目/线程基础读写、环境读取和主机列表已存在 |
 | B1 | 启动、导航与首个 threads 流程 | 14 | B0 | 启动探活、侧栏初始化、项目/线程列表后的线程打开、时间线读取与发送 |
 | B2 | 线程控制与辅助视图 | 14 | B1 | 活动线程的默认执行选项、运行状态、搜索、历史、编辑、停止/重试和压缩 |
 | B3 | 交互、计划与队列发送 | 14 | B1 + B2 | 线程中的交互请求、计划控制和 queued message 的查看/创建/发送 |
@@ -134,8 +134,8 @@ bb UI 用契约格式发起写请求时会 422，而 CI 与一致性测试全绿
 | `environments.pullRequest` | `GET` | `/api/v1/environments/:id/pull-request` | 已实现 | `GET /api/v1/environments/{id}/pull-request` | B0 | 契约路径与方法已匹配 |
 | `environments.status` | `GET` | `/api/v1/environments/:id/status` | 已实现 | `GET /api/v1/environments/{id}/status` | B0 | 契约路径与方法已匹配 |
 | `environments.update` | `PATCH` | `/api/v1/environments/:id` | 已实现 | `PATCH /api/v1/environments/{id}` | B0 | 契约路径与方法已匹配 |
-| `filePreviews.content` | `GET` | `/api/v1/file-previews/:id/:filePath{.+}` | 待实现 | - | B8 | - |
-| `files.createPreview` | `POST` | `/api/v1/files/previews` | 待实现 | - | B9 | - |
+| `filePreviews.content` | `GET` | `/api/v1/file-previews/:id/:filePath{.+}` | 已实现 | `GET /api/v1/file-previews/{id}/{*file_path}` | B0 | 契约路径与方法已匹配 |
+| `files.createPreview` | `POST` | `/api/v1/files/previews` | 已实现 | `POST /api/v1/files/previews` | B0 | 契约路径与方法已匹配 |
 | `files.list` | `POST` | `/api/v1/files/list` | 待实现 | - | B9 | - |
 | `files.listPaths` | `POST` | `/api/v1/files/paths` | 待实现 | - | B9 | - |
 | `files.mkdir` | `POST` | `/api/v1/files/mkdir` | 待实现 | - | B9 | - |
@@ -143,19 +143,19 @@ bb UI 用契约格式发起写请求时会 422，而 CI 与一致性测试全绿
 | `files.read` | `POST` | `/api/v1/files/read` | 待实现 | - | B9 | - |
 | `files.remove` | `POST` | `/api/v1/files/remove` | 待实现 | - | B9 | - |
 | `files.write` | `POST` | `/api/v1/files/write` | 待实现 | - | B9 | - |
-| `hosts.cloneDefaultPath` | `GET` | `/api/v1/hosts/:id/clone-default-path` | 待实现 | - | B8 | - |
-| `hosts.createJoinCode` | `POST` | `/api/v1/hosts/join-codes` | 待实现 | - | B8 | - |
-| `hosts.delete` | `DELETE` | `/api/v1/hosts/:id` | 待实现 | - | B8 | - |
-| `hosts.directory` | `GET` | `/api/v1/hosts/:id/directory` | 待实现 | - | B8 | - |
-| `hosts.get` | `GET` | `/api/v1/hosts/:id` | 待实现 | - | B8 | - |
+| `hosts.cloneDefaultPath` | `GET` | `/api/v1/hosts/:id/clone-default-path` | 已实现 | `GET /api/v1/hosts/{id}/clone-default-path` | B0 | 契约路径与方法已匹配 |
+| `hosts.createJoinCode` | `POST` | `/api/v1/hosts/join-codes` | 已实现 | `POST /api/v1/hosts/join-codes` | B0 | 契约路径与方法已匹配 |
+| `hosts.delete` | `DELETE` | `/api/v1/hosts/:id` | 已实现 | `DELETE /api/v1/hosts/{id}` | B0 | 契约路径与方法已匹配 |
+| `hosts.directory` | `GET` | `/api/v1/hosts/:id/directory` | 已实现 | `GET /api/v1/hosts/{id}/directory` | B0 | 契约路径与方法已匹配 |
+| `hosts.get` | `GET` | `/api/v1/hosts/:id` | 已实现 | `GET /api/v1/hosts/{id}` | B0 | 契约路径与方法已匹配 |
 | `hosts.list` | `GET` | `/api/v1/hosts` | 已实现 | `GET /api/v1/hosts` | B0 | 契约路径与方法已匹配 |
-| `hosts.pathsExist` | `POST` | `/api/v1/hosts/:id/paths/exist` | 待实现 | - | B8 | - |
-| `hosts.pickFolder` | `POST` | `/api/v1/hosts/:id/pick-folder` | 待实现 | - | B8 | - |
-| `hosts.providerCliInstall` | `POST` | `/api/v1/hosts/:id/provider-clis/install` | 待实现 | - | B8 | - |
-| `hosts.providerCliStatus` | `GET` | `/api/v1/hosts/:id/provider-clis/status` | 待实现 | - | B8 | - |
-| `hosts.retryUpdate` | `POST` | `/api/v1/hosts/:id/retry-update` | 待实现 | - | B8 | - |
-| `hosts.update` | `PATCH` | `/api/v1/hosts/:id` | 待实现 | - | B8 | - |
-| `hosts.updatePermissionCeiling` | `PATCH` | `/api/v1/hosts/:id/permission-ceiling` | 待实现 | - | B8 | - |
+| `hosts.pathsExist` | `POST` | `/api/v1/hosts/:id/paths/exist` | 已实现 | `POST /api/v1/hosts/{id}/paths/exist` | B0 | 契约路径与方法已匹配 |
+| `hosts.pickFolder` | `POST` | `/api/v1/hosts/:id/pick-folder` | 已实现 | `POST /api/v1/hosts/{id}/pick-folder` | B0 | 契约路径与方法已匹配 |
+| `hosts.providerCliInstall` | `POST` | `/api/v1/hosts/:id/provider-clis/install` | 已实现 | `POST /api/v1/hosts/{id}/provider-clis/install` | B0 | 契约路径与方法已匹配 |
+| `hosts.providerCliStatus` | `GET` | `/api/v1/hosts/:id/provider-clis/status` | 已实现 | `GET /api/v1/hosts/{id}/provider-clis/status` | B0 | 契约路径与方法已匹配 |
+| `hosts.retryUpdate` | `POST` | `/api/v1/hosts/:id/retry-update` | 已实现 | `POST /api/v1/hosts/{id}/retry-update` | B0 | 契约路径与方法已匹配 |
+| `hosts.update` | `PATCH` | `/api/v1/hosts/:id` | 已实现 | `PATCH /api/v1/hosts/{id}` | B0 | 契约路径与方法已匹配 |
+| `hosts.updatePermissionCeiling` | `PATCH` | `/api/v1/hosts/:id/permission-ceiling` | 已实现 | `PATCH /api/v1/hosts/{id}/permission-ceiling` | B0 | 契约路径与方法已匹配 |
 | `projects.attachmentContent` | `GET` | `/api/v1/projects/:id/attachments/content` | 已实现 | `GET /api/v1/projects/{id}/attachments/content` | B0 | 契约路径与方法已匹配 |
 | `projects.branches` | `GET` | `/api/v1/projects/:id/branches` | 已实现 | `GET /api/v1/projects/{id}/branches` | B0 | 契约路径与方法已匹配 |
 | `projects.branchOptions` | `GET` | `/api/v1/projects/:id/branch-options` | 已实现 | `GET /api/v1/projects/{id}/branch-options` | B0 | 契约路径与方法已匹配 |
@@ -184,7 +184,7 @@ bb UI 用契约格式发起写请求时会 422，而 CI 与一致性测试全绿
 | `projects.uploadAttachment` | `POST` | `/api/v1/projects/:id/attachments` | 已实现 | `POST /api/v1/projects/{id}/attachments` | B0 | 契约路径与方法已匹配 |
 | `queue.list` | `GET` | `/api/v1/queued-messages` | 已实现 | `GET /api/v1/queued-messages` | B0 | 契约路径与方法已匹配 |
 | `system.appearance` | `PUT` | `/api/v1/settings/appearance` | 待实现 | - | B10 | - |
-| `system.attention` | `GET` | `/api/v1/system/attention` | 待实现 | - | B8 | - |
+| `system.attention` | `GET` | `/api/v1/system/attention` | 已实现 | `GET /api/v1/system/attention` | B0 | 契约路径与方法已匹配 |
 | `system.cliSkillsStatus` | `GET` | `/api/v1/system/cli-skills` | 不适用（已决策） | - | - | 已决策：skill/CLI skill 不实现 |
 | `system.config` | `GET` | `/api/v1/system/config` | 已实现 | `GET /api/v1/system/config` | B0 | 契约路径与方法已匹配 |
 | `system.environmentProviders` | `GET` | `/api/v1/system/environment-providers` | 已实现 | `GET /api/v1/system/environment-providers` | B0 | 契约路径与方法已匹配 |

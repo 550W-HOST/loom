@@ -126,6 +126,10 @@ where
     S: DaemonState + ?Sized,
     F: Future<Output = ()>,
 {
+    // A join code is a one-time enrollment capability. Keep it in the
+    // process-local base config only until the first successful enrollment;
+    // reconnects use the persisted host id instead.
+    let mut config = config;
     // Pinned once here so neither the caller nor the helper needs an `Unpin`
     // bound: an async block that captures a `&mut` is routinely not `Unpin`,
     // and requiring it would be a trap for the one caller that matters.
@@ -164,6 +168,7 @@ where
                         continue;
                     }
                 };
+                config.join_code = None;
                 eprintln!(
                     "loom-daemon \"{}\" enrolled as {enrolled} with {url}",
                     config.name

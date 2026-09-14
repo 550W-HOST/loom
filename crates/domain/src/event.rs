@@ -136,6 +136,18 @@ pub enum DomainEvent {
         /// Wall-clock milliseconds of the change.
         at_ms: u64,
     },
+    /// A host's mutable metadata changed.
+    HostUpdated {
+        /// The host after the change.
+        host: Host,
+    },
+    /// A host was removed after all references were cleared.
+    HostDeleted {
+        /// The removed host identity.
+        host_id: HostId,
+        /// The display name at deletion time.
+        name: String,
+    },
     /// A queued message was created, sent or cancelled.
     ///
     /// Carries the whole message after the change, for the same reason
@@ -224,6 +236,8 @@ impl DomainEvent {
             DomainEvent::ThreadRunEvent { .. } => "thread_run_event",
             DomainEvent::HostRegistered { .. } => "host_registered",
             DomainEvent::HostStatusChanged { .. } => "host_status_changed",
+            DomainEvent::HostUpdated { .. } => "host_updated",
+            DomainEvent::HostDeleted { .. } => "host_deleted",
             DomainEvent::ThreadQueuedMessageChanged { .. } => "thread_queued_message_changed",
             DomainEvent::ThreadInteractionChanged { .. } => "thread_interaction_changed",
             DomainEvent::EnvironmentCreated { .. } => "environment_created",
@@ -270,6 +284,8 @@ impl DomainEvent {
             }
             DomainEvent::HostRegistered { host } => DomainScope::Host(host.id.clone()),
             DomainEvent::HostStatusChanged { host_id, .. } => DomainScope::Host(host_id.clone()),
+            DomainEvent::HostUpdated { host } => DomainScope::Host(host.id.clone()),
+            DomainEvent::HostDeleted { host_id, .. } => DomainScope::Host(host_id.clone()),
             DomainEvent::EnvironmentCreated { environment } => {
                 DomainScope::Project(environment.project_id.clone())
             }

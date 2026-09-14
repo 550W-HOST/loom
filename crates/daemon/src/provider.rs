@@ -8,7 +8,7 @@
 
 use std::time::Duration;
 
-use loom_domain::{ProviderEvent, RunEvent, RunOutcome, TurnError};
+use loom_domain::{HostPermissionMode, ProviderEvent, RunEvent, RunOutcome, TurnError};
 use loom_provider_protocol::{ProviderSpec, RunDispatch};
 
 /// Everything one ACP run needs to report events.
@@ -38,6 +38,8 @@ pub struct ProviderRun {
     /// question deserves. Cancellation is the outcome, never an approval — see
     /// `crate::acp::permission`.
     pub permission_timeout: Duration,
+    /// The host's maximum permission policy for this run.
+    pub permission_ceiling: HostPermissionMode,
     /// The agent's identifier for this thread's conversation, when a previous
     /// run already opened one.
     pub provider_session_id: Option<String>,
@@ -60,6 +62,7 @@ impl ProviderRun {
             run_id: dispatch.run_id.clone(),
             timeout,
             permission_timeout,
+            permission_ceiling: dispatch.permission_ceiling,
             provider_session_id: dispatch.provider_session_id.clone(),
         }
     }

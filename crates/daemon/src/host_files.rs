@@ -52,6 +52,19 @@ pub fn answer(request: HostFileRequest) -> HostFileReport {
             root_path,
             max_bytes,
         } => read_file(path, root_path.as_deref(), *max_bytes),
+        HostFileOperation::ListDirectory {
+            path,
+            include_files,
+            include_directories,
+            include_hidden,
+            limit,
+        } => list_directory(
+            path,
+            *include_files,
+            *include_directories,
+            *include_hidden,
+            *limit,
+        ),
         HostFileOperation::List {
             path,
             query,
@@ -67,6 +80,7 @@ pub fn answer(request: HostFileRequest) -> HostFileReport {
             *include_directories,
             *include_hidden,
         ),
+        HostFileOperation::Exists { paths } => paths_exist(paths),
         HostFileOperation::Write {
             path,
             root_path,
@@ -199,6 +213,31 @@ fn confined_existing(path: &Path, root: &Path) -> Result<PathBuf, HostFileOutcom
         return Err(failed("invalid_path", "path escapes the workspace root"));
     }
     Ok(real_path)
+}
+
+fn paths_exist(paths: &[String]) -> HostFileOutcome {
+    HostFileOutcome::Listing {
+        entries: paths
+            .iter()
+            .filter(|raw| Path::new(raw).is_absolute() && std::fs::metadata(raw).is_ok())
+            .map(|raw| HostFileEntry {
+                path: raw.clone(),
+                name: Path::new(raw)
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or_default()
+                    .to_owned(),
+                kind: if std::fs::metadata(raw).is_ok_and(|metadata| metadata.is_dir()) {
+                    HostPathKind::Directory
+                } else {
+                    HostPathKind::File
+                },
+                score: 0.0,
+                positions: Vec::new(),
+            })
+            .collect(),
+        truncated: false,
+    }
 }
 
 /// Writes one file inside `root_path`, creating parent directories.
@@ -453,6 +492,61 @@ fn base64_decode(raw: &str) -> Option<Vec<u8>> {
         }
     }
     Some(decoded)
+}
+
+fn list_directory(
+    path: &str,
+    include_files: bool,
+    include_directories: bool,
+    include_hidden: bool,
+    limit: usize,
+) -> HostFileOutcome {
+    let root = PathBuf::from(path);
+    if !root.is_absolute() {
+        return failed("invalid_path", "path must be absolute");
+    }
+    let Ok(entries) = std::fs::read_dir(&root) else {
+        return HostFileOutcome::Listing {
+            entries: Vec::new(),
+            truncated: false,
+        };
+    };
+    let mut listed = Vec::new();
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !include_hidden && name.starts_with('.') {
+            continue;
+        }
+        let Ok(metadata) = entry.metadata() else {
+            continue;
+        };
+        let kind = if metadata.is_dir() {
+            HostPathKind::Directory
+        } else if metadata.is_file() {
+            HostPathKind::File
+        } else {
+            continue;
+        };
+        if (kind == HostPathKind::File && !include_files)
+            || (kind == HostPathKind::Directory && !include_directories)
+        {
+            continue;
+        }
+        listed.push(HostFileEntry {
+            path: name.clone(),
+            name,
+            kind,
+            score: 0.0,
+            positions: Vec::new(),
+        });
+    }
+    listed.sort_by(|left, right| left.path.cmp(&right.path));
+    let truncated = listed.len() > limit;
+    listed.truncate(limit);
+    HostFileOutcome::Listing {
+        entries: listed,
+        truncated,
+    }
 }
 
 /// Lists a directory tree, relative to `path`.

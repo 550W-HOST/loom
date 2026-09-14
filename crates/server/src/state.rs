@@ -21,9 +21,11 @@ use loom_relay::{now_ms, Relay, Result as RelayResult};
 
 use crate::artifacts::Artifacts;
 use crate::domain_state::DomainRegistry;
+use crate::file_previews::FilePreviewRegistry;
 use crate::host_files::HostFileBroker;
 use crate::host_rpc::HostRpcBroker;
 use crate::hub_actor::HubHandle;
+use crate::join_codes::JoinCodeRegistry;
 use crate::persistence::{self, DomainSnapshot, SNAPSHOT_VERSION};
 use crate::pump::{Pump, PumpConfig};
 use crate::runs::{RunRecord, RunRegistry};
@@ -168,6 +170,10 @@ pub struct AppState {
     pub ui: Ui,
     /// The daemon binaries this server hosts for self-update.
     pub artifacts: Arc<Artifacts>,
+    /// One-time host enrollment capabilities.
+    pub join_codes: Arc<JoinCodeRegistry>,
+    /// Short-lived root-bound capabilities for host file previews.
+    pub file_previews: Arc<FilePreviewRegistry>,
     /// HTTP requests waiting on a host's answer to a file read or listing.
     pub host_files: Arc<HostFileBroker>,
     /// HTTP requests waiting on a host's answer to a workspace RPC.
@@ -236,6 +242,8 @@ impl AppState {
             runs: Arc::new(RunRegistry::new()),
             ui,
             artifacts,
+            file_previews: Arc::new(FilePreviewRegistry::new()),
+            join_codes: Arc::new(JoinCodeRegistry::new()),
             host_files: Arc::new(HostFileBroker::new()),
             host_rpc: Arc::new(HostRpcBroker::new()),
             local_host_id: config.local_host_id,

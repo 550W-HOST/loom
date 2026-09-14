@@ -33,7 +33,9 @@
 //!
 //! [`RunEvent`]: loom_domain::RunEvent
 
-use loom_domain::{EnvironmentId, HostId, ProjectId, RunEvent, RunId, ThreadId};
+use loom_domain::{
+    EnvironmentId, HostId, HostPermissionMode, ProjectId, RunEvent, RunId, ThreadId,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -160,7 +162,10 @@ pub struct RunDispatch {
     /// means "start fresh", the behaviour it already had.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_session_id: Option<String>,
-    /// Wall-clock milliseconds by which the run must have a terminal event.
+    /// The host policy ceiling applied to provider permission answers.
+    #[serde(default)]
+    pub permission_ceiling: HostPermissionMode,
+    /// The wall-clock milliseconds by which the run must have a terminal event.
     pub deadline_ms: u64,
     /// When the control plane minted the dispatch.
     pub created_at_ms: u64,
@@ -388,6 +393,19 @@ pub enum HostFileOperation {
         /// truncated: half a file is not the file the client asked for.
         max_bytes: u64,
     },
+    /// List only the direct children of one directory.
+    ListDirectory {
+        /// Absolute path of the directory on the host.
+        path: String,
+        /// Whether files are candidates.
+        include_files: bool,
+        /// Whether directories are candidates.
+        include_directories: bool,
+        /// Whether dotfiles are candidates.
+        include_hidden: bool,
+        /// Maximum entries returned.
+        limit: usize,
+    },
     /// List the entries under one directory, recursively.
     List {
         /// Absolute path of the directory on the host.
@@ -429,6 +447,11 @@ pub enum HostFileOperation {
         /// Whether an existing file is replaced. `false` writes a suffixed
         /// sibling instead.
         overwrite: bool,
+    },
+    /// Check whether a bounded set of absolute paths exists on the host.
+    Exists {
+        /// Absolute paths to inspect.
+        paths: Vec<String>,
     },
     /// Copy existing files into a destination directory.
     ///
@@ -748,6 +771,19 @@ pub enum HostRpcOperation {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         method: Option<String>,
     },
+    /// Ask the host-side UI capability to select a folder. Headless daemons
+    /// answer with a null path rather than pretending the server has a dialog.
+    #[serde(rename = "host.pick_folder")]
+    PickFolder {
+        #[serde(rename = "clientHostId")]
+        client_host_id: String,
+    },
+    /// Compute the daemon's configured default clone directory.
+    #[serde(rename = "host.clone_default_path")]
+    CloneDefaultPath {
+        #[serde(rename = "projectId")]
+        project_id: ProjectId,
+    },
     /// List the prompt commands available in a project workspace.
     ///
     /// A command list is a property of the **workspace on disk** — project
@@ -841,6 +877,7 @@ mod tests {
             host_id: HostId::mint(),
             prompt: "hello".into(),
             provider: ProviderSpec::pi(),
+            permission_ceiling: HostPermissionMode::Full,
             deadline_ms: 12,
             created_at_ms: 1,
             provider_session_id: None,

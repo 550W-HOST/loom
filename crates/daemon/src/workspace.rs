@@ -57,12 +57,34 @@ struct CommandOutput {
 /// Answers one request. This function is async so command children can be
 /// killed on timeout without blocking the daemon's socket loop.
 pub async fn answer(request: HostRpcRequest) -> HostRpcReport {
-    let workspace_path = workspace_path(&request.operation).to_owned();
+    answer_with_root(request, crate::default_environment_root()).await
+}
+
+/// Answers a request using the daemon's configured workspace root.
+pub async fn answer_with_root(
+    request: HostRpcRequest,
+    default_root: std::path::PathBuf,
+) -> HostRpcReport {
     let host_id = request.host_id.clone();
     let request_id = request.request_id.clone();
-    let outcome = match prepare_workspace(&workspace_path).await {
-        Ok(workspace) => execute(workspace, request.operation).await,
-        Err(error) => Err(error),
+    let outcome = match &request.operation {
+        HostRpcOperation::PickFolder { client_host_id } => {
+            if client_host_id.trim().is_empty() {
+                Err(Failure::new("invalid_request", "client host id is empty"))
+            } else {
+                Ok(serde_json::json!({ "path": null }))
+            }
+        }
+        HostRpcOperation::CloneDefaultPath { project_id } => Ok(serde_json::json!({
+            "path": default_root.join(project_id.to_string()).to_string_lossy()
+        })),
+        _ => {
+            let workspace_path = workspace_path(&request.operation).to_owned();
+            match prepare_workspace(&workspace_path).await {
+                Ok(workspace) => execute(workspace, request.operation).await,
+                Err(error) => Err(error),
+            }
+        }
     };
     let outcome = match outcome {
         Ok(result) => HostRpcOutcome::Result { result },
@@ -83,6 +105,7 @@ fn workspace_path(operation: &HostRpcOperation) -> &str {
         HostRpcOperation::InspectGitSource { path, .. }
         | HostRpcOperation::ListBranchOptions { path, .. }
         | HostRpcOperation::ListCommands { cwd: path } => path,
+        HostRpcOperation::PickFolder { .. } | HostRpcOperation::CloneDefaultPath { .. } => "",
         HostRpcOperation::WorkspaceStatus {
             workspace_context, ..
         }
@@ -216,6 +239,9 @@ async fn execute(workspace: PathBuf, operation: HostRpcOperation) -> Result<Valu
             "pull_request_unavailable",
             "pull request actions are unavailable: no host provider is configured",
         )),
+        HostRpcOperation::PickFolder { .. } | HostRpcOperation::CloneDefaultPath { .. } => {
+            Ok(serde_json::json!({ "path": null }))
+        }
         HostRpcOperation::ListCommands { cwd } => list_commands(&cwd).await,
     }
 }
@@ -277,6 +303,14 @@ fn validate_operation(operation: &HostRpcOperation) -> Result<(), Failure> {
             Ok(())
         }
         HostRpcOperation::WorkspacePullRequest { .. } => Ok(()),
+        HostRpcOperation::PickFolder { client_host_id } => {
+            if client_host_id.trim().is_empty() {
+                Err(Failure::new("invalid_request", "client host id is empty"))
+            } else {
+                Ok(())
+            }
+        }
+        HostRpcOperation::CloneDefaultPath { .. } => Ok(()),
         HostRpcOperation::ListCommands { cwd } => {
             if cwd.is_empty() || cwd.contains('\0') || !Path::new(cwd).is_absolute() {
                 Err(Failure::new(

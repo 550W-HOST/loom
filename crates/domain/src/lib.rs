@@ -71,7 +71,7 @@ pub mod thread;
 pub use environment::{Environment, EnvironmentKind, EnvironmentStatus};
 pub use error::DomainError;
 pub use event::DomainEvent;
-pub use host::{select_primary_host, Host, HostKind, HostStatus};
+pub use host::{select_primary_host, Host, HostKind, HostPermissionMode, HostStatus};
 pub use id::{
     is_turn_request_id, mint_turn_request_id, AttachmentId, AttachmentTag, Entity, EnvironmentId,
     EnvironmentTag, HostId, HostTag, Id, InteractionId, InteractionTag, MessageId, MessageTag,

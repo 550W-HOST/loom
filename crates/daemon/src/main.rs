@@ -12,7 +12,7 @@
 //!
 //! Everything is also settable through the environment (`LOOM_SERVER_URL`,
 //! `LOOM_HOST_NAME`, `LOOM_HOST_ID`, `LOOM_HEARTBEAT_MS`, `LOOM_DAEMON_STATE`,
-//! `LOOM_PROVIDER_CMD`, `LOOM_PROVIDER_ARGS`,
+//! `LOOM_PROVIDER_CMD`, `LOOM_PROVIDER_ARGS`, `LOOM_JOIN_CODE`,
 //! `LOOM_RUN_TIMEOUT_MS`, `LOOM_DATA_DIR`, `LOOM_WORKSPACE_ROOT`,
 //! `LOOM_AUTO_UPDATE`) so a systemd unit needs no command line.
 //!
@@ -68,6 +68,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         config.data_dir = dir.clone();
     }
     config.provider = options.provider.clone();
+    config.join_code = options.join_code.clone();
     config.update = options.update_config()?;
 
     // The updater is built once. It is absent only when the operator disabled
@@ -225,6 +226,7 @@ struct Options {
     run_timeout: Duration,
     permission_timeout: Duration,
     provider: Option<ProviderSpec>,
+    join_code: Option<String>,
     workspace_root: Option<PathBuf>,
     data_dir: Option<PathBuf>,
     state: Option<PathBuf>,
@@ -243,6 +245,7 @@ impl Options {
         let mut state = std::env::var("LOOM_DAEMON_STATE").ok();
         let mut provider_cmd = std::env::var("LOOM_PROVIDER_CMD").ok();
         let mut provider_args = std::env::var("LOOM_PROVIDER_ARGS").ok();
+        let mut join_code = std::env::var("LOOM_JOIN_CODE").ok();
         let mut workspace_root = std::env::var("LOOM_WORKSPACE_ROOT").ok();
         let mut data_dir = std::env::var("LOOM_DATA_DIR").ok();
         // `--auto-update` is the affirmative of bb's flag: loom's default is on,
@@ -266,6 +269,7 @@ impl Options {
                 "--state" => state = args.next(),
                 "--provider-cmd" => provider_cmd = args.next(),
                 "--provider-args" => provider_args = args.next(),
+                "--join-code" => join_code = args.next(),
                 "--workspace-root" => workspace_root = args.next(),
                 "--data-dir" => data_dir = args.next(),
                 // bb spells the switch `--auto-update`; loom keeps the spelling
@@ -328,6 +332,7 @@ impl Options {
             run_timeout,
             permission_timeout,
             provider,
+            join_code: join_code.filter(|value| !value.trim().is_empty()),
             workspace_root: workspace_root
                 .filter(|value| !value.trim().is_empty())
                 .map(PathBuf::from),
@@ -374,6 +379,7 @@ USAGE:
                 [--heartbeat-ms <MS>] [--run-timeout-ms <MS>]
                 [--permission-timeout-ms <MS>]
                 [--provider-cmd <CMD>] [--provider-args <ARGS>]
+                [--join-code <CODE>]
                 [--state <PATH>]
                 [--auto-update | --no-auto-update]
 
@@ -399,6 +405,8 @@ FLAGS:
                              Env: LOOM_PROVIDER_CMD
     --provider-args <ARGS>   Space-separated arguments for the ACP agent
                              override. Env: LOOM_PROVIDER_ARGS
+    --join-code <CODE>       One-time code from /api/v1/hosts/join-codes for
+                             first enrollment. Env: LOOM_JOIN_CODE
     --data-dir <PATH>        This machine's data directory. Thread storage lives
                              here as <dir>/thread-storage/<thread_id>, and the
                              server names it from what this daemon reports at
@@ -445,6 +453,16 @@ mod tests {
         assert!(options(&["--server-url", "http://x:1", "--auto-update"]).auto_update);
         assert!(!options(&["--server-url", "http://x:1", "--no-auto-update"]).auto_update);
         assert!(!options(&["--server-url", "http://x:1", "--disable-auto-update"]).auto_update);
+    }
+
+    #[test]
+    fn join_code_is_read_from_the_command_line() {
+        assert_eq!(
+            options(&["--server-url", "http://x:1", "--join-code", "loom-code"])
+                .join_code
+                .as_deref(),
+            Some("loom-code")
+        );
     }
 
     #[test]

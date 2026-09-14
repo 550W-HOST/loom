@@ -18,7 +18,7 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::Duration;
 
-use loom_domain::HostId;
+use loom_domain::{HostId, HostStatus};
 use loom_provider_protocol::{HostRpcOperation, HostRpcOutcome, HostRpcReport, HostRpcRequest};
 use loom_relay::{now_ms, Scope};
 use tokio::sync::oneshot;
@@ -35,6 +35,8 @@ pub enum HostRpcTransportError {
     Publish(String),
     /// The daemon did not answer before [`HOST_RPC_TIMEOUT`].
     Timeout,
+    /// The host is enrolled but currently has no daemon connection.
+    Disconnected(String),
     /// The host is not known to this server.
     UnknownHost(String),
 }
@@ -44,6 +46,7 @@ impl std::fmt::Display for HostRpcTransportError {
         match self {
             Self::Publish(message) => write!(f, "publish failed: {message}"),
             Self::Timeout => write!(f, "the host did not answer the workspace request in time"),
+            Self::Disconnected(message) => write!(f, "{message}"),
             Self::UnknownHost(message) => f.write_str(message),
         }
     }
@@ -116,9 +119,14 @@ impl AppState {
         host_id: &HostId,
         operation: HostRpcOperation,
     ) -> Result<HostRpcOutcome, HostRpcTransportError> {
-        if self.registry.host(host_id).is_none() {
+        let Some(host) = self.registry.host(host_id) else {
             return Err(HostRpcTransportError::UnknownHost(format!(
                 "host {host_id} is not enrolled on this server"
+            )));
+        };
+        if host.status != HostStatus::Connected {
+            return Err(HostRpcTransportError::Disconnected(format!(
+                "host {host_id} is disconnected"
             )));
         }
 

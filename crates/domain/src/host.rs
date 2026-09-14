@@ -23,6 +23,43 @@ pub enum HostKind {
     Persistent,
 }
 
+/// The maximum provider permission mode a host may grant.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum HostPermissionMode {
+    /// The provider may edit files, but not use unrestricted access.
+    AcceptEdits,
+    /// The provider may use the normal automatic policy.
+    Auto,
+    /// The provider may use all ACP capabilities.
+    #[default]
+    Full,
+}
+
+impl HostPermissionMode {
+    /// The wire spelling used by the bb contract and ACP policy.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::AcceptEdits => "accept-edits",
+            Self::Auto => "auto",
+            Self::Full => "full",
+        }
+    }
+
+    /// Whether `requested` is within this ceiling.
+    pub const fn allows(self, requested: Self) -> bool {
+        self.rank() >= requested.rank()
+    }
+
+    const fn rank(self) -> u8 {
+        match self {
+            Self::AcceptEdits => 0,
+            Self::Auto => 1,
+            Self::Full => 2,
+        }
+    }
+}
+
 /// Whether a daemon is currently attached to this host.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -50,6 +87,9 @@ pub struct Host {
     pub created_at_ms: u64,
     /// Wall-clock milliseconds of the last mutation.
     pub updated_at_ms: u64,
+    /// The maximum ACP permission mode allowed on this host.
+    #[serde(default)]
+    pub max_permission_mode: HostPermissionMode,
     /// The daemon's own data directory on this machine, as it reported at
     /// enrollment.
     ///
@@ -117,6 +157,7 @@ impl Host {
             kind: HostKind::Persistent,
             status: HostStatus::Connected,
             last_seen_at_ms: Some(now_ms),
+            max_permission_mode: HostPermissionMode::Full,
             data_dir: data_dir
                 .map(|dir| dir.trim().to_owned())
                 .filter(|dir| !dir.is_empty()),
@@ -152,6 +193,26 @@ impl Host {
         self.data_dir = Some(data_dir.to_owned());
         self.updated_at_ms = now_ms;
         true
+    }
+
+    /// Changes the display name.
+    pub fn rename(&mut self, name: impl Into<String>, now_ms: u64) -> Result<(), DomainError> {
+        let name = name.into().trim().to_owned();
+        if name.is_empty() {
+            return Err(DomainError::InvalidField {
+                field: "name",
+                reason: "must not be empty".into(),
+            });
+        }
+        self.name = name;
+        self.updated_at_ms = now_ms;
+        Ok(())
+    }
+
+    /// Changes the permission ceiling without changing the daemon connection.
+    pub fn set_permission_ceiling(&mut self, mode: HostPermissionMode, now_ms: u64) {
+        self.max_permission_mode = mode;
+        self.updated_at_ms = now_ms;
     }
 
     /// Marks the daemon attached, returning an event on an actual change.

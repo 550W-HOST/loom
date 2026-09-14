@@ -29,7 +29,7 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::Duration;
 
-use loom_domain::HostId;
+use loom_domain::{HostId, HostStatus};
 use loom_provider_protocol::{HostFileOperation, HostFileOutcome, HostFileReport, HostFileRequest};
 use loom_relay::{now_ms, Scope};
 use tokio::sync::oneshot;
@@ -51,6 +51,8 @@ pub enum HostFileTransportError {
     Publish(String),
     /// The host did not answer within [`HOST_FILE_TIMEOUT`].
     Timeout,
+    /// The host is enrolled but currently has no daemon connection.
+    Disconnected(String),
     /// The host is not enrolled on this server at all.
     UnknownHost(String),
 }
@@ -62,6 +64,7 @@ impl std::fmt::Display for HostFileTransportError {
             HostFileTransportError::Timeout => {
                 write!(f, "the host did not answer the file request in time")
             }
+            HostFileTransportError::Disconnected(message) => write!(f, "{message}"),
             HostFileTransportError::UnknownHost(message) => write!(f, "{message}"),
         }
     }
@@ -137,9 +140,14 @@ impl AppState {
         host_id: &HostId,
         operation: HostFileOperation,
     ) -> Result<HostFileOutcome, HostFileTransportError> {
-        if self.registry.host(host_id).is_none() {
+        let Some(host) = self.registry.host(host_id) else {
             return Err(HostFileTransportError::UnknownHost(format!(
                 "host {host_id} is not enrolled on this server"
+            )));
+        };
+        if host.status != HostStatus::Connected {
+            return Err(HostFileTransportError::Disconnected(format!(
+                "host {host_id} is disconnected"
             )));
         }
 
@@ -171,7 +179,10 @@ impl AppState {
             // The sender was dropped without answering; treat it as a timeout
             // rather than a distinct failure, because from the client's side
             // the two are the same "no answer".
-            Ok(Err(_)) | Err(_) => Err(HostFileTransportError::Timeout),
+            Ok(Err(_)) | Err(_) => {
+                self.host_files.forget(&request_id);
+                Err(HostFileTransportError::Timeout)
+            }
         }
     }
 }

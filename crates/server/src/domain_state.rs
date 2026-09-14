@@ -1242,8 +1242,17 @@ impl DomainRegistry {
         let mut inner = self.lock();
         if let Some(id) = host_id {
             if let Some(existing) = inner.hosts.get_mut(&id) {
-                existing.record_data_dir(data_dir.as_deref(), now_ms);
-                let events = existing.mark_connected(now_ms).into_iter().collect();
+                let data_dir_changed = existing.record_data_dir(data_dir.as_deref(), now_ms);
+                let status_event = existing.mark_connected(now_ms);
+                let mut events = Vec::with_capacity(usize::from(data_dir_changed) + 1);
+                if data_dir_changed {
+                    events.push(DomainEvent::HostUpdated {
+                        host: existing.clone(),
+                    });
+                }
+                if let Some(event) = status_event {
+                    events.push(event);
+                }
                 return Ok((existing.clone(), events));
             }
             let (host, event) = Host::register_with_data_dir(Some(id), name, data_dir, now_ms)?;
@@ -1964,6 +1973,84 @@ impl DomainRegistry {
             .ok_or_else(|| CommandError::NotFound(format!("thread {thread_id} is not known")))?;
         thread.clear_run(now_ms);
         Ok(())
+    }
+
+    /// Renames a host and returns the updated value.
+    pub fn rename_host(
+        &self,
+        host_id: &HostId,
+        name: String,
+        now_ms: u64,
+    ) -> Result<(Host, DomainEvent), CommandError> {
+        let mut inner = self.lock();
+        let host = inner
+            .hosts
+            .get_mut(host_id)
+            .ok_or_else(|| CommandError::NotFound(format!("host {host_id} is not known")))?;
+        host.rename(name, now_ms)?;
+        let updated = host.clone();
+        Ok((updated.clone(), DomainEvent::HostUpdated { host: updated }))
+    }
+
+    /// Updates the host's ACP permission ceiling.
+    pub fn update_host_permission_ceiling(
+        &self,
+        host_id: &HostId,
+        mode: loom_domain::HostPermissionMode,
+        now_ms: u64,
+    ) -> Result<(Host, DomainEvent), CommandError> {
+        let mut inner = self.lock();
+        let host = inner
+            .hosts
+            .get_mut(host_id)
+            .ok_or_else(|| CommandError::NotFound(format!("host {host_id} is not known")))?;
+        host.set_permission_ceiling(mode, now_ms);
+        let updated = host.clone();
+        Ok((updated.clone(), DomainEvent::HostUpdated { host: updated }))
+    }
+
+    /// Removes a host record after the caller has decided it is safe to do so.
+    pub fn delete_host(&self, host_id: &HostId) -> Result<(Host, DomainEvent), CommandError> {
+        let mut inner = self.lock();
+        let host = inner
+            .hosts
+            .remove(host_id)
+            .ok_or_else(|| CommandError::NotFound(format!("host {host_id} is not known")))?;
+        let event = DomainEvent::HostDeleted {
+            host_id: host.id.clone(),
+            name: host.name.clone(),
+        };
+        Ok((host, event))
+    }
+
+    /// Returns whether at least one interaction is waiting for user attention.
+    pub fn has_pending_interactions(&self) -> bool {
+        !self
+            .lock()
+            .interactions
+            .values()
+            .all(|interaction| !interaction.status.is_open())
+    }
+
+    /// Returns a stable reason when a host is still referenced by domain state.
+    pub fn host_reference(&self, host_id: &HostId) -> Option<&'static str> {
+        let inner = self.lock();
+        if inner.projects.values().any(|project| {
+            project
+                .sources
+                .iter()
+                .any(|source| &source.host_id == host_id)
+        }) {
+            return Some("project_source");
+        }
+        if inner
+            .environments
+            .values()
+            .any(|environment| &environment.host_id == host_id)
+        {
+            return Some("environment");
+        }
+        None
     }
 
     /// Looks up a host.
@@ -2770,6 +2857,12 @@ impl DomainRegistry {
                     host.updated_at_ms = *at_ms;
                 }
             }
+            DomainEvent::HostUpdated { host } => {
+                inner.hosts.insert(host.id.clone(), host.clone());
+            }
+            DomainEvent::HostDeleted { host_id, .. } => {
+                inner.hosts.remove(host_id);
+            }
             DomainEvent::EnvironmentCreated { environment } => {
                 inner
                     .environments
@@ -3055,6 +3148,41 @@ mod tests {
             registry.host(&host.id).unwrap().status,
             loom_domain::HostStatus::Connected
         );
+    }
+
+    #[test]
+    fn a_changed_data_directory_is_replayed_with_the_reconnect() {
+        let registry = registry();
+        let (host, _) = registry
+            .enroll_host_with_data_dir(None, "laptop".into(), Some("/var/lib/loom".into()), 2)
+            .unwrap();
+        registry.mark_host_disconnected(&host.id, 3).unwrap();
+
+        let (reconnected, events) = registry
+            .enroll_host_with_data_dir(
+                Some(host.id.clone()),
+                "laptop".into(),
+                Some("/srv/loom".into()),
+                4,
+            )
+            .unwrap();
+        assert_eq!(reconnected.data_dir.as_deref(), Some("/srv/loom"));
+        assert_eq!(events.len(), 2);
+        match &events[0] {
+            DomainEvent::HostUpdated { host } => {
+                assert_eq!(host.data_dir.as_deref(), Some("/srv/loom"));
+                assert_eq!(host.status, loom_domain::HostStatus::Connected);
+            }
+            other => panic!("expected a host update, got {other:?}"),
+        }
+        assert!(matches!(
+            events[1],
+            DomainEvent::HostStatusChanged {
+                from: loom_domain::HostStatus::Disconnected,
+                to: loom_domain::HostStatus::Connected,
+                ..
+            }
+        ));
     }
 
     #[test]
