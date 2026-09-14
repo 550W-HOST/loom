@@ -258,6 +258,8 @@ pub struct DaemonConfig {
     /// The host-scope event id to resume from. `None` replays the retained
     /// window and relies on dispatch dedup.
     pub resume_cursor: Option<EventId>,
+    /// An optional one-time enrollment code issued by the server.
+    pub join_code: Option<String>,
     /// Maximum frames to request in the reconnect replay.
     pub replay_limit: usize,
     /// How the daemon reacts to a server whose protocol does not match.
@@ -302,6 +304,7 @@ impl DaemonConfig {
             permission_timeout: DEFAULT_PERMISSION_TIMEOUT,
             environment_root: default_environment_root(),
             data_dir: default_data_dir(),
+            join_code: None,
             resume_cursor: None,
             replay_limit: 500,
             update,
@@ -473,6 +476,7 @@ impl Daemon {
             // guesses it. An empty value is normalised away rather than sent.
             data_dir: Some(self.config.data_dir.to_string_lossy().into_owned())
                 .filter(|dir| !dir.trim().is_empty()),
+            join_code: self.config.join_code.clone(),
         })
         .await?;
 
@@ -686,8 +690,9 @@ impl Daemon {
             return;
         }
         let reports = self.host_rpc_reports_tx.clone();
+        let default_root = self.config.environment_root.clone();
         tokio::spawn(async move {
-            let report = workspace::answer(request).await;
+            let report = workspace::answer_with_root(request, default_root).await;
             let _ = reports.send(report).await;
         });
     }

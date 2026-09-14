@@ -186,7 +186,26 @@ async fn handle_command(
             host_id,
             name,
             data_dir,
+            join_code,
         } => {
+            let host_id = match join_code {
+                Some(code) => match state.join_codes.consume(&code) {
+                    Some(reserved) if host_id.as_ref().is_none_or(|id| id == &reserved) => {
+                        Some(reserved)
+                    }
+                    Some(_) => {
+                        return Some(ServerMessage::Error {
+                            message: "join code is bound to a different host identity".into(),
+                        })
+                    }
+                    None => {
+                        return Some(ServerMessage::Error {
+                            message: "join code is missing or expired".into(),
+                        })
+                    }
+                },
+                None => host_id,
+            };
             match state.registry.enroll_host_with_data_dir(
                 host_id,
                 name,

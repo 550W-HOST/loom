@@ -34,7 +34,7 @@
 
 use loom_domain::{
     Interaction, InteractionId, InteractionKind, InteractionOrigin, InteractionPayload,
-    NewInteraction, Resolution, ThreadId,
+    NewInteraction, Resolution, RunId, ThreadId,
 };
 use loom_provider_protocol::{
     InteractionAnswer, InteractionRequest, InteractionResolutionFrame, PermissionDecision,
@@ -128,6 +128,28 @@ impl AppState {
         if !existing.status.is_open() {
             return DeliverOutcome::Settled(Box::new(existing));
         }
+        let resolution = match resolution {
+            Resolution::Decision {
+                decision,
+                granted_permissions,
+            } if decision == "allow_for_session"
+                && existing
+                    .turn_id
+                    .parse::<RunId>()
+                    .ok()
+                    .and_then(|run_id| self.runs.get(&run_id))
+                    .and_then(|run| self.registry.host(&run.host_id))
+                    .is_some_and(|host| {
+                        host.max_permission_mode != loom_domain::HostPermissionMode::Full
+                    }) =>
+            {
+                Resolution::Decision {
+                    decision: "allow_once".into(),
+                    granted_permissions,
+                }
+            }
+            other => other,
+        };
         match self
             .registry
             .resolve_interaction(interaction_id, resolution.clone(), now_ms)

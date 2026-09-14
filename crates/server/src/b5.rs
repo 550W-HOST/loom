@@ -184,6 +184,9 @@ fn transport_error_response(error: HostFileTransportError) -> Response {
             "command_timeout",
             "the host did not answer the file request in time",
         ),
+        HostFileTransportError::Disconnected(message) => {
+            api_error(StatusCode::BAD_GATEWAY, "host_unavailable", message)
+        }
         HostFileTransportError::UnknownHost(message) => {
             api_error(StatusCode::NOT_FOUND, "host_not_found", message)
         }
@@ -420,7 +423,7 @@ fn file_response(content: HostFileContent) -> Response {
 }
 
 /// A file's raw bytes, guarded by the HTML preview cap where it applies.
-fn content_response(content: HostFileContent, relative_path: Option<&str>) -> Response {
+pub(crate) fn content_response(content: HostFileContent, relative_path: Option<&str>) -> Response {
     let is_html = relative_path
         .map(|path| path.to_ascii_lowercase().ends_with(".html"))
         .unwrap_or_else(|| {

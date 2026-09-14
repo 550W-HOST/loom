@@ -323,6 +323,7 @@ impl AppState {
             host_id: host.id.clone(),
             prompt: prompt.to_owned(),
             provider,
+            permission_ceiling: host.max_permission_mode,
             deadline_ms: record.deadline_ms,
             created_at_ms: now,
         };

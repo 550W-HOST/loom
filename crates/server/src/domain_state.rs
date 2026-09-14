@@ -1972,14 +1972,15 @@ impl DomainRegistry {
         host_id: &HostId,
         name: String,
         now_ms: u64,
-    ) -> Result<Host, CommandError> {
+    ) -> Result<(Host, DomainEvent), CommandError> {
         let mut inner = self.lock();
         let host = inner
             .hosts
             .get_mut(host_id)
             .ok_or_else(|| CommandError::NotFound(format!("host {host_id} is not known")))?;
         host.rename(name, now_ms)?;
-        Ok(host.clone())
+        let updated = host.clone();
+        Ok((updated.clone(), DomainEvent::HostUpdated { host: updated }))
     }
 
     /// Updates the host's ACP permission ceiling.
@@ -1988,24 +1989,29 @@ impl DomainRegistry {
         host_id: &HostId,
         mode: loom_domain::HostPermissionMode,
         now_ms: u64,
-    ) -> Result<Host, CommandError> {
+    ) -> Result<(Host, DomainEvent), CommandError> {
         let mut inner = self.lock();
         let host = inner
             .hosts
             .get_mut(host_id)
             .ok_or_else(|| CommandError::NotFound(format!("host {host_id} is not known")))?;
         host.set_permission_ceiling(mode, now_ms);
-        Ok(host.clone())
+        let updated = host.clone();
+        Ok((updated.clone(), DomainEvent::HostUpdated { host: updated }))
     }
 
     /// Removes a host record after the caller has decided it is safe to do so.
-    pub fn delete_host(&self, host_id: &HostId) -> Result<(), CommandError> {
+    pub fn delete_host(&self, host_id: &HostId) -> Result<(Host, DomainEvent), CommandError> {
         let mut inner = self.lock();
-        inner
+        let host = inner
             .hosts
             .remove(host_id)
-            .map(|_| ())
-            .ok_or_else(|| CommandError::NotFound(format!("host {host_id} is not known")))
+            .ok_or_else(|| CommandError::NotFound(format!("host {host_id} is not known")))?;
+        let event = DomainEvent::HostDeleted {
+            host_id: host.id.clone(),
+            name: host.name.clone(),
+        };
+        Ok((host, event))
     }
 
     /// Returns whether at least one interaction is waiting for user attention.
@@ -2015,6 +2021,27 @@ impl DomainRegistry {
             .interactions
             .values()
             .all(|interaction| !interaction.status.is_open())
+    }
+
+    /// Returns a stable reason when a host is still referenced by domain state.
+    pub fn host_reference(&self, host_id: &HostId) -> Option<&'static str> {
+        let inner = self.lock();
+        if inner.projects.values().any(|project| {
+            project
+                .sources
+                .iter()
+                .any(|source| &source.host_id == host_id)
+        }) {
+            return Some("project_source");
+        }
+        if inner
+            .environments
+            .values()
+            .any(|environment| &environment.host_id == host_id)
+        {
+            return Some("environment");
+        }
+        None
     }
 
     /// Looks up a host.
@@ -2820,6 +2847,12 @@ impl DomainRegistry {
                     host.status = *to;
                     host.updated_at_ms = *at_ms;
                 }
+            }
+            DomainEvent::HostUpdated { host } => {
+                inner.hosts.insert(host.id.clone(), host.clone());
+            }
+            DomainEvent::HostDeleted { host_id, .. } => {
+                inner.hosts.remove(host_id);
             }
             DomainEvent::EnvironmentCreated { environment } => {
                 inner

@@ -168,6 +168,9 @@ fn transport_error(error: HostFileTransportError) -> Response {
             "command_timeout",
             "the host did not answer the file request in time",
         ),
+        HostFileTransportError::Disconnected(message) => {
+            api_error(StatusCode::BAD_GATEWAY, "host_unavailable", message)
+        }
         HostFileTransportError::UnknownHost(message) => {
             api_error(StatusCode::NOT_FOUND, "host_not_found", message)
         }
@@ -895,6 +898,9 @@ pub async fn project_commands(
                     "command_timeout",
                     "the host did not answer the command listing in time",
                 ),
+                HostRpcTransportError::Disconnected(message) => {
+                    api_error(StatusCode::BAD_GATEWAY, "host_unavailable", message)
+                }
                 HostRpcTransportError::UnknownHost(message) => {
                     api_error(StatusCode::NOT_FOUND, "host_not_found", message)
                 }

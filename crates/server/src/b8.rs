@@ -9,18 +9,20 @@
 
 use std::path::Path as FsPath;
 
-use axum::body::Body;
 use axum::extract::{Path as AxumPath, Query, State};
-use axum::http::{header, StatusCode};
+use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use loom_domain::{Host, HostId, HostPermissionMode};
-use loom_provider_protocol::{HostFileOperation, HostFileOutcome};
+use loom_provider_protocol::{
+    HostFileOperation, HostFileOutcome, HostRpcOperation, HostRpcOutcome,
+};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use crate::b5::{base64_decode, validate_absolute_path};
+use crate::b5::{content_response, validate_absolute_path, validate_relative_path};
 use crate::host_files::HostFileTransportError;
+use crate::host_rpc::HostRpcTransportError;
 use crate::state::AppState;
 
 fn api_error(status: StatusCode, code: &'static str, message: impl Into<String>) -> Response {
@@ -76,9 +78,38 @@ fn transport_error(error: HostFileTransportError) -> Response {
             "command_timeout",
             "the host did not answer the filesystem request in time",
         ),
+        HostFileTransportError::Disconnected(message) => {
+            api_error(StatusCode::BAD_GATEWAY, "host_unavailable", message)
+        }
         HostFileTransportError::UnknownHost(message) => {
             api_error(StatusCode::NOT_FOUND, "host_not_found", message)
         }
+    }
+}
+
+fn rpc_transport_error(error: HostRpcTransportError) -> Response {
+    match error {
+        HostRpcTransportError::Publish(message) => {
+            api_error(StatusCode::BAD_GATEWAY, "host_unavailable", message)
+        }
+        HostRpcTransportError::Timeout => api_error(
+            StatusCode::GATEWAY_TIMEOUT,
+            "command_timeout",
+            "the host did not answer the host operation in time",
+        ),
+        HostRpcTransportError::Disconnected(message) => {
+            api_error(StatusCode::BAD_GATEWAY, "host_unavailable", message)
+        }
+        HostRpcTransportError::UnknownHost(message) => {
+            api_error(StatusCode::NOT_FOUND, "host_not_found", message)
+        }
+    }
+}
+
+fn host_rpc_failure(outcome: HostRpcOutcome) -> Response {
+    match outcome {
+        HostRpcOutcome::Result { result } => Json(result).into_response(),
+        HostRpcOutcome::Failed { code, message } => host_failure(&code, &message),
     }
 }
 
@@ -102,42 +133,20 @@ fn listing_path(root: &str, relative: &str) -> String {
         .into_owned()
 }
 
-fn file_response(content: loom_provider_protocol::HostFileContent) -> Response {
-    let bytes = match content.content_encoding {
-        loom_provider_protocol::HostFileEncoding::Utf8 => content.content.into_bytes(),
-        loom_provider_protocol::HostFileEncoding::Base64 => match base64_decode(&content.content) {
-            Some(bytes) => bytes,
-            None => {
-                return api_error(
-                    StatusCode::BAD_GATEWAY,
-                    "host_unavailable",
-                    "host returned invalid file data",
-                )
-            }
-        },
-    };
-    let mut response = Response::new(Body::from(bytes));
-    if let Some(mime) = content.mime_type.and_then(|mime| mime.parse().ok()) {
-        response.headers_mut().insert(header::CONTENT_TYPE, mime);
-    }
-    response
-}
-
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DirectoryQuery {
     path: Option<String>,
 }
 
-pub async fn create_join_code() -> (StatusCode, Json<Value>) {
-    let host_id = HostId::mint();
-    let event_id = loom_relay::EventId::new().to_string();
+pub async fn create_join_code(State(state): State<AppState>) -> (StatusCode, Json<Value>) {
+    let (join_code, host_id, expires_at) = state.join_codes.issue();
     (
         StatusCode::CREATED,
         Json(json!({
-            "joinCode": format!("loom-{}", event_id.chars().take(16).collect::<String>()),
+            "joinCode": join_code,
             "hostId": host_id.to_string(),
-            "expiresAt": loom_relay::now_ms().saturating_add(10 * 60 * 1_000),
+            "expiresAt": expires_at,
         })),
     )
 }
@@ -167,7 +176,14 @@ pub async fn host_update(
         .registry
         .rename_host(&host_id, request.name, loom_relay::now_ms())
     {
-        Ok(host) => Json(host_value(&host)).into_response(),
+        Ok((host, event)) => match state.publish_domain_event(&event) {
+            Ok(_) => Json(host_value(&host)).into_response(),
+            Err(error) => api_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal_error",
+                error.to_string(),
+            ),
+        },
         Err(error) => crate::http::command_error_response(error),
     }
 }
@@ -192,7 +208,14 @@ pub async fn host_permission_ceiling(
         request.max_permission_mode,
         loom_relay::now_ms(),
     ) {
-        Ok(host) => Json(host_value(&host)).into_response(),
+        Ok((host, event)) => match state.publish_domain_event(&event) {
+            Ok(_) => Json(host_value(&host)).into_response(),
+            Err(error) => api_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal_error",
+                error.to_string(),
+            ),
+        },
         Err(error) => crate::http::command_error_response(error),
     }
 }
@@ -201,12 +224,47 @@ pub async fn host_delete(
     State(state): State<AppState>,
     AxumPath(raw): AxumPath<String>,
 ) -> Response {
-    let host_id = match parse_host(&raw) {
-        Ok(id) => id,
+    let host = match host_or_error(&state, &raw) {
+        Ok(host) => host,
         Err(response) => return response,
     };
-    match state.registry.delete_host(&host_id) {
-        Ok(()) => Json(json!({ "ok": true })).into_response(),
+    if host.status == loom_domain::HostStatus::Connected {
+        return api_error(
+            StatusCode::CONFLICT,
+            "host_connected",
+            "disconnect the daemon before removing the host",
+        );
+    }
+    if state.local_host_id() == Some(&host.id) {
+        return api_error(
+            StatusCode::CONFLICT,
+            "primary_host_removal_refused",
+            "the configured primary host cannot be removed",
+        );
+    }
+    if let Some(reference) = state.registry.host_reference(&host.id) {
+        return api_error(
+            StatusCode::CONFLICT,
+            "host_in_use",
+            format!("host is still referenced by {reference}"),
+        );
+    }
+    if !state.runs.for_host(&host.id).is_empty() {
+        return api_error(
+            StatusCode::CONFLICT,
+            "host_in_use",
+            "host still owns an in-flight run",
+        );
+    }
+    match state.registry.delete_host(&host.id) {
+        Ok((_host, event)) => match state.publish_domain_event(&event) {
+            Ok(_) => Json(json!({ "ok": true })).into_response(),
+            Err(error) => api_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal_error",
+                error.to_string(),
+            ),
+        },
         Err(error) => crate::http::command_error_response(error),
     }
 }
@@ -220,7 +278,17 @@ pub async fn host_directory(
         Ok(host) => host,
         Err(response) => return response,
     };
-    let directory = query.path.unwrap_or_else(|| "/".into());
+    let directory = query.path.or(host.data_dir.clone()).ok_or_else(|| {
+        api_error(
+            StatusCode::NOT_IMPLEMENTED,
+            "not_configured",
+            "host has not reported a default directory",
+        )
+    });
+    let directory = match directory {
+        Ok(directory) => directory,
+        Err(response) => return response,
+    };
     if validate_absolute_path(&directory).is_err() {
         return api_error(
             StatusCode::BAD_REQUEST,
@@ -231,13 +299,12 @@ pub async fn host_directory(
     let outcome = state
         .request_host_file(
             &host.id,
-            HostFileOperation::List {
+            HostFileOperation::ListDirectory {
                 path: directory.clone(),
-                query: None,
                 limit: 10_000,
                 include_files: true,
                 include_directories: true,
-                include_hidden: true,
+                include_hidden: false,
             },
         )
         .await;
@@ -334,20 +401,22 @@ pub async fn host_pick_folder(
     AxumPath(raw): AxumPath<String>,
     Json(request): Json<PickFolderRequest>,
 ) -> Response {
-    let _ = match host_or_error(&state, &raw) {
+    let host = match host_or_error(&state, &raw) {
         Ok(host) => host,
         Err(response) => return response,
     };
-    // Folder dialogs are a client capability. The server has no desktop to
-    // open one on, so server-only and remote deployments report cancellation.
-    if request.client_host_id.trim().is_empty() {
-        return api_error(
-            StatusCode::BAD_REQUEST,
-            "invalid_request",
-            "clientHostId must not be empty",
-        );
+    let outcome = state
+        .request_host_rpc(
+            &host.id,
+            HostRpcOperation::PickFolder {
+                client_host_id: request.client_host_id,
+            },
+        )
+        .await;
+    match outcome {
+        Ok(outcome) => host_rpc_failure(outcome),
+        Err(error) => rpc_transport_error(error),
     }
-    Json(json!({ "path": Value::Null })).into_response()
 }
 
 #[derive(Debug, Deserialize)]
@@ -375,25 +444,20 @@ pub async fn host_clone_default_path(
             )
         }
     };
-    let Some(project) = state.registry.project(&project_id) else {
+    if state.registry.project(&project_id).is_none() {
         return api_error(
             StatusCode::NOT_FOUND,
             "project_not_found",
             "project is not known",
         );
-    };
-    if let Some(source) = project
-        .sources
-        .iter()
-        .find(|source| source.host_id == host.id && !source.path.is_empty())
-    {
-        return Json(json!({ "path": source.path })).into_response();
     }
-    api_error(
-        StatusCode::NOT_FOUND,
-        "path_not_found",
-        "the project has no checkout on this host",
-    )
+    let outcome = state
+        .request_host_rpc(&host.id, HostRpcOperation::CloneDefaultPath { project_id })
+        .await;
+    match outcome {
+        Ok(outcome) => host_rpc_failure(outcome),
+        Err(error) => rpc_transport_error(error),
+    }
 }
 
 pub async fn provider_cli_status(
@@ -474,32 +538,43 @@ pub async fn system_attention(State(state): State<AppState>) -> Json<Value> {
 
 pub async fn file_preview_content(
     State(state): State<AppState>,
-    AxumPath((raw_host, raw_path)): AxumPath<(String, String)>,
+    AxumPath((raw_lease, raw_path)): AxumPath<(String, String)>,
 ) -> Response {
-    let host = match host_or_error(&state, &raw_host) {
-        Ok(host) => host,
-        Err(response) => return response,
-    };
-    if validate_absolute_path(&raw_path).is_err() {
+    let Some(lease) = state.file_previews.get(&raw_lease) else {
         return api_error(
-            StatusCode::BAD_REQUEST,
-            "invalid_path",
-            "preview path must be absolute",
+            StatusCode::NOT_FOUND,
+            "preview_not_found",
+            "preview lease is missing or expired",
         );
-    }
+    };
+    let relative = match validate_relative_path(&raw_path) {
+        Ok(path) => path,
+        Err(_) => {
+            return api_error(
+                StatusCode::BAD_REQUEST,
+                "invalid_path",
+                "preview path must be relative",
+            )
+        }
+    };
+    let path = format!(
+        "{}/{}",
+        lease.root_path.trim_end_matches(['/', '\\']),
+        relative
+    );
     match state
         .request_host_file(
-            &host.id,
+            &lease.host_id,
             HostFileOperation::Read {
-                path: raw_path,
-                root_path: None,
+                path,
+                root_path: Some(lease.root_path),
                 max_bytes: 25 * 1024 * 1024,
             },
         )
         .await
     {
         Err(error) => transport_error(error),
-        Ok(HostFileOutcome::Content(content)) => file_response(content),
+        Ok(HostFileOutcome::Content(content)) => content_response(content, Some(relative)),
         Ok(HostFileOutcome::Failed { code, message }) => host_failure(&code, &message),
         Ok(_) => api_error(
             StatusCode::BAD_GATEWAY,

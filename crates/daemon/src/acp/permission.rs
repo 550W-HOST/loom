@@ -43,7 +43,7 @@ use agent_client_protocol::schema::v1::{
     PermissionOptionKind, RequestPermissionOutcome, RequestPermissionRequest,
     RequestPermissionResponse, SelectedPermissionOutcome,
 };
-use loom_domain::{InteractionKind, InteractionPayload};
+use loom_domain::{HostPermissionMode, InteractionKind, InteractionPayload};
 use loom_provider_protocol::{InteractionAnswer, InteractionRequest, PermissionDecision};
 use tokio::sync::{mpsc, oneshot, Mutex};
 
@@ -257,7 +257,7 @@ impl PermissionBroker {
         }
 
         match tokio::time::timeout(self.timeout, rx).await {
-            Ok(Ok(answer)) => answer_to_response(answer, &request),
+            Ok(Ok(answer)) => answer_to_response(answer, &request, self.run.permission_ceiling),
             // The control plane refused to record the question, or the sender
             // was dropped. Either way there is no answer to wait for.
             Ok(Err(_)) => cancelled(),
@@ -405,9 +405,17 @@ fn tool_kind_name(kind: agent_client_protocol_schema::v1::ToolKind) -> &'static 
 fn answer_to_response(
     answer: InteractionAnswer,
     request: &RequestPermissionRequest,
+    ceiling: HostPermissionMode,
 ) -> RequestPermissionResponse {
     match answer {
         InteractionAnswer::Decision { decision } => {
+            let decision = if decision == PermissionDecision::AllowForSession
+                && ceiling != HostPermissionMode::Full
+            {
+                PermissionDecision::AllowOnce
+            } else {
+                decision
+            };
             let wanted: &[PermissionOptionKind] = match decision {
                 PermissionDecision::AllowOnce => &[PermissionOptionKind::AllowOnce],
                 PermissionDecision::AllowForSession => &[
@@ -471,6 +479,7 @@ mod tests {
             run_id: RunId::mint(),
             timeout: Duration::from_secs(30),
             permission_timeout: Duration::from_secs(30),
+            permission_ceiling: HostPermissionMode::Full,
             provider_session_id: None,
         }
     }

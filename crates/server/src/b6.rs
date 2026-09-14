@@ -138,6 +138,9 @@ fn transport_error(error: HostRpcTransportError) -> Response {
             "command_timeout",
             "the host did not answer the workspace request in time",
         ),
+        HostRpcTransportError::Disconnected(message) => {
+            api_error(StatusCode::BAD_GATEWAY, "host_unavailable", message)
+        }
         HostRpcTransportError::UnknownHost(message) => {
             api_error(StatusCode::NOT_FOUND, "host_not_found", message)
         }
@@ -720,6 +723,9 @@ pub async fn environment_paths(
                     "command_timeout",
                     "the host did not answer the path request in time",
                 ),
+                crate::host_files::HostFileTransportError::Disconnected(message) => {
+                    api_error(StatusCode::BAD_GATEWAY, "host_unavailable", message)
+                }
                 crate::host_files::HostFileTransportError::UnknownHost(message) => {
                     api_error(StatusCode::NOT_FOUND, "host_not_found", message)
                 }

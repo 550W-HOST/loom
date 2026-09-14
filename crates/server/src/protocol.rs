@@ -68,6 +68,9 @@ pub enum ClientCommand {
         /// answers `501` rather than guessing a path.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         data_dir: Option<String>,
+        /// A one-time code issued by `hosts.createJoinCode`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        join_code: Option<String>,
     },
     /// A daemon reports that it is still alive.
     HostHeartbeat {
@@ -319,6 +322,7 @@ mod tests {
                 host_id: None,
                 name: "laptop".into(),
                 data_dir: None,
+                join_code: None,
             }
         );
 
@@ -333,6 +337,7 @@ mod tests {
                 host_id: Some(host_id),
                 name: "laptop".into(),
                 data_dir: None,
+                join_code: None,
             }
         );
 
@@ -348,6 +353,7 @@ mod tests {
                 host_id: None,
                 name: "laptop".into(),
                 data_dir: Some("/var/lib/loom".into()),
+                join_code: None,
             }
         );
     }
