@@ -25,7 +25,7 @@ with all five jobs succeeding. The durations below are those runs.
 | `checks` | `fmt + clippy + test` | `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace` |
 | `msrv` | `MSRV` | the workspace still compiles on the `rust-version` floor in the manifests |
 | `contract` | `bb contract is reproducible` | re-exporting bb's contract yields the committed `contracts/bb` byte for byte |
-| `ui` | `UI typecheck, tests and bundle` | `pnpm install --frozen-lockfile`, `pnpm run typecheck` and `pnpm run test` over `ui/` and its seven packages, then a fresh build reproduces the committed `ui/app.js` |
+| `ui` | `UI typecheck, tests, bundle and provenance` | `pnpm install --frozen-lockfile`, `pnpm run typecheck`, `pnpm run test`, a fresh build reproduces `ui/app.js`, and `node scripts/check-ui-provenance.mjs` verifies source/package/contract hashes and the import closure |
 | `pi` | `real pi provider (allowed to fail)` | the `#[ignore]`d provider tests against the real `pi` CLI — `provider_e2e` drives the streamed turn, `real_pi` adds the first-turn-plus-cross-run-resume property — skipped unless the runner has a configured `pi` |
 | `self-update` | `daemon self-update end to end` | the `#[ignore]`d self-update tests: a real daemon process, refused by a server that speaks a newer protocol, installing that server's binary over itself, and the reinstalled binary running a real turn |
 
@@ -152,7 +152,7 @@ run [34666503929](https://github.com/550W-HOST/loom/actions/runs/34666503929):
 
 | Job | Push | PR |
 | --- | --- | --- |
-| `UI typecheck, tests and bundle` | 1 m 00 s | 59 s |
+| `UI typecheck, tests, bundle and provenance` | 1 m 00 s | 59 s |
 | `fmt + clippy + test` | 1 m 02 s | 1 m 03 s |
 | `MSRV` | 23 s | 26 s |
 | `bb contract is reproducible` | 27 s | 32 s |
@@ -461,7 +461,7 @@ Protect `main` and require these five checks:
 | `fmt + clippy + test` | format, lint and the full test suite |
 | `MSRV` | the declared floor keeps compiling |
 | `bb contract is reproducible` | the committed contract is what the exporter produces |
-| `UI typecheck, tests and bundle` | the UI packages type-check and pass their tests, and the committed bundle is what the build produces |
+| `UI typecheck, tests, bundle and provenance` | the UI packages type-check and pass their tests, the committed bundle is what the build produces, and the source/package/contract provenance matches its manifest |
 | `daemon self-update end to end` | a real daemon follows a newer-protocol server: fetch, verify, install over itself, restart, run a turn |
 
 The last four jobs of the workflow are skipped when `ui` fails, which is not a

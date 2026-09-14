@@ -171,7 +171,7 @@ jobs:
   # that is wrong only in a browser, which is the failure this job exists to
   # catch.
   ui:
-    name: UI typecheck, tests and bundle
+    name: UI typecheck, tests, bundle and provenance
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -215,6 +215,26 @@ jobs:
       # `ui/`.
       - name: Rebuild the committed bundle
         run: pnpm --filter @loom/ui run build
+
+      # Fetch the exact source baseline as a separate checkout. The provenance
+      # checker reads this checkout's HEAD and hashes apps/app plus every
+      # imported package; it does not trust only the manifest's commit text.
+      - name: Fetch the bb revision recorded in UI provenance
+        run: |
+          set -euo pipefail
+          repository="$(jq -r .upstream.repository ui/provenance.json)"
+          commit="$(jq -r .upstream.commit ui/provenance.json)"
+          echo "checking UI source from $repository at $commit"
+          bb_src="$RUNNER_TEMP/bb-ui"
+          git init --quiet "$bb_src"
+          git -C "$bb_src" remote add origin "$repository"
+          git -C "$bb_src" fetch --quiet --depth 1 origin "$commit"
+          git -C "$bb_src" checkout --quiet FETCH_HEAD
+
+      # The source-level provenance check covers the app source tree, generated
+      # bundle, imported package closure and the contract manifest in one place.
+      - name: UI source provenance
+        run: BB_SRC="$RUNNER_TEMP/bb-ui" pnpm run provenance:check
 
       # Modifications, additions and removals all have to fail: the bundle is
       # generated, so any difference means the committed one is stale. Both

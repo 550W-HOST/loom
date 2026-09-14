@@ -77,6 +77,13 @@ docs/
   deployment-verification.md
 ```
 
+apps/app source is intentionally not copied as part of this stage; the
+source-level baseline, dependency closure and product-surface decisions are
+recorded in [`docs/ui-baseline.md`](docs/ui-baseline.md). The machine-checkable
+hashes and import list live in [`ui/provenance.json`](ui/provenance.json), and
+the projection package sync policy remains in
+[`docs/ui-package-sync.md`](docs/ui-package-sync.md).
+
 Application code from the bb fork (`apps/`, `packages/`, `plugins/`) lands here
 next, alongside the Rust workspace rather than replacing it.
 
@@ -90,13 +97,15 @@ cargo fmt --all
 pnpm install
 pnpm build
 pnpm test
+pnpm provenance:check
 pnpm example
 ```
 
 The ported `thread-view`, `client-core`, `core-ui`, `shared-ui`, and contract
-packages live under `ui/packages/`. The projection baseline and deliberate hard
-fork synchronization policy are recorded in
-[`docs/ui-package-sync.md`](docs/ui-package-sync.md).
+packages live under `ui/packages/`. Their source pin and deliberate hard-fork
+synchronization policy are recorded in
+[`docs/ui-package-sync.md`](docs/ui-package-sync.md); the full app baseline and
+migration boundary are in [`docs/ui-baseline.md`](docs/ui-baseline.md).
 
 CI runs the check forms of these on every push and PR, plus the declared MSRV
 and the contract-reproducibility check; [`docs/ci.md`](docs/ci.md) lists the

@@ -1,10 +1,11 @@
 ## Ported UI packages
 
-The projection and UI primitive packages in `ui/packages/` were imported from
-the bb hard-fork baseline at commit
+The projection and UI primitive package sources were selected from the bb
+hard-fork baseline at commit
 `fa1f44ebe9e5676004b669e48c99b3c7606466b6` (bb repository commit
 `Cut startup JavaScript by 81 KiB and restore 5% bundle headroom (#3476)`).
-The imported package set is:
+The local entries are loom's adapted source trees, whose digests are recorded
+separately from the upstream trees in `ui/provenance.json`. The package set is:
 
 - `@bb/domain`
 - `@bb/server-contract`
@@ -18,7 +19,14 @@ The imported package set is:
 contains state and transport helpers only; this issue does not import bb's
 application assembly or plugin runtime.
 
-## Synchronization policy
+## Source provenance
+
+The source-level pin, app/package/contract hashes, dependency closure, and
+product-surface migration matrix are maintained in
+[`docs/ui-baseline.md`](ui-baseline.md) and machine-checked by
+`scripts/check-ui-provenance.mjs` through [`ui/provenance.json`](../ui/provenance.json).
+This document describes the package-level policy; it does not replace the
+unified manifest.
 
 loom is a hard fork and intentionally has no `upstream` remote. Future package
 updates must be deliberate source comparisons: record the new bb commit here,

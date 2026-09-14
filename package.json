@@ -7,6 +7,7 @@
     "build": "pnpm --filter @loom/ui run build && pnpm --filter './ui/packages/*' run build",
     "typecheck": "pnpm --filter @loom/ui run typecheck && pnpm --filter './ui/packages/*' run typecheck",
     "test": "pnpm --filter @loom/ui run test && pnpm --filter './ui/packages/*' run test",
+    "provenance:check": "node scripts/check-ui-provenance.mjs",
     "example": "tsx ui/examples/thread-timeline.ts"
   },
   "dependencies": {
