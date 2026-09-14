@@ -178,6 +178,10 @@ pub struct AppState {
     pub host_files: Arc<HostFileBroker>,
     /// HTTP requests waiting on a host's answer to a workspace RPC.
     pub host_rpc: Arc<HostRpcBroker>,
+    /// HTTP requests waiting on a host's answer to a terminal operation.
+    pub terminal: Arc<crate::terminals::TerminalBroker>,
+    /// The control plane's terminal session index.
+    pub terminals: Arc<crate::terminals::TerminalSessions>,
     local_host_id: Option<HostId>,
     run_timeout_ms: u64,
     host_stale_after_ms: u64,
@@ -246,6 +250,8 @@ impl AppState {
             join_codes: Arc::new(JoinCodeRegistry::new()),
             host_files: Arc::new(HostFileBroker::new()),
             host_rpc: Arc::new(HostRpcBroker::new()),
+            terminal: Arc::new(crate::terminals::TerminalBroker::new()),
+            terminals: Arc::new(crate::terminals::TerminalSessions::new()),
             local_host_id: config.local_host_id,
             run_timeout_ms: config.run_timeout.as_millis().min(u128::from(u64::MAX)) as u64,
             host_stale_after_ms: config

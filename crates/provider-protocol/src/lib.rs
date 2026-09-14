@@ -453,6 +453,127 @@ pub enum HostFileOperation {
         /// Absolute paths to inspect.
         paths: Vec<String>,
     },
+    /// Create one directory, optionally with its parents.
+    ///
+    /// `root_path` is optional and, when given, is the containment boundary
+    /// the daemon re-checks on the *resolved* path. A create that names no
+    /// root is confined only by being absolute, which is what the reference
+    /// client does when it creates a directory it just picked in a host dialog.
+    CreateDirectory {
+        /// Absolute directory to create.
+        path: String,
+        /// When set, the resolved path must stay inside this absolute root.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        root_path: Option<String>,
+        /// Whether missing parent directories are created too.
+        recursive: bool,
+    },
+    /// Move (rename) one path to another on the same host.
+    Move {
+        /// Absolute source path.
+        source_path: String,
+        /// Absolute destination path.
+        destination_path: String,
+        /// When set, both resolved paths must stay inside this absolute root.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        root_path: Option<String>,
+        /// When false, an existing destination is refused rather than
+        /// replaced. The move API's callers expect a rename, not a merge, and
+        /// a silent overwrite would lose a file the user still had.
+        overwrite: bool,
+    },
+    /// Remove one file or directory, optionally recursively.
+    Remove {
+        /// Absolute path to remove.
+        path: String,
+        /// When set, the resolved path must stay inside this absolute root.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        root_path: Option<String>,
+        /// Whether a directory is removed with its contents. A non-empty
+        /// directory without this flag is refused, never partially removed.
+        recursive: bool,
+    },
+    /// Read one file with optimistic-concurrency metadata.
+    ///
+    /// This is the richer sibling of [`HostFileOperation::Read`]: it answers a
+    /// content hash so a client can write it back with an `expected_sha256`,
+    /// and it refuses a directory instead of failing obscurely. `Read` stays
+    /// for the older observers whose contract carries no hash.
+    ReadWithMetadata {
+        /// Absolute path on the host.
+        path: String,
+        /// When set, the *real* resolved path must stay inside this root.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        root_path: Option<String>,
+        /// Upper bound on the file size; larger files are refused, not
+        /// truncated.
+        max_bytes: u64,
+    },
+    /// Write one file with optimistic concurrency and POSIX mode control.
+    ///
+    /// Distinct from [`HostFileOperation::Write`], which exists for uploads
+    /// that must never clobber a colliding name. This one is the editor's
+    /// write: it replaces the target, honours `create_parents`, honouring an
+    /// optional file mode, and refuses the write when `expected_sha256` does
+    /// not match what is on disk right now — which is how an editor's save
+    /// detects a concurrent change instead of silently overwriting it.
+    WriteFile {
+        /// Absolute path to write.
+        path: String,
+        /// Absolute directory the resolved path must stay inside.
+        root_path: String,
+        /// The bytes, encoded per `content_encoding`.
+        content: String,
+        /// How `content` is encoded.
+        content_encoding: HostFileEncoding,
+        /// Upper bound on the decoded size, refused rather than truncated.
+        max_bytes: u64,
+        /// Whether missing parent directories are created.
+        create_parents: bool,
+        /// When set, the file is refused unless its current SHA-256 equals
+        /// this value.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expected_sha256: Option<String>,
+        /// When true, the write is refused unless the target does not exist.
+        ///
+        /// This is the `expectedSha256: null` case of the HTTP contract: a
+        /// client creating a new file wants create-only semantics, which is a
+        /// different assertion from "the bytes hash to X".
+        #[serde(default)]
+        create_only: bool,
+        /// POSIX mode bits to apply after writing, when the platform has them.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        mode: Option<u32>,
+    },
+    /// Modify a file's mode bits and/or its modification time.
+    ///
+    /// The touch half of an editor's save cycle. Both fields are optional and
+    /// at least one must be present; a request that names neither is refused
+    /// rather than reported as a silent success.
+    SetMetadata {
+        /// Absolute path on the host.
+        path: String,
+        /// When set, the resolved path must stay inside this absolute root.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        root_path: Option<String>,
+        /// POSIX mode bits to apply, when the platform has them.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        mode: Option<u32>,
+        /// Whether to update the modification time to now.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        touch: Option<bool>,
+    },
+    /// Copy a single path to a destination path, confined to a shared root.
+    CopyPath {
+        /// Absolute source path.
+        source_path: String,
+        /// Absolute destination path.
+        destination_path: String,
+        /// Absolute directory both resolved paths must stay inside.
+        root_path: String,
+        /// Whether an existing destination is replaced.
+        overwrite: bool,
+    },
     /// Copy existing files into a destination directory.
     ///
     /// Two roots, deliberately: a project-to-project attachment copy reads
@@ -520,6 +641,14 @@ pub struct HostFileContent {
     /// Wall-clock milliseconds of the file's last modification.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub modified_at_ms: Option<u64>,
+    /// SHA-256 of the bytes on disk, lowercase hex.
+    ///
+    /// Additive on the wire: an older daemon omits it and a reader that needs a
+    /// hash asks for [`HostFileOperation::ReadWithMetadata`] instead. It is
+    /// present on a write's answer so the `files.write` route can report the
+    /// hash the contract requires without a second round trip.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<String>,
 }
 
 /// Whether a listed entry is a file or a directory.
@@ -564,6 +693,32 @@ pub enum HostFileOutcome {
     },
     /// A file was written; the entry describes what now exists on disk.
     Written(HostFileContent),
+    /// One file's contents together with the metadata a writer needs to
+    /// detect a concurrent change: a SHA-256 of the bytes and its mode.
+    FileMetadata {
+        /// The bytes, encoded per `content_encoding`.
+        content: String,
+        /// How `content` is encoded.
+        content_encoding: HostFileEncoding,
+        /// Number of bytes on disk, independent of the encoding.
+        size_bytes: u64,
+        /// SHA-256 of the bytes, lowercase hex.
+        sha256: String,
+        /// POSIX mode bits, when the platform reports them.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        mode: Option<u32>,
+        /// Wall-clock milliseconds of the last modification.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        modified_at_ms: Option<u64>,
+    },
+    /// A write was refused because the file changed under the writer.
+    Conflict {
+        /// The hash that was found, or `None` when the file does not exist.
+        current_sha256: Option<String>,
+    },
+    /// A path-affecting operation (mkdir, move, remove, metadata, copy) that
+    /// has no natural content to return.
+    Done,
     /// Files were copied, and the entries describe the copies.
     Copied {
         /// The copies that were made, in the order they were asked for.
@@ -831,6 +986,308 @@ pub struct HostRpcReport {
     pub request_id: String,
     /// The result or failure.
     pub outcome: HostRpcOutcome,
+}
+
+// ---------------------------------------------------------------------------
+// Terminal sessions
+// ---------------------------------------------------------------------------
+//
+// A terminal is a **process on the machine that owns it**, not a server-side
+// abstraction. The control plane therefore keeps only what it needs to route a
+// request — identity, ownership, size and status — and every byte of input,
+// output and resize is a request to that host. The server never holds a PTY
+// handle and never buffers an unbounded stdout.
+//
+// ```text
+//   HTTP ── TerminalRequest ──▶ relay host:{id} ──▶ daemon
+//   HTTP ◀── TerminalReport ── daemon socket
+// ```
+//
+// This mirrors the file protocol deliberately: the same correlation token, the
+// same host-ownership check, the same bounded answer. The difference is that a
+// terminal is **stateful on the host**, so the request kind names the session
+// and its answers are ordered by a per-session output sequence number.
+
+/// What kind of thing a terminal was started as.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "mode", rename_all = "snake_case")]
+pub enum TerminalStart {
+    /// The host's default shell.
+    Shell,
+    /// One non-interactive command, run under the shell.
+    Command {
+        /// The command line, exactly as the user typed it.
+        command: String,
+    },
+}
+
+/// What a terminal was attached to, which also settles who owns it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum TerminalTarget {
+    /// A thread's workspace on `host_id`.
+    Thread {
+        /// The owning thread.
+        #[serde(rename = "threadId")]
+        thread_id: ThreadId,
+    },
+    /// A managed environment's workspace.
+    Environment {
+        /// The owning environment.
+        #[serde(rename = "environmentId")]
+        environment_id: EnvironmentId,
+    },
+    /// An absolute host path, optionally with its own host.
+    HostPath {
+        /// The host that owns the path. Required, because a bare path names no
+        /// machine and this protocol never guesses one.
+        #[serde(rename = "hostId")]
+        host_id: HostId,
+        /// The absolute working directory, or `None` for the host's default.
+        #[serde(rename = "cwd", default, skip_serializing_if = "Option::is_none")]
+        cwd: Option<String>,
+    },
+}
+
+/// The lifecycle state of a terminal, as the host reports it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TerminalStatus {
+    /// The process is spawning.
+    Starting,
+    /// The process is running and accepts input.
+    Running,
+    /// The host that owns it dropped while it was alive; the session is still
+    /// recorded but cannot be driven until the host reconnects and reports it.
+    Disconnected,
+    /// The process ended. `exit_code` is meaningful only here.
+    Exited,
+}
+
+/// Why a terminal ended, in the contract's vocabulary.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum TerminalCloseReason {
+    /// The client asked for it.
+    User,
+    /// The owning thread was deleted.
+    ThreadDeleted,
+    /// The process ended on its own.
+    ProcessExit,
+    /// The owning daemon disconnected.
+    DaemonDisconnect,
+    /// The owning environment was destroyed.
+    EnvironmentDestroyed,
+    /// The owning thread was archived.
+    ThreadArchived,
+    /// A create or attach waited past its deadline.
+    OpenTimeout,
+}
+
+/// The control plane's record of one terminal session.
+///
+/// This is the entity a client lists and reads; the daemon is the authority on
+/// whether the process it names is actually alive, and reconciles this record
+/// through [`TerminalOperation::Report`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TerminalSession {
+    /// The stable session id.
+    pub id: String,
+    /// The owning thread, when the target was a thread.
+    #[serde(rename = "threadId", default, skip_serializing_if = "Option::is_none")]
+    pub thread_id: Option<ThreadId>,
+    /// The owning environment, when the target was an environment.
+    #[serde(
+        rename = "environmentId",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub environment_id: Option<EnvironmentId>,
+    /// The host that owns the process.
+    #[serde(rename = "hostId")]
+    pub host_id: HostId,
+    /// Display title.
+    pub title: String,
+    /// Absolute working directory the process was started in.
+    #[serde(rename = "initialCwd")]
+    pub initial_cwd: String,
+    /// Columns.
+    pub cols: u16,
+    /// Rows.
+    pub rows: u16,
+    /// Lifecycle state.
+    pub status: TerminalStatus,
+    /// Exit code, only meaningful when `status` is `exited`.
+    #[serde(rename = "exitCode", default, skip_serializing_if = "Option::is_none")]
+    pub exit_code: Option<i32>,
+    /// Why it ended, when it has.
+    #[serde(
+        rename = "closeReason",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub close_reason: Option<TerminalCloseReason>,
+    /// When it was created, in wall-clock milliseconds.
+    #[serde(rename = "createdAt")]
+    pub created_at_ms: u64,
+    /// When it was last changed, in wall-clock milliseconds.
+    #[serde(rename = "updatedAt")]
+    pub updated_at_ms: u64,
+    /// The last time a user sent it input, when they have.
+    #[serde(
+        rename = "lastUserInputAt",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub last_user_input_at_ms: Option<u64>,
+    /// The next output chunk the host will mint.
+    ///
+    /// The cursor a client resumes from. It is authoritative on the host (which
+    /// owns the output ring) and mirrored here so `terminals.list` can answer
+    /// without a round trip.
+    #[serde(rename = "nextSeq")]
+    pub next_seq: u64,
+}
+
+/// One chunk of terminal output.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TerminalOutputChunk {
+    /// Monotonic per-session sequence number, starting at 0.
+    pub seq: u64,
+    /// The bytes, base64-encoded so binary terminal output survives JSON.
+    #[serde(rename = "dataBase64")]
+    pub data_base64: String,
+}
+
+/// A request sent to the host that owns a terminal session.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "operation", rename_all = "snake_case")]
+pub enum TerminalOperation {
+    /// Start a new session. The daemon mints nothing; the server already
+    /// minted `id`, so a redelivered create is idempotent on that id.
+    Create {
+        /// The id the control plane assigned.
+        id: String,
+        /// Shell or one command.
+        start: TerminalStart,
+        /// What it is attached to, and therefore who owns it.
+        target: TerminalTarget,
+        /// Initial columns.
+        cols: u16,
+        /// Initial rows.
+        rows: u16,
+        /// Display title the client chose.
+        title: String,
+        /// Absolute working directory the daemon resolves and reports back.
+        cwd: String,
+    },
+    /// Send bytes to the process's stdin.
+    Input {
+        /// The session to write to.
+        id: String,
+        /// The bytes, base64-encoded.
+        data_base64: String,
+    },
+    /// Change the window size and signal the child.
+    Resize {
+        /// The session to resize.
+        id: String,
+        /// New columns.
+        cols: u16,
+        /// New rows.
+        rows: u16,
+    },
+    /// Read output from a cursor.
+    Output {
+        /// The session to read.
+        id: String,
+        /// Read chunks strictly after this sequence number.
+        since_seq: u64,
+        /// Maximum chunks to return.
+        limit: usize,
+        /// Upper bound on the total decoded bytes to return.
+        tail_bytes: u64,
+    },
+    /// Close the session with a reason.
+    Close {
+        /// The session to close.
+        id: String,
+        /// Whether a live process is killed (`force`) or an already-exited
+        /// session is only recorded (`if_clean`).
+        force: bool,
+    },
+    /// Restart a session's process under the same id, resetting its output.
+    Restart {
+        /// The session to restart.
+        id: String,
+    },
+    /// Ask the host to report the current state of every session it holds.
+    ///
+    /// Sent after a reconnect: the daemon is the authority on liveness, so the
+    /// control plane reconciles its records from this rather than guessing
+    /// which processes survived.
+    Report {
+        /// Restrict the report to one session when set.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        id: Option<String>,
+    },
+}
+
+/// A request to the host that owns a terminal.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TerminalRequest {
+    /// Correlation token; the server is waiting on exactly this value.
+    pub request_id: String,
+    /// The host expected to answer.
+    pub host_id: HostId,
+    /// What to do.
+    pub operation: TerminalOperation,
+    /// Wall-clock milliseconds when the control plane minted the request.
+    pub created_at_ms: u64,
+}
+
+/// What a host answered for one terminal request.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "outcome", rename_all = "snake_case")]
+pub enum TerminalOutcome {
+    /// A session was created, restarted, closed or otherwise described.
+    Session {
+        /// The session's current state.
+        session: TerminalSession,
+    },
+    /// Output was read.
+    Output {
+        /// The chunks, in sequence order.
+        chunks: Vec<TerminalOutputChunk>,
+        /// The cursor to pass as `since_seq` on the next read.
+        next_seq: u64,
+        /// Whether older chunks were dropped before this window.
+        truncated: bool,
+    },
+    /// One or more sessions, for a reconciliation report.
+    Sessions {
+        /// Every session the host holds, or the one that was asked about.
+        sessions: Vec<TerminalSession>,
+    },
+    /// The request could not be carried out.
+    Failed {
+        /// A stable machine-readable code, in the vocabulary the HTTP layer
+        /// already uses (`terminal_not_found`, `terminal_not_running`, …).
+        code: String,
+        /// A human-readable explanation.
+        message: String,
+    },
+}
+
+/// A host's answer to one [`TerminalRequest`].
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TerminalReport {
+    /// The host answering.
+    pub host_id: HostId,
+    /// The request being answered, echoed verbatim.
+    pub request_id: String,
+    /// What happened.
+    pub outcome: TerminalOutcome,
 }
 
 /// Where a thread's storage directory lives under a host's data directory.

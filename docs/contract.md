@@ -649,6 +649,148 @@ A project with no source on the named host, or with no source at all, answers
 `404 not_found`. The contract lists no `project_source_not_found`, and inventing
 a code a client cannot branch on is worse than the generic one.
 
+## B9: workspace file operations and terminal sessions
+
+Batch B9 added seventeen routes: eight file operations (`files.list`,
+`listPaths`, `mkdir`, `move`, `read`, `remove`, `write`, plus B8's
+`createPreview`) and nine terminal routes (`create`, `get`, `list`, `input`,
+`output`, `resize`, `close`, `restart`, `update`). Both families are, without
+exception, questions for the machine that owns the file or the process.
+
+### Files: the host is the only party that touches a path
+
+Every file route follows B5/B7's rule. The control plane resolves the target
+host — an explicit `hostId`, or the primary connected host — and publishes a
+`HostFileRequest`; the daemon performs the operation and reports the outcome.
+The three scopes are:
+
+- **Root-confined** (`mkdir`, `write`, `move`, `remove`, `read`) — `rootPath` is
+  **required**, and the path is treated as root-relative. It is validated for
+  `..`/NUL/backslash/absolute escapes here and then re-checked on the daemon
+  against the *canonicalised* path, so a symlink inside the root cannot leave
+  it. A route in this family with no root is a `400 invalid_request` before
+  anything is published: the route's job is to require the boundary, even
+  though the daemon would tolerate its absence.
+- **Absolute-path** (`list`, `listPaths`, `read` with no root) — the client
+  names a path it already knows, still executed on that host.
+- **Preview capability** — B8's short-lived root-bound lease; B9's file routes
+  do not widen it.
+
+`files.write` carries the contract's `expectedSha256` as a **tri-state**, and
+the distinction is load-bearing: absent means "no check", `null` means "the file
+must not exist yet" (create-only), and a string means "the file must hash to
+this". A plain `Option<String>` would collapse the first two and turn a
+create-only write into an unconditional overwrite, so the presence of the JSON
+key is what is captured. A mismatch answers `200` with
+`{outcome: "conflict", currentSha256}`, exactly as the contract declares — a
+conflict is a successful comparison, not a transport failure.
+
+The daemon writes through a sibling temp file and renames it into place, so a
+crash mid-write leaves either the old file or the new one, never a truncated
+file that looks like a successful save. The write path reports the SHA-256 of
+the bytes it just wrote as a new optional field on `HostFileContent`, so
+`files.write` can answer the contract's `sha256` without a second round trip.
+
+A path-targeting `HostFileOperation` family was added rather than reusing B7's
+upload semantics: `CreateDirectory`, `Move`, `Remove`, `ReadWithMetadata`,
+`WriteFile`, `SetMetadata`, and `CopyPath`. B7's `Write` is deliberately *not*
+reused by `files.write`, because B7's write exists to avoid clobbering a
+colliding name (it suffixes), while an editor's save must replace the file and
+honour `expectedSha256`. `move` defaults to no-overwrite for the same reason an
+upload does: silently losing a file the user still had is the failure this
+design keeps refusing.
+
+### Terminals: a process on a machine, driven by request
+
+A terminal is a PTY with a child process, and it lives on exactly one host. The
+control plane keeps an **index** (identity, ownership, size, status) and never
+a PTY handle, never a byte of output. `TerminalRequest`/`TerminalReport` mirror
+the file protocol — the same correlation token, the same host-ownership check,
+the same bounded answer — with one difference that matters: a terminal is
+**stateful on the host**, so the report carries a per-session output sequence.
+
+The target decides the host, and the ownership:
+
+| target | host | owning entity |
+| --- | --- | --- |
+| `thread` | the thread's environment's host | the thread and its environment |
+| `environment` | the environment's host | the environment |
+| `host_path` | the named `hostId` | none (a host-scoped shell) |
+
+A thread with no environment, or an environment with no workspace path, is a
+`409` (`thread_environment_unavailable` / `environment_not_ready`) before
+anything is published. A `host_path` target with no `cwd` uses the host's own
+reported data directory, because the control plane cannot invent a path on a
+machine it does not own.
+
+#### Output is bounded on the daemon, and the cursor is explicit
+
+A terminal's stdout is unbounded. Buffering it in the control plane would turn
+"a command printed a lot" into "the server ran out of memory", so each session
+owns a **bounded ring** on the daemon: at most 4096 chunks and 8 MiB of decoded
+bytes, oldest dropped first. `terminals.output` reads a window
+(`sinceSeq`/`limitChunks`/`tailBytes`, all clamped) and always answers with
+`nextSeq` — the cursor to pass next time — and `truncated`, which says whether
+anything was dropped *before* this window. A reader that falls behind therefore
+loses old chunks and is told so, which is a fact it can render; an unbounded
+buffer would instead silently hold every byte forever. `nextSeq` is the
+session's head when the window is empty, so a reader that polls an idle terminal
+does not have to distinguish "nothing new" from "no such session".
+
+#### Lifecycle, reconnect and cleanup
+
+```text
+  create ─▶ starting ─▶ running ─(child exits)─▶ exited
+                │           │
+                │           ├─ close(force) ──▶ exited (user)
+                │           └─ restart ───────▶ starting
+                └─ spawn failed ─────────────▶ exited (process-exit)
+
+  server connection drops ─▶ session marked `disconnected` (process survives)
+  daemon reconnects ───────▶ the server asks for a full inventory and reconciles
+```
+
+A terminal belongs to its **process and its user**, not to the server
+connection. So a dropped connection marks the record `disconnected` rather than
+killing the process — the daemon keeps it running — and a reconnect reconciles:
+the daemon is the authority on liveness, and `TerminalOperation::Report` returns
+every session it holds. A session the host no longer knows (a daemon restart, a
+machine reboot) is closed as `daemon-disconnect`; one it still holds is
+returned to `running`. A **clean daemon shutdown**, by contrast, kills every
+session it holds: they are its own child processes, and leaving them running
+with no daemon to report them would leak processes the control plane could never
+see again.
+
+A thread being deleted or archived, and an environment being destroyed, settle
+their terminals' records immediately and ask the host to kill the processes in
+the background. The lifecycle change must not fail because a host is
+unreachable: an orphaned process on a disconnected machine is a leak, but
+refusing to delete the thread would be a much worse one.
+
+`terminals.update` is the exception to the request rule: a title is
+control-plane metadata that changes nothing about the process, so a rename never
+touches a host and a disconnected session can still be renamed.
+
+#### One deliberate divergence in `files.read`
+
+The contract's `filesReadResponseSchema` declares `mimeType` as nullable but
+required, and `content-encoding` as `base64` | `utf8`. The daemon *does* compute
+a best-effort media type for the content routes (B5/B7 use it for a
+`content-type` header), but `files.read` deliberately reports `null` rather than
+inventing a type: the client that calls this route is an editor that already
+knows what it opened, and a wrong specific type is worse than an honest absence.
+This is the same reasoning B5 records for its `content-type`, applied where the
+field is data rather than a header.
+
+#### Why `terminals.close` can answer `terminal_not_running`
+
+The contract's `mode` is `force` or `if-clean`, and the distinction is real:
+`if-clean` closes a session that has already exited and is refused (`409
+terminal_not_running`) while the process is still alive, because silently
+killing a running shell the user asked to close "if clean" would be the wrong
+reading. The contract only accepts `reason: "user"` on this route, so a
+different reason is a `400` rather than a close with a mislabelled cause.
+
 ## Known limits
 
 - **Error codes are best-effort.** bb's contract package types the error body

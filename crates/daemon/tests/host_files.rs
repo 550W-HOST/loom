@@ -582,3 +582,428 @@ fn decode_base64(raw: &str) -> Vec<u8> {
     }
     decoded
 }
+
+/* ------------------------------------------------------------------ */
+/* B9 file operations                                                  */
+/* ------------------------------------------------------------------ */
+
+fn path_operation(operation: HostFileOperation) -> HostFileOutcome {
+    answer(request(operation)).outcome
+}
+
+fn metadata_read(path: &Path, root: Option<&Path>, max_bytes: u64) -> HostFileOutcome {
+    path_operation(HostFileOperation::ReadWithMetadata {
+        path: path.to_string_lossy().into_owned(),
+        root_path: root.map(|root| root.to_string_lossy().into_owned()),
+        max_bytes,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn full_write(
+    path: &Path,
+    root: &Path,
+    content: &str,
+    encoding: HostFileEncoding,
+    create_parents: bool,
+    expected_sha256: Option<&str>,
+    create_only: bool,
+    mode: Option<u32>,
+) -> HostFileOutcome {
+    path_operation(HostFileOperation::WriteFile {
+        path: path.to_string_lossy().into_owned(),
+        root_path: root.to_string_lossy().into_owned(),
+        content: content.to_owned(),
+        content_encoding: encoding,
+        max_bytes: 1 << 20,
+        create_parents,
+        expected_sha256: expected_sha256.map(str::to_owned),
+        create_only,
+        mode,
+    })
+}
+
+#[test]
+fn a_directory_is_created_and_an_existing_one_is_success() {
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("a/b/c");
+
+    let created = path_operation(HostFileOperation::CreateDirectory {
+        path: target.to_string_lossy().into_owned(),
+        root_path: Some(dir.path().to_string_lossy().into_owned()),
+        recursive: true,
+    });
+    assert_eq!(created, HostFileOutcome::Done);
+    assert!(target.is_dir());
+
+    // Mkdir on an existing directory is idempotent: reporting a conflict would
+    // be a race the caller cannot act on.
+    let again = path_operation(HostFileOperation::CreateDirectory {
+        path: target.to_string_lossy().into_owned(),
+        root_path: Some(dir.path().to_string_lossy().into_owned()),
+        recursive: true,
+    });
+    assert_eq!(again, HostFileOutcome::Done);
+}
+
+#[test]
+fn a_non_recursive_mkdir_refuses_a_missing_parent() {
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("a/b");
+    let outcome = path_operation(HostFileOperation::CreateDirectory {
+        path: target.to_string_lossy().into_owned(),
+        root_path: Some(dir.path().to_string_lossy().into_owned()),
+        recursive: false,
+    });
+    let HostFileOutcome::Failed { code, .. } = outcome else {
+        panic!("expected a refusal, got {outcome:?}");
+    };
+    assert_eq!(code, "invalid_path");
+}
+
+#[test]
+fn a_mkdir_that_escapes_its_root_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("root");
+    std::fs::create_dir_all(&root).unwrap();
+    let outside = dir.path().join("outside");
+    let outcome = path_operation(HostFileOperation::CreateDirectory {
+        path: outside.to_string_lossy().into_owned(),
+        root_path: Some(root.to_string_lossy().into_owned()),
+        recursive: true,
+    });
+    let HostFileOutcome::Failed { code, .. } = outcome else {
+        panic!("expected a refusal, got {outcome:?}");
+    };
+    assert_eq!(code, "invalid_path");
+    assert!(
+        !outside.exists(),
+        "the directory must not have been created"
+    );
+}
+
+#[test]
+fn a_move_renames_and_refuses_to_clobber() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = write(dir.path(), "a.txt", b"a");
+    let existing = write(dir.path(), "b.txt", b"b");
+
+    let refused = path_operation(HostFileOperation::Move {
+        source_path: source.to_string_lossy().into_owned(),
+        destination_path: existing.to_string_lossy().into_owned(),
+        root_path: Some(dir.path().to_string_lossy().into_owned()),
+        overwrite: false,
+    });
+    let HostFileOutcome::Failed { code, .. } = refused else {
+        panic!("expected a refusal, got {refused:?}");
+    };
+    assert_eq!(code, "conflict");
+    assert_eq!(std::fs::read(&existing).unwrap(), b"b");
+
+    let moved = path_operation(HostFileOperation::Move {
+        source_path: source.to_string_lossy().into_owned(),
+        destination_path: dir.path().join("c.txt").to_string_lossy().into_owned(),
+        root_path: Some(dir.path().to_string_lossy().into_owned()),
+        overwrite: false,
+    });
+    assert_eq!(moved, HostFileOutcome::Done);
+    assert!(!source.exists());
+    assert_eq!(std::fs::read(dir.path().join("c.txt")).unwrap(), b"a");
+}
+
+#[test]
+fn a_remove_takes_a_file_and_a_recursive_directory() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = write(dir.path(), "a.txt", b"a");
+    let removed_file = path_operation(HostFileOperation::Remove {
+        path: file.to_string_lossy().into_owned(),
+        root_path: Some(dir.path().to_string_lossy().into_owned()),
+        recursive: false,
+    });
+    assert_eq!(removed_file, HostFileOutcome::Done);
+    assert!(!file.exists());
+
+    write(dir.path(), "tree/inner/a.txt", b"a");
+    let tree = dir.path().join("tree");
+    // A non-empty directory without `recursive` is a conflict, and nothing is
+    // removed.
+    let refused = path_operation(HostFileOperation::Remove {
+        path: tree.to_string_lossy().into_owned(),
+        root_path: Some(dir.path().to_string_lossy().into_owned()),
+        recursive: false,
+    });
+    let HostFileOutcome::Failed { code, .. } = refused else {
+        panic!("expected a conflict, got {refused:?}");
+    };
+    assert_eq!(code, "conflict");
+    assert!(tree.join("inner/a.txt").exists());
+
+    let recursive = path_operation(HostFileOperation::Remove {
+        path: tree.to_string_lossy().into_owned(),
+        root_path: Some(dir.path().to_string_lossy().into_owned()),
+        recursive: true,
+    });
+    assert_eq!(recursive, HostFileOutcome::Done);
+    assert!(!tree.exists());
+}
+
+#[test]
+fn a_missing_remove_is_reported_as_not_found() {
+    let dir = tempfile::tempdir().unwrap();
+    let outcome = path_operation(HostFileOperation::Remove {
+        path: dir.path().join("gone").to_string_lossy().into_owned(),
+        root_path: Some(dir.path().to_string_lossy().into_owned()),
+        recursive: false,
+    });
+    let HostFileOutcome::Failed { code, .. } = outcome else {
+        panic!("expected not_found, got {outcome:?}");
+    };
+    assert_eq!(code, "not_found");
+}
+
+#[test]
+fn a_metadata_read_reports_the_sha256_of_the_bytes() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = write(dir.path(), "a.txt", b"abc");
+    let outcome = metadata_read(&path, Some(dir.path()), 1024);
+    let HostFileOutcome::FileMetadata {
+        content,
+        sha256,
+        size_bytes,
+        mode,
+        ..
+    } = outcome
+    else {
+        panic!("expected metadata, got {outcome:?}");
+    };
+    assert_eq!(content, "abc");
+    assert_eq!(size_bytes, 3);
+    // The known SHA-256 of "abc".
+    assert_eq!(
+        sha256,
+        "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+    );
+    #[cfg(unix)]
+    assert!(mode.is_some());
+}
+
+#[test]
+fn a_directory_is_refused_by_a_metadata_read() {
+    let dir = tempfile::tempdir().unwrap();
+    let outcome = metadata_read(dir.path(), Some(dir.path()), 1024);
+    let HostFileOutcome::Failed { code, .. } = outcome else {
+        panic!("expected a refusal, got {outcome:?}");
+    };
+    assert_eq!(code, "invalid_path");
+}
+
+#[test]
+fn an_optimistic_write_is_refused_when_the_hash_does_not_match() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = write(dir.path(), "a.txt", b"abc");
+
+    let outcome = full_write(
+        &path,
+        dir.path(),
+        "new",
+        HostFileEncoding::Utf8,
+        false,
+        Some("0000"),
+        false,
+        None,
+    );
+    let HostFileOutcome::Conflict { current_sha256 } = outcome else {
+        panic!("expected a conflict, got {outcome:?}");
+    };
+    assert_eq!(
+        current_sha256.as_deref(),
+        Some("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
+    );
+    assert_eq!(std::fs::read(&path).unwrap(), b"abc");
+
+    // The matching hash goes through and reports the hash of what was written.
+    let written = full_write(
+        &path,
+        dir.path(),
+        "new",
+        HostFileEncoding::Utf8,
+        false,
+        Some("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"),
+        false,
+        None,
+    );
+    let HostFileOutcome::Written(written) = written else {
+        panic!("expected a write, got {written:?}");
+    };
+    assert_eq!(std::fs::read(&path).unwrap(), b"new");
+    assert!(written.sha256.is_some());
+}
+
+#[test]
+fn a_create_only_write_refuses_an_existing_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = write(dir.path(), "a.txt", b"old");
+    let outcome = full_write(
+        &path,
+        dir.path(),
+        "new",
+        HostFileEncoding::Utf8,
+        false,
+        None,
+        true,
+        None,
+    );
+    let HostFileOutcome::Conflict { current_sha256 } = outcome else {
+        panic!("expected a conflict, got {outcome:?}");
+    };
+    assert!(current_sha256.is_some());
+    assert_eq!(std::fs::read(&path).unwrap(), b"old");
+}
+
+#[test]
+fn a_create_only_write_creates_a_missing_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("new.txt");
+    let outcome = full_write(
+        &path,
+        dir.path(),
+        "fresh",
+        HostFileEncoding::Utf8,
+        false,
+        None,
+        true,
+        None,
+    );
+    let HostFileOutcome::Written(_) = outcome else {
+        panic!("expected a write, got {outcome:?}");
+    };
+    assert_eq!(std::fs::read(&path).unwrap(), b"fresh");
+}
+
+#[test]
+fn a_write_creating_parents_works_and_one_that_does_not_refuses() {
+    let dir = tempfile::tempdir().unwrap();
+    let nested = dir.path().join("a/b/c.txt");
+    let refused = full_write(
+        &nested,
+        dir.path(),
+        "x",
+        HostFileEncoding::Utf8,
+        false,
+        None,
+        false,
+        None,
+    );
+    let HostFileOutcome::Failed { code, .. } = refused else {
+        panic!("expected a refusal, got {refused:?}");
+    };
+    assert_eq!(code, "invalid_path");
+
+    let created = full_write(
+        &nested,
+        dir.path(),
+        "x",
+        HostFileEncoding::Utf8,
+        true,
+        None,
+        false,
+        None,
+    );
+    let HostFileOutcome::Written(_) = created else {
+        panic!("expected a write, got {created:?}");
+    };
+    assert_eq!(std::fs::read(&nested).unwrap(), b"x");
+}
+
+#[test]
+fn a_write_can_set_the_mode_bits() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("script.sh");
+    let outcome = full_write(
+        &path,
+        dir.path(),
+        "#!/bin/sh\n",
+        HostFileEncoding::Utf8,
+        false,
+        None,
+        false,
+        Some(0o755),
+    );
+    let HostFileOutcome::Written(_) = outcome else {
+        panic!("expected a write, got {outcome:?}");
+    };
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o755);
+    }
+}
+
+#[test]
+fn a_base64_write_decodes_the_bytes_exactly() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("blob.bin");
+    let bytes: Vec<u8> = (0u8..=255).collect();
+    let outcome = full_write(
+        &path,
+        dir.path(),
+        &encode_base64(&bytes),
+        HostFileEncoding::Base64,
+        false,
+        None,
+        false,
+        None,
+    );
+    let HostFileOutcome::Written(_) = outcome else {
+        panic!("expected a write, got {outcome:?}");
+    };
+    assert_eq!(std::fs::read(&path).unwrap(), bytes);
+}
+
+#[test]
+fn a_set_metadata_with_neither_mode_nor_touch_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = write(dir.path(), "a.txt", b"a");
+    let outcome = path_operation(HostFileOperation::SetMetadata {
+        path: path.to_string_lossy().into_owned(),
+        root_path: Some(dir.path().to_string_lossy().into_owned()),
+        mode: None,
+        touch: None,
+    });
+    let HostFileOutcome::Failed { code, .. } = outcome else {
+        panic!("expected a refusal, got {outcome:?}");
+    };
+    assert_eq!(code, "invalid_request");
+}
+
+#[test]
+fn a_copy_path_is_confined_to_its_shared_root() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("root");
+    std::fs::create_dir_all(&root).unwrap();
+    let source = write(&root, "a.txt", b"a");
+
+    let copied = path_operation(HostFileOperation::CopyPath {
+        source_path: source.to_string_lossy().into_owned(),
+        destination_path: root.join("b.txt").to_string_lossy().into_owned(),
+        root_path: root.to_string_lossy().into_owned(),
+        overwrite: false,
+    });
+    assert_eq!(copied, HostFileOutcome::Done);
+    assert_eq!(std::fs::read(root.join("b.txt")).unwrap(), b"a");
+
+    // A destination outside the root is refused.
+    let outside = dir.path().join("outside.txt");
+    let refused = path_operation(HostFileOperation::CopyPath {
+        source_path: source.to_string_lossy().into_owned(),
+        destination_path: outside.to_string_lossy().into_owned(),
+        root_path: root.to_string_lossy().into_owned(),
+        overwrite: false,
+    });
+    let HostFileOutcome::Failed { code, .. } = refused else {
+        panic!("expected a refusal, got {refused:?}");
+    };
+    assert_eq!(code, "invalid_path");
+    assert!(!outside.exists());
+}

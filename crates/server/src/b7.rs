@@ -623,6 +623,13 @@ fn content_from_outcome(outcome: HostFileOutcome) -> Response {
             "host_unavailable",
             "the host answered a content request with a write result",
         ),
+        HostFileOutcome::FileMetadata { .. }
+        | HostFileOutcome::Conflict { .. }
+        | HostFileOutcome::Done => api_error(
+            StatusCode::BAD_GATEWAY,
+            "host_unavailable",
+            "the host answered a content request with a non-content result",
+        ),
     }
 }
 
@@ -651,10 +658,13 @@ fn listing_from_outcome(outcome: HostFileOutcome, files: bool) -> Response {
             "host_unavailable",
             "the host answered a listing request with content",
         ),
-        HostFileOutcome::Copied { .. } => api_error(
+        HostFileOutcome::Copied { .. }
+        | HostFileOutcome::FileMetadata { .. }
+        | HostFileOutcome::Conflict { .. }
+        | HostFileOutcome::Done => api_error(
             StatusCode::BAD_GATEWAY,
             "host_unavailable",
-            "the host answered a listing request with a copy result",
+            "the host answered a listing request with a non-listing result",
         ),
     }
 }

@@ -382,6 +382,44 @@ pub fn router(state: AppState) -> Router {
             "/api/v1/file-previews/{id}/{*file_path}",
             get(crate::b8::file_preview_content),
         )
+        // B9: workspace file operations and terminal sessions. The file routes
+        // are literal and the terminal routes share one path prefix with a
+        // parameter, so `check-api-coverage.mjs` can parse them.
+        .route("/api/v1/files/list", post(crate::b9::files_list))
+        .route("/api/v1/files/paths", post(crate::b9::files_list_paths))
+        .route("/api/v1/files/mkdir", post(crate::b9::files_mkdir))
+        .route("/api/v1/files/move", post(crate::b9::files_move))
+        .route("/api/v1/files/read", post(crate::b9::files_read))
+        .route("/api/v1/files/remove", post(crate::b9::files_remove))
+        .route("/api/v1/files/write", post(crate::b9::files_write))
+        .route(
+            "/api/v1/terminals",
+            get(crate::b9::terminals_list).post(crate::b9::terminals_create),
+        )
+        .route(
+            "/api/v1/terminals/{terminal_id}",
+            get(crate::b9::terminals_get).patch(crate::b9::terminals_update),
+        )
+        .route(
+            "/api/v1/terminals/{terminal_id}/input",
+            post(crate::b9::terminals_input),
+        )
+        .route(
+            "/api/v1/terminals/{terminal_id}/output",
+            get(crate::b9::terminals_output),
+        )
+        .route(
+            "/api/v1/terminals/{terminal_id}/resize",
+            post(crate::b9::terminals_resize),
+        )
+        .route(
+            "/api/v1/terminals/{terminal_id}/close",
+            post(crate::b9::terminals_close),
+        )
+        .route(
+            "/api/v1/terminals/{terminal_id}/restart",
+            post(crate::b9::terminals_restart),
+        )
         .route("/ws", get(ws::client_socket))
         // Daemon self-update: the version to compare against, and the binary
         // that matches it. Deliberately not behind the `/api` namespace — a
@@ -1521,6 +1559,11 @@ async fn archive_thread(
         .archive_thread(&thread_id, loom_relay::now_ms())
     {
         Ok((_thread, event)) => {
+            crate::b9::close_thread_terminals(
+                &state,
+                &thread_id,
+                loom_provider_protocol::TerminalCloseReason::ThreadArchived,
+            );
             if let Some(event) = event {
                 if let Err(error) = state.publish_domain_event(&event) {
                     return error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string());
@@ -1628,6 +1671,11 @@ async fn delete_thread(
         .delete_thread(&thread_id, loom_relay::now_ms())
     {
         Ok((_thread, event)) => {
+            crate::b9::close_thread_terminals(
+                &state,
+                &thread_id,
+                loom_provider_protocol::TerminalCloseReason::ThreadDeleted,
+            );
             if let Some(event) = event {
                 if let Err(error) = state.publish_domain_event(&event) {
                     return error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string());

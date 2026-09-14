@@ -495,6 +495,7 @@ pub async fn delete_environment(
         .delete_environment(&environment_id, loom_relay::now_ms())
     {
         Ok((_environment, event)) => {
+            crate::b9::close_environment_terminals(&state, &environment_id);
             if let Some(event) = event {
                 if let Err(response) = publish_events(&state, &[event]) {
                     return response;
@@ -744,10 +745,13 @@ pub async fn environment_paths(
             "host_unavailable",
             "host answered a path request with file content",
         ),
-        HostFileOutcome::Copied { .. } => api_error(
+        HostFileOutcome::Copied { .. }
+        | HostFileOutcome::FileMetadata { .. }
+        | HostFileOutcome::Conflict { .. }
+        | HostFileOutcome::Done => api_error(
             StatusCode::BAD_GATEWAY,
             "host_unavailable",
-            "host answered a path request with a copy result",
+            "host answered a path request with a non-listing result",
         ),
     }
 }

@@ -452,12 +452,17 @@ fn content_from_outcome(outcome: HostFileOutcome, relative: Option<&str>) -> Res
             "the host answered a content request with a listing",
         ),
         HostFileOutcome::Failed { code, message } => host_failure_response(&code, &message),
-        // Write and copy exist for B7's attachment routes; a read route can
-        // never legitimately receive one, so it is a host protocol mistake.
-        HostFileOutcome::Written(_) | HostFileOutcome::Copied { .. } => api_error(
+        // Write, copy and the newer path operations exist for other routes; a
+        // read route can never legitimately receive one, so it is a host
+        // protocol mistake rather than a result to reinterpret.
+        HostFileOutcome::Written(_)
+        | HostFileOutcome::Copied { .. }
+        | HostFileOutcome::FileMetadata { .. }
+        | HostFileOutcome::Conflict { .. }
+        | HostFileOutcome::Done => api_error(
             StatusCode::BAD_GATEWAY,
             "host_unavailable",
-            "the host answered a content request with a write result",
+            "the host answered a content request with a non-content result",
         ),
     }
 }
@@ -910,10 +915,13 @@ pub async fn thread_storage_files(
             "host_unavailable",
             "the host answered a listing request with content",
         ),
-        HostFileOutcome::Copied { .. } => api_error(
+        HostFileOutcome::Copied { .. }
+        | HostFileOutcome::FileMetadata { .. }
+        | HostFileOutcome::Conflict { .. }
+        | HostFileOutcome::Done => api_error(
             StatusCode::BAD_GATEWAY,
             "host_unavailable",
-            "the host answered a listing request with a copy result",
+            "the host answered a listing request with a non-listing result",
         ),
         HostFileOutcome::Failed { code, message } => host_failure_response(&code, &message),
     }
@@ -975,10 +983,13 @@ pub async fn thread_storage_paths(
             "host_unavailable",
             "the host answered a listing request with content",
         ),
-        HostFileOutcome::Copied { .. } => api_error(
+        HostFileOutcome::Copied { .. }
+        | HostFileOutcome::FileMetadata { .. }
+        | HostFileOutcome::Conflict { .. }
+        | HostFileOutcome::Done => api_error(
             StatusCode::BAD_GATEWAY,
             "host_unavailable",
-            "the host answered a listing request with a copy result",
+            "the host answered a listing request with a non-listing result",
         ),
         HostFileOutcome::Failed { code, message } => host_failure_response(&code, &message),
     }

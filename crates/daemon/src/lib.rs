@@ -47,6 +47,7 @@ pub mod acp;
 pub mod host_files;
 pub mod provider;
 pub mod session;
+pub mod terminal;
 pub mod update;
 pub mod workspace;
 
@@ -412,6 +413,11 @@ pub struct Daemon {
     /// Workspace and git answers waiting to be forwarded to the server.
     host_rpc_reports: mpsc::Receiver<HostRpcReport>,
     host_rpc_reports_tx: mpsc::Sender<HostRpcReport>,
+    /// Terminal answers waiting to be forwarded to the server.
+    terminal_reports: mpsc::Receiver<loom_provider_protocol::TerminalReport>,
+    terminal_reports_tx: mpsc::Sender<loom_provider_protocol::TerminalReport>,
+    /// The PTY sessions this daemon holds.
+    terminal_sessions: crate::terminal::TerminalRegistry,
     /// Runs with a provider task in flight, keyed by run id.
     running: HashSet<RunId>,
 }
@@ -435,6 +441,8 @@ impl Daemon {
                     mpsc::channel(REPORT_CHANNEL_CAPACITY);
                 let (host_rpc_reports_tx, host_rpc_reports) =
                     mpsc::channel(REPORT_CHANNEL_CAPACITY);
+                let (terminal_reports_tx, terminal_reports) =
+                    mpsc::channel(REPORT_CHANNEL_CAPACITY);
                 Ok(Self {
                     socket,
                     cursor: config.resume_cursor,
@@ -453,6 +461,9 @@ impl Daemon {
                     host_file_reports_tx,
                     host_rpc_reports,
                     host_rpc_reports_tx,
+                    terminal_reports,
+                    terminal_reports_tx,
+                    terminal_sessions: crate::terminal::TerminalRegistry::new(),
                     running: HashSet::new(),
                 })
             }
@@ -528,7 +539,15 @@ impl Daemon {
                 }
                 message = self.socket.next() => {
                     match message {
-                        None => return Ok(()),
+                        // The connection dropped. The processes do not: a
+                        // terminal is the user's, not the connection's, so the
+                        // sessions are marked undrivable and reconciled when the
+                        // daemon reconnects.
+                        None => {
+                            self.terminal_sessions
+                                .mark_all_disconnected(loom_relay::now_ms());
+                            return Ok(());
+                        }
                         Some(message) => self.on_socket_message(message?)?,
                     }
                 }
@@ -579,12 +598,28 @@ impl Daemon {
                     let Some(report) = report else { continue };
                     self.send(&ClientCommand::HostRpcReport { report }).await?;
                 }
+                report = self.terminal_reports.recv() => {
+                    let Some(report) = report else { continue };
+                    self.send(&ClientCommand::TerminalReport { report }).await?;
+                }
             }
         }
     }
 
     /// Announces the departure and closes the socket.
+    ///
+    /// A clean shutdown kills every terminal this daemon holds: they are its
+    /// child processes, and leaving them running with no daemon to report them
+    /// would leak processes the control plane could never see again. A dropped
+    /// connection does **not** go through here — a terminal is the user's, not
+    /// the connection's, so those sessions survive a reconnect and are
+    /// reconciled then.
     pub async fn disconnect(mut self) -> Result<(), DaemonError> {
+        let closing = self.terminal_sessions.len();
+        self.terminal_sessions.close_all(loom_relay::now_ms());
+        if closing > 0 {
+            eprintln!("loom-daemon: closed {closing} terminal session(s) on shutdown");
+        }
         if let Some(host_id) = self.host_id.clone() {
             let _ = self.send(&ClientCommand::HostDisconnect { host_id }).await;
         }
@@ -680,8 +715,42 @@ impl Daemon {
             self.start_host_file_request(request);
         } else if let Ok(request) = serde_json::from_str::<HostRpcRequest>(payload) {
             self.start_host_rpc_request(request);
+        } else if let Ok(request) =
+            serde_json::from_str::<loom_provider_protocol::TerminalRequest>(payload)
+        {
+            self.start_terminal_request(request);
         }
         Ok(())
+    }
+
+    /// Executes one terminal operation on the daemon's machine.
+    ///
+    /// The work runs on the blocking pool: a pty read or a shell spawn is
+    /// synchronous, and running it on the socket loop would stall every other
+    /// session this daemon serves.
+    fn start_terminal_request(&self, request: loom_provider_protocol::TerminalRequest) {
+        if self.host_id.as_ref() != Some(&request.host_id) {
+            return;
+        }
+        let reports = self.terminal_reports_tx.clone();
+        let sessions = self.terminal_sessions.clone();
+        tokio::spawn(async move {
+            let report =
+                tokio::task::spawn_blocking(move || crate::terminal::answer(request, &sessions))
+                    .await
+                    .unwrap_or_else(|error| {
+                        eprintln!("loom-daemon: terminal request panicked: {error}");
+                        loom_provider_protocol::TerminalReport {
+                            host_id: loom_domain::HostId::mint(),
+                            request_id: String::new(),
+                            outcome: loom_provider_protocol::TerminalOutcome::Failed {
+                                code: "internal_error".into(),
+                                message: "the terminal request panicked".into(),
+                            },
+                        }
+                    });
+            let _ = reports.send(report).await;
+        });
     }
 
     /// Executes one workspace operation on the daemon's machine.

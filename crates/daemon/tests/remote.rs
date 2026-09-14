@@ -273,3 +273,173 @@ async fn a_daemon_answers_thread_storage_reads_from_its_own_disk() {
     daemon.abort();
     state.shutdown();
 }
+
+/// A real daemon drives a real PTY for a real server.
+///
+/// This is the end-to-end proof for B9's terminal half: the server mints the
+/// session, publishes a create to the host room, and the daemon spawns the
+/// process, captures its output and answers a window read. The bytes the test
+/// reads back came from a process on this machine, never from the server.
+#[tokio::test]
+async fn a_daemon_runs_a_terminal_and_streams_its_output() {
+    use loom_provider_protocol::{
+        TerminalOperation, TerminalOutcome, TerminalStart, TerminalStatus, TerminalTarget,
+    };
+
+    let temp = tempfile::tempdir().unwrap();
+    let data_dir = temp.path().join("data");
+    std::fs::create_dir_all(&data_dir).unwrap();
+
+    let (url, state) = spawn_server(AppConfig::default()).await;
+    let mut config = DaemonConfig::new(&url, "terminals");
+    config.data_dir = data_dir.clone();
+    config.heartbeat_interval = Duration::from_millis(25);
+    let mut daemon = Daemon::connect(config).await.unwrap();
+    let host_id = daemon.enroll().await.unwrap();
+    let daemon = tokio::spawn(async move {
+        let _ = daemon.run().await;
+    });
+
+    // Create a session that prints something and exits.
+    let outcome = state
+        .request_terminal(
+            &host_id,
+            TerminalOperation::Create {
+                id: "term_remote".into(),
+                start: TerminalStart::Command {
+                    command: "printf 'from the daemon'".into(),
+                },
+                target: TerminalTarget::HostPath {
+                    host_id: host_id.clone(),
+                    cwd: Some(temp.path().to_string_lossy().into_owned()),
+                },
+                cols: 80,
+                rows: 24,
+                title: "smoke".into(),
+                cwd: temp.path().to_string_lossy().into_owned(),
+            },
+        )
+        .await
+        .unwrap();
+    let TerminalOutcome::Session { session } = outcome else {
+        panic!("expected a session, got {outcome:?}");
+    };
+    assert_eq!(session.id, "term_remote");
+    assert!(
+        matches!(
+            session.status,
+            TerminalStatus::Running | TerminalStatus::Exited
+        ),
+        "unexpected status {:?}",
+        session.status
+    );
+
+    // The output arrives asynchronously; poll the cursor until the text lands.
+    let mut collected = String::new();
+    let mut cursor = 0u64;
+    for _ in 0..200 {
+        let outcome = state
+            .request_terminal(
+                &host_id,
+                TerminalOperation::Output {
+                    id: "term_remote".into(),
+                    since_seq: cursor,
+                    limit: 100,
+                    tail_bytes: 64 * 1024,
+                },
+            )
+            .await
+            .unwrap();
+        let TerminalOutcome::Output {
+            chunks, next_seq, ..
+        } = outcome
+        else {
+            panic!("expected output, got {outcome:?}");
+        };
+        for chunk in &chunks {
+            use base64::Engine as _;
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(&chunk.data_base64)
+                .unwrap();
+            collected.push_str(&String::from_utf8_lossy(&bytes));
+        }
+        cursor = next_seq;
+        if collected.contains("from the daemon") {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(
+        collected.contains("from the daemon"),
+        "the terminal produced no expected output: {collected:?}"
+    );
+
+    // A resume from an old cursor re-reads the same bytes — replaying a read is
+    // safe because the ring is on the machine that produced it.
+    let replayed = state
+        .request_terminal(
+            &host_id,
+            TerminalOperation::Output {
+                id: "term_remote".into(),
+                since_seq: 0,
+                limit: 100,
+                tail_bytes: 64 * 1024,
+            },
+        )
+        .await
+        .unwrap();
+    let TerminalOutcome::Output { chunks, .. } = replayed else {
+        panic!("expected output");
+    };
+    assert!(
+        !chunks.is_empty(),
+        "a cursor at zero must still see the retained window"
+    );
+
+    // Close is idempotent for an already-exited process.
+    let closed = state
+        .request_terminal(
+            &host_id,
+            TerminalOperation::Close {
+                id: "term_remote".into(),
+                force: true,
+            },
+        )
+        .await
+        .unwrap();
+    let TerminalOutcome::Session { session } = closed else {
+        panic!("expected a session, got {closed:?}");
+    };
+    assert_eq!(session.status, TerminalStatus::Exited);
+
+    // An unknown session is a bounded failure, not a fabricated answer.
+    let missing = state
+        .request_terminal(
+            &host_id,
+            TerminalOperation::Output {
+                id: "term_nope".into(),
+                since_seq: 0,
+                limit: 10,
+                tail_bytes: 1024,
+            },
+        )
+        .await
+        .unwrap();
+    let TerminalOutcome::Failed { code, .. } = missing else {
+        panic!("expected a failure, got {missing:?}");
+    };
+    assert_eq!(code, "terminal_not_found");
+
+    // A host that is not enrolled is refused before anything is published.
+    let absent = HostId::mint();
+    let outcome = state
+        .request_terminal(&absent, TerminalOperation::Report { id: None })
+        .await;
+    assert!(matches!(
+        outcome,
+        Err(loom_server::TerminalTransportError::UnknownHost(_))
+    ));
+
+    daemon.abort();
+    state.shutdown();
+}

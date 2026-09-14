@@ -138,6 +138,14 @@ pub enum ClientCommand {
         /// The workspace operation result.
         report: HostRpcReport,
     },
+    /// A daemon answers one terminal request.
+    ///
+    /// Like a host file or workspace answer, this satisfies exactly one
+    /// waiting HTTP request and is consumed by the broker, never fanned out.
+    TerminalReport {
+        /// The terminal operation result.
+        report: loom_provider_protocol::TerminalReport,
+    },
     /// Ask the server to replay retained frames for a scope to this
     /// connection.
     ///

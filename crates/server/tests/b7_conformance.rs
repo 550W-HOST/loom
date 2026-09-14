@@ -518,6 +518,7 @@ fn content(path: &str, text: &str) -> HostFileOutcome {
         size_bytes: text.len() as u64,
         mime_type: Some("text/plain".into()),
         modified_at_ms: None,
+        sha256: None,
     })
 }
 
@@ -967,6 +968,7 @@ async fn uploading_an_attachment_writes_inside_the_attachment_root() {
         size_bytes: 5,
         mime_type: Some("text/plain".into()),
         modified_at_ms: None,
+        sha256: None,
     }));
 
     let response = upload(
@@ -1015,6 +1017,7 @@ async fn an_upload_reports_the_path_the_host_actually_wrote() {
         size_bytes: 5,
         mime_type: Some("text/plain".into()),
         modified_at_ms: None,
+        sha256: None,
     }));
 
     let response = upload(
@@ -1068,6 +1071,7 @@ async fn an_upload_filename_cannot_escape_the_attachment_root() {
         size_bytes: 1,
         mime_type: None,
         modified_at_ms: None,
+        sha256: None,
     }));
 
     let response = upload(
@@ -1233,6 +1237,7 @@ async fn copying_attachments_confines_both_projects() {
             size_bytes: 3,
             mime_type: Some("image/png".into()),
             modified_at_ms: None,
+            sha256: None,
         }],
         failures: vec![HostFileFailure {
             path: format!("{source_root}/gone.png"),

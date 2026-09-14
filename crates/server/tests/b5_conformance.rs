@@ -704,6 +704,7 @@ async fn content_routes_return_the_hosts_bytes_and_enforce_the_path_rules() {
             size_bytes: 15,
             mime_type: Some("text/x-rust".into()),
             modified_at_ms: Some(7),
+            sha256: None,
         },
     ));
     let worktree = fixture
@@ -762,6 +763,7 @@ async fn content_routes_return_the_hosts_bytes_and_enforce_the_path_rules() {
             size_bytes: 8,
             mime_type: Some("text/markdown".into()),
             modified_at_ms: None,
+            sha256: None,
         },
     ));
     let by_query = fixture
@@ -790,6 +792,7 @@ async fn content_routes_return_the_hosts_bytes_and_enforce_the_path_rules() {
             size_bytes: 2,
             mime_type: None,
             modified_at_ms: None,
+            sha256: None,
         },
     ));
     let by_url = fixture
@@ -815,6 +818,7 @@ async fn content_routes_return_the_hosts_bytes_and_enforce_the_path_rules() {
             size_bytes: 5,
             mime_type: None,
             modified_at_ms: None,
+            sha256: None,
         },
     ));
     let binary = fixture
@@ -840,6 +844,7 @@ async fn content_routes_return_the_hosts_bytes_and_enforce_the_path_rules() {
             size_bytes: 5,
             mime_type: None,
             modified_at_ms: None,
+            sha256: None,
         },
     ));
     let malformed = fixture
@@ -866,6 +871,7 @@ async fn content_routes_return_the_hosts_bytes_and_enforce_the_path_rules() {
             size_bytes: 4,
             mime_type: Some("text/plain".into()),
             modified_at_ms: None,
+            sha256: None,
         },
     ));
     let absolute = fixture
@@ -947,6 +953,7 @@ async fn html_previews_are_sandboxed_size_capped_and_non_html_is_refused() {
             size_bytes: loom_server::MAX_HTML_PREVIEW_BYTES + 1,
             mime_type: Some("text/html".into()),
             modified_at_ms: None,
+            sha256: None,
         },
     ));
     let too_large = fixture
@@ -973,6 +980,7 @@ async fn html_previews_are_sandboxed_size_capped_and_non_html_is_refused() {
             size_bytes: 15,
             mime_type: Some("text/html".into()),
             modified_at_ms: None,
+            sha256: None,
         },
     ));
     let preview = fixture
@@ -1067,6 +1075,7 @@ async fn a_thread_without_a_ready_environment_never_asks_a_host() {
             size_bytes: 2,
             mime_type: None,
             modified_at_ms: None,
+            sha256: None,
         },
     ));
     let response = fixture

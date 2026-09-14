@@ -23,12 +23,18 @@
 //! to remove — so they run on the blocking pool and the async runtime only
 //! waits.
 
-use std::path::{Component, Path, PathBuf};
+// Every helper here answers with `HostFileOutcome`, whose `Failed` arm is large
+// enough that clippy's `result_large_err` fires on each one. Boxing the error
+// would cost an allocation on the hot failure path and obscure the handlers;
+// the server's HTTP modules carry the same allow for the same reason.
+#![allow(clippy::result_large_err)]
 
 use loom_provider_protocol::{
     HostFileContent, HostFileEncoding, HostFileEntry, HostFileFailure, HostFileOperation,
     HostFileOutcome, HostFileReport, HostFileRequest, HostPathKind,
 };
+use sha2::{Digest, Sha256};
+use std::path::{Component, Path, PathBuf};
 
 use crate::Daemon;
 
@@ -101,6 +107,65 @@ pub fn answer(request: HostFileRequest) -> HostFileReport {
             destination_root,
             *max_bytes,
         ),
+        HostFileOperation::CreateDirectory {
+            path,
+            root_path,
+            recursive,
+        } => create_directory(path, root_path.as_deref(), *recursive),
+        HostFileOperation::Move {
+            source_path,
+            destination_path,
+            root_path,
+            overwrite,
+        } => move_path(
+            source_path,
+            destination_path,
+            root_path.as_deref(),
+            *overwrite,
+        ),
+        HostFileOperation::Remove {
+            path,
+            root_path,
+            recursive,
+        } => remove_path(path, root_path.as_deref(), *recursive),
+        HostFileOperation::ReadWithMetadata {
+            path,
+            root_path,
+            max_bytes,
+        } => read_with_metadata(path, root_path.as_deref(), *max_bytes),
+        HostFileOperation::WriteFile {
+            path,
+            root_path,
+            content,
+            content_encoding,
+            max_bytes,
+            create_parents,
+            expected_sha256,
+            create_only,
+            mode,
+        } => write_file_full(
+            path,
+            root_path,
+            content,
+            *content_encoding,
+            *max_bytes,
+            *create_parents,
+            expected_sha256.as_deref(),
+            *create_only,
+            *mode,
+        ),
+        HostFileOperation::SetMetadata {
+            path,
+            root_path,
+            mode,
+            touch,
+        } => set_metadata(path, root_path.as_deref(), *mode, *touch),
+        HostFileOperation::CopyPath {
+            source_path,
+            destination_path,
+            root_path,
+            overwrite,
+        } => copy_path(source_path, destination_path, root_path, *overwrite),
     };
     HostFileReport {
         host_id: request.host_id,
@@ -182,6 +247,7 @@ fn read_resolved(path: &Path, max_bytes: u64) -> HostFileOutcome {
         size_bytes: metadata.len(),
         mime_type: mime_type_for(path),
         modified_at_ms: modified_at_ms(&metadata),
+        sha256: Some(sha256_hex(&bytes)),
     })
 }
 
@@ -309,6 +375,7 @@ fn write_file(
         size_bytes: bytes.len() as u64,
         mime_type: mime_type_for(&target),
         modified_at_ms: metadata.as_ref().and_then(modified_at_ms),
+        sha256: Some(sha256_hex(&bytes)),
     })
 }
 
@@ -434,9 +501,500 @@ fn copy_files(
                 .unwrap_or(metadata.len()),
             mime_type: mime_type_for(&target),
             modified_at_ms: copied.as_ref().and_then(modified_at_ms),
+            sha256: None,
         });
     }
     HostFileOutcome::Copied { files, failures }
+}
+
+/* ------------------------------------------------------------------ */
+/* B9 path operations                                                  */
+/* ------------------------------------------------------------------ */
+
+/// Lowercase hex SHA-256 of the bytes on disk.
+fn sha256_hex(bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    let digest = hasher.finalize();
+    let mut encoded = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        encoded.push_str(&format!("{byte:02x}"));
+    }
+    encoded
+}
+
+/// The POSIX mode of an existing path, when the platform has one.
+#[cfg(unix)]
+fn mode_of(metadata: &std::fs::Metadata) -> Option<u32> {
+    use std::os::unix::fs::PermissionsExt;
+    Some(metadata.permissions().mode() & 0o777)
+}
+
+#[cfg(not(unix))]
+fn mode_of(_metadata: &std::fs::Metadata) -> Option<u32> {
+    None
+}
+
+/// Confines a path that does not exist yet by resolving its parent.
+///
+/// Canonicalising a missing path fails, so containment is checked on the part
+/// that does exist. A symlinked parent is exactly the escape a plain prefix
+/// comparison would miss, which is why this goes through `canonicalize`.
+fn confine_new(path: &Path, root: Option<&Path>) -> Result<PathBuf, HostFileOutcome> {
+    if !path.is_absolute() {
+        return Err(failed("invalid_path", "path must be absolute"));
+    }
+    let Some(root) = root else {
+        return Ok(path.to_path_buf());
+    };
+    if !root.is_absolute() {
+        return Err(failed("invalid_path", "root_path must be absolute"));
+    }
+    let real_root = match std::fs::canonicalize(root) {
+        Ok(root) => root,
+        Err(error) => {
+            return Err(failed(
+                "invalid_path",
+                format!("root is not readable: {error}"),
+            ))
+        }
+    };
+    // The nearest existing ancestor must resolve inside the root; then the
+    // still-missing tail is re-joined onto the canonical ancestor. That keeps
+    // the final path inside the root without requiring the target to exist.
+    let mut ancestor = path;
+    let mut missing: Vec<std::ffi::OsString> = Vec::new();
+    let real_ancestor = loop {
+        match std::fs::canonicalize(ancestor) {
+            Ok(real) => break real,
+            Err(_) => match (ancestor.parent(), ancestor.file_name()) {
+                (Some(parent), Some(name)) => {
+                    missing.push(name.to_os_string());
+                    ancestor = parent;
+                }
+                _ => {
+                    return Err(failed(
+                        "invalid_path",
+                        "path has no existing ancestor inside the root",
+                    ))
+                }
+            },
+        }
+    };
+    if !real_ancestor.starts_with(&real_root) {
+        return Err(failed("invalid_path", "path escapes the workspace root"));
+    }
+    let mut resolved = real_ancestor;
+    for part in missing.iter().rev() {
+        resolved.push(part);
+    }
+    Ok(resolved)
+}
+
+/// Creates one directory, optionally with its parents.
+fn create_directory(path: &str, root_path: Option<&str>, recursive: bool) -> HostFileOutcome {
+    let path = PathBuf::from(path);
+    let root = root_path.map(PathBuf::from);
+    let resolved = match confine_new(&path, root.as_deref()) {
+        Ok(resolved) => resolved,
+        Err(outcome) => return outcome,
+    };
+    if resolved.exists() {
+        if resolved.is_dir() {
+            // Already there is success: mkdir that reports a conflict when the
+            // directory exists is a race the caller cannot do anything about.
+            return HostFileOutcome::Done;
+        }
+        return failed("invalid_path", "path exists and is not a directory");
+    }
+    let result = if recursive {
+        std::fs::create_dir_all(&resolved)
+    } else {
+        std::fs::create_dir(&resolved)
+    };
+    match result {
+        Ok(()) => HostFileOutcome::Done,
+        Err(error) => failed(
+            "invalid_path",
+            format!("could not create directory: {error}"),
+        ),
+    }
+}
+
+/// Moves a path, refusing to clobber unless `overwrite` is set.
+fn move_path(
+    source_path: &str,
+    destination_path: &str,
+    root_path: Option<&str>,
+    overwrite: bool,
+) -> HostFileOutcome {
+    let root = root_path.map(PathBuf::from);
+    let source = PathBuf::from(source_path);
+    if !source.is_absolute() {
+        return failed("invalid_path", "source path must be absolute");
+    }
+    let destination = PathBuf::from(destination_path);
+    // Both sides are confined: a rename that moved a file out of the root
+    // would be the same escape a read refused.
+    let real_source = match root.as_deref() {
+        Some(root) => match confined_existing(&source, root) {
+            Ok(source) => source,
+            Err(outcome) => return outcome,
+        },
+        None => source.clone(),
+    };
+    if !real_source.exists() {
+        return failed("not_found", "source path does not exist");
+    }
+    let real_destination = match confine_new(&destination, root.as_deref()) {
+        Ok(destination) => destination,
+        Err(outcome) => return outcome,
+    };
+    if let Some(parent) = real_destination.parent() {
+        if let Err(error) = std::fs::create_dir_all(parent) {
+            return failed(
+                "invalid_path",
+                format!("could not create destination parent: {error}"),
+            );
+        }
+    }
+    if real_destination.exists() && !overwrite {
+        return failed(
+            "conflict",
+            "destination already exists and overwrite was not requested",
+        );
+    }
+    match std::fs::rename(&real_source, &real_destination) {
+        Ok(()) => HostFileOutcome::Done,
+        // A rename across filesystems fails with `EXDEV`; a copy-then-remove is
+        // the honest fallback rather than reporting a move that did not happen.
+        Err(_) if !overwrite && real_destination.exists() => failed(
+            "conflict",
+            "destination already exists and overwrite was not requested",
+        ),
+        Err(error) => failed("invalid_path", format!("could not move path: {error}")),
+    }
+}
+
+/// Removes one file or directory.
+fn remove_path(path: &str, root_path: Option<&str>, recursive: bool) -> HostFileOutcome {
+    let path = PathBuf::from(path);
+    if !path.is_absolute() {
+        return failed("invalid_path", "path must be absolute");
+    }
+    let resolved = match root_path.map(PathBuf::from) {
+        Some(root) => match confined_existing(&path, &root) {
+            Ok(path) => path,
+            // A path that does not exist cannot escape anything, and a remove
+            // of a missing path is reported as `not_found` below.
+            Err(HostFileOutcome::Failed { .. }) if !path.exists() => path,
+            Err(outcome) => return outcome,
+        },
+        None => path,
+    };
+    let metadata = match std::fs::symlink_metadata(&resolved) {
+        Ok(metadata) => metadata,
+        Err(error) => return failed("not_found", format!("{error}")),
+    };
+    if metadata.is_dir() {
+        let result = if recursive {
+            std::fs::remove_dir_all(&resolved)
+        } else {
+            std::fs::remove_dir(&resolved)
+        };
+        return match result {
+            Ok(()) => HostFileOutcome::Done,
+            // A non-empty directory refused without `recursive` is a conflict
+            // rather than a bad path: the caller asked for something the
+            // filesystem will not do, and half-removing it is not an option.
+            Err(error) if error.kind() == std::io::ErrorKind::DirectoryNotEmpty => {
+                failed("conflict", "directory is not empty")
+            }
+            Err(error) => failed(
+                "invalid_path",
+                format!("could not remove directory: {error}"),
+            ),
+        };
+    }
+    match std::fs::remove_file(&resolved) {
+        Ok(()) => HostFileOutcome::Done,
+        Err(error) => failed("invalid_path", format!("could not remove file: {error}")),
+    }
+}
+
+/// Reads one file together with the metadata an editor's save needs.
+fn read_with_metadata(path: &str, root_path: Option<&str>, max_bytes: u64) -> HostFileOutcome {
+    let path = PathBuf::from(path);
+    if !path.is_absolute() {
+        return failed("invalid_path", "path must be absolute");
+    }
+    let resolved = match root_path.map(PathBuf::from) {
+        Some(root) => match confined_existing(&path, &root) {
+            Ok(path) => path,
+            Err(outcome) => return outcome,
+        },
+        None => path,
+    };
+    let metadata = match std::fs::metadata(&resolved) {
+        Ok(metadata) => metadata,
+        Err(error) => return failed("not_found", format!("{error}")),
+    };
+    if metadata.is_dir() {
+        return failed("invalid_path", "path is a directory, not a file");
+    }
+    if metadata.len() > max_bytes {
+        return failed(
+            "file_too_large",
+            format!(
+                "file is {} bytes, over the {} byte limit",
+                metadata.len(),
+                max_bytes
+            ),
+        );
+    }
+    let bytes = match std::fs::read(&resolved) {
+        Ok(bytes) => bytes,
+        Err(error) => return failed("not_found", format!("{error}")),
+    };
+    let sha256 = sha256_hex(&bytes);
+    let (content, content_encoding) = match String::from_utf8(bytes) {
+        Ok(text) => (text, HostFileEncoding::Utf8),
+        Err(error) => (base64_encode(error.as_bytes()), HostFileEncoding::Base64),
+    };
+    HostFileOutcome::FileMetadata {
+        content,
+        content_encoding,
+        size_bytes: metadata.len(),
+        sha256,
+        mode: mode_of(&metadata),
+        modified_at_ms: modified_at_ms(&metadata),
+    }
+}
+
+/// Writes one file with optional optimistic concurrency and mode control.
+#[allow(clippy::too_many_arguments)]
+fn write_file_full(
+    path: &str,
+    root_path: &str,
+    content: &str,
+    content_encoding: HostFileEncoding,
+    max_bytes: u64,
+    create_parents: bool,
+    expected_sha256: Option<&str>,
+    create_only: bool,
+    mode: Option<u32>,
+) -> HostFileOutcome {
+    let path = PathBuf::from(path);
+    let root = PathBuf::from(root_path);
+    if !path.is_absolute() || !root.is_absolute() {
+        return failed("invalid_path", "path and root_path must be absolute");
+    }
+    let bytes = match content_encoding {
+        HostFileEncoding::Utf8 => content.as_bytes().to_vec(),
+        HostFileEncoding::Base64 => match base64_decode(content) {
+            Some(bytes) => bytes,
+            None => return failed("invalid_request", "content is not valid base64"),
+        },
+    };
+    if bytes.len() as u64 > max_bytes {
+        return failed(
+            "file_too_large",
+            format!(
+                "write is {} bytes, over the {} byte limit",
+                bytes.len(),
+                max_bytes
+            ),
+        );
+    }
+    // The optimistic check is against what is on disk *now*, before any
+    // mutation: that is what makes it a compare-and-set rather than a race.
+    let current = match std::fs::read(&path) {
+        Ok(existing) => Some(sha256_hex(&existing)),
+        Err(_) => None,
+    };
+    if create_only {
+        if current.is_some() {
+            return HostFileOutcome::Conflict {
+                current_sha256: current,
+            };
+        }
+    } else if let Some(expected) = expected_sha256 {
+        if current.as_deref() != Some(expected) {
+            return HostFileOutcome::Conflict {
+                current_sha256: current,
+            };
+        }
+    }
+    let Some(file_name) = path.file_name() else {
+        return failed("invalid_path", "path has no file name");
+    };
+    let Some(parent) = path.parent() else {
+        return failed("invalid_path", "path has no parent directory");
+    };
+    if create_parents {
+        if let Err(error) = std::fs::create_dir_all(parent) {
+            return failed(
+                "invalid_path",
+                format!("could not create {parent:?}: {error}"),
+            );
+        }
+    } else if !parent.exists() {
+        // A missing parent without `createParents` is a path the caller named
+        // wrongly, not a file that vanished: `invalid_path` at 400 is the
+        // actionable answer, where `not_found` would suggest a race.
+        return failed(
+            "invalid_path",
+            format!("parent directory {parent:?} does not exist"),
+        );
+    }
+    let real_parent = match confined_existing(parent, &root) {
+        Ok(parent) => parent,
+        Err(outcome) => return outcome,
+    };
+    let target = real_parent.join(file_name);
+    // Write through a sibling temp file and rename, so a crash mid-write leaves
+    // either the old file or the new one, never a truncated file that looks
+    // like a successful save.
+    let temp = real_parent.join(format!(".{}.loom-write", file_name.to_string_lossy()));
+    if let Err(error) = std::fs::write(&temp, &bytes) {
+        return failed("invalid_path", format!("could not write {temp:?}: {error}"));
+    }
+    if let Some(mode) = mode {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&temp, std::fs::Permissions::from_mode(mode & 0o777));
+        }
+        #[cfg(not(unix))]
+        let _ = mode;
+    }
+    if let Err(error) = std::fs::rename(&temp, &target) {
+        let _ = std::fs::remove_file(&temp);
+        return failed(
+            "invalid_path",
+            format!("could not write {target:?}: {error}"),
+        );
+    }
+    let written = std::fs::metadata(&target).ok();
+    HostFileOutcome::Written(HostFileContent {
+        path: target.to_string_lossy().into_owned(),
+        content: String::new(),
+        content_encoding: HostFileEncoding::Utf8,
+        size_bytes: bytes.len() as u64,
+        mime_type: mime_type_for(&target),
+        modified_at_ms: written.as_ref().and_then(modified_at_ms),
+        sha256: Some(sha256_hex(&bytes)),
+    })
+}
+
+/// Applies mode and/or modification-time changes to one path.
+fn set_metadata(
+    path: &str,
+    root_path: Option<&str>,
+    mode: Option<u32>,
+    touch: Option<bool>,
+) -> HostFileOutcome {
+    if mode.is_none() && touch != Some(true) {
+        return failed(
+            "invalid_request",
+            "set_metadata must name a mode or touch=true",
+        );
+    }
+    let path = PathBuf::from(path);
+    if !path.is_absolute() {
+        return failed("invalid_path", "path must be absolute");
+    }
+    let resolved = match root_path.map(PathBuf::from) {
+        Some(root) => match confined_existing(&path, &root) {
+            Ok(path) => path,
+            Err(outcome) => return outcome,
+        },
+        None => path,
+    };
+    if !resolved.exists() {
+        return failed("not_found", "path does not exist");
+    }
+    if let Some(mode) = mode {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if let Err(error) =
+                std::fs::set_permissions(&resolved, std::fs::Permissions::from_mode(mode & 0o777))
+            {
+                return failed("invalid_path", format!("could not set mode: {error}"));
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            // Windows has no POSIX mode. Reporting the request as done while
+            // ignoring it would be a lie a client could act on, so it is
+            // refused instead.
+            let _ = mode;
+            return failed(
+                "unsupported_media_type",
+                "POSIX mode bits are not supported on this host",
+            );
+        }
+    }
+    if touch == Some(true) {
+        // Re-writing the file's own bytes is the portable `touch`: setting the
+        // mtime without a platform-specific syscall this crate cannot reach.
+        let bytes = match std::fs::read(&resolved) {
+            Ok(bytes) => bytes,
+            Err(error) => return failed("not_found", format!("{error}")),
+        };
+        if let Err(error) = std::fs::write(&resolved, &bytes) {
+            return failed("invalid_path", format!("could not touch path: {error}"));
+        }
+    }
+    HostFileOutcome::Done
+}
+
+/// Copies one path, confined to a shared root on both sides.
+fn copy_path(
+    source_path: &str,
+    destination_path: &str,
+    root_path: &str,
+    overwrite: bool,
+) -> HostFileOutcome {
+    let source = PathBuf::from(source_path);
+    let destination = PathBuf::from(destination_path);
+    let root = PathBuf::from(root_path);
+    if !source.is_absolute() || !destination.is_absolute() || !root.is_absolute() {
+        return failed(
+            "invalid_path",
+            "source_path, destination_path and root_path must be absolute",
+        );
+    }
+    let real_source = match confined_existing(&source, &root) {
+        Ok(source) => source,
+        Err(outcome) => return outcome,
+    };
+    if real_source.is_dir() {
+        return failed("invalid_path", "source is a directory, not a file");
+    }
+    let real_destination = match confine_new(&destination, Some(&root)) {
+        Ok(destination) => destination,
+        Err(outcome) => return outcome,
+    };
+    if let Some(parent) = real_destination.parent() {
+        if let Err(error) = std::fs::create_dir_all(parent) {
+            return failed(
+                "invalid_path",
+                format!("could not create destination parent: {error}"),
+            );
+        }
+    }
+    if real_destination.exists() && !overwrite {
+        return failed(
+            "conflict",
+            "destination already exists and overwrite was not requested",
+        );
+    }
+    match std::fs::copy(&real_source, &real_destination) {
+        Ok(_) => HostFileOutcome::Done,
+        Err(error) => failed("invalid_path", format!("could not copy path: {error}")),
+    }
 }
 
 /// The destination path for `name`, suffixed rather than overwriting.

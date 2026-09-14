@@ -26,6 +26,7 @@ pub mod b5;
 pub mod b6;
 pub mod b7;
 pub mod b8;
+pub mod b9;
 pub mod build_info;
 pub mod domain_state;
 pub mod environments;
@@ -42,6 +43,7 @@ pub mod pump;
 pub mod queue;
 pub mod runs;
 pub mod state;
+pub mod terminals;
 pub mod transport;
 pub mod ui;
 pub mod ws;
@@ -52,6 +54,7 @@ pub use artifacts::{
 };
 pub use b5::{MAX_FILE_CONTENT_BYTES, MAX_HTML_PREVIEW_BYTES, THREAD_COUNT_ROOT_PARENT};
 pub use b7::MAX_ATTACHMENT_BYTES;
+pub use b9::{MAX_FILE_OPERATION_BYTES, MAX_WRITE_BYTES};
 pub use build_info::{version_line, COMMIT, TARGET, VERSION};
 pub use domain_state::{CommandError, DomainRegistry};
 pub use environments::{EnvironmentReportOutcome, ProvisionOutcome};
@@ -67,6 +70,7 @@ pub use runs::{
     DispatchOutcome, ReconcileSummary, ReportOutcome, RunRecord, RunRegistry, StopOutcome,
 };
 pub use state::{relay_scope, AppState, BuildStateError};
+pub use terminals::{TerminalBroker, TerminalSessions, TerminalTransportError, TERMINAL_TIMEOUT};
 pub use transport::ChannelTransport;
 
 /// Protocol version reported by `/api/v1/version` and negotiated by daemons.

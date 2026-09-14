@@ -18,9 +18,9 @@
 
 - 契约快照：`fa1f44ebe9e5676004b669e48c99b3c7606466b6`，共 **167 条**路由。
 - 已决策不实现：**18 条**（desktopBrowsers 11 条，skill/CLI skill 7 条）。
-- 当前源码包含 **119 个 `.route` 声明、137 个 HTTP 方法入口**；其中只有 120 个匹配 bb 契约，另有 17 个契约外入口。契约当前没有 plugin/marketplace 路由条目。
-- 有效总数：**149 条**；当前已实现 **120 条**，待实现 **29 条**。
-- 当前有效覆盖率：**120/149（80.5%）**。
+- 当前源码包含 **133 个 `.route` 声明、153 个 HTTP 方法入口**；其中只有 136 个匹配 bb 契约，另有 17 个契约外入口。契约当前没有 plugin/marketplace 路由条目。
+- 有效总数：**149 条**；当前已实现 **136 条**，待实现 **13 条**。
+- 当前有效覆盖率：**136/149（91.3%）**。
 - B0 是现有实现基线；B1-B10 是建议的后续交付批次，每批 14、14、14、14、10、14、14、14、17、13 条，均在 10-20 条范围内。
 
 ## threads.send 判定
@@ -61,7 +61,7 @@ bb UI 用契约格式发起写请求时会 422，而 CI 与一致性测试全绿
 
 | 批次 | 主题 | 路由数 | 依赖 | UI 交付边界 |
 | --- | --- | ---: | --- | --- |
-| B0 | 当前基础覆盖（基线） | 120 | - | 项目/线程基础读写、环境读取和主机列表已存在 |
+| B0 | 当前基础覆盖（基线） | 136 | - | 项目/线程基础读写、环境读取和主机列表已存在 |
 | B1 | 启动、导航与首个 threads 流程 | 14 | B0 | 启动探活、侧栏初始化、项目/线程列表后的线程打开、时间线读取与发送 |
 | B2 | 线程控制与辅助视图 | 14 | B1 | 活动线程的默认执行选项、运行状态、搜索、历史、编辑、停止/重试和压缩 |
 | B3 | 交互、计划与队列发送 | 14 | B1 + B2 | 线程中的交互请求、计划控制和 queued message 的查看/创建/发送 |
@@ -136,13 +136,13 @@ bb UI 用契约格式发起写请求时会 422，而 CI 与一致性测试全绿
 | `environments.update` | `PATCH` | `/api/v1/environments/:id` | 已实现 | `PATCH /api/v1/environments/{id}` | B0 | 契约路径与方法已匹配 |
 | `filePreviews.content` | `GET` | `/api/v1/file-previews/:id/:filePath{.+}` | 已实现 | `GET /api/v1/file-previews/{id}/{*file_path}` | B0 | 契约路径与方法已匹配 |
 | `files.createPreview` | `POST` | `/api/v1/files/previews` | 已实现 | `POST /api/v1/files/previews` | B0 | 契约路径与方法已匹配 |
-| `files.list` | `POST` | `/api/v1/files/list` | 待实现 | - | B9 | - |
-| `files.listPaths` | `POST` | `/api/v1/files/paths` | 待实现 | - | B9 | - |
-| `files.mkdir` | `POST` | `/api/v1/files/mkdir` | 待实现 | - | B9 | - |
-| `files.move` | `POST` | `/api/v1/files/move` | 待实现 | - | B9 | - |
-| `files.read` | `POST` | `/api/v1/files/read` | 待实现 | - | B9 | - |
-| `files.remove` | `POST` | `/api/v1/files/remove` | 待实现 | - | B9 | - |
-| `files.write` | `POST` | `/api/v1/files/write` | 待实现 | - | B9 | - |
+| `files.list` | `POST` | `/api/v1/files/list` | 已实现 | `POST /api/v1/files/list` | B0 | 契约路径与方法已匹配 |
+| `files.listPaths` | `POST` | `/api/v1/files/paths` | 已实现 | `POST /api/v1/files/paths` | B0 | 契约路径与方法已匹配 |
+| `files.mkdir` | `POST` | `/api/v1/files/mkdir` | 已实现 | `POST /api/v1/files/mkdir` | B0 | 契约路径与方法已匹配 |
+| `files.move` | `POST` | `/api/v1/files/move` | 已实现 | `POST /api/v1/files/move` | B0 | 契约路径与方法已匹配 |
+| `files.read` | `POST` | `/api/v1/files/read` | 已实现 | `POST /api/v1/files/read` | B0 | 契约路径与方法已匹配 |
+| `files.remove` | `POST` | `/api/v1/files/remove` | 已实现 | `POST /api/v1/files/remove` | B0 | 契约路径与方法已匹配 |
+| `files.write` | `POST` | `/api/v1/files/write` | 已实现 | `POST /api/v1/files/write` | B0 | 契约路径与方法已匹配 |
 | `hosts.cloneDefaultPath` | `GET` | `/api/v1/hosts/:id/clone-default-path` | 已实现 | `GET /api/v1/hosts/{id}/clone-default-path` | B0 | 契约路径与方法已匹配 |
 | `hosts.createJoinCode` | `POST` | `/api/v1/hosts/join-codes` | 已实现 | `POST /api/v1/hosts/join-codes` | B0 | 契约路径与方法已匹配 |
 | `hosts.delete` | `DELETE` | `/api/v1/hosts/:id` | 已实现 | `DELETE /api/v1/hosts/{id}` | B0 | 契约路径与方法已匹配 |
@@ -205,15 +205,15 @@ bb UI 用契约格式发起写请求时会 422，而 CI 与一致性测试全绿
 | `system.usageLimits` | `GET` | `/api/v1/system/usage-limits` | 待实现 | - | B10 | - |
 | `system.version` | `GET` | `/api/v1/system/version` | 已实现 | `GET /api/v1/system/version` | B0 | 契约路径与方法已匹配 |
 | `system.voiceTranscription` | `POST` | `/api/v1/system/voice-transcription` | 待实现 | - | B10 | - |
-| `terminals.close` | `POST` | `/api/v1/terminals/:terminalId/close` | 待实现 | - | B9 | - |
-| `terminals.create` | `POST` | `/api/v1/terminals` | 待实现 | - | B9 | - |
-| `terminals.get` | `GET` | `/api/v1/terminals/:terminalId` | 待实现 | - | B9 | - |
-| `terminals.input` | `POST` | `/api/v1/terminals/:terminalId/input` | 待实现 | - | B9 | - |
-| `terminals.list` | `GET` | `/api/v1/terminals` | 待实现 | - | B9 | - |
-| `terminals.output` | `GET` | `/api/v1/terminals/:terminalId/output` | 待实现 | - | B9 | - |
-| `terminals.resize` | `POST` | `/api/v1/terminals/:terminalId/resize` | 待实现 | - | B9 | - |
-| `terminals.restart` | `POST` | `/api/v1/terminals/:terminalId/restart` | 待实现 | - | B9 | - |
-| `terminals.update` | `PATCH` | `/api/v1/terminals/:terminalId` | 待实现 | - | B9 | - |
+| `terminals.close` | `POST` | `/api/v1/terminals/:terminalId/close` | 已实现 | `POST /api/v1/terminals/{terminal_id}/close` | B0 | 契约路径与方法已匹配 |
+| `terminals.create` | `POST` | `/api/v1/terminals` | 已实现 | `POST /api/v1/terminals` | B0 | 契约路径与方法已匹配 |
+| `terminals.get` | `GET` | `/api/v1/terminals/:terminalId` | 已实现 | `GET /api/v1/terminals/{terminal_id}` | B0 | 契约路径与方法已匹配 |
+| `terminals.input` | `POST` | `/api/v1/terminals/:terminalId/input` | 已实现 | `POST /api/v1/terminals/{terminal_id}/input` | B0 | 契约路径与方法已匹配 |
+| `terminals.list` | `GET` | `/api/v1/terminals` | 已实现 | `GET /api/v1/terminals` | B0 | 契约路径与方法已匹配 |
+| `terminals.output` | `GET` | `/api/v1/terminals/:terminalId/output` | 已实现 | `GET /api/v1/terminals/{terminal_id}/output` | B0 | 契约路径与方法已匹配 |
+| `terminals.resize` | `POST` | `/api/v1/terminals/:terminalId/resize` | 已实现 | `POST /api/v1/terminals/{terminal_id}/resize` | B0 | 契约路径与方法已匹配 |
+| `terminals.restart` | `POST` | `/api/v1/terminals/:terminalId/restart` | 已实现 | `POST /api/v1/terminals/{terminal_id}/restart` | B0 | 契约路径与方法已匹配 |
+| `terminals.update` | `PATCH` | `/api/v1/terminals/:terminalId` | 已实现 | `PATCH /api/v1/terminals/{terminal_id}` | B0 | 契约路径与方法已匹配 |
 | `threads.archive` | `POST` | `/api/v1/threads/:id/archive` | 已实现 | `POST /api/v1/threads/{id}/archive` | B0 | 契约路径与方法已匹配 |
 | `threads.archiveAll` | `POST` | `/api/v1/threads/:id/archive-all` | 已实现 | `POST /api/v1/threads/{id}/archive-all` | B0 | 契约路径与方法已匹配 |
 | `threads.cancelInteraction` | `POST` | `/api/v1/threads/:id/interactions/:interactionId/cancel` | 已实现 | `POST /api/v1/threads/{id}/interactions/{interaction_id}/cancel` | B0 | 契约路径与方法已匹配 |

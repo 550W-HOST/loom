@@ -133,6 +133,18 @@ async fn handle_client(socket: WebSocket, state: AppState) {
     // closing is what detaches the host. This is deliberately independent of
     // the server's own lifetime, so stopping a daemon never touches the server.
     if let Some(host_id) = enrolled_host {
+        // A terminal is driven through the daemon that owns it, so a host with
+        // no connection has no drivable sessions. The record survives — the
+        // process may still be alive on that machine — but its status does not
+        // claim to be usable.
+        let changed = state
+            .terminals
+            .mark_host_disconnected(&host_id, loom_relay::now_ms());
+        if changed > 0 {
+            eprintln!(
+                "loom-server: marked {changed} terminal session(s) disconnected with host {host_id}"
+            );
+        }
         if let Ok(events) = state
             .registry
             .mark_host_disconnected(&host_id, loom_relay::now_ms())
@@ -214,6 +226,11 @@ async fn handle_command(
             ) {
                 Ok((host, events)) => {
                     *enrolled_host = Some(host.id.clone());
+                    // A host that just (re)connected is the authority on which
+                    // of its terminal processes survived the gap. Reconcile in
+                    // the background so enrollment does not wait on a relay
+                    // round trip per session.
+                    state.spawn_terminal_reconcile(host.id.clone());
                     Some(ServerMessage::HostEnrolled {
                         host,
                         event_id: publish_all(state, &events),
@@ -254,6 +271,9 @@ async fn handle_command(
                 .mark_host_disconnected(&host_id, loom_relay::now_ms())
                 .unwrap_or_default();
             publish_all(state, &events);
+            state
+                .terminals
+                .mark_host_disconnected(&host_id, loom_relay::now_ms());
             // Cleared so the socket-close path does not mark it twice.
             *enrolled_host = None;
             Some(ServerMessage::HostDisconnected { host_id })
@@ -386,6 +406,24 @@ async fn handle_command(
             // the correlation id. Late or duplicate answers are normal after
             // a request timeout and are deliberately ignored.
             state.host_rpc.resolve(report);
+            None
+        }
+        ClientCommand::TerminalReport { report } => {
+            let Some(host_id) = enrolled_host.clone() else {
+                return Some(ServerMessage::Error {
+                    message: "terminal reports require an enrolled host".into(),
+                });
+            };
+            if host_id != report.host_id {
+                return Some(ServerMessage::Error {
+                    message: "report names a different host than this connection enrolled as"
+                        .into(),
+                });
+            }
+            // Terminal answers are private to the HTTP request that minted the
+            // correlation id. A late or duplicate answer is normal after a
+            // timeout and is deliberately ignored.
+            state.terminal.resolve(report);
             None
         }
         ClientCommand::Replay {
