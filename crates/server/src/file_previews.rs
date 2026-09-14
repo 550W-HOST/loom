@@ -1,15 +1,24 @@
 //! Short-lived, host-bound file preview leases.
 //!
-//! A preview URL is a capability returned by the future `files.createPreview`
-//! route. The URL must never turn a client-controlled host id and absolute path
-//! into an arbitrary filesystem read, so the lease binds the request to one
-//! host and one root. The B8 content route only accepts a lease token.
+//! A preview URL is a capability returned by the `files.createPreview` route.
+//! The URL must never turn a client-controlled host id and absolute path into
+//! an arbitrary filesystem read, so the lease binds the request to one host and
+//! one root. The B8 content route only accepts a lease token.
+//!
+//! Leases are deliberately process-local capabilities. They are not part of
+//! the domain snapshot or the relay log: a restart invalidates them, and a
+//! request routed to another node cannot use one. Deployments that need
+//! cross-node preview URLs must add a shared capability store and routing
+//! affinity; the in-memory registry remains the zero-dependency default.
 
 use std::collections::HashMap;
 use std::sync::Mutex;
 
 use loom_domain::HostId;
 use loom_relay::{now_ms, EventId};
+
+/// Default lifetime for a preview when the caller omits `ttlMs`.
+pub const DEFAULT_FILE_PREVIEW_TTL_MS: u64 = 5 * 60 * 1_000;
 
 /// A root-bound preview capability.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -40,14 +49,16 @@ impl FilePreviewRegistry {
         root_path: String,
         ttl_ms: u64,
     ) -> Option<(String, FilePreviewLease)> {
-        if root_path.is_empty() || !root_path.starts_with('/') {
+        if crate::b5::validate_absolute_path(&root_path).is_err() {
             return None;
         }
+        self.purge_expired(now_ms());
         let ttl_ms = ttl_ms.clamp(60_000, 3_600_000);
+        let now = now_ms();
         let lease = FilePreviewLease {
             host_id,
             root_path,
-            expires_at_ms: now_ms().saturating_add(ttl_ms),
+            expires_at_ms: now.saturating_add(ttl_ms),
         };
         let id = format!("fprev_{}", EventId::new());
         self.leases
@@ -55,6 +66,17 @@ impl FilePreviewRegistry {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .insert(id.clone(), lease.clone());
         Some((id, lease))
+    }
+
+    /// Removes all expired leases and returns how many were discarded.
+    pub fn purge_expired(&self, now_ms: u64) -> usize {
+        let mut leases = self
+            .leases
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let before = leases.len();
+        leases.retain(|_, lease| lease.expires_at_ms > now_ms);
+        before.saturating_sub(leases.len())
     }
 
     /// Returns a live lease, removing expired entries opportunistically.
@@ -109,5 +131,17 @@ mod tests {
         assert!(registry
             .create(HostId::mint(), "relative".into(), 60_000)
             .is_none());
+    }
+
+    #[test]
+    fn purge_expired_removes_leases_without_a_token_lookup() {
+        let registry = FilePreviewRegistry::new();
+        let (id, lease) = registry
+            .create(HostId::mint(), "/srv/project".into(), 60_000)
+            .unwrap();
+        assert_eq!(registry.len(), 1);
+        assert_eq!(registry.purge_expired(lease.expires_at_ms), 1);
+        assert!(registry.get(&id).is_none());
+        assert!(registry.is_empty());
     }
 }

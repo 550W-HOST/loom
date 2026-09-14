@@ -18,9 +18,9 @@
 
 - 契约快照：`fa1f44ebe9e5676004b669e48c99b3c7606466b6`，共 **167 条**路由。
 - 已决策不实现：**18 条**（desktopBrowsers 11 条，skill/CLI skill 7 条）。
-- 当前源码包含 **118 个 `.route` 声明、136 个 HTTP 方法入口**；其中只有 119 个匹配 bb 契约，另有 17 个契约外入口。契约当前没有 plugin/marketplace 路由条目。
-- 有效总数：**149 条**；当前已实现 **119 条**，待实现 **30 条**。
-- 当前有效覆盖率：**119/149（79.9%）**。
+- 当前源码包含 **119 个 `.route` 声明、137 个 HTTP 方法入口**；其中只有 120 个匹配 bb 契约，另有 17 个契约外入口。契约当前没有 plugin/marketplace 路由条目。
+- 有效总数：**149 条**；当前已实现 **120 条**，待实现 **29 条**。
+- 当前有效覆盖率：**120/149（80.5%）**。
 - B0 是现有实现基线；B1-B10 是建议的后续交付批次，每批 14、14、14、14、10、14、14、14、17、13 条，均在 10-20 条范围内。
 
 ## threads.send 判定
@@ -61,7 +61,7 @@ bb UI 用契约格式发起写请求时会 422，而 CI 与一致性测试全绿
 
 | 批次 | 主题 | 路由数 | 依赖 | UI 交付边界 |
 | --- | --- | ---: | --- | --- |
-| B0 | 当前基础覆盖（基线） | 119 | - | 项目/线程基础读写、环境读取和主机列表已存在 |
+| B0 | 当前基础覆盖（基线） | 120 | - | 项目/线程基础读写、环境读取和主机列表已存在 |
 | B1 | 启动、导航与首个 threads 流程 | 14 | B0 | 启动探活、侧栏初始化、项目/线程列表后的线程打开、时间线读取与发送 |
 | B2 | 线程控制与辅助视图 | 14 | B1 | 活动线程的默认执行选项、运行状态、搜索、历史、编辑、停止/重试和压缩 |
 | B3 | 交互、计划与队列发送 | 14 | B1 + B2 | 线程中的交互请求、计划控制和 queued message 的查看/创建/发送 |
@@ -135,7 +135,7 @@ bb UI 用契约格式发起写请求时会 422，而 CI 与一致性测试全绿
 | `environments.status` | `GET` | `/api/v1/environments/:id/status` | 已实现 | `GET /api/v1/environments/{id}/status` | B0 | 契约路径与方法已匹配 |
 | `environments.update` | `PATCH` | `/api/v1/environments/:id` | 已实现 | `PATCH /api/v1/environments/{id}` | B0 | 契约路径与方法已匹配 |
 | `filePreviews.content` | `GET` | `/api/v1/file-previews/:id/:filePath{.+}` | 已实现 | `GET /api/v1/file-previews/{id}/{*file_path}` | B0 | 契约路径与方法已匹配 |
-| `files.createPreview` | `POST` | `/api/v1/files/previews` | 待实现 | - | B9 | - |
+| `files.createPreview` | `POST` | `/api/v1/files/previews` | 已实现 | `POST /api/v1/files/previews` | B0 | 契约路径与方法已匹配 |
 | `files.list` | `POST` | `/api/v1/files/list` | 待实现 | - | B9 | - |
 | `files.listPaths` | `POST` | `/api/v1/files/paths` | 待实现 | - | B9 | - |
 | `files.mkdir` | `POST` | `/api/v1/files/mkdir` | 待实现 | - | B9 | - |

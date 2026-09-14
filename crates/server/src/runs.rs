@@ -504,6 +504,10 @@ impl AppState {
     /// deliberately driven from the server, because the failure it repairs is
     /// precisely "the execution plane is no longer able to tell us anything".
     pub fn reconcile_runs(&self, now: u64) -> ReconcileSummary {
+        // Capabilities are process-local and intentionally not snapshotted, so
+        // the same sweep that reaps runs also bounds their in-memory lifetime.
+        self.join_codes.purge_expired(now);
+        self.file_previews.purge_expired(now);
         let mut summary = ReconcileSummary::default();
 
         // 1. A host that has not heartbeat within the staleness window is

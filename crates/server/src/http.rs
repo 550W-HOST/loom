@@ -375,6 +375,10 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/v1/system/attention", get(crate::b8::system_attention))
         .route(
+            "/api/v1/files/previews",
+            post(crate::b8::file_preview_create),
+        )
+        .route(
             "/api/v1/file-previews/{id}/{*file_path}",
             get(crate::b8::file_preview_content),
         )

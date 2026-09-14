@@ -21,6 +21,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::b5::{content_response, validate_absolute_path, validate_relative_path};
+use crate::file_previews::DEFAULT_FILE_PREVIEW_TTL_MS;
 use crate::host_files::HostFileTransportError;
 use crate::host_rpc::HostRpcTransportError;
 use crate::state::AppState;
@@ -149,6 +150,66 @@ pub async fn create_join_code(State(state): State<AppState>) -> (StatusCode, Jso
             "expiresAt": expires_at,
         })),
     )
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreatePreviewRequest {
+    pub host_id: Option<String>,
+    pub root_path: String,
+    pub ttl_ms: Option<u64>,
+}
+
+/// Issues the narrow capability consumed by `file_preview_content`.
+///
+/// The root is retained in the lease and sent back to the owning daemon as a
+/// containment boundary. This is the preview-specific prerequisite for the
+/// B8 content route; the remaining B9 file operations are still separate.
+pub async fn file_preview_create(
+    State(state): State<AppState>,
+    Json(request): Json<CreatePreviewRequest>,
+) -> Response {
+    if validate_absolute_path(&request.root_path).is_err() {
+        return api_error(
+            StatusCode::BAD_REQUEST,
+            "invalid_path",
+            "preview root path must be absolute",
+        );
+    }
+
+    let host = match request.host_id.as_deref() {
+        Some(raw) => match host_or_error(&state, raw) {
+            Ok(host) => host,
+            Err(response) => return response,
+        },
+        None => match state.registry.primary_host(state.local_host_id()) {
+            Some(host) => host,
+            None => {
+                return api_error(
+                    StatusCode::CONFLICT,
+                    "host_unavailable",
+                    "no connected host is available for a preview",
+                )
+            }
+        },
+    };
+    let ttl_ms = request.ttl_ms.unwrap_or(DEFAULT_FILE_PREVIEW_TTL_MS);
+    let Some((lease_id, lease)) = state
+        .file_previews
+        .create(host.id, request.root_path, ttl_ms)
+    else {
+        return api_error(
+            StatusCode::BAD_REQUEST,
+            "invalid_path",
+            "preview root path must be absolute",
+        );
+    };
+
+    Json(json!({
+        "baseUrl": format!("/api/v1/file-previews/{lease_id}"),
+        "expiresAtMs": lease.expires_at_ms,
+    }))
+    .into_response()
 }
 
 pub async fn host_get(State(state): State<AppState>, AxumPath(raw): AxumPath<String>) -> Response {
@@ -515,8 +576,8 @@ pub async fn provider_cli_install(
         );
     }
     (
-        StatusCode::NOT_IMPLEMENTED,
-        "ACP providers do not use a provider CLI",
+        StatusCode::OK,
+        "ACP providers do not use a provider CLI; the daemon manages ACP directly",
     )
         .into_response()
 }
@@ -529,7 +590,10 @@ pub async fn host_retry_update(
         Ok(host) => host,
         Err(response) => return response,
     };
-    (StatusCode::NOT_IMPLEMENTED, Json(json!({ "code": "not_supported", "message": "daemon self-update is negotiated on reconnect" }))).into_response()
+    // Updates are pull-based: a daemon retries the protocol handshake on its
+    // next connection and fetches the matching artifact then. The endpoint is
+    // still a successful acknowledgement so clients can clear their retry UI.
+    Json(json!({ "ok": true })).into_response()
 }
 
 pub async fn system_attention(State(state): State<AppState>) -> Json<Value> {

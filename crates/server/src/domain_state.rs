@@ -1242,8 +1242,17 @@ impl DomainRegistry {
         let mut inner = self.lock();
         if let Some(id) = host_id {
             if let Some(existing) = inner.hosts.get_mut(&id) {
-                existing.record_data_dir(data_dir.as_deref(), now_ms);
-                let events = existing.mark_connected(now_ms).into_iter().collect();
+                let data_dir_changed = existing.record_data_dir(data_dir.as_deref(), now_ms);
+                let status_event = existing.mark_connected(now_ms);
+                let mut events = Vec::with_capacity(usize::from(data_dir_changed) + 1);
+                if data_dir_changed {
+                    events.push(DomainEvent::HostUpdated {
+                        host: existing.clone(),
+                    });
+                }
+                if let Some(event) = status_event {
+                    events.push(event);
+                }
                 return Ok((existing.clone(), events));
             }
             let (host, event) = Host::register_with_data_dir(Some(id), name, data_dir, now_ms)?;
@@ -3139,6 +3148,41 @@ mod tests {
             registry.host(&host.id).unwrap().status,
             loom_domain::HostStatus::Connected
         );
+    }
+
+    #[test]
+    fn a_changed_data_directory_is_replayed_with_the_reconnect() {
+        let registry = registry();
+        let (host, _) = registry
+            .enroll_host_with_data_dir(None, "laptop".into(), Some("/var/lib/loom".into()), 2)
+            .unwrap();
+        registry.mark_host_disconnected(&host.id, 3).unwrap();
+
+        let (reconnected, events) = registry
+            .enroll_host_with_data_dir(
+                Some(host.id.clone()),
+                "laptop".into(),
+                Some("/srv/loom".into()),
+                4,
+            )
+            .unwrap();
+        assert_eq!(reconnected.data_dir.as_deref(), Some("/srv/loom"));
+        assert_eq!(events.len(), 2);
+        match &events[0] {
+            DomainEvent::HostUpdated { host } => {
+                assert_eq!(host.data_dir.as_deref(), Some("/srv/loom"));
+                assert_eq!(host.status, loom_domain::HostStatus::Connected);
+            }
+            other => panic!("expected a host update, got {other:?}"),
+        }
+        assert!(matches!(
+            events[1],
+            DomainEvent::HostStatusChanged {
+                from: loom_domain::HostStatus::Disconnected,
+                to: loom_domain::HostStatus::Connected,
+                ..
+            }
+        ));
     }
 
     #[test]
