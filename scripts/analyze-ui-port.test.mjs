@@ -138,6 +138,15 @@ test("the real app corpus is complete, partitioned and compiler-consistent", () 
   assert.equal(sdkPackage.decision, "adapter");
   assert.equal(sdkPackage.runtimeAllowed, true);
   assert.equal(sdkPackage.reasonCode, "compile-only-browser-sdk-W-593");
+  const automationsPackage = plan.workspacePackages.find(
+    (item) => item.name === "bb-plugin-automations",
+  );
+  assert.equal(automationsPackage.decision, "adapter");
+  assert.equal(automationsPackage.runtimeAllowed, true);
+  assert.equal(
+    automationsPackage.reasonCode,
+    "browser-automation-client-W-599",
+  );
   assert.equal(plan.resolver.configDiagnostics, 0);
   assert.equal(Object.values(plan.compileBlockers).flat().filter((blocker) => blocker.specifier?.startsWith("node:") || blocker.specifier === "path").length, 0);
   assert.equal(Object.values(plan.compileBlockers).flat().filter((blocker) => blocker.specifier?.startsWith("@/assets/workspace-open-target-icons/")).length, 0);

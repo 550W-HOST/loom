@@ -112,7 +112,10 @@ The platform closure exposes browser-safe config and host schemas only: direct
 host-daemon access fails with a typed unavailable error, and Hono/provider-bridge
 runtime code is not exported. The mobile bridge remains an exact source reuse.
 The browser SDK exposes the current app method surface but rejects every operation
-without network access until W-593 installs the loom contract mapping.
+without network access until W-593 installs the loom contract mapping. The pinned
+Automations overview, detail, and editor UI now use an injected ten-operation
+loom-native client seam; the default client is unavailable and no generic plugin,
+SQLite, or Node runtime enters its browser graph.
 Every later app adaptation must switch the app registry entry to the closed
 `source-port`/`adapted-source` state and add a one-file ledger entry with its upstream and
 expected local hash/mode. In that state `BB_SRC` is mandatory and the checker

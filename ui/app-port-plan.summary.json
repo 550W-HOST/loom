@@ -1,7 +1,7 @@
 {
   "format": "loom.app-port-plan-summary/v1",
   "plan": "ui/app-port-plan.json",
-  "planBytes": 1940630,
+  "planBytes": 1946019,
   "source": {
     "root": "apps/app/src",
     "trackedFiles": 1437,
@@ -22,8 +22,8 @@
     "edges": 9125,
     "blockers": {
       "runtime": 71,
-      "test": 122,
-      "story": 15,
+      "test": 118,
+      "story": 10,
       "build": 6
     },
     "workspacePackages": 124
@@ -3696,16 +3696,16 @@
       }
     },
     "test": {
-      "count": 122,
+      "count": 118,
       "categories": {
-        "unresolved-workspace-package": 121,
+        "unresolved-workspace-package": 117,
         "require-nonliteral": 1
       }
     },
     "story": {
-      "count": 15,
+      "count": 10,
       "categories": {
-        "unresolved-workspace-package": 14,
+        "unresolved-workspace-package": 9,
         "unresolved-local": 1
       }
     },
@@ -4414,7 +4414,7 @@
           "delete-unsupported",
           "verification-only"
         ],
-        "dependencyCount": 184,
+        "dependencyCount": 187,
         "dependsOnBatchIds": [
           "W-603-01",
           "W-603-02",
@@ -5517,8 +5517,8 @@
       "verificationValueImports": 6,
       "verificationTypeImports": 3,
       "decision": "adapter",
-      "reasonCode": "automations-native-port-W-599",
-      "runtimeAllowed": false
+      "reasonCode": "browser-automation-client-W-599",
+      "runtimeAllowed": true
     },
     {
       "name": "class-variance-authority",

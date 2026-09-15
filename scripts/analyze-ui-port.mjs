@@ -167,7 +167,7 @@ const PACKAGE_DECISION_OVERRIDES = new Map([
   ["@bb/templates", ["adapter", "adapt-template-boundary", false]],
   ["@get-bb/plugin-sdk", ["adapter", "generic-plugin-sdk-boundary", false]],
   ["@bb/test-helpers", ["remove", "verification-only-helper", false]],
-  ["bb-plugin-automations", ["adapter", "automations-native-port-W-599", false]],
+  ["bb-plugin-automations", ["adapter", "browser-automation-client-W-599", true]],
 ]);
 
 function posix(value) {
