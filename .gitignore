@@ -12,4 +12,3 @@ dist/
 *.log
 .DS_Store
 .bb-dev/
-artifacts/

@@ -25,7 +25,7 @@ with all five jobs succeeding. The durations below are those runs.
 | `checks` | `fmt + clippy + test` | `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace` |
 | `msrv` | `MSRV` | the workspace still compiles on the `rust-version` floor in the manifests |
 | `contract` | `bb contract is reproducible` | re-exporting bb's contract yields the committed `contracts/bb` byte for byte |
-| `ui` | `UI typecheck, tests, bundle and provenance` | `pnpm install --frozen-lockfile`, `pnpm run typecheck`, `pnpm run test`, a fresh build reproduces both the reference `ui/app.js` and the product app build, `pnpm run ui:boundary` audits the product runtime, and `node scripts/check-ui-provenance.mjs` verifies source/package/contract hashes and the import closure |
+| `ui` | `UI typecheck, tests, bundle and provenance` | `pnpm install --frozen-lockfile`, `pnpm run typecheck`, `pnpm run test`, a fresh build reproduces `ui/app.js`, and `node scripts/check-ui-provenance.mjs` verifies source/package/contract hashes and the import closure |
 | `pi` | `real pi provider (allowed to fail)` | the `#[ignore]`d provider tests against the real `pi` CLI — `provider_e2e` drives the streamed turn, `real_pi` adds the first-turn-plus-cross-run-resume property — skipped unless the runner has a configured `pi` |
 | `self-update` | `daemon self-update end to end` | the `#[ignore]`d self-update tests: a real daemon process, refused by a server that speaks a newer protocol, installing that server's binary over itself, and the reinstalled binary running a real turn |
 
