@@ -8,8 +8,9 @@ UI package 追溯；不能改用 bb `main`、版本错位的 npm 包或 opaque b
 
 可重现信息集中在 [`ui/provenance.json`](../ui/provenance.json)。它包含：
 
-- manifest-driven source registry：app 与 package 的 upstream/local path、
-  disposition，以及为未来 exact package snapshot 保留的 snapshot kind；
+- manifest-driven source registry：app、package 与 standalone source/blob 的
+  upstream/local path、disposition 和 snapshot kind；W-607 的 exact roots 与
+  跨 package 的 exact blob overlay 先以 planned entry 登记；
 - pinned checkout 中 `apps/app` 的 tree、`package.json` bytes/SHA-256、完整
   dependency snapshot/digest，以及 7 个 upstream package tree/package.json
   dependency digest；
@@ -30,7 +31,9 @@ node scripts/check-ui-provenance.mjs --upstream /path/to/bb-at-fa1f44ebe9e567600
 ```
 
 默认模式只读并失败于任何 local/reference source、adapted package、contract
-artifact 或禁止 app import 漂移。设置 `BB_SRC` 或传入 `--upstream` 后，检查器
+artifact 或禁止 app import 漂移。目录比较只纳入 tracked 或 non-ignored source
+files，因此正常 pnpm dependency symlink 不会污染 exact tree；tracked、root 或
+ancestor symlink 仍会失败。设置 `BB_SRC` 或传入 `--upstream` 后，检查器
 还会读取 checkout 的实际 `git rev-parse HEAD`，并按 manifest registry 重算 pinned
 `apps/app`、其 `package.json` dependency digest 和每个 upstream package tree/digest。CI 在
 运行 upstream 模式前从 manifest 的 pin fetch 一个干净 checkout。`--write` 只
@@ -116,7 +119,8 @@ action registry 中删除，不能留下 dead navigation。
 4. 若 contract 也变化，运行 contract exporter，检查 route/event/wire diff，
    特别确认 149/149 的口径没有静默改变。
 5. 在 source patch 提交中设置 `BB_SRC`，逐文件填写 `ui/app-patch-ledger.json`，
-   运行 `pnpm provenance:test` 覆盖 ledger 的负例，再运行
+   运行 `pnpm provenance:test` 覆盖 ledger、symlink、mode、source/blob registry
+   的负例，再运行
    `node scripts/check-ui-provenance.mjs --write`，审阅 hash、imports 和
    disposition；source pin 变化必须和 package/contract 变化在同一 PR 说明。
 6. 运行 UI typecheck、test、build 以及 Rust contract/API coverage 检查。

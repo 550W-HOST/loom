@@ -6,6 +6,7 @@ import path from "node:path";
 import test from "node:test";
 
 import {
+  assertExactBlobEntry,
   assertExactSourceEntry,
   assertLedgerMatchesDiff,
   computePatchDiff,
@@ -54,7 +55,7 @@ function expectFailure(callback, message) {
   assert.throws(callback, new RegExp(message));
 }
 
-function registryManifest(packageOverrides = {}) {
+function registryManifest(packageOverrides = {}, sources = []) {
   return {
     registry: {
       app: {
@@ -72,6 +73,7 @@ function registryManifest(packageOverrides = {}) {
         snapshot: { kind: "adapted-source" },
         ...packageOverrides,
       }],
+      sources,
     },
   };
 }
@@ -220,6 +222,67 @@ test("keeps the source registry closed and rejects path collisions or traversal"
   );
 });
 
+test("requires closed disposition and snapshot pairings", () => {
+  expectFailure(
+    () => sourceRegistry(registryManifest({ disposition: "unknown-disposition" })),
+    "disposition must be one of",
+  );
+  expectFailure(
+    () => sourceRegistry(registryManifest({ disposition: "exact-snapshot", snapshot: { kind: "adapted-source" } })),
+    "requires snapshot.kind exact-snapshot",
+  );
+  expectFailure(
+    () => sourceRegistry(registryManifest({ disposition: "retain-source", snapshot: { kind: "exact-snapshot" } })),
+    "requires snapshot.kind adapted-source",
+  );
+  assert.doesNotThrow(() => sourceRegistry(registryManifest({
+    disposition: "exact-snapshot",
+    snapshot: { kind: "exact-snapshot" },
+  })));
+  const manifest = registryManifest();
+  manifest.registry.app = {
+    ...manifest.registry.app,
+    disposition: "retain-source",
+    snapshot: { kind: "adapted-source" },
+  };
+  expectFailure(() => sourceRegistry(manifest), "app.disposition must be exact-snapshot");
+});
+
+test("registers standalone exact roots and adapted-package blob overlays without overlap", () => {
+  const overlay = {
+    name: "@bb/domain/update-state",
+    kind: "blob",
+    upstreamPath: "packages/domain/src/update-state.ts",
+    localPath: "ui/packages/domain/src/update-state.ts",
+    disposition: "exact-snapshot",
+    snapshot: { kind: "exact-snapshot" },
+    materialization: "planned",
+  };
+  assert.doesNotThrow(() => sourceRegistry(registryManifest({}, [overlay])));
+
+  expectFailure(
+    () => sourceRegistry(registryManifest({}, [{
+      ...overlay,
+      kind: "source",
+      upstreamPath: "packages/domain/src",
+      localPath: "ui/packages/domain/src",
+    }])),
+    "overlapping exact root paths",
+  );
+  const exactPackage = registryManifest({ disposition: "exact-snapshot", snapshot: { kind: "exact-snapshot" } });
+  expectFailure(
+    () => sourceRegistry({
+      ...exactPackage,
+      registry: {
+        ...exactPackage.registry,
+        packages: [{ ...exactPackage.registry.packages[0], upstreamPath: "packages/exact", localPath: "ui/packages/exact" }],
+        sources: [{ ...overlay, upstreamPath: "packages/exact/src/update-state.ts", localPath: "ui/packages/exact/src/update-state.ts" }],
+      },
+    }),
+    "overlapping exact root paths",
+  );
+});
+
 test("compares exact snapshots across different registered paths and modes", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "loom-provenance-exact-"));
   const upstream = path.join(root, "upstream");
@@ -236,7 +299,58 @@ test("compares exact snapshots across different registered paths and modes", () 
 
   const entry = { name: "@bb/app", upstreamPath: "source/app", localPath: "dest/app" };
   assert.doesNotThrow(() => assertExactSourceEntry(entry, upstream, "fixture exact snapshot", local));
+  execFileSync("git", ["-C", local, "config", "core.filemode", "false"]);
   fs.chmodSync(path.join(local, "dest/app/run.sh"), 0o644);
   expectFailure(() => assertExactSourceEntry(entry, upstream, "fixture exact snapshot", local), "must be clean");
   fs.rmSync(root, { recursive: true, force: true });
 });
+
+test("ignores an untracked pnpm dependency symlink but rejects tracked symlinks", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "loom-provenance-ignored-link-"));
+  const upstream = path.join(root, "upstream");
+  const local = path.join(root, "local");
+  fs.mkdirSync(path.join(upstream, "packages", "exact"), { recursive: true });
+  fs.mkdirSync(path.join(local, "ui", "packages", "exact", "node_modules"), { recursive: true });
+  writeRepositoryFile(upstream, "packages/exact/index.ts", "export const exact = true;\n");
+  writeRepositoryFile(local, "ui/packages/exact/index.ts", "export const exact = true;\n");
+  fs.mkdirSync(path.join(local, "vendor", "dependency"), { recursive: true });
+  fs.symlinkSync("../../../../vendor/dependency", path.join(local, "ui/packages/exact/node_modules/dependency"), "dir");
+  fs.writeFileSync(path.join(local, ".gitignore"), "**/node_modules/\n");
+  commitFixture(upstream);
+  commitFixture(local);
+
+  const entry = { name: "@bb/exact", kind: "source", upstreamPath: "packages/exact", localPath: "ui/packages/exact" };
+  assert.doesNotThrow(() => assertExactSourceEntry(entry, upstream, "ignored dependency exact", local));
+
+  fs.rmSync(path.join(local, "ui/packages/exact/node_modules/dependency"), { force: true });
+  fs.symlinkSync("../../../../vendor/dependency", path.join(local, "ui/packages/exact/tracked-link"), "dir");
+  execFileSync("git", ["-C", local, "add", "-f", "ui/packages/exact/tracked-link"]);
+  expectFailure(
+    () => computePatchDiff(upstream, local, "packages/exact", "ui/packages/exact"),
+    "symbolic.?link",
+  );
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("compares standalone exact blobs by blob, bytes, and mode", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "loom-provenance-blob-"));
+  const upstream = path.join(root, "upstream");
+  const local = path.join(root, "local");
+  writeRepositoryFile(upstream, "source/blob.txt", "same blob\n");
+  writeRepositoryFile(local, "dest/blob.txt", "same blob\n");
+  commitFixture(upstream);
+  commitFixture(local);
+
+  const entry = { name: "bb/blob", kind: "blob", upstreamPath: "source/blob.txt", localPath: "dest/blob.txt" };
+  assert.doesNotThrow(() => assertExactBlobEntry(entry, upstream, "fixture exact blob", local));
+  fs.writeFileSync(path.join(local, "dest/blob.txt"), "changed blob\n");
+  expectFailure(() => assertExactBlobEntry(entry, upstream, "fixture exact blob", local), "must be clean");
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+function writeRepositoryFile(root, relativePath, content, mode = 0o644) {
+  const absolutePath = path.join(root, relativePath);
+  fs.mkdirSync(path.dirname(absolutePath), { recursive: true });
+  fs.writeFileSync(absolutePath, content, { mode });
+  fs.chmodSync(absolutePath, mode);
+}

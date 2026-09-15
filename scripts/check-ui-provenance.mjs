@@ -20,6 +20,12 @@ const DEFAULT_SOURCE = {
 const PATCH_LEDGER_FORMAT = "loom.ui-patch-ledger/v2";
 const PATCH_KINDS = new Set(["modify", "add", "delete", "rename", "mode-change"]);
 const SNAPSHOT_KINDS = new Set(["exact-snapshot", "adapted-source"]);
+const DISPOSITION_SNAPSHOT_KINDS = new Map([
+  ["exact-snapshot", "exact-snapshot"],
+  ["retain-source", "adapted-source"],
+]);
+const STANDALONE_SOURCE_KINDS = new Set(["blob", "source"]);
+const MATERIALIZATION_STATES = new Set(["planned", "materialized"]);
 const GLOB_CHARACTERS = /[*?\[\]{}]/;
 
 function fail(message) {
@@ -125,9 +131,70 @@ function fileMode(relativePath, root = repoRoot) {
   return (stat.mode & 0o111) === 0 ? "100644" : "100755";
 }
 
+function gitCommand(root, args, options = {}) {
+  return execFileSync("git", ["-c", "core.filemode=true", "-C", repositoryRoot(root), ...args], options);
+}
+
+function gitWorktreeRoot(root) {
+  try {
+    return gitCommand(root, ["rev-parse", "--show-toplevel"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+  } catch (error) {
+    if (error.status === 128) return null;
+    throw error;
+  }
+}
+
+function gitPathFromAbsolute(worktreeRoot, absolutePath) {
+  const relativePath = path.relative(worktreeRoot, absolutePath);
+  if (relativePath.startsWith("..") || path.isAbsolute(relativePath)) {
+    throw new Error(`${absolutePath} escapes the git worktree`);
+  }
+  return relativePath.split(path.sep).join("/");
+}
+
+function trackedGitPaths(relativePath, root, absolutePath) {
+  const worktreeRoot = gitWorktreeRoot(root);
+  if (!worktreeRoot) return null;
+  const prefix = gitPathFromAbsolute(worktreeRoot, absolutePath);
+  let output;
+  try {
+    output = gitCommand(root, ["ls-files", "-z", "--stage", "--full-name", "--", prefix || "."]);
+  } catch (error) {
+    throw new Error(`${root}: cannot inspect tracked files under ${relativePath}: ${error.message}`);
+  }
+  const tracked = new Set();
+  for (const record of output.toString("utf8").split("\0").filter(Boolean)) {
+    const separator = record.indexOf("\t");
+    if (separator < 0) throw new Error(`${root}: malformed tracked-file record for ${relativePath}`);
+    const [mode] = record.slice(0, separator).split(" ");
+    const trackedPath = record.slice(separator + 1);
+    if (mode === "120000") tracked.add(trackedPath);
+    else if (!/^100[0-7]{3}$/.test(mode)) {
+      throw new Error(`${root}: unsupported tracked mode ${mode} for ${trackedPath}`);
+    } else {
+      tracked.add(trackedPath);
+    }
+  }
+  return { worktreeRoot, tracked };
+}
+
+function isIgnoredGitPath(gitRoot, relativePath) {
+  try {
+    gitCommand(gitRoot, ["check-ignore", "--no-index", "-q", "--", relativePath]);
+    return true;
+  } catch (error) {
+    if (error.status === 1) return false;
+    throw new Error(`${gitRoot}: cannot inspect ignore state for ${relativePath}: ${error.message}`);
+  }
+}
+
 function filesUnder(relativePath, root = repoRoot, includeAllFiles = false) {
   const absolutePath = repositoryPath(relativePath, root);
   const files = [];
+  const tracked = trackedGitPaths(relativePath, root, absolutePath);
 
   function visit(directory, prefix) {
     for (const entry of fs.readdirSync(directory, { withFileTypes: true }).sort((a, b) =>
@@ -135,6 +202,11 @@ function filesUnder(relativePath, root = repoRoot, includeAllFiles = false) {
     )) {
       const entryPath = path.join(directory, entry.name);
       const entryRelativePath = prefix ? `${prefix}/${entry.name}` : entry.name;
+      const gitRelativePath = tracked
+        ? gitPathFromAbsolute(tracked.worktreeRoot, entryPath)
+        : null;
+      const isTracked = tracked?.tracked.has(gitRelativePath) ?? false;
+      if (!isTracked && tracked && isIgnoredGitPath(tracked.worktreeRoot, gitRelativePath)) continue;
       if (entry.isSymbolicLink()) {
         throw new Error(`${relativePath}: symbolic links are not allowed (${entryRelativePath})`);
       }
@@ -200,6 +272,46 @@ function dependencyDigest(packageJson) {
   return sha256Bytes(Buffer.from(JSON.stringify(dependencySnapshot(packageJson))));
 }
 
+function assertDispositionSnapshotPair(entry, label) {
+  const expectedKind = DISPOSITION_SNAPSHOT_KINDS.get(entry.disposition);
+  if (!expectedKind) {
+    throw new Error(`${label}.disposition must be one of ${[...DISPOSITION_SNAPSHOT_KINDS.keys()].join(", ")}`);
+  }
+  if (!entry.snapshot || !SNAPSHOT_KINDS.has(entry.snapshot.kind)) {
+    throw new Error(`${label}.snapshot.kind is unsupported; must be one of ${[...SNAPSHOT_KINDS].join(", ")}`);
+  }
+  if (entry.snapshot.kind !== expectedKind) {
+    throw new Error(`${label} disposition ${entry.disposition} requires snapshot.kind ${expectedKind}`);
+  }
+}
+
+function isStrictChild(child, parent) {
+  return child !== parent && child.startsWith(`${parent}/`);
+}
+
+function isAllowedAdaptedFileOverlay(left, right) {
+  const source = left.category === "source" ? left : right.category === "source" ? right : null;
+  const packageEntry = left.category === "package" ? left : right.category === "package" ? right : null;
+  return Boolean(
+    source &&
+    packageEntry &&
+    source.kind === "blob" &&
+    packageEntry.disposition === "retain-source" &&
+    isStrictChild(source.path, packageEntry.path),
+  );
+}
+
+function registerPath(entries, candidate, label, sideName) {
+  for (const previous of entries) {
+    if (!pathsOverlap(previous.path, candidate.path) || isAllowedAdaptedFileOverlay(previous, candidate)) continue;
+    const overlapLabel = previous.category === "source" || candidate.category === "source"
+      ? "exact root paths"
+      : `${sideName} paths`;
+    throw new Error(`${label} has overlapping ${overlapLabel}: ${previous.path} and ${candidate.path}`);
+  }
+  entries.push(candidate);
+}
+
 function packageRecord(name, relativePath, root, extra = {}) {
   const packageJson = readJsonAt(path.posix.join(relativePath, "package.json"), root, `${name} package.json`);
   return {
@@ -227,19 +339,17 @@ function sourceRegistry(manifest) {
   }
   assertRepositoryPath(app.upstreamPath, "manifest.registry.app.upstreamPath");
   assertRepositoryPath(app.localPath, "manifest.registry.app.localPath");
-  if (!app.snapshot || !SNAPSHOT_KINDS.has(app.snapshot.kind)) {
-    throw new Error(`manifest.registry.app.snapshot.kind must be one of ${[...SNAPSHOT_KINDS].join(", ")}`);
-  }
-  if (app.disposition === "exact-snapshot" && app.snapshot.kind !== "exact-snapshot") {
-    throw new Error("manifest.registry.app exact-snapshot disposition requires an exact-snapshot kind");
+  assertDispositionSnapshotPair(app, "manifest.registry.app");
+  if (app.disposition !== "exact-snapshot") {
+    throw new Error("manifest.registry.app.disposition must be exact-snapshot");
   }
 
   if (!Array.isArray(registry.packages) || registry.packages.length === 0) {
     throw new Error("manifest.registry.packages must be a non-empty array");
   }
   const names = new Set([app.name]);
-  const upstreamEntries = [{ name: app.name, path: app.upstreamPath }];
-  const localEntries = [{ name: app.name, path: app.localPath }];
+  const upstreamEntries = [{ name: app.name, path: app.upstreamPath, category: "app", kind: "source", disposition: app.disposition }];
+  const localEntries = [{ name: app.name, path: app.localPath, category: "app", kind: "source", disposition: app.disposition }];
   for (const [index, item] of registry.packages.entries()) {
     if (!item || typeof item !== "object") throw new Error(`manifest.registry.packages[${index}] must be an object`);
     for (const field of ["name", "upstreamPath", "localPath", "disposition"]) {
@@ -249,23 +359,65 @@ function sourceRegistry(manifest) {
     }
     assertRepositoryPath(item.upstreamPath, `manifest.registry.packages[${index}].upstreamPath`);
     assertRepositoryPath(item.localPath, `manifest.registry.packages[${index}].localPath`);
-    if (!item.snapshot || !SNAPSHOT_KINDS.has(item.snapshot.kind)) {
-      throw new Error(`manifest.registry.packages[${index}].snapshot.kind is unsupported`);
-    }
+    assertDispositionSnapshotPair(item, `manifest.registry.packages[${index}]`);
     if (names.has(item.name)) throw new Error(`manifest.registry has duplicate package name ${item.name}`);
-    for (const previous of upstreamEntries) {
-      if (pathsOverlap(previous.path, item.upstreamPath)) {
-        throw new Error(`manifest.registry has overlapping upstream paths: ${previous.path} and ${item.upstreamPath}`);
-      }
-    }
-    for (const previous of localEntries) {
-      if (pathsOverlap(previous.path, item.localPath)) {
-        throw new Error(`manifest.registry has overlapping local paths: ${previous.path} and ${item.localPath}`);
-      }
-    }
+    registerPath(upstreamEntries, {
+      name: item.name,
+      path: item.upstreamPath,
+      category: "package",
+      kind: "source",
+      disposition: item.disposition,
+    }, "manifest.registry", "upstream");
+    registerPath(localEntries, {
+      name: item.name,
+      path: item.localPath,
+      category: "package",
+      kind: "source",
+      disposition: item.disposition,
+    }, "manifest.registry", "local");
     names.add(item.name);
-    upstreamEntries.push({ name: item.name, path: item.upstreamPath });
-    localEntries.push({ name: item.name, path: item.localPath });
+  }
+
+  if (registry.sources !== undefined && !Array.isArray(registry.sources)) {
+    throw new Error("manifest.registry.sources must be an array");
+  }
+  for (const [index, item] of (registry.sources ?? []).entries()) {
+    const label = `manifest.registry.sources[${index}]`;
+    if (!item || typeof item !== "object") throw new Error(`${label} must be an object`);
+    for (const field of ["name", "kind", "upstreamPath", "localPath", "disposition"]) {
+      if (typeof item[field] !== "string" || item[field].length === 0) {
+        throw new Error(`${label}.${field} is required`);
+      }
+    }
+    if (!STANDALONE_SOURCE_KINDS.has(item.kind)) {
+      throw new Error(`${label}.kind must be one of ${[...STANDALONE_SOURCE_KINDS].join(", ")}`);
+    }
+    if (item.disposition !== "exact-snapshot") {
+      throw new Error(`${label}.disposition must be exact-snapshot for a standalone exact source`);
+    }
+    assertDispositionSnapshotPair(item, label);
+    const materialization = item.materialization ?? "planned";
+    if (!MATERIALIZATION_STATES.has(materialization)) {
+      throw new Error(`${label}.materialization must be one of ${[...MATERIALIZATION_STATES].join(", ")}`);
+    }
+    assertRepositoryPath(item.upstreamPath, `${label}.upstreamPath`);
+    assertRepositoryPath(item.localPath, `${label}.localPath`);
+    if (names.has(item.name)) throw new Error(`manifest.registry has duplicate source name ${item.name}`);
+    registerPath(upstreamEntries, {
+      name: item.name,
+      path: item.upstreamPath,
+      category: "source",
+      kind: item.kind,
+      disposition: item.disposition,
+    }, "manifest.registry", "upstream");
+    registerPath(localEntries, {
+      name: item.name,
+      path: item.localPath,
+      category: "source",
+      kind: item.kind,
+      disposition: item.disposition,
+    }, "manifest.registry", "local");
+    names.add(item.name);
   }
   return registry;
 }
@@ -309,6 +461,7 @@ function upstreamRecord(root, previous, registry) {
     packages: registry.packages.map((entry) => packageRecord(entry.name, entry.upstreamPath, root, {
       gitTree: gitTreeId(entry.upstreamPath, root),
     })),
+    sources: (registry.sources ?? []).map((entry) => standaloneRecord(entry, root, "upstream")),
   };
 }
 
@@ -335,7 +488,7 @@ function contractRecord(existingContract) {
 
 function gitHead(root) {
   try {
-    return execFileSync("git", ["-C", repositoryRoot(root), "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+    return gitCommand(root, ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
   } catch (error) {
     throw new Error(`${root}: cannot read checkout HEAD: ${error.message}`);
   }
@@ -345,11 +498,23 @@ function gitTreeId(relativePath, root) {
   const checkoutRoot = repositoryRoot(root);
   repositoryPath(relativePath, checkoutRoot);
   try {
-    const type = execFileSync("git", ["-C", checkoutRoot, "cat-file", "-t", `HEAD:${relativePath}`], { encoding: "utf8" }).trim();
+    const type = gitCommand(checkoutRoot, ["cat-file", "-t", `HEAD:${relativePath}`], { encoding: "utf8" }).trim();
     if (type !== "tree") throw new Error(`expected tree, got ${type || "missing object"}`);
-    return execFileSync("git", ["-C", checkoutRoot, "rev-parse", `HEAD:${relativePath}`], { encoding: "utf8" }).trim();
+    return gitCommand(checkoutRoot, ["rev-parse", `HEAD:${relativePath}`], { encoding: "utf8" }).trim();
   } catch (error) {
     throw new Error(`${root}: cannot read git tree ${relativePath}: ${error.message}`);
+  }
+}
+
+function gitBlobId(relativePath, root) {
+  const checkoutRoot = repositoryRoot(root);
+  repositoryPath(relativePath, checkoutRoot);
+  try {
+    const type = gitCommand(checkoutRoot, ["cat-file", "-t", `HEAD:${relativePath}`], { encoding: "utf8" }).trim();
+    if (type !== "blob") throw new Error(`expected blob, got ${type || "missing object"}`);
+    return gitCommand(checkoutRoot, ["rev-parse", `HEAD:${relativePath}`], { encoding: "utf8" }).trim();
+  } catch (error) {
+    throw new Error(`${root}: cannot read git blob ${relativePath}: ${error.message}`);
   }
 }
 
@@ -358,7 +523,7 @@ function gitFileRecords(relativePath, root) {
   repositoryPath(relativePath, checkoutRoot);
   let output;
   try {
-    output = execFileSync("git", ["-C", checkoutRoot, "ls-tree", "-r", "-z", "HEAD", "--", relativePath]);
+    output = gitCommand(checkoutRoot, ["ls-tree", "-r", "-z", "HEAD", "--", relativePath]);
   } catch (error) {
     throw new Error(`${root}: cannot read git files ${relativePath}: ${error.message}`);
   }
@@ -375,11 +540,32 @@ function gitFileRecords(relativePath, root) {
   });
 }
 
+function gitFileRecord(relativePath, root) {
+  const checkoutRoot = repositoryRoot(root);
+  repositoryPath(relativePath, checkoutRoot);
+  let output;
+  try {
+    output = gitCommand(checkoutRoot, ["ls-tree", "-z", "HEAD", "--", relativePath]);
+  } catch (error) {
+    throw new Error(`${root}: cannot read git file ${relativePath}: ${error.message}`);
+  }
+  const records = output.toString("utf8").split("\0").filter(Boolean);
+  if (records.length !== 1) throw new Error(`${root}: expected one git file record for ${relativePath}`);
+  const separator = records[0].indexOf("\t");
+  if (separator < 0) throw new Error(`${root}: malformed git file record for ${relativePath}`);
+  const [mode, type] = records[0].slice(0, separator).split(" ");
+  const fullPath = records[0].slice(separator + 1);
+  if (type !== "blob" || !/^100[0-7]{3}$/.test(mode) || fullPath !== relativePath) {
+    throw new Error(`${root}: unexpected git file entry ${records[0]}`);
+  }
+  return { path: fullPath, mode };
+}
+
 function assertCleanGitWorktree(root, label) {
   const checkoutRoot = repositoryRoot(root, label);
   let output;
   try {
-    output = execFileSync("git", ["-C", checkoutRoot, "status", "--porcelain=v1", "--untracked-files=all"], {
+    output = gitCommand(checkoutRoot, ["status", "--porcelain=v1", "--untracked-files=all"], {
       encoding: "utf8",
     });
   } catch (error) {
@@ -393,8 +579,8 @@ function assertCleanGitPath(root, relativePath, label) {
   repositoryPath(relativePath, checkoutRoot, label);
   let output;
   try {
-    output = execFileSync("git", [
-      "-C", checkoutRoot, "status", "--porcelain=v1", "--untracked-files=all", "--", relativePath,
+    output = gitCommand(checkoutRoot, [
+      "status", "--porcelain=v1", "--untracked-files=all", "--", relativePath,
     ], { encoding: "utf8" });
   } catch (error) {
     throw new Error(`${label}: cannot inspect worktree: ${error.message}`);
@@ -428,6 +614,23 @@ function buildManifest(existing, upstreamRoot) {
       localPath: entry.localPath,
       disposition: entry.disposition,
     })),
+    sources: (registry.sources ?? []).map((entry) => {
+      const materialization = entry.materialization ?? "planned";
+      const record = {
+        name: entry.name,
+        kind: entry.kind,
+        path: entry.localPath,
+        disposition: entry.disposition,
+        materialization,
+      };
+      if (repositoryPathExists(entry.localPath, repoRoot)) {
+        return standaloneRecord(entry, repoRoot, "local");
+      }
+      if (materialization === "materialized") {
+        throw new Error(`${entry.name}: materialized standalone source is missing at ${entry.localPath}`);
+      }
+      return record;
+    }),
   };
 
   return {
@@ -484,6 +687,19 @@ function assertSnapshotContentsEqual(actual, expected, label) {
   assertEqual(snapshotContents(actual, label), snapshotContents(expected, label), label);
 }
 
+function repositoryPathExists(relativePath, root = repoRoot) {
+  assertRepositoryPath(relativePath, relativePath);
+  const absoluteRoot = repositoryRoot(root);
+  const absolutePath = path.resolve(absoluteRoot, ...relativePath.split("/"));
+  try {
+    fs.lstatSync(absolutePath);
+    return true;
+  } catch (error) {
+    if (error.code === "ENOENT") return false;
+    throw error;
+  }
+}
+
 function assertExactSourceEntry(entry, upstreamRoot, label, localRoot = repoRoot) {
   const upstreamTree = gitTreeId(entry.upstreamPath, upstreamRoot);
   const localTree = gitTreeId(entry.localPath, localRoot);
@@ -498,6 +714,50 @@ function assertExactSourceEntry(entry, upstreamRoot, label, localRoot = repoRoot
   const upstreamGitFiles = gitFileRecords(entry.upstreamPath, upstreamRoot);
   const localGitFiles = gitFileRecords(entry.localPath, localRoot);
   assertEqual(localGitFiles, upstreamGitFiles, `${label} git file modes`);
+}
+
+function assertExactBlobEntry(entry, upstreamRoot, label, localRoot = repoRoot) {
+  const upstreamBlob = gitBlobId(entry.upstreamPath, upstreamRoot);
+  const localBlob = gitBlobId(entry.localPath, localRoot);
+  assertEqual(localBlob, upstreamBlob, `${label} git blob`);
+  assertCleanGitPath(upstreamRoot, entry.upstreamPath, `${label} upstream`);
+  assertCleanGitPath(localRoot, entry.localPath, `${label} local`);
+  assertEqual(
+    { ...fileDigest(entry.localPath, localRoot), mode: fileMode(entry.localPath, localRoot) },
+    { ...fileDigest(entry.upstreamPath, upstreamRoot), mode: fileMode(entry.upstreamPath, upstreamRoot) },
+    `${label} bytes, hash, and mode`,
+  );
+  const upstreamGitFile = gitFileRecord(entry.upstreamPath, upstreamRoot);
+  const localGitFile = gitFileRecord(entry.localPath, localRoot);
+  assertEqual(localGitFile.mode, upstreamGitFile.mode, `${label} git file mode`);
+}
+
+function assertExactStandaloneEntry(entry, upstreamRoot, label, localRoot = repoRoot) {
+  if (entry.kind === "source") return assertExactSourceEntry(entry, upstreamRoot, label, localRoot);
+  if (entry.kind === "blob") return assertExactBlobEntry(entry, upstreamRoot, label, localRoot);
+  throw new Error(`${label}: unsupported standalone source kind ${entry.kind}`);
+}
+
+function standaloneRecord(entry, root, side) {
+  const relativePath = side === "upstream" ? entry.upstreamPath : entry.localPath;
+  const record = {
+    name: entry.name,
+    kind: entry.kind,
+    path: relativePath,
+    disposition: entry.disposition,
+    materialization: entry.materialization ?? "planned",
+  };
+  if (entry.kind === "blob") {
+    record.gitBlob = gitBlobId(relativePath, root);
+    record.file = {
+      ...fileDigest(relativePath, root),
+      mode: fileMode(relativePath, root),
+    };
+  } else {
+    record.gitTree = gitTreeId(relativePath, root);
+    record.snapshot = sourceSnapshot(relativePath, root);
+  }
+  return record;
 }
 
 function joinRepositoryPath(directory, relativeFile) {
@@ -771,6 +1031,30 @@ function checkLocalProductApp(manifest, upstreamRoot) {
   }
 }
 
+function checkLocalStandaloneSources(manifest, upstreamRoot, registry) {
+  const entries = registry.sources ?? [];
+  if (!Array.isArray(manifest.local.sources)) throw new Error("local sources must be an array");
+  assertEqual(manifest.local.sources.map((item) => item.name), entries.map((item) => item.name), "local source names");
+  for (const item of manifest.local.sources) {
+    const entry = entries.find((candidate) => candidate.name === item.name);
+    if (!entry) throw new Error(`${item.name}: standalone source is absent from the source registry`);
+    assertEqual(item.kind, entry.kind, `${item.name} local source kind`);
+    assertEqual(item.path, entry.localPath, `${item.name} local source path`);
+    assertEqual(item.disposition, entry.disposition, `${item.name} local source disposition`);
+    const materialization = entry.materialization ?? "planned";
+    assertEqual(item.materialization, materialization, `${item.name} local source materialization`);
+    const exists = repositoryPathExists(entry.localPath, repoRoot);
+    if (!exists) {
+      if (materialization === "materialized") {
+        throw new Error(`${item.name}: materialized standalone source is missing at ${entry.localPath}`);
+      }
+      continue;
+    }
+    assertEqual(standaloneRecord(entry, repoRoot, "local"), item, `${item.name} local standalone source`);
+    if (upstreamRoot) assertExactStandaloneEntry(entry, upstreamRoot, `${item.name} exact standalone source`);
+  }
+}
+
 function checkUpstream(manifest, root) {
   const registry = sourceRegistry(manifest);
   assertCleanGitWorktree(root, "upstream checkout");
@@ -807,7 +1091,15 @@ function checkUpstream(manifest, root) {
     assertEqual(treeDigest(item.path, root), item.tree, `${item.name} upstream tree`);
     assertEqual(fileDigest(path.posix.join(item.path, "package.json"), root), item.packageJson, `${item.name} upstream package.json`);
     assertEqual(dependencySnapshot(packageJson), item.dependencies, `${item.name} upstream dependencies`);
-    assertEqual(dependencyDigest(packageJson), item.dependencyDigest, `${item.name} upstream dependency digest`);
+      assertEqual(dependencyDigest(packageJson), item.dependencyDigest, `${item.name} upstream dependency digest`);
+  }
+  const sourceEntries = registry.sources ?? [];
+  if (!Array.isArray(manifest.upstream.sources)) throw new Error("upstream sources must be an array");
+  assertEqual(manifest.upstream.sources.map((item) => item.name), sourceEntries.map((item) => item.name), "upstream source names");
+  for (const item of manifest.upstream.sources) {
+    const entry = sourceEntries.find((candidate) => candidate.name === item.name);
+    if (!entry) throw new Error(`${item.name}: standalone source is absent from the source registry`);
+    assertEqual(standaloneRecord(entry, root, "upstream"), item, `${item.name} upstream standalone source`);
   }
   for (const entry of [registry.app, ...registry.packages]) {
     if (entry.snapshot.kind === "exact-snapshot") {
@@ -862,6 +1154,7 @@ function checkLocal(manifest, upstreamRoot) {
       assertCleanGitPath(repoRoot, entry.localPath, `${entry.name} local exact snapshot`);
     }
   }
+  checkLocalStandaloneSources(manifest, upstreamRoot, registry);
 
   if (!Array.isArray(manifest.local.imports)) throw new Error("local imports must be an array");
   assertEqual(manifest.local.imports.map((item) => item.package), registry.packages.map((item) => item.name), "import package names");
@@ -914,7 +1207,9 @@ function main() {
 
 export {
   assertLedgerMatchesDiff,
+  assertExactBlobEntry,
   assertExactSourceEntry,
+  assertExactStandaloneEntry,
   computePatchDiff,
   sourceRegistry,
 };

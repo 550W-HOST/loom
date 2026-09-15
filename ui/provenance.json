@@ -75,6 +75,74 @@
           "kind": "adapted-source"
         }
       }
+    ],
+    "sources": [
+      {
+        "name": "@bb/tsconfig",
+        "kind": "source",
+        "upstreamPath": "packages/tsconfig",
+        "localPath": "ui/packages/tsconfig",
+        "disposition": "exact-snapshot",
+        "snapshot": {
+          "kind": "exact-snapshot"
+        },
+        "materialization": "planned"
+      },
+      {
+        "name": "@bb/fuzzy-match",
+        "kind": "source",
+        "upstreamPath": "packages/fuzzy-match",
+        "localPath": "ui/packages/fuzzy-match",
+        "disposition": "exact-snapshot",
+        "snapshot": {
+          "kind": "exact-snapshot"
+        },
+        "materialization": "planned"
+      },
+      {
+        "name": "@bb/domain/update-state",
+        "kind": "blob",
+        "upstreamPath": "packages/domain/src/update-state.ts",
+        "localPath": "ui/packages/domain/src/update-state.ts",
+        "disposition": "exact-snapshot",
+        "snapshot": {
+          "kind": "exact-snapshot"
+        },
+        "materialization": "planned"
+      },
+      {
+        "name": "bb/CHANGELOG.md",
+        "kind": "blob",
+        "upstreamPath": "CHANGELOG.md",
+        "localPath": "CHANGELOG.md",
+        "disposition": "exact-snapshot",
+        "snapshot": {
+          "kind": "exact-snapshot"
+        },
+        "materialization": "planned"
+      },
+      {
+        "name": "bb/changelog-metadata",
+        "kind": "blob",
+        "upstreamPath": "changelog-metadata.ts",
+        "localPath": "changelog-metadata.ts",
+        "disposition": "exact-snapshot",
+        "snapshot": {
+          "kind": "exact-snapshot"
+        },
+        "materialization": "planned"
+      },
+      {
+        "name": "bb/bb-logo",
+        "kind": "blob",
+        "upstreamPath": "assets/bb-logo.svg",
+        "localPath": "assets/bb-logo.svg",
+        "disposition": "exact-snapshot",
+        "snapshot": {
+          "kind": "exact-snapshot"
+        },
+        "materialization": "planned"
+      }
     ]
   },
   "source": {
@@ -8120,6 +8188,134 @@
         },
         "dependencyDigest": "329b7e024c5d37daa8efc428ae34f70870e99b4ff5468695f3e71f622527e0c6"
       }
+    ],
+    "sources": [
+      {
+        "name": "@bb/tsconfig",
+        "kind": "source",
+        "path": "packages/tsconfig",
+        "disposition": "exact-snapshot",
+        "materialization": "planned",
+        "gitTree": "54aba954df43a317c490b7ed70731aeb8ac19ef7",
+        "snapshot": {
+          "path": "packages/tsconfig",
+          "tree": {
+            "files": 3,
+            "sha256": "62a6d062843188900562cfe66af299d22f6642346aae37b68458a38d36c5ff28"
+          },
+          "files": [
+            {
+              "path": "base.json",
+              "bytes": 408,
+              "sha256": "58c7c83ec04ef2e4de6427ff1a5b7f9b1fffa8db5002957b43b2ce5c08030057"
+            },
+            {
+              "path": "package.json",
+              "bytes": 136,
+              "sha256": "eb83510c823f3a5957d6c6da4c43c60b828a2d25e03670ab145fc7a259ce0dd0"
+            },
+            {
+              "path": "typecheck-overrides.json",
+              "bytes": 189,
+              "sha256": "8e4a4347bfdcf177f9ac33507e536099a37d9cc6de6d907841513037376bb10e"
+            }
+          ]
+        }
+      },
+      {
+        "name": "@bb/fuzzy-match",
+        "kind": "source",
+        "path": "packages/fuzzy-match",
+        "disposition": "exact-snapshot",
+        "materialization": "planned",
+        "gitTree": "d6b714cd0295429268f30b6922d472c9e9c59f43",
+        "snapshot": {
+          "path": "packages/fuzzy-match",
+          "tree": {
+            "files": 5,
+            "sha256": "1b6175c803649a0034358d7813a7dceb0094b73768062e491342bd4291dde084"
+          },
+          "files": [
+            {
+              "path": "package.json",
+              "bytes": 650,
+              "sha256": "dbfb5c5a51fc4e103d95f39cec7098f0fce8741376cae9587dab3983729803c5"
+            },
+            {
+              "path": "src/index.ts",
+              "bytes": 20476,
+              "sha256": "2ddaf5db3689c89bf2f7d60546d35dffe08bec7c449d62c87372cb56ec10290c"
+            },
+            {
+              "path": "test/index.test.ts",
+              "bytes": 12302,
+              "sha256": "d0d6e3d326addac8f93442b408fd44d95fdb861651dabc08220067c0385ddad0"
+            },
+            {
+              "path": "tsconfig.json",
+              "bytes": 206,
+              "sha256": "e1f02f0ca6b21fd4c51adc5b3227657fef0937ba5ba4410f983b6690792b4fe9"
+            },
+            {
+              "path": "vitest.config.ts",
+              "bytes": 268,
+              "sha256": "4f0dd242ca24cd14849bc70b1ed34b5ab9ebda51f258fcd5cf5438ae7d7d0c01"
+            }
+          ]
+        }
+      },
+      {
+        "name": "@bb/domain/update-state",
+        "kind": "blob",
+        "path": "packages/domain/src/update-state.ts",
+        "disposition": "exact-snapshot",
+        "materialization": "planned",
+        "gitBlob": "ba0fca681686952700eb15eb34ccf7dad6bb14de",
+        "file": {
+          "bytes": 1853,
+          "sha256": "323271c2d353f47d19f95be3998246828592d341f8e5fd1bae2e0077d72112dd",
+          "mode": "100644"
+        }
+      },
+      {
+        "name": "bb/CHANGELOG.md",
+        "kind": "blob",
+        "path": "CHANGELOG.md",
+        "disposition": "exact-snapshot",
+        "materialization": "planned",
+        "gitBlob": "158c4cfb084b97d1b9a92b8d4f594e8dbbd568c4",
+        "file": {
+          "bytes": 57453,
+          "sha256": "ea37b775449d1f25795a205a13ab8812a72f1829eecc1653671e447b9bde7edb",
+          "mode": "100644"
+        }
+      },
+      {
+        "name": "bb/changelog-metadata",
+        "kind": "blob",
+        "path": "changelog-metadata.ts",
+        "disposition": "exact-snapshot",
+        "materialization": "planned",
+        "gitBlob": "6cf5caf3c6763a8713157a322a89b74a42a85c14",
+        "file": {
+          "bytes": 1454,
+          "sha256": "8a1255546dddbd964d9a043fefbeb6897653755feab26b0f6c8f308a4e9e2880",
+          "mode": "100644"
+        }
+      },
+      {
+        "name": "bb/bb-logo",
+        "kind": "blob",
+        "path": "assets/bb-logo.svg",
+        "disposition": "exact-snapshot",
+        "materialization": "planned",
+        "gitBlob": "2ca960e0bab12c39a80862ba5b2634994f4c6fb8",
+        "file": {
+          "bytes": 8002,
+          "sha256": "6361470096f10305473d4d46880cd531e1e05952923707082eb4017a219d4d3e",
+          "mode": "100644"
+        }
+      }
     ]
   },
   "local": {
@@ -16085,6 +16281,50 @@
         "upstreamPath": "packages/desktop-contract",
         "localPath": "ui/packages/desktop-contract",
         "disposition": "retain-source"
+      }
+    ],
+    "sources": [
+      {
+        "name": "@bb/tsconfig",
+        "kind": "source",
+        "path": "ui/packages/tsconfig",
+        "disposition": "exact-snapshot",
+        "materialization": "planned"
+      },
+      {
+        "name": "@bb/fuzzy-match",
+        "kind": "source",
+        "path": "ui/packages/fuzzy-match",
+        "disposition": "exact-snapshot",
+        "materialization": "planned"
+      },
+      {
+        "name": "@bb/domain/update-state",
+        "kind": "blob",
+        "path": "ui/packages/domain/src/update-state.ts",
+        "disposition": "exact-snapshot",
+        "materialization": "planned"
+      },
+      {
+        "name": "bb/CHANGELOG.md",
+        "kind": "blob",
+        "path": "CHANGELOG.md",
+        "disposition": "exact-snapshot",
+        "materialization": "planned"
+      },
+      {
+        "name": "bb/changelog-metadata",
+        "kind": "blob",
+        "path": "changelog-metadata.ts",
+        "disposition": "exact-snapshot",
+        "materialization": "planned"
+      },
+      {
+        "name": "bb/bb-logo",
+        "kind": "blob",
+        "path": "assets/bb-logo.svg",
+        "disposition": "exact-snapshot",
+        "materialization": "planned"
       }
     ]
   },
