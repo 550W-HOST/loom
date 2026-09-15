@@ -39,15 +39,16 @@ artifact 或禁止 app import 漂移。设置 `BB_SRC` 或传入 `--upstream` �
 
 ## App 闭包
 
-当前没有把 bb 的 `apps/app` 复制进 loom，也没有把 bundle 当作 source。
-`ui/src` 是 loom-native 的 reference client，`ui/app.js` 是其可重建的服务
-产物。`ui/provenance.json` 已验证 pinned checkout 的 `apps/app` source tree
-与 dependency digest，但这不表示它已经成为本地产品 app。上游的通用
-plugin SDK/host/marketplace 不进入发布 runtime；一方 Automations 产品能力
-则保留 UI，并由 loom-native typed API、scheduler、daemon 和 ACP 边界替代其
-generic plugin RPC。后续引入产品 app 时，必须先从同一个 bb commit 导入完整
-source snapshot，再通过机器可校验的 patch ledger 记录每一个删除或适配；不
-允许选择性重写界面，也不允许通过 npm bundle 绕过源码审查。
+当前已将 bb 的 `apps/app` 以 pinned commit 的精确源码快照导入 `loom/apps/app`，但
+没有把它作为 bundle source，也没有启用 workspace、默认 build 或 runtime。`ui/src`
+仍是 loom-native 的 reference client，`ui/app.js` 是其可重建的服务产物。
+`ui/provenance.json` 现在同时保存 upstream 的 commit/tree、完整 app 文件集合及
+逐文件 bytes/SHA-256，以及本地 product-app 快照；校验器会把两者逐项比较。初始
+无修改状态由 `ui/app-patch-ledger.json` 记录。上游的通用 plugin
+SDK/host/marketplace 不进入发布 runtime；一方 Automations 产品能力则保留 UI，
+并由 loom-native typed API、scheduler、daemon 和 ACP 边界替代其 generic plugin
+RPC。后续 source port 必须在独立提交中通过同一个 ledger 记录每一个删除或适配；
+不允许选择性重写界面，也不允许通过 npm bundle 绕过源码审查。
 
 | 层 | 当前路径 | 依赖/边界 | 决策 |
 | --- | --- | --- | --- |
@@ -59,7 +60,7 @@ source snapshot，再通过机器可校验的 patch ledger 记录每一个删除
 | Core UI | `ui/packages/core-ui` | domain | 保留 source；纯 presentation helper |
 | Shared UI | `ui/packages/shared-ui` | React、Radix、icons、`clsx` 等 | 保留 source；由未来 app 按需引用，不能重复 vendor |
 | Desktop contract | `ui/packages/desktop-contract` | `zod` | 保留类型边界；不恢复 Electron/desktop runtime |
-| `apps/app` assembly | 不存在 | 需要未来 source port 和 route-by-route 接入 | 延后；本阶段只记录设计 |
+| `apps/app` assembly | `apps/app`（精确快照） | pinned bb source；当前不在 pnpm workspace，不进入默认 build/runtime | 已导入；后续独立 source port |
 | bb plugin runtime | 不存在 | 任意 JS plugin host、发现和生命周期 | 移除；禁止加入闭包 |
 
 七个 package 的传递 workspace 依赖，以及 runtime/development 外部依赖，均由
@@ -99,8 +100,10 @@ action registry 中删除，不能留下 dead navigation。
 ## 同步流程
 
 1. 在只读 bb checkout 中确认目标 commit，并记录完整 commit 和 commit title。
-2. 完整导入对应的 `apps/app` source snapshot，校验文件集合、bytes、tree id
-   和逐文件 hash；snapshot 提交不允许本地改写。
+2. **W-600 已完成。** 完整导入对应的 `apps/app` source snapshot，校验文件集合、
+   bytes、tree id 和逐文件 hash；snapshot 提交不允许本地改写。校验结果与文件
+   清单位于 `ui/provenance.json`，零差异 baseline 位于
+   `ui/app-patch-ledger.json`。
 3. 在后续独立提交中按 patch ledger 删除不支持 surface、隔离 runtime 并适配
    loom 输入边界；保留原 AppLayout、sidebar、composer、thread workspace、
    Automations 和样式。

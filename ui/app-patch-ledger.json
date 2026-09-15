@@ -1,0 +1,20 @@
+{
+  "format": "loom.ui-patch-ledger/v1",
+  "source": {
+    "repository": "https://github.com/get-bb/bb",
+    "commit": "fa1f44ebe9e5676004b669e48c99b3c7606466b6"
+  },
+  "import": {
+    "upstreamPath": "apps/app",
+    "localPath": "apps/app",
+    "disposition": "exact-snapshot"
+  },
+  "baseline": {
+    "kind": "exact-snapshot",
+    "owner": "PuQing",
+    "issue": "W-600",
+    "reason": "Mechanical source import of the pinned get-bb product app; no visual or runtime adaptation is permitted in the snapshot.",
+    "affectedUpstreamFiles": []
+  },
+  "patches": []
+}

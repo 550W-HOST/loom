@@ -99,9 +99,11 @@ GET /api/v1/threads            → thread list
 
 ## Porting the bb UI
 
-The bb app is checked in next, but deliberately not in this step. The reason is
-that "the existing bb UI builds" and "the existing bb UI talks to loom" are two
-different problems, and only the first is a mechanical copy.
+The bb app source snapshot is checked in at `apps/app`, but it remains
+intentionally outside the current pnpm workspace and default build/runtime.
+This issue is the mechanical source import only; the reference client remains
+the served UI until a later integration stage. The exact snapshot and its
+zero-diff patch ledger are checked by `scripts/check-ui-provenance.mjs`.
 
 What `apps/app` needs to build, from the bb tree:
 
@@ -122,11 +124,10 @@ The phased plan, smallest valuable step first:
 1. **Done, this issue.** Server hosts the UI, the UI subscribes to
    `thread:{id}` through the relay, and reconnect merges live and replayed
    frames. The reference client proves the path.
-2. **Check in `apps/app` and its workspace closure verbatim**, plus
-   `pnpm-workspace.yaml`, the root `package.json`, `turbo.json` and the
-   `packages/*` it needs. Change nothing but the workspace name. Prove
-   `pnpm --filter @bb/app build` passes and serve `apps/app/dist` with
-   `LOOM_UI_DIR`. This is the mechanical step; it is large but low-risk.
+2. **Done in W-600.** Check in `apps/app` as the exact source snapshot from
+   the pinned commit. It remains outside the workspace and no build/runtime
+   integration is enabled yet; `ui/app-patch-ledger.json` records that the
+   initial product-app source diff is zero.
 3. **Adapt the transport, not the tree.** Replace `@bb/sdk`'s fetch/WS base with
    loom's routes (`/api/v1/...`, `/ws`) and map the thread list and thread
    timeline onto bb's query layer. Ship one screen — list → thread → messages —

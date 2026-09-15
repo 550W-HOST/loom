@@ -77,15 +77,18 @@ docs/
   deployment-verification.md
 ```
 
-apps/app source is intentionally not copied as part of this stage; the
-source-level baseline, dependency closure and product-surface decisions are
+`apps/app` is now checked in as the exact source snapshot from the pinned bb
+commit. It is intentionally outside the current pnpm workspace and is not
+included in the default build or server runtime; source-level adaptation is a
+later stage. The baseline, dependency closure and product-surface decisions are
 recorded in [`docs/ui-baseline.md`](docs/ui-baseline.md). The machine-checkable
 hashes and import list live in [`ui/provenance.json`](ui/provenance.json), and
-the projection package sync policy remains in
-[`docs/ui-package-sync.md`](docs/ui-package-sync.md).
+the zero-diff starting point is recorded in
+[`ui/app-patch-ledger.json`](ui/app-patch-ledger.json). The projection package
+sync policy remains in [`docs/ui-package-sync.md`](docs/ui-package-sync.md).
 
-Application code from the bb fork (`apps/`, `packages/`, `plugins/`) lands here
-next, alongside the Rust workspace rather than replacing it.
+The product app snapshot sits alongside the Rust workspace and the reference
+client remains the default served UI until a later integration stage.
 
 ## Build and test
 

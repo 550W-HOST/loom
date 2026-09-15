@@ -237,15 +237,14 @@ jobs:
         run: BB_SRC="$RUNNER_TEMP/bb-ui" pnpm run provenance:check
 
       # Modifications, additions and removals all have to fail: the bundle is
-      # generated, so any difference means the committed one is stale. Both
-      # halves are needed, exactly as in the `contract` job — `git diff` catches
-      # tracked files and `git status` catches one the build added or removed.
-      # The build's own output under `ui/dist/` is gitignored.
-      - name: The committed bundle must match
+      # generated, so any difference means the committed UI is wrong. The
+      # product app snapshot is checked separately from the reference client;
+      # provenance compares its complete file list and per-file digests.
+      - name: The committed UI and product app must match
         run: |
           set -euo pipefail
-          git diff --exit-code -- ui/
-          test -z "$(git status --porcelain -- ui/)"
+          git diff --exit-code -- ui/ apps/app/
+          test -z "$(git status --porcelain -- ui/ apps/app/)"
 
   # `the_real_pi_process_streams_through_the_bridge` is `#[ignore]`d because it
   # runs the actual `pi` CLI through embedded `pi-acp`. It is the only automated

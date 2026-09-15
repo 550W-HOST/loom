@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const manifestPath = path.join(repoRoot, "ui", "provenance.json");
+const patchLedgerPath = path.join(repoRoot, "ui", "app-patch-ledger.json");
 const contractManifestPath = path.join(repoRoot, "contracts", "bb", "manifest.json");
 
 const PACKAGE_SOURCES = [
@@ -49,7 +50,7 @@ function fileDigest(relativePath, root = repoRoot) {
   return { bytes: bytes.length, sha256: sha256Bytes(bytes) };
 }
 
-function filesUnder(relativePath, root = repoRoot) {
+function filesUnder(relativePath, root = repoRoot, includeAllFiles = false) {
   const absolutePath = path.join(root, relativePath);
   const files = [];
 
@@ -59,7 +60,7 @@ function filesUnder(relativePath, root = repoRoot) {
     )) {
       const entryPath = path.join(directory, entry.name);
       const entryRelativePath = prefix ? `${prefix}/${entry.name}` : entry.name;
-      if (entry.name === "node_modules" || entry.name === "dist") continue;
+      if (!includeAllFiles && (entry.name === "node_modules" || entry.name === "dist")) continue;
       if (entry.isDirectory()) visit(entryPath, entryRelativePath);
       else if (entry.isFile()) files.push(entryRelativePath);
       else throw new Error(`${relativePath}: unsupported directory entry ${entryRelativePath}`);
@@ -71,14 +72,29 @@ function filesUnder(relativePath, root = repoRoot) {
   return files;
 }
 
-function treeDigest(relativePath, root = repoRoot) {
-  const files = filesUnder(relativePath, root);
+function treeDigest(relativePath, root = repoRoot, includeAllFiles = false) {
+  const files = filesUnder(relativePath, root, includeAllFiles);
   const hash = crypto.createHash("sha256");
   for (const relativeFile of files) {
     const digest = fileDigest(path.join(relativePath, relativeFile), root);
     hash.update(`${relativeFile}\0${digest.sha256}\n`);
   }
   return { files: files.length, sha256: hash.digest("hex") };
+}
+
+function fileRecords(relativePath, root = repoRoot, includeAllFiles = false) {
+  return filesUnder(relativePath, root, includeAllFiles).map((relativeFile) => ({
+    path: relativeFile,
+    ...fileDigest(path.join(relativePath, relativeFile), root),
+  }));
+}
+
+function sourceSnapshot(relativePath, root = repoRoot) {
+  return {
+    path: relativePath,
+    tree: treeDigest(relativePath, root, true),
+    files: fileRecords(relativePath, root, true),
+  };
 }
 
 function dependencySnapshot(packageJson) {
@@ -136,6 +152,8 @@ function upstreamRecord(root, previous) {
     app: {
       path: "apps/app",
       tree: treeDigest("apps/app", root),
+      gitTree: gitTreeId("apps/app", root),
+      files: fileRecords("apps/app", root),
       packageJson: fileDigest("apps/app/package.json", root),
       dependencies: dependencySnapshot(appPackageJson),
       dependencyDigest: dependencyDigest(appPackageJson),
@@ -175,6 +193,14 @@ function gitHead(root) {
   }
 }
 
+function gitTreeId(relativePath, root) {
+  try {
+    return execFileSync("git", ["-C", root, "rev-parse", `HEAD:${relativePath}`], { encoding: "utf8" }).trim();
+  } catch (error) {
+    throw new Error(`${root}: cannot read git tree ${relativePath}: ${error.message}`);
+  }
+}
+
 function buildManifest(existing, upstreamRoot) {
   const source = { ...DEFAULT_SOURCE, ...(existing?.source ?? {}) };
   const localPackages = PACKAGE_SOURCES.map(([name, directory]) => {
@@ -186,6 +212,13 @@ function buildManifest(existing, upstreamRoot) {
   });
   const local = {
     referenceApp: localAppRecord(existing?.local?.referenceApp ?? existing?.app),
+    productApp: {
+      upstreamPath: "apps/app",
+      localPath: "apps/app",
+      disposition: existing?.local?.productApp?.disposition ?? "exact-snapshot",
+      gitTree: gitTreeId("apps/app", repoRoot),
+      snapshot: sourceSnapshot("apps/app"),
+    },
     packages: localPackages,
     imports: localPackages.map((item) => ({
       package: item.name,
@@ -218,6 +251,65 @@ function assertEqual(actual, expected, label) {
   }
 }
 
+function checkSnapshot(relativePath, expected, label, root = repoRoot) {
+  const actual = sourceSnapshot(relativePath, root);
+  assertEqual(actual.path, expected.path, `${label} path`);
+  assertEqual(actual.tree, expected.tree, `${label} tree`);
+  if (actual.files.length !== expected.files.length) {
+    throw new Error(`${label}: expected ${expected.files.length} files, got ${actual.files.length}`);
+  }
+  for (let index = 0; index < expected.files.length; index += 1) {
+    const expectedFile = expected.files[index];
+    const actualFile = actual.files[index];
+    if (JSON.stringify(actualFile) !== JSON.stringify(expectedFile)) {
+      throw new Error(`${label}: file ${expectedFile.path} differs (expected ${JSON.stringify(expectedFile)}, got ${JSON.stringify(actualFile)})`);
+    }
+  }
+}
+
+function checkPatchLedger(manifest) {
+  const ledger = readJson(patchLedgerPath);
+  if (ledger.format !== "loom.ui-patch-ledger/v1") throw new Error("unsupported app patch ledger format");
+  assertEqual(ledger.source, {
+    repository: manifest.source.repository,
+    commit: manifest.source.commit,
+  }, "app patch ledger source");
+  assertEqual(ledger.import, {
+    upstreamPath: "apps/app",
+    localPath: "apps/app",
+    disposition: "exact-snapshot",
+  }, "app patch ledger import");
+  const baseline = ledger.baseline;
+  if (!baseline || baseline.kind !== "exact-snapshot") {
+    throw new Error("app patch ledger must declare an exact snapshot baseline");
+  }
+  for (const field of ["owner", "issue", "reason"]) {
+    if (typeof baseline[field] !== "string" || baseline[field].length === 0) {
+      throw new Error(`app patch ledger baseline.${field} is required`);
+    }
+  }
+  assertEqual(baseline.affectedUpstreamFiles, [], "app patch ledger baseline affected files");
+  if (!Array.isArray(ledger.patches) || ledger.patches.length !== 0) {
+    throw new Error("app patch ledger must have no patches for the exact snapshot baseline");
+  }
+}
+
+function checkLocalProductApp(manifest) {
+  const productApp = manifest.local.productApp;
+  if (!productApp) throw new Error("local.productApp is required");
+  assertEqual(productApp.upstreamPath, "apps/app", "local product app upstream path");
+  assertEqual(productApp.localPath, "apps/app", "local product app path");
+  assertEqual(productApp.disposition, "exact-snapshot", "local product app disposition");
+  assertEqual(productApp.gitTree, gitTreeId("apps/app", repoRoot), "local product app git tree");
+  assertEqual(productApp.gitTree, manifest.upstream.app.gitTree, "local/upstream product app git tree");
+  checkSnapshot("apps/app", productApp.snapshot, "local product app snapshot");
+  checkSnapshot("apps/app", {
+    path: manifest.upstream.app.path,
+    tree: manifest.upstream.app.tree,
+    files: manifest.upstream.app.files,
+  }, "local product app vs upstream snapshot");
+}
+
 function checkUpstream(manifest, root) {
   const head = gitHead(root);
   assertEqual(head, manifest.source.commit, "upstream checkout HEAD");
@@ -228,7 +320,12 @@ function checkUpstream(manifest, root) {
   assertEqual(expectedApp.path, "apps/app", "upstream app path");
   const appPackageJson = readJson(path.join(root, expectedApp.path, "package.json"));
   assertEqual(appPackageJson.name, "@bb/app", "upstream app package name");
-  assertEqual(treeDigest(expectedApp.path, root), expectedApp.tree, "upstream apps/app tree");
+  assertEqual(sourceSnapshot(expectedApp.path, root), {
+    path: expectedApp.path,
+    tree: expectedApp.tree,
+    files: expectedApp.files,
+  }, "upstream apps/app file snapshot");
+  assertEqual(gitTreeId(expectedApp.path, root), expectedApp.gitTree, "upstream apps/app git tree");
   assertEqual(fileDigest(path.join(expectedApp.path, "package.json"), root), expectedApp.packageJson, "upstream apps/app package.json");
   assertEqual(dependencySnapshot(appPackageJson), expectedApp.dependencies, "upstream apps/app dependencies");
   assertEqual(dependencyDigest(appPackageJson), expectedApp.dependencyDigest, "upstream apps/app dependency digest");
@@ -255,6 +352,8 @@ function checkLocal(manifest) {
     throw new Error(`source.repository must be ${DEFAULT_SOURCE.repository}`);
   }
   assertEqual(manifest.source.commit, manifest.upstream.commit, "source/upstream commit");
+  checkLocalProductApp(manifest);
+  checkPatchLedger(manifest);
 
   const referenceApp = manifest.local.referenceApp;
   const localAppPackageJson = readJson(path.join(repoRoot, "ui", "package.json"));
