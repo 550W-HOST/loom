@@ -2,9 +2,21 @@ import { describe, expect, it, vi } from "vitest";
 import {
   AutomationsUnavailableError,
   createUnavailableAutomationsClient,
+  type AutomationOperationMap,
 } from "./client.js";
 
 const route = { projectId: "project", automationId: "automation" };
+const schemaValidUpdate: AutomationOperationMap["automations_update"]["input"] = {
+  ...route,
+  execution: {
+    mode: "agent",
+    prompt: "Check the build",
+    providerId: "pi",
+    model: "default",
+    permissionMode: "accept-edits",
+    environment: { type: "project-default" },
+  },
+};
 
 describe("loom-native Automations client boundary", () => {
   it("fails all ten operations closed with stable typed errors", async () => {
@@ -36,7 +48,7 @@ describe("loom-native Automations client boundary", () => {
       ],
       [
         "automations_update",
-        client.call("automations_update", { ...route, name: "Updated" }),
+        client.call("automations_update", schemaValidUpdate),
       ],
       ["automations_delete", client.call("automations_delete", route)],
       ["automations_pause", client.call("automations_pause", route)],

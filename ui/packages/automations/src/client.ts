@@ -10,7 +10,7 @@ import type {
   ListAutomationsInput,
   ProjectAutomationInput,
   RunAutomationInput,
-  UpdateAutomationInput,
+  UpdateAutomationRequest,
 } from "./rpc-types.js";
 
 export interface AutomationOperationMap {
@@ -31,7 +31,7 @@ export interface AutomationOperationMap {
     output: AutomationResponse;
   };
   automations_update: {
-    input: UpdateAutomationInput;
+    input: UpdateAutomationRequest;
     output: AutomationResponse;
   };
   automations_delete: {

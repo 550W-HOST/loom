@@ -378,7 +378,12 @@ export const updateAutomationInputSchema = z
       message: "execution and agent updates cannot be combined",
     },
   );
-export type UpdateAutomationInput = z.infer<typeof updateAutomationInputSchema>;
+export type UpdateAutomationRequest = z.input<
+  typeof updateAutomationInputSchema
+>;
+export type UpdateAutomationInput = z.output<
+  typeof updateAutomationInputSchema
+>;
 
 export const runAutomationInputSchema = projectAutomationInputSchema
   .extend({
