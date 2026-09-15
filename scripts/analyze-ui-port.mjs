@@ -377,6 +377,38 @@ export function resolveWithCompilerModule(specifier, containingFile, options, ho
   return ts.resolveModuleName(specifier, containingFile, options, host).resolvedModule?.resolvedFileName ?? null;
 }
 
+function pathPatternWildcard(pattern, specifier) {
+  const star = pattern.indexOf("*");
+  if (star < 0) return pattern === specifier ? "" : null;
+  const prefix = pattern.slice(0, star);
+  const suffix = pattern.slice(star + 1);
+  if (!specifier.startsWith(prefix) || !specifier.endsWith(suffix) || specifier.length < prefix.length + suffix.length) return null;
+  return specifier.slice(prefix.length, specifier.length - suffix.length);
+}
+
+export function resolvePathMappedFile(specifier, options, cwd) {
+  const entries = Object.entries(options.paths ?? {}).sort(([left], [right]) => {
+    const leftStar = left.indexOf("*");
+    const rightStar = right.indexOf("*");
+    if (leftStar < 0 && rightStar < 0) return 0;
+    if (leftStar < 0) return -1;
+    if (rightStar < 0) return 1;
+    return rightStar - leftStar;
+  });
+  const base = options.pathsBasePath ?? options.baseUrl ?? cwd;
+  let matched = false;
+  for (const [pattern, targets] of entries) {
+    const wildcard = pathPatternWildcard(pattern, specifier);
+    if (wildcard === null) continue;
+    matched = true;
+    for (const target of targets) {
+      const candidate = path.resolve(base, target.replaceAll("*", wildcard));
+      if (fs.existsSync(candidate) && fs.statSync(candidate).isFile()) return { matched: true, path: candidate };
+    }
+  }
+  return { matched, path: null };
+}
+
 function skipCssTrivia(text, start) {
   let index = start;
   while (index < text.length) {
@@ -658,6 +690,13 @@ function resolverFor(repo, app, options, packageMap, declared) {
       if (isInside(repo, resolved)) return { status: "resolved-repository", path: relativeTo(repo, resolved) };
       return { status: "resolved-external", package: packageName(specifier), path: resolved };
     }
+    const pathMapped = resolvePathMappedFile(specifier, options, app);
+    if (pathMapped.path) {
+      if (isInside(app, pathMapped.path)) return { status: "resolved-local", path: relativeTo(app, pathMapped.path) };
+      if (isInside(repo, pathMapped.path)) return { status: "resolved-repository", path: relativeTo(repo, pathMapped.path) };
+      return { status: "resolved-external", package: packageName(specifier), path: pathMapped.path };
+    }
+    if (pathMapped.matched) return { status: "unresolved-local" };
     if (specifier.startsWith(".") || specifier.startsWith("/")) {
       const base = specifier.startsWith("/") ? path.join(app, specifier.slice(1)) : path.resolve(path.dirname(containingFile), specifier);
       for (const candidate of [base, ...[".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".css", ".json", ".svg", ".png"].map((extension) => `${base}${extension}`), ...["index.ts", "index.tsx", "index.js", "index.jsx"].map((entry) => path.join(base, entry))]) {
@@ -1480,7 +1519,7 @@ function checkPlan(plan) {
   assert.equal(plan.batchCoverage.assigned, 1437);
   assert.equal(plan.batchCoverage.missingCrossStageEdges, 0);
   assert.equal(plan.batchCoverage.missingCrossIssueBatchDependencies, 0);
-  assert.equal(plan.batchCoverage.crossIssueEdges, 1519);
+  assert.equal(plan.batchCoverage.crossIssueEdges, 1524);
   assert.equal(plan.batchPlan.kind, "reviewChunks");
   assert.equal(plan.batchPlan.executable, false);
   assert.equal(plan.batchPlan.atomicStageCount, 2);

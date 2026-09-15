@@ -4,7 +4,7 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
-import { assertBatchCoverage, assertCleanAppStatus, assertSourceInventory, batchDetails, canonicalEdgeKey, classifyPath, extractCompilerImports, generatePlan, isNodeBuiltin, packageExportTarget, preProcessImportSpecifiers, resolveWithCompilerModule, scanCssImports, scanHtmlImports } from "./analyze-ui-port.mjs";
+import { assertBatchCoverage, assertCleanAppStatus, assertSourceInventory, batchDetails, canonicalEdgeKey, classifyPath, extractCompilerImports, generatePlan, isNodeBuiltin, packageExportTarget, preProcessImportSpecifiers, resolvePathMappedFile, resolveWithCompilerModule, scanCssImports, scanHtmlImports } from "./analyze-ui-port.mjs";
 
 const fixtureRoot = path.join(path.dirname(fileURLToPath(import.meta.url)), "fixtures");
 
@@ -44,6 +44,20 @@ test("compiler module resolution honors a tsconfig path alias", () => {
     pathsBasePath: fixtureRoot,
   });
   assert.equal(resolved, path.join(fixtureRoot, "alias-target.ts"));
+});
+
+test("path mappings resolve static assets and distinguish missing alias targets", () => {
+  const options = {
+    baseUrl: fixtureRoot,
+    paths: { "@/*": ["*"] },
+    pathsBasePath: fixtureRoot,
+  };
+  assert.deepEqual(resolvePathMappedFile("@/alias-target.svg", options, fixtureRoot), {
+    matched: true,
+    path: path.join(fixtureRoot, "alias-target.svg"),
+  });
+  assert.deepEqual(resolvePathMappedFile("@/missing.svg", options, fixtureRoot), { matched: true, path: null });
+  assert.deepEqual(resolvePathMappedFile("external-package", options, fixtureRoot), { matched: false, path: null });
 });
 
 test("builtin resolver recognizes bare and node-prefixed Node modules", () => {
@@ -87,10 +101,10 @@ test("the real app corpus is complete, partitioned and compiler-consistent", () 
   assert.equal(plan.graph.parsers.typescript.preProcessFileSpecifiers, 9184);
   assert.equal(plan.graph.typeOnlySemantics.allNamedTypeOnlyImports, 20);
   assert.equal(plan.graph.typeOnlySemantics.allCorpusNamedTypeOnlyImports, 22);
-  assert.equal(plan.graph.reachability.runtimeCompile, 782);
-  assert.equal(plan.graph.reachability.runtimeEmitted, 771);
-  assert.equal(plan.batchCoverage.crossIssueEdges, 1519);
-  assert.equal(plan.batchCoverage.crossIssueLogicalEdges, 1511);
+  assert.equal(plan.graph.reachability.runtimeCompile, 807);
+  assert.equal(plan.graph.reachability.runtimeEmitted, 796);
+  assert.equal(plan.batchCoverage.crossIssueEdges, 1524);
+  assert.equal(plan.batchCoverage.crossIssueLogicalEdges, 1516);
   assert.equal(plan.batchCoverage.missingCrossIssueBatchDependencies, 0);
   assert.equal(plan.batchPlan.kind, "reviewChunks");
   assert.equal(plan.batchPlan.executable, false);
@@ -111,6 +125,8 @@ test("the real app corpus is complete, partitioned and compiler-consistent", () 
   assert.equal(plan.workspacePackages.find((item) => item.name === "@bb/tsconfig").decision, "adapter");
   assert.equal(plan.resolver.configDiagnostics, 2);
   assert.equal(Object.values(plan.compileBlockers).flat().filter((blocker) => blocker.specifier?.startsWith("node:") || blocker.specifier === "path").length, 0);
+  assert.equal(Object.values(plan.compileBlockers).flat().filter((blocker) => blocker.specifier?.startsWith("@/assets/workspace-open-target-icons/")).length, 0);
+  assert.equal(plan.graph.edges.filter((edge) => typeof edge[edgeIndexes.specifier] === "string" && edge[edgeIndexes.specifier].startsWith("@/assets/workspace-open-target-icons/") && typeof edge[edgeIndexes.toFileIndexOrPath] === "number").length, 29);
   for (const file of ["src/components/ui/markdown-message-directives.tsx", "src/components/ui/markdown-prompt-mentions.tsx", "src/components/ui/markdown-thread-mentions.tsx"]) assert.equal(nodes.get(file).disposition, "retain-verbatim");
 });
 

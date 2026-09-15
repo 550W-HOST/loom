@@ -236,6 +236,9 @@ jobs:
       - name: UI source provenance
         run: BB_SRC="$RUNNER_TEMP/bb-ui" pnpm run provenance:check
 
+      - name: Product app port plan
+        run: pnpm run port-plan:test && pnpm run port-plan:check
+
       # Modifications, additions and removals all have to fail: the bundle is
       # generated, so any difference means the committed UI is wrong. The
       # product app snapshot is checked separately from the reference client;

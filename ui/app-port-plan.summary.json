@@ -1,7 +1,7 @@
 {
   "format": "loom.app-port-plan-summary/v1",
   "plan": "ui/app-port-plan.json",
-  "planBytes": 1956784,
+  "planBytes": 1955646,
   "source": {
     "root": "apps/app/src",
     "trackedFiles": 1437,
@@ -9,9 +9,9 @@
   },
   "summary": {
     "nodes": 1437,
-    "runtimeReachable": 771,
-    "runtimeCompileReachable": 782,
-    "runtimeEmittedReachable": 771,
+    "runtimeReachable": 796,
+    "runtimeCompileReachable": 807,
+    "runtimeEmittedReachable": 796,
     "dispositions": {
       "retain-verbatim": 640,
       "adapt-boundary": 87,
@@ -21,9 +21,9 @@
     },
     "edges": 9125,
     "blockers": {
-      "runtime": 156,
+      "runtime": 132,
       "test": 146,
-      "story": 25,
+      "story": 20,
       "build": 13
     },
     "workspacePackages": 124
@@ -3922,13 +3922,12 @@
   },
   "blockers": {
     "runtime": {
-      "count": 156,
+      "count": 132,
       "categories": {
         "unresolved-workspace-package": 118,
         "unresolved-workspace-export": 6,
         "conditional-import": 3,
         "unresolved-local": 4,
-        "unresolved-external": 24,
         "dynamic-nonliteral": 1
       }
     },
@@ -3941,12 +3940,11 @@
       }
     },
     "story": {
-      "count": 25,
+      "count": 20,
       "categories": {
         "unresolved-workspace-package": 18,
         "unresolved-workspace-export": 1,
-        "unresolved-local": 1,
-        "unresolved-external": 5
+        "unresolved-local": 1
       }
     },
     "build": {
@@ -4033,14 +4031,14 @@
     "assigned": 1437,
     "missing": [],
     "duplicates": [],
-    "crossStageEdges": 3488,
+    "crossStageEdges": 3518,
     "missingCrossStageEdges": 0,
-    "crossChunkEdges": 3488,
-    "crossChunkOccurrences": 3500,
-    "crossIssueEdges": 1519,
-    "crossIssueOccurrences": 1524,
-    "crossIssueLogicalEdges": 1511,
-    "crossIssueLogicalOccurrences": 1516,
+    "crossChunkEdges": 3518,
+    "crossChunkOccurrences": 3530,
+    "crossIssueEdges": 1524,
+    "crossIssueOccurrences": 1529,
+    "crossIssueLogicalEdges": 1516,
+    "crossIssueLogicalOccurrences": 1521,
     "missingCrossIssueBatchDependencies": 0
   },
   "batchPlan": {
@@ -4076,10 +4074,10 @@
         "cyclic": true
       }
     ],
-    "crossIssueEdges": 1519,
-    "crossIssueLogicalEdges": 1511,
-    "crossIssueOccurrences": 1524,
-    "crossIssueLogicalOccurrences": 1516,
+    "crossIssueEdges": 1524,
+    "crossIssueLogicalEdges": 1516,
+    "crossIssueOccurrences": 1529,
+    "crossIssueLogicalOccurrences": 1521,
     "crossIssueCycles": 1,
     "crossStageConflict": true
   },
@@ -4383,7 +4381,7 @@
           "asset-build",
           "retain-verbatim"
         ],
-        "dependencyCount": 135,
+        "dependencyCount": 158,
         "dependsOnBatchIds": [
           "W-603-01",
           "W-603-02",
@@ -4657,7 +4655,7 @@
           "delete-unsupported",
           "verification-only"
         ],
-        "dependencyCount": 179,
+        "dependencyCount": 183,
         "dependsOnBatchIds": [
           "W-603-01",
           "W-603-02",
