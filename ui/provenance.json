@@ -441,6 +441,43 @@
         "sha256": "3468d861059419aabef6452234f31889929ab6bb444e1d1ff35dd07ca025a919"
       }
     },
+    "productApp": {
+      "name": "@loom/product-app",
+      "upstreamPath": "apps/app",
+      "upstreamDisposition": "source-port-foundation",
+      "path": "apps/app",
+      "localSourcePath": "apps/app/src",
+      "localSourceDisposition": "loom-product-shell",
+      "sourceTree": {
+        "files": 10,
+        "sha256": "e61898eaff5ef2cbf4878adea63000168b456d741c7faa3df0a1dc83912b19cd"
+      },
+      "packageJson": {
+        "bytes": 817,
+        "sha256": "d45c94734b997db7707ba832b6ddbbe4c97cd0971a120ec5b25357070e170a76"
+      },
+      "dependencies": {
+        "dependencies": {
+          "@bb/domain": "workspace:*",
+          "@fontsource-variable/inter": "^5.2.8",
+          "lucide-react": "^1.23.0",
+          "react": "^19.0.0",
+          "react-dom": "^19.0.0"
+        },
+        "devDependencies": {
+          "@types/node": "^22.0.0",
+          "@types/react": "^19.0.0",
+          "@types/react-dom": "^19.0.0",
+          "playwright": "1.52.0",
+          "typescript": "^5.7.3",
+          "vite": "^7.3.6",
+          "vitest": "^3.2.4"
+        },
+        "peerDependencies": {},
+        "optionalDependencies": {}
+      },
+      "dependencyDigest": "7c7615a9cec3940ac8523348ef3ace7fd1050441565dec4bda70c1498c205b2e"
+    },
     "packages": [
       {
         "name": "@bb/domain",
@@ -683,6 +720,12 @@
       }
     ],
     "imports": [
+      {
+        "package": "@loom/product-app",
+        "upstreamPath": "apps/app",
+        "localPath": "apps/app",
+        "disposition": "source-port-foundation"
+      },
       {
         "package": "@bb/domain",
         "upstreamPath": "packages/domain",

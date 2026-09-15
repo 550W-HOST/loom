@@ -29,7 +29,8 @@ on it and it can be validated on its own.
 - [x] The event model aligned with bb's `ThreadEvent` contract (35 provider event types) — see [`docs/event-model.md`](docs/event-model.md)
 - [ ] Persist domain entities (the domain registry is in-process and lost on restart)
 - [x] `loom-server` hosts the UI from its own origin; a client subscribes to `thread:{id}` through the relay and reconnects by subscribe-then-replay (`docs/ui.md`)
-- [ ] Check in the bb web UI (`apps/app`) and serve its built bundle unchanged via `LOOM_UI_DIR`
+- [x] Source-level product app shell (`apps/app`) has an independent Vite build; it is not the default server UI yet
+- [ ] Complete the bb product UI and serve its built bundle via `LOOM_UI_DIR`
 - [ ] Check in the Node execution plane (`apps/host-daemon`) against the daemon contract
   (`loom-daemon` is the reference implementation and exercises the whole contract today)
 - [x] Redis Streams relay backend for restart-transparent upgrades (`LOOM_REDIS_URL`)
@@ -50,6 +51,7 @@ crates/
 contracts/bb/                   generated JSON Schema from bb's contract packages
 tools/contract-export/          the exporter that produces contracts/bb
 ui/             the reference UI client: buildless, served by loom-server
+apps/app/       the source-level product app shell: independent Vite target
 deploy/         systemd units, environment templates, install/uninstall scripts,
                 the container images and a compose example
 docs/
@@ -77,11 +79,11 @@ docs/
   deployment-verification.md
 ```
 
-apps/app source is intentionally not copied as part of this stage; the
-source-level baseline, dependency closure and product-surface decisions are
-recorded in [`docs/ui-baseline.md`](docs/ui-baseline.md). The machine-checkable
-hashes and import list live in [`ui/provenance.json`](ui/provenance.json), and
-the projection package sync policy remains in
+The full bb `apps/app` source is intentionally not copied as part of this stage;
+the source-level baseline, product shell closure and product-surface decisions
+are recorded in [`docs/ui-baseline.md`](docs/ui-baseline.md). The machine-
+checkable hashes and import list live in [`ui/provenance.json`](ui/provenance.json),
+and the projection package sync policy remains in
 [`docs/ui-package-sync.md`](docs/ui-package-sync.md).
 
 Application code from the bb fork (`apps/`, `packages/`, `plugins/`) lands here
@@ -98,6 +100,8 @@ pnpm install
 pnpm build
 pnpm test
 pnpm provenance:check
+pnpm --filter @loom/product-app exec playwright install chromium
+pnpm ui:browser
 pnpm example
 ```
 

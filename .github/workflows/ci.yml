@@ -206,6 +206,9 @@ jobs:
       - name: pnpm test
         run: pnpm run test
 
+      - name: Product app runtime boundary
+        run: pnpm run ui:boundary
+
       # The same command the root `build` script runs first, and the one
       # docs/ci.md gives as the local equivalent; the packages' own `build` is
       # another `tsc --noEmit`, which the typecheck step above already ran. It

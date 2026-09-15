@@ -127,6 +127,22 @@ function localAppRecord(previous) {
   };
 }
 
+function localProductAppRecord(previous) {
+  const packageJson = readJson(path.join(repoRoot, "apps", "app", "package.json"));
+  return {
+    name: packageJson.name,
+    upstreamPath: previous?.upstreamPath ?? "apps/app",
+    upstreamDisposition: previous?.upstreamDisposition ?? "source-port-foundation",
+    path: "apps/app",
+    localSourcePath: "apps/app/src",
+    localSourceDisposition: previous?.localSourceDisposition ?? "loom-product-shell",
+    sourceTree: treeDigest("apps/app"),
+    packageJson: fileDigest("apps/app/package.json"),
+    dependencies: dependencySnapshot(packageJson),
+    dependencyDigest: dependencyDigest(packageJson),
+  };
+}
+
 function upstreamRecord(root, previous) {
   if (!root) return previous;
   const appPackageJson = readJson(path.join(root, "apps", "app", "package.json"));
@@ -184,15 +200,25 @@ function buildManifest(existing, upstreamRoot) {
       disposition: previous?.disposition ?? "retain-source",
     });
   });
+  const productApp = localProductAppRecord(existing?.local?.productApp);
   const local = {
     referenceApp: localAppRecord(existing?.local?.referenceApp ?? existing?.app),
+    productApp,
     packages: localPackages,
-    imports: localPackages.map((item) => ({
-      package: item.name,
-      upstreamPath: item.upstreamPath,
-      localPath: item.path,
-      disposition: item.disposition,
-    })),
+    imports: [
+      {
+        package: productApp.name,
+        upstreamPath: productApp.upstreamPath,
+        localPath: productApp.path,
+        disposition: productApp.upstreamDisposition,
+      },
+      ...localPackages.map((item) => ({
+        package: item.name,
+        upstreamPath: item.upstreamPath,
+        localPath: item.path,
+        disposition: item.disposition,
+      })),
+    ],
   };
 
   return {
@@ -264,6 +290,14 @@ function checkLocal(manifest) {
   assertEqual(dependencyDigest(localAppPackageJson), referenceApp.dependencyDigest, "local reference app dependency digest");
   assertEqual(fileDigest(referenceApp.bundlePath), referenceApp.bundle, "local reference app bundle");
 
+  const productApp = manifest.local.productApp;
+  const productAppPackageJson = readJson(path.join(repoRoot, productApp.path, "package.json"));
+  assertEqual(productAppPackageJson.name, productApp.name, "local product app package name");
+  assertEqual(treeDigest(productApp.path), productApp.sourceTree, "local product app source tree");
+  assertEqual(fileDigest(path.join(productApp.path, "package.json")), productApp.packageJson, "local product app package.json");
+  assertEqual(dependencySnapshot(productAppPackageJson), productApp.dependencies, "local product app dependencies");
+  assertEqual(dependencyDigest(productAppPackageJson), productApp.dependencyDigest, "local product app dependency digest");
+
   const expectedNames = PACKAGE_SOURCES.map(([name]) => name);
   assertEqual(manifest.local.packages.map((item) => item.name), expectedNames, "local package names");
   for (const item of manifest.local.packages) {
@@ -277,13 +311,24 @@ function checkLocal(manifest) {
     assertEqual(dependencyDigest(packageJson), item.dependencyDigest, `${item.name} local dependency digest`);
   }
 
-  assertEqual(manifest.local.imports.map((item) => item.package), expectedNames, "import package names");
-  for (let index = 0; index < manifest.local.imports.length; index += 1) {
-    const imported = manifest.local.imports[index];
-    const packageRecordValue = manifest.local.packages[index];
-    assertEqual(imported.localPath, packageRecordValue.path, `import ${index} local path`);
-    assertEqual(imported.upstreamPath, packageRecordValue.upstreamPath, `import ${index} upstream path`);
-    assertEqual(imported.disposition, packageRecordValue.disposition, `import ${index} disposition`);
+  const expectedImports = [
+    {
+      package: productApp.name,
+      upstreamPath: productApp.upstreamPath,
+      localPath: productApp.path,
+      disposition: productApp.upstreamDisposition,
+    },
+    ...manifest.local.packages.map((item) => ({
+      package: item.name,
+      upstreamPath: item.upstreamPath,
+      localPath: item.path,
+      disposition: item.disposition,
+    })),
+  ];
+  assertEqual(manifest.local.imports, expectedImports, "local import manifest");
+  assertEqual(manifest.local.imports.map((item) => item.package), [productApp.name, ...expectedNames], "import package names");
+  for (let index = 0; index < expectedImports.length; index += 1) {
+    assertEqual(manifest.local.imports[index], expectedImports[index], `import ${index}`);
   }
 
   const contracts = contractRecord(manifest.contracts);
