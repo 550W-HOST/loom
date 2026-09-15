@@ -11,8 +11,8 @@ UI package 追溯；不能改用 bb `main`、版本错位的 npm 包或 opaque b
 - pinned checkout 中 `apps/app` 的 tree、`package.json` bytes/SHA-256、完整
   dependency snapshot/digest，以及 7 个 upstream package tree/package.json
   dependency digest；
-- loom 中 reference app 与 adapted package 的独立 tree/package.json/digest、
-  workspace/runtime/development dependency 闭包；
+- loom 中 reference app、product app 与 adapted package 的独立
+  tree/package.json/digest、workspace/runtime/development dependency 闭包；
 - 当前生成的 `ui/app.js` 的 bytes/SHA-256，以及每个导入项的本地路径、上游
   路径和 disposition；
 - `contracts/bb/manifest.json` 的 hash、五份 JSON Schema artifact 的 hash，
@@ -39,10 +39,11 @@ artifact 或禁止 app import 漂移。设置 `BB_SRC` 或传入 `--upstream` �
 
 ## App 闭包
 
-当前没有把 bb 的 `apps/app` 复制进 loom，也没有把 bundle 当作 source。
+当前没有把 bb 的完整 `apps/app` 复制进 loom，也没有把 bundle 当作 source。
 `ui/src` 是 loom-native 的 reference client，`ui/app.js` 是其可重建的服务
-产物。`ui/provenance.json` 已验证 pinned checkout 的 `apps/app` source tree
-与 dependency digest，但这不表示它已经成为本地产品 app。上游 app 的
+产物；`apps/app` 是从同一 pin 开始的独立 product shell 构建目标。
+`ui/provenance.json` 同时验证 pinned checkout 的 `apps/app` source tree、
+本地 product app source tree 与 dependency digest。上游 app 的
 plugin SDK、plugin automation 及其他未纳入 local closure 的依赖，按下方
 product surface 矩阵移除或改由 loom-native 能力替代。后续引入产品 app 时，
 必须从同一个 bb commit 做 source-level 对照，逐项纳入下表允许的闭包；不
@@ -58,11 +59,12 @@ product surface 矩阵移除或改由 loom-native 能力替代。后续引入产
 | Core UI | `ui/packages/core-ui` | domain | 保留 source；纯 presentation helper |
 | Shared UI | `ui/packages/shared-ui` | React、Radix、icons、`clsx` 等 | 保留 source；由未来 app 按需引用，不能重复 vendor |
 | Desktop contract | `ui/packages/desktop-contract` | `zod` | 保留类型边界；不恢复 Electron/desktop runtime |
-| `apps/app` assembly | 不存在 | 需要未来 source port 和 route-by-route 接入 | 延后；本阶段只记录设计 |
+| Product app shell | `apps/app` | React/Vite entry、主题、资产与静态 workspace layout | 本阶段 source-level foundation |
+| `apps/app` assembly | `apps/app` | 需要未来 route-by-route 接入，暂不切默认发布目标 | 延后；reference client 继续保留 |
 | bb plugin runtime | 不存在 | 任意 JS plugin host、发现和生命周期 | 移除；禁止加入闭包 |
 
 七个 package 的传递 workspace 依赖，以及 runtime/development 外部依赖，均由
-manifest 机器计算；这让 source、build、test 三种闭包都可审阅。未来 app 应
+manifest 机器计算；这让 source、build、test 三种闭包都可审阅。product app 与未来页面应
 引用这些 workspace package，而不是再复制一份 domain、thread-view 或 shared
 UI。
 
@@ -104,6 +106,8 @@ action registry 中删除，不能留下 dead navigation。
 4. 运行 `node scripts/check-ui-provenance.mjs --write`，审阅 hash、imports 和
    disposition；source pin 变化必须和 package/contract 变化在同一 PR 说明。
 5. 运行 UI typecheck、test、build 以及 Rust contract/API coverage 检查。
+   首屏浏览器验收可运行 `pnpm exec playwright install chromium` 和
+   `pnpm ui:browser`；截图默认写入 `artifacts/product-app/`。
 
 本仓库是 hard fork，没有 upstream remote，也不维护 bb patch series；同步是
 有意的 source comparison 和最小移植，不是 cherry-pick upstream commit。
