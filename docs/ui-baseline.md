@@ -42,11 +42,12 @@ artifact 或禁止 app import 漂移。设置 `BB_SRC` 或传入 `--upstream` �
 当前没有把 bb 的 `apps/app` 复制进 loom，也没有把 bundle 当作 source。
 `ui/src` 是 loom-native 的 reference client，`ui/app.js` 是其可重建的服务
 产物。`ui/provenance.json` 已验证 pinned checkout 的 `apps/app` source tree
-与 dependency digest，但这不表示它已经成为本地产品 app。上游 app 的
-plugin SDK、plugin automation 及其他未纳入 local closure 的依赖，按下方
-product surface 矩阵移除或改由 loom-native 能力替代。后续引入产品 app 时，
-必须从同一个 bb commit 做 source-level 对照，逐项纳入下表允许的闭包；不
-允许通过 npm bundle 绕过源码审查。
+与 dependency digest，但这不表示它已经成为本地产品 app。上游的通用
+plugin SDK/host/marketplace 不进入发布 runtime；一方 Automations 产品能力
+则保留 UI，并由 loom-native typed API、scheduler、daemon 和 ACP 边界替代其
+generic plugin RPC。后续引入产品 app 时，必须先从同一个 bb commit 导入完整
+source snapshot，再通过机器可校验的 patch ledger 记录每一个删除或适配；不
+允许选择性重写界面，也不允许通过 npm bundle 绕过源码审查。
 
 | 层 | 当前路径 | 依赖/边界 | 决策 |
 | --- | --- | --- | --- |
@@ -82,6 +83,7 @@ action registry 中删除，不能留下 dead navigation。
 | workspace files、attachments、file preview | 保留 | 通过 server/daemon boundary；控制面不直接碰主机磁盘 |
 | terminal | 保留 | 使用 daemon terminal contract 和 relay；不嵌入 app 内本地执行 |
 | 外观、键盘、实验项、主题、UI 偏好 | 保留 | 使用 system settings surface；provider logo 采用固定 provider 数据 |
+| Automations | 保留并原生化 | 保留 get-bb overview/detail/editor、导航与交互；loom 原生实现 cron/once、agent/script、run history、恢复与 realtime，不开放通用 plugin runtime |
 | plugin/extension marketplace | 移除 | 删除导航、页面、加载器、registry 请求和 plugin lifecycle |
 | provider plugin 管理/安装/启停 | 移除 | provider 只通过 ACP adapter 和 loom 配置管理 |
 | skills、CLI skills、skill marketplace | 移除 | 删除导航、resource actions 和安装入口；不实现 skill 文件管理 |
@@ -97,13 +99,16 @@ action registry 中删除，不能留下 dead navigation。
 ## 同步流程
 
 1. 在只读 bb checkout 中确认目标 commit，并记录完整 commit 和 commit title。
-2. 对照对应的 `apps/app` 与 `packages/*` source tree，先更新依赖闭包和
-   surface 矩阵，再只移植符合 loom 边界的源码。
-3. 若 contract 也变化，运行 contract exporter，检查 route/event/wire diff，
+2. 完整导入对应的 `apps/app` source snapshot，校验文件集合、bytes、tree id
+   和逐文件 hash；snapshot 提交不允许本地改写。
+3. 在后续独立提交中按 patch ledger 删除不支持 surface、隔离 runtime 并适配
+   loom 输入边界；保留原 AppLayout、sidebar、composer、thread workspace、
+   Automations 和样式。
+4. 若 contract 也变化，运行 contract exporter，检查 route/event/wire diff，
    特别确认 149/149 的口径没有静默改变。
-4. 运行 `node scripts/check-ui-provenance.mjs --write`，审阅 hash、imports 和
+5. 运行 `node scripts/check-ui-provenance.mjs --write`，审阅 hash、imports 和
    disposition；source pin 变化必须和 package/contract 变化在同一 PR 说明。
-5. 运行 UI typecheck、test、build 以及 Rust contract/API coverage 检查。
+6. 运行 UI typecheck、test、build 以及 Rust contract/API coverage 检查。
 
 本仓库是 hard fork，没有 upstream remote，也不维护 bb patch series；同步是
-有意的 source comparison 和最小移植，不是 cherry-pick upstream commit。
+精确 source snapshot 加本仓库内可审计的适配提交，不是外部 patch series。
