@@ -16628,7 +16628,7 @@
         "name": "bb-plugin-automations",
         "upstreamPath": "plugins/automations",
         "disposition": "retain-source",
-        "gitTree": "8ce8d24238dc47f39ee4cc5e4e203600ddc8f0ed",
+        "gitTree": "9f05320452a860b1fa8090c0d407684997d7abf3",
         "path": "ui/packages/automations",
         "tree": {
           "files": 42,
