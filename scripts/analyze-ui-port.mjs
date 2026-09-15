@@ -9,6 +9,7 @@ import ts from "typescript";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const planPath = path.join(repoRoot, "ui", "app-port-plan.json");
+const reviewSummaryPath = path.join(repoRoot, "ui", "app-port-plan.summary.json");
 const expectedAppTree = "8ba6eb6f3d2f67f8ba2703f1fd0c123f788c6d52";
 const sourceRoot = "apps/app/src";
 
@@ -135,6 +136,7 @@ const PRESERVED_SURFACE_PREFIXES = [
 ];
 
 const PACKAGE_DECISION_OVERRIDES = new Map([
+  ["@bb/tsconfig", ["adapter", "adapt-build-config-boundary", false]],
   ["@bb/config", ["adapter", "adapt-config-boundary", false]],
   ["@bb/fuzzy-match", ["copy", "copy-source-utility", true]],
   ["@bb/host-daemon-contract", ["adapter", "adapt-daemon-boundary", false]],
@@ -169,7 +171,7 @@ function packageName(specifier) {
 }
 
 function isPackageSpecifier(specifier) {
-  return !specifier.startsWith(".") && !specifier.startsWith("/") && !specifier.startsWith("@/");
+  return !specifier.startsWith(".") && !specifier.startsWith("/") && !specifier.startsWith("@/") && !specifier.startsWith("node:");
 }
 
 function trackedFiles(repo, relativePath) {
@@ -306,6 +308,25 @@ export function extractCompilerImports(filePath, text) {
   }
   visit(sourceFile, []);
   return { imports, blockers };
+}
+
+export function preProcessImportSpecifiers(text) {
+  const sourceFile = ts.createSourceFile("preprocess.ts", text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  const ambientModuleSpans = [];
+  function collectAmbientModules(node) {
+    if (ts.isModuleDeclaration(node) && (node.flags & ts.NodeFlags.Ambient) !== 0) {
+      ambientModuleSpans.push({ start: node.getStart(sourceFile), end: node.end });
+    }
+    ts.forEachChild(node, collectAmbientModules);
+  }
+  collectAmbientModules(sourceFile);
+  return ts.preProcessFile(text, true, true).importedFiles
+    .filter((entry) => !ambientModuleSpans.some((span) => entry.pos >= span.start && entry.pos < span.end))
+    .map((entry) => entry.fileName);
+}
+
+export function resolveWithCompilerModule(specifier, containingFile, options, host = moduleResolutionHost()) {
+  return ts.resolveModuleName(specifier, containingFile, options, host).resolvedModule?.resolvedFileName ?? null;
 }
 
 function skipCssTrivia(text, start) {
@@ -580,6 +601,7 @@ function resolverFor(repo, app, options, packageMap, declared) {
     return { status: "unresolved-workspace-export", package: name };
   };
   return (specifier, containingFile) => {
+    if (specifier.startsWith("node:")) return { status: "builtin", package: specifier };
     const workspaceResult = isPackageSpecifier(specifier) ? resolveWorkspace(specifier) : null;
     if (workspaceResult) return workspaceResult;
     const resolved = resolveWithTs(specifier, containingFile);
@@ -589,7 +611,7 @@ function resolverFor(repo, app, options, packageMap, declared) {
       return { status: "resolved-external", package: packageName(specifier), path: resolved };
     }
     if (specifier.startsWith(".") || specifier.startsWith("/")) {
-      const base = specifier.startsWith("/") ? path.resolve(specifier) : path.resolve(path.dirname(containingFile), specifier);
+      const base = specifier.startsWith("/") ? path.join(app, specifier.slice(1)) : path.resolve(path.dirname(containingFile), specifier);
       for (const candidate of [base, ...[".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".css", ".json", ".svg", ".png"].map((extension) => `${base}${extension}`), ...["index.ts", "index.tsx", "index.js", "index.jsx"].map((entry) => path.join(base, entry))]) {
         if (fs.existsSync(candidate) && fs.statSync(candidate).isFile()) return { status: isInside(app, candidate) ? "resolved-local" : "resolved-repository", path: relativeTo(app, candidate) };
       }
@@ -612,14 +634,14 @@ function dependencyDeclarations(packageJson) {
 }
 
 function layerForPath(filePath) {
-  if (filePath.includes(".test.") || filePath.includes(".spec.")) return "test";
-  if (filePath.includes(".stories.") || filePath.includes(".story.")) return "story";
+  if (filePath.includes(".stories.") || filePath.includes(".story.") || filePath === "src/views/mobile-home-story-fixtures.tsx") return "story";
+  if (filePath.includes(".test.") || filePath.includes(".spec.") || filePath.startsWith("src/test/") || filePath.includes(".fixtures.")) return "test";
   if (filePath.startsWith(".ladle/") || filePath === "index.html" || !filePath.startsWith("src/")) return "build";
   return "runtime";
 }
 
 function isVerificationPath(filePath) {
-  return filePath.includes(".test.") || filePath.includes(".spec.") || filePath.includes(".stories.") || filePath.includes(".story.");
+  return filePath.includes(".test.") || filePath.includes(".spec.") || filePath.includes(".stories.") || filePath.includes(".story.") || filePath.startsWith("src/test/") || filePath.includes(".fixtures.") || filePath === "src/views/mobile-home-story-fixtures.tsx";
 }
 
 function underRoot(filePath, root) {
@@ -634,7 +656,7 @@ function surfaceTags(filePath, disposition) {
   const tags = new Set();
   if (disposition === "asset-build") tags.add("asset");
   if (disposition === "adapt-boundary") tags.add("boundary-adapter");
-  if (isVerificationPath(filePath)) tags.add(filePath.includes(".stories.") || filePath.includes(".story.") ? "story" : "test");
+  if (isVerificationPath(filePath)) tags.add(layerForPath(filePath) === "story" ? "story" : "test");
   if (AUTOMATION_PATHS.has(filePath) || filePath === "src/components/tools/Automations.stories.tsx") tags.add("automations");
   if (filePath === "src/App.tsx" || filePath.startsWith("src/views/RootCompose")) tags.add("runtime-main");
   if (filePath.startsWith("src/components/layout/") || filePath.startsWith("src/components/sidebar/")) tags.add("layout");
@@ -649,7 +671,7 @@ function surfaceTags(filePath, disposition) {
   return [...tags].sort();
 }
 
-function classifyPath(filePath, fileEdges = []) {
+export function classifyPath(filePath, fileEdges = [], reachability = { runtime: true, test: false, story: false, build: false }) {
   const extension = path.extname(filePath).toLowerCase();
   if (isVerificationPath(filePath)) {
     return { disposition: "verification-only", reasonCode: "test-or-story-root", preserveStructure: false };
@@ -661,11 +683,19 @@ function classifyPath(filePath, fileEdges = []) {
   if (unsupported) {
     return { disposition: "delete-unsupported", reasonCode: `unsupported-composition:${unsupported}`, preserveStructure: false };
   }
+  if (!reachability.runtime) {
+    return {
+      disposition: "verification-only",
+      reasonCode: reachability.story ? "story-only-reachable" : reachability.test ? "test-only-reachable" : reachability.build ? "build-only-reachable" : "unreachable-source-review",
+      preserveStructure: false,
+    };
+  }
   const unresolvedBoundary = fileEdges.find((edge) =>
     edge.status === "unresolved-workspace-package" ||
     edge.status === "unresolved-workspace-export" ||
     edge.status === "unresolved-local" ||
     edge.status === "non-literal" ||
+    edge.status === "unresolved-external" ||
     edge.package === "@get-bb/plugin-sdk",
   );
   if (unresolvedBoundary) {
@@ -684,8 +714,8 @@ function classifyPath(filePath, fileEdges = []) {
   return { disposition: "retain-verbatim", reasonCode: "runtime-graph-node", preserveStructure: false };
 }
 
-function canonicalEdgeKey(edge) {
-  return [edge.from, edge.origin, edge.kind, edge.specifier ?? "<non-literal>", edge.to ?? "<unresolved>"].join("\u0000");
+export function canonicalEdgeKey(edge) {
+  return [edge.from, edge.origin, edge.kind, edge.specifier ?? "<non-literal>", edge.to ?? "<unresolved>", Boolean(edge.typeOnly), Boolean(edge.conditional)].join("\u0000");
 }
 
 function walkReachability(roots, edgeMap) {
@@ -754,21 +784,28 @@ function batchFiles(paths, issue, size = 120) {
   return batches;
 }
 
-function batchDetails(rawBatches, edges, nodeByPath, issue) {
+export function batchDetails(rawBatches, edges, nodeByPath, issue) {
+  const batchByFile = new Map(rawBatches.flatMap((batch) => batch.files.map((file) => [file, batch])));
   return rawBatches.map((batch) => {
     const fileSet = new Set(batch.files);
     const dependencies = new Set();
+    const dependsOnBatchIds = new Set();
     for (const edge of edges) {
       if (!fileSet.has(edge.from)) continue;
-      if (edge.to && !fileSet.has(edge.to)) dependencies.add(edge.to);
-      else if (edge.package) dependencies.add(`package:${edge.package}`);
-      else if (edge.status !== "resolved-local" && edge.specifier) dependencies.add(`specifier:${edge.specifier}`);
+      if (edge.to && !fileSet.has(edge.to)) {
+        dependencies.add(edge.to);
+        const dependencyBatch = batchByFile.get(edge.to);
+        if (dependencyBatch && dependencyBatch.id !== batch.id) dependsOnBatchIds.add(dependencyBatch.id);
+      }
+      if (edge.package) dependencies.add(`package:${edge.package}`);
+      if (!edge.to && !edge.package && edge.status !== "resolved-local" && edge.specifier) dependencies.add(`specifier:${edge.specifier}`);
     }
     const cutPoints = batch.files.filter((file) => explicitUnsupportedRoot(file) || ADAPTER_BOUNDARY_PATHS.has(file));
     if (cutPoints.length === 0) cutPoints.push(issue === "W-603" ? "preserve-product-composition" : "unsupported-composition-policy");
     return {
       ...batch,
-      dependencies: [...dependencies].sort().slice(0, 80),
+      dependencies: [...dependencies].sort(),
+      dependsOnBatchIds: [...dependsOnBatchIds].sort(),
       cutPoints: [...new Set(cutPoints)].sort(),
       verificationCommands: [
         "pnpm run port-plan:check",
@@ -778,6 +815,71 @@ function batchDetails(rawBatches, edges, nodeByPath, issue) {
       dispositions: [...new Set(batch.files.map((file) => nodeByPath.get(file)?.disposition).filter(Boolean))].sort(),
     };
   });
+}
+
+function batchDependencyGraph(batchGroups) {
+  const batches = Object.values(batchGroups).flat();
+  const dependencies = new Map(batches.map((batch) => [batch.id, new Set(batch.dependsOnBatchIds)]));
+  const indexById = new Map();
+  const lowLinkById = new Map();
+  const stack = [];
+  const onStack = new Set();
+  const components = [];
+  let nextIndex = 0;
+  function visit(id) {
+    indexById.set(id, nextIndex);
+    lowLinkById.set(id, nextIndex);
+    nextIndex += 1;
+    stack.push(id);
+    onStack.add(id);
+    for (const dependency of dependencies.get(id) ?? []) {
+      if (!indexById.has(dependency)) {
+        visit(dependency);
+        lowLinkById.set(id, Math.min(lowLinkById.get(id), lowLinkById.get(dependency)));
+      } else if (onStack.has(dependency)) {
+        lowLinkById.set(id, Math.min(lowLinkById.get(id), indexById.get(dependency)));
+      }
+    }
+    if (lowLinkById.get(id) !== indexById.get(id)) return;
+    const component = [];
+    let member;
+    do {
+      member = stack.pop();
+      onStack.delete(member);
+      component.push(member);
+    } while (member !== id);
+    components.push(component.sort());
+  }
+  for (const batch of batches) if (!indexById.has(batch.id)) visit(batch.id);
+  components.sort((left, right) => left[0].localeCompare(right[0]));
+  const componentOf = new Map(components.flatMap((component, componentIndex) => component.map((id) => [id, componentIndex])));
+  const componentDependencies = components.map(() => new Set());
+  for (const [id, ids] of dependencies) {
+    const component = componentOf.get(id);
+    for (const dependency of ids) {
+      const dependencyComponent = componentOf.get(dependency);
+      if (dependencyComponent !== undefined && dependencyComponent !== component) componentDependencies[component].add(dependencyComponent);
+    }
+  }
+  const pending = componentDependencies.map((ids) => ids.size);
+  const dependents = components.map(() => new Set());
+  for (const [component, ids] of componentDependencies.entries()) for (const dependency of ids) dependents[dependency].add(component);
+  const ready = pending.map((count, component) => count === 0 ? component : null).filter((component) => component !== null);
+  const dependencyOrder = [];
+  while (ready.length) {
+    const component = ready.shift();
+    dependencyOrder.push(component);
+    for (const dependent of dependents[component]) {
+      pending[dependent] -= 1;
+      if (pending[dependent] === 0) ready.push(dependent);
+    }
+  }
+  if (dependencyOrder.length !== components.length) throw new Error("batch dependency graph condensation is not acyclic");
+  return {
+    dependsOnBatchIds: Object.fromEntries([...dependencies.entries()].map(([id, ids]) => [id, [...ids].sort()])),
+    stronglyConnectedComponents: components.map((ids, component) => ({ component, batchIds: ids, cyclic: ids.length > 1 || dependencies.get(ids[0])?.has(ids[0]) === true })),
+    dependencyOrder,
+  };
 }
 
 const EDGE_FIELDS = ["fromFileIndex", "kind", "specifier", "toFileIndexOrPath", "status", "typeOnly", "conditional", "package", "occurrences"];
@@ -800,14 +902,12 @@ function exactSnapshotCheck(repo, sourceFiles) {
   const tree = gitTree(repo, "apps/app");
   if (tree !== expectedAppTree) throw new Error(`apps/app git tree changed: expected ${expectedAppTree}, got ${tree}`);
   if (sourceFiles.length !== 1437) throw new Error(`apps/app/src tracked file count changed: expected 1437, got ${sourceFiles.length}`);
-  try {
-    const diff = execFileSync("git", ["-C", repo, "diff", "--name-only", "--", "apps/app"], { encoding: "utf8" }).trim();
-    if (diff) throw new Error(`apps/app has local changes: ${diff.split(/\r?\n/)[0]}`);
-    const untracked = execFileSync("git", ["-C", repo, "ls-files", "--others", "--exclude-standard", "--", "apps/app"], { encoding: "utf8" }).trim();
-    if (untracked) throw new Error(`apps/app has untracked files: ${untracked.split(/\r?\n/)[0]}`);
-  } catch (error) {
-    if (error.message.includes("apps/app has local changes")) throw error;
-  }
+  const status = execFileSync("git", ["-C", repo, "status", "--porcelain=v1", "--untracked-files=all", "--", "apps/app"], { encoding: "utf8" }).trim();
+  assertCleanAppStatus(status);
+}
+
+export function assertCleanAppStatus(status) {
+  if (status.trim()) throw new Error(`apps/app has staged, unstaged, or untracked changes: ${status.trim().split(/\r?\n/)[0]}`);
 }
 
 export function assertSourceInventory(sourceFiles) {
@@ -815,6 +915,10 @@ export function assertSourceInventory(sourceFiles) {
   if (sourceFiles.length !== 1437 || unique.size !== sourceFiles.length) {
     throw new Error(`unclassified source inventory: expected 1437 unique tracked files, got ${sourceFiles.length} (${unique.size} unique)`);
   }
+}
+
+export function assertBatchCoverage(batchCoverage) {
+  if (batchCoverage.missing.length || batchCoverage.duplicates.length || batchCoverage.assigned !== batchCoverage.expected) throw new Error("W-603/W-604 batch partition is incomplete");
 }
 
 export function analyzeApp({ repo = repoRoot, app = path.join(repo, "apps", "app") } = {}) {
@@ -828,6 +932,7 @@ export function analyzeApp({ repo = repoRoot, app = path.join(repo, "apps", "app
   const resolver = resolverFor(repo, app, config.options, packageMap, declarations);
   const edges = [];
   const compilerRecords = [];
+  const preProcessRecords = [];
   const blockers = [];
   const actualImports = new Map();
   const edgeMap = new Map();
@@ -873,9 +978,10 @@ export function analyzeApp({ repo = repoRoot, app = path.join(repo, "apps", "app
     const text = fs.readFileSync(absolute, "utf8");
     if (SOURCE_EXTENSIONS.has(extension)) {
       const extracted = extractCompilerImports(absolute, text);
+      preProcessRecords.push(...preProcessImportSpecifiers(text).map((specifier) => ({ from: file, specifier })));
       for (const record of extracted.imports) {
         const edge = addEdge(file, { ...record, specifier: record.specifier }, "typescript");
-        compilerRecords.push({ from: file, kind: record.kind, specifier: record.specifier, line: record.line });
+        compilerRecords.push({ from: file, kind: record.kind, specifier: record.specifier, typeOnly: Boolean(record.typeOnly), conditional: Boolean(record.conditional), line: record.line });
         if (isPackageSpecifier(record.specifier)) {
           const name = packageName(record.specifier);
           const actual = actualImports.get(name) ?? { total: 0, runtime: 0, test: 0, story: 0 };
@@ -893,7 +999,7 @@ export function analyzeApp({ repo = repoRoot, app = path.join(repo, "apps", "app
       }
       for (const dynamicBlocker of extracted.blockers) {
         const edge = addEdge(file, { ...dynamicBlocker, specifier: null, kind: dynamicBlocker.kind }, "typescript");
-        compilerRecords.push({ from: file, kind: dynamicBlocker.kind, specifier: null, line: dynamicBlocker.line });
+        compilerRecords.push({ from: file, kind: dynamicBlocker.kind, specifier: null, typeOnly: false, conditional: Boolean(dynamicBlocker.conditional), line: dynamicBlocker.line });
         blockers.push({ ...makeBlocker(edge, layerForPath(file), dynamicBlocker.kind, dynamicBlocker.expression), line: dynamicBlocker.line });
       }
     } else if (CSS_EXTENSIONS.has(extension)) {
@@ -909,15 +1015,20 @@ export function analyzeApp({ repo = repoRoot, app = path.join(repo, "apps", "app
     }
   }
 
-  const consistencyKey = (record) => [record.from, record.kind, record.specifier].join("\u0000");
+  const consistencyKey = (record) => [record.from, record.kind, record.specifier, record.typeOnly, record.conditional].join("\u0000");
   const compilerKeys = compilerRecords.map(consistencyKey).sort();
   const graphCompilerKeys = edges
     .filter((edge) => edge.origin === "typescript")
-    .flatMap((edge) => Array.from({ length: edge.occurrences ?? 1 }, () => [edge.from, edge.kind, edge.specifier].join("\u0000")))
+    .flatMap((edge) => Array.from({ length: edge.occurrences ?? 1 }, () => [edge.from, edge.kind, edge.specifier, Boolean(edge.typeOnly), Boolean(edge.conditional)].join("\u0000")))
     .sort();
   const missing = compilerKeys.filter((key, index) => key !== graphCompilerKeys[index]);
   const extra = graphCompilerKeys.filter((key, index) => key !== compilerKeys[index]);
   if (missing.length || extra.length) throw new Error(`compiler import graph mismatch: missing=${missing.length} extra=${extra.length}`);
+  const compilerLiteralKeys = compilerRecords.filter((record) => record.specifier !== null).map((record) => `${record.from}\u0000${record.specifier}`).sort();
+  const preProcessKeys = preProcessRecords.map((record) => `${record.from}\u0000${record.specifier}`).sort();
+  const preProcessMissing = compilerLiteralKeys.filter((key, index) => key !== preProcessKeys[index]);
+  const preProcessExtra = preProcessKeys.filter((key, index) => key !== compilerLiteralKeys[index]);
+  if (preProcessMissing.length || preProcessExtra.length) throw new Error(`preProcessFile import parity mismatch: missing=${preProcessMissing.length} extra=${preProcessExtra.length}`);
 
   const runtimeRoots = allFiles.includes("src/main.tsx") ? ["src/main.tsx"] : [];
   const testRoots = sourceFiles.filter((file) => layerForPath(file) === "test").sort();
@@ -929,7 +1040,12 @@ export function analyzeApp({ repo = repoRoot, app = path.join(repo, "apps", "app
   const buildReachability = walkReachability(buildRoots, edgeMap);
 
   const nodes = sourceFiles.sort().map((file) => {
-    const classification = classifyPath(file, edges.filter((edge) => edge.from === file));
+    const classification = classifyPath(file, edges.filter((edge) => edge.from === file), {
+      runtime: runtimeReachability.distance.has(file),
+      test: testReachability.distance.has(file),
+      story: storyReachability.distance.has(file),
+      build: buildReachability.distance.has(file),
+    });
     return {
       path: file,
       disposition: classification.disposition,
@@ -974,6 +1090,7 @@ export function analyzeApp({ repo = repoRoot, app = path.join(repo, "apps", "app
     "W-603": batchDetails(batchFiles(w603Paths, "W-603"), edges, nodeByPath, "W-603"),
     "W-604": batchDetails(batchFiles(w604Paths, "W-604"), edges, nodeByPath, "W-604"),
   };
+  const batchGraph = batchDependencyGraph(batches);
   const assigned = [...batches["W-603"], ...batches["W-604"]].flatMap((batch) => batch.files);
   const assignedCounts = new Map();
   for (const file of assigned) assignedCounts.set(file, (assignedCounts.get(file) ?? 0) + 1);
@@ -983,7 +1100,7 @@ export function analyzeApp({ repo = repoRoot, app = path.join(repo, "apps", "app
     missing: sourceFiles.filter((file) => !assignedCounts.has(file)),
     duplicates: [...assignedCounts.entries()].filter(([, count]) => count > 1).map(([file]) => file).sort(),
   };
-  if (batchCoverage.missing.length || batchCoverage.duplicates.length || assigned.length !== sourceFiles.length) throw new Error("W-603/W-604 batch partition is incomplete");
+  assertBatchCoverage(batchCoverage);
 
   const requiredAppEdge = edges.some((edge) => edge.from === "src/App.tsx" && edge.origin === "typescript" && edge.specifier === "react-router-dom");
   const requiredRouteEdge = edges.some((edge) => edge.from === "src/App.tsx" && edge.origin === "typescript" && edge.specifier === "./lib/route-paths");
@@ -1002,6 +1119,7 @@ export function analyzeApp({ repo = repoRoot, app = path.join(repo, "apps", "app
   return {
     format: "loom.app-port-plan/v1",
     generatedBy: "scripts/analyze-ui-port.mjs",
+    reviewSummary: "ui/app-port-plan.summary.json",
     source: {
       root: sourceRoot,
       trackedFiles: sourceFiles.length,
@@ -1029,6 +1147,7 @@ export function analyzeApp({ repo = repoRoot, app = path.join(repo, "apps", "app
         typescript: {
           files: allFiles.filter((file) => SOURCE_EXTENSIONS.has(path.extname(file).toLowerCase())).length,
           specifiers: compilerRecords.length,
+          preProcessFileSpecifiers: preProcessRecords.length,
         },
         css: {
           files: allFiles.filter((file) => CSS_EXTENSIONS.has(path.extname(file).toLowerCase())).length,
@@ -1043,7 +1162,7 @@ export function analyzeApp({ repo = repoRoot, app = path.join(repo, "apps", "app
         { source: "src/App.tsx", kind: "static", specifier: "react-router-dom" },
         { source: "src/App.tsx", kind: "static", specifier: "./lib/route-paths" },
       ],
-      externalModules: [...new Set(edges.filter((edge) => edge.package).map((edge) => edge.package))].sort(),
+      externalModules: [...new Set(edges.filter((edge) => edge.package && edge.status !== "builtin").map((edge) => edge.package))].sort(),
       reachability: {
         runtime: runtimeFiles.length,
         test: testReachability.distance.size,
@@ -1055,6 +1174,12 @@ export function analyzeApp({ repo = repoRoot, app = path.join(repo, "apps", "app
         graphSpecifiers: graphCompilerKeys.length,
         missing: [],
         extra: [],
+        preProcessFileParity: {
+          compilerLiteralSpecifiers: compilerLiteralKeys.length,
+          preProcessFileSpecifiers: preProcessKeys.length,
+          missing: [],
+          extra: [],
+        },
       },
     },
     policy: {
@@ -1066,6 +1191,7 @@ export function analyzeApp({ repo = repoRoot, app = path.join(repo, "apps", "app
     workspacePackages: packageDecisions,
     compileBlockers: blockerLayers,
     batches,
+    batchGraph,
     batchCoverage,
     assertions: {
       appImports: {
@@ -1096,8 +1222,60 @@ function stableJson(value) {
   return `${JSON.stringify(value)}\n`;
 }
 
+function reviewSummary(plan) {
+  const blockerCategories = Object.fromEntries(Object.entries(plan.compileBlockers).map(([layer, blockers]) => {
+    const categories = {};
+    for (const blocker of blockers) categories[blocker.category] = (categories[blocker.category] ?? 0) + 1;
+    return [layer, { count: blockers.length, categories }];
+  }));
+  return {
+    format: "loom.app-port-plan-summary/v1",
+    plan: "ui/app-port-plan.json",
+    planBytes: stableJson(plan).length,
+    source: plan.source,
+    summary: plan.summary,
+    dispositions: plan.summary.dispositions,
+    exceptions: {
+      boundary: plan.nodes.filter((node) => node.disposition === "adapt-boundary").map((node) => ({ path: node.path, reasonCode: node.reasonCode, preserveStructure: node.preserveStructure ?? false })),
+      unsupported: plan.nodes.filter((node) => node.disposition === "delete-unsupported").map((node) => ({ path: node.path, reasonCode: node.reasonCode })),
+      nonRuntime: plan.nodes.filter((node) => !node.runtimeReachable && node.disposition !== "asset-build").map((node) => ({ path: node.path, disposition: node.disposition, reasonCode: node.reasonCode })),
+    },
+    blockers: blockerCategories,
+    requiredAssertions: plan.assertions,
+    compilerConsistency: plan.graph.compilerImportConsistency,
+    parsers: plan.graph.parsers,
+    batchCoverage: plan.batchCoverage,
+    batchGraph: plan.batchGraph,
+    batches: Object.fromEntries(Object.entries(plan.batches).map(([issue, batches]) => [issue, batches.map((batch) => ({
+      id: batch.id,
+      fileCount: batch.files.length,
+      dispositions: batch.dispositions,
+      dependencyCount: batch.dependencies.length,
+      dependsOnBatchIds: batch.dependsOnBatchIds,
+      cutPoints: batch.cutPoints,
+      verificationCommands: batch.verificationCommands,
+    }))])),
+    workspacePackages: plan.workspacePackages.map((item) => ({
+      name: item.name,
+      declaredAs: item.declaredAs,
+      actualImports: item.actualImports,
+      runtimeImports: item.runtimeImports,
+      decision: item.decision,
+      reasonCode: item.reasonCode,
+      runtimeAllowed: item.runtimeAllowed,
+    })),
+  };
+}
+
+function stableReviewSummary(plan) {
+  const summary = JSON.stringify(reviewSummary(plan), null, 2);
+  if (summary.split("\n").length > 30000) throw new Error("ui/app-port-plan.summary.json is larger than 30000 lines");
+  return `${summary}\n`;
+}
+
 function checkPlan(plan) {
   assert.equal(plan.format, "loom.app-port-plan/v1");
+  assert.equal(plan.reviewSummary, "ui/app-port-plan.summary.json");
   assert.equal(plan.source.trackedFiles, 1437);
   assert.equal(plan.source.exactGitTree, expectedAppTree);
   assert.equal(plan.nodes.length, 1437);
@@ -1116,6 +1294,8 @@ function checkPlan(plan) {
   assert.equal(plan.batchCoverage.assigned, 1437);
   assert.equal(plan.graph.compilerImportConsistency.missing.length, 0);
   assert.equal(plan.graph.compilerImportConsistency.extra.length, 0);
+  assert.equal(plan.graph.compilerImportConsistency.preProcessFileParity.missing.length, 0);
+  assert.equal(plan.graph.compilerImportConsistency.preProcessFileParity.extra.length, 0);
   for (const issue of ["W-603", "W-604"]) {
     assert.ok(Array.isArray(plan.batches[issue]) && plan.batches[issue].length > 0);
     for (const batch of plan.batches[issue]) {
@@ -1140,11 +1320,18 @@ export function generatePlan(options = {}) {
 function run() {
   const shouldWrite = process.argv.includes("--write");
   const plan = generatePlan();
+  const summary = stableReviewSummary(plan);
   if (shouldWrite) fs.writeFileSync(planPath, stableJson(plan));
   else {
     if (!fs.existsSync(planPath)) throw new Error("ui/app-port-plan.json is missing; run node scripts/analyze-ui-port.mjs --write");
     const current = fs.readFileSync(planPath, "utf8");
     if (current !== stableJson(plan)) throw new Error("ui/app-port-plan.json is stale; run node scripts/analyze-ui-port.mjs --write and review the diff");
+  }
+  if (shouldWrite) fs.writeFileSync(reviewSummaryPath, summary);
+  else {
+    if (!fs.existsSync(reviewSummaryPath)) throw new Error("ui/app-port-plan.summary.json is missing; run node scripts/analyze-ui-port.mjs --write");
+    const currentSummary = fs.readFileSync(reviewSummaryPath, "utf8");
+    if (currentSummary !== summary) throw new Error("ui/app-port-plan.summary.json is stale; run node scripts/analyze-ui-port.mjs --write and review the diff");
   }
   console.log(`app port plan OK: ${plan.summary.nodes} nodes, ${plan.summary.edges} edges, ${plan.summary.blockers.runtime + plan.summary.blockers.test + plan.summary.blockers.story + plan.summary.blockers.build} blockers`);
 }
