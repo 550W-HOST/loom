@@ -158,7 +158,7 @@ const PRESERVED_SURFACE_PREFIXES = [
 ];
 
 const PACKAGE_DECISION_OVERRIDES = new Map([
-  ["@bb/tsconfig", ["adapter", "adapt-build-config-boundary", false]],
+  ["@bb/tsconfig", ["reuse", "pinned-exact-build-config", false]],
   ["@bb/config", ["adapter", "adapt-config-boundary", false]],
   ["@bb/fuzzy-match", ["copy", "copy-source-utility", true]],
   ["@bb/host-daemon-contract", ["adapter", "adapt-daemon-boundary", false]],
@@ -198,6 +198,11 @@ export function isNodeBuiltin(specifier) {
 
 function isPackageSpecifier(specifier) {
   return !specifier.startsWith(".") && !specifier.startsWith("/") && !specifier.startsWith("@/") && !isNodeBuiltin(specifier);
+}
+
+export function stripResourceQueryAndHash(specifier) {
+  const suffix = specifier.search(/[?#]/u);
+  return suffix < 0 ? specifier : specifier.slice(0, suffix);
 }
 
 function trackedFiles(repo, relativePath) {
@@ -690,15 +695,16 @@ function resolverFor(repo, app, options, packageMap, declared) {
       if (isInside(repo, resolved)) return { status: "resolved-repository", path: relativeTo(repo, resolved) };
       return { status: "resolved-external", package: packageName(specifier), path: resolved };
     }
-    const pathMapped = resolvePathMappedFile(specifier, options, app);
+    const filesystemSpecifier = stripResourceQueryAndHash(specifier);
+    const pathMapped = resolvePathMappedFile(filesystemSpecifier, options, app);
     if (pathMapped.path) {
       if (isInside(app, pathMapped.path)) return { status: "resolved-local", path: relativeTo(app, pathMapped.path) };
       if (isInside(repo, pathMapped.path)) return { status: "resolved-repository", path: relativeTo(repo, pathMapped.path) };
       return { status: "resolved-external", package: packageName(specifier), path: pathMapped.path };
     }
     if (pathMapped.matched) return { status: "unresolved-local" };
-    if (specifier.startsWith(".") || specifier.startsWith("/")) {
-      const base = specifier.startsWith("/") ? path.join(app, specifier.slice(1)) : path.resolve(path.dirname(containingFile), specifier);
+    if (filesystemSpecifier.startsWith(".") || filesystemSpecifier.startsWith("/")) {
+      const base = filesystemSpecifier.startsWith("/") ? path.join(app, filesystemSpecifier.slice(1)) : path.resolve(path.dirname(containingFile), filesystemSpecifier);
       for (const candidate of [base, ...[".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".css", ".json", ".svg", ".png"].map((extension) => `${base}${extension}`), ...["index.ts", "index.tsx", "index.js", "index.jsx"].map((entry) => path.join(base, entry))]) {
         if (fs.existsSync(candidate) && fs.statSync(candidate).isFile()) return { status: isInside(app, candidate) ? "resolved-local" : "resolved-repository", path: relativeTo(app, candidate) };
       }
@@ -1528,7 +1534,7 @@ function checkPlan(plan) {
   assert.equal(plan.graph.compilerImportConsistency.preProcessFileParity.missing.length, 0);
   assert.equal(plan.graph.compilerImportConsistency.preProcessFileParity.extra.length, 0);
   assert.equal(plan.graph.typeOnlySemantics.allNamedTypeOnlyImports, 20);
-  assert.equal(plan.resolver.configDiagnostics, 2);
+  assert.equal(plan.resolver.configDiagnostics, 0);
   for (const issue of ["W-603", "W-604"]) {
     assert.ok(Array.isArray(plan.batches[issue]) && plan.batches[issue].length > 0);
     for (const batch of plan.batches[issue]) {

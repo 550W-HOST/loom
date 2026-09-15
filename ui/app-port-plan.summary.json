@@ -1,7 +1,7 @@
 {
   "format": "loom.app-port-plan-summary/v1",
   "plan": "ui/app-port-plan.json",
-  "planBytes": 1955646,
+  "planBytes": 1952147,
   "source": {
     "root": "apps/app/src",
     "trackedFiles": 1437,
@@ -13,24 +13,24 @@
     "runtimeCompileReachable": 807,
     "runtimeEmittedReachable": 796,
     "dispositions": {
-      "retain-verbatim": 640,
-      "adapt-boundary": 87,
+      "retain-verbatim": 649,
+      "adapt-boundary": 78,
       "delete-unsupported": 56,
       "verification-only": 626,
       "asset-build": 28
     },
     "edges": 9125,
     "blockers": {
-      "runtime": 132,
-      "test": 146,
-      "story": 20,
-      "build": 13
+      "runtime": 118,
+      "test": 145,
+      "story": 19,
+      "build": 10
     },
     "workspacePackages": 124
   },
   "dispositions": {
-    "retain-verbatim": 640,
-    "adapt-boundary": 87,
+    "retain-verbatim": 649,
+    "adapt-boundary": 78,
     "delete-unsupported": 56,
     "verification-only": 626,
     "asset-build": 28
@@ -60,11 +60,6 @@
       {
         "path": "src/components/layout/AppLayout.tsx",
         "reasonCode": "loom-boundary-preserves-composition",
-        "preserveStructure": true
-      },
-      {
-        "path": "src/components/pickers/picker-search.ts",
-        "reasonCode": "compiler-unresolved-boundary",
         "preserveStructure": true
       },
       {
@@ -188,17 +183,7 @@
         "preserveStructure": true
       },
       {
-        "path": "src/components/settings/UpdatesSettingsSection.tsx",
-        "reasonCode": "compiler-unresolved-boundary",
-        "preserveStructure": true
-      },
-      {
         "path": "src/components/settings/UsageLimitsSettingsSection.tsx",
-        "reasonCode": "compiler-unresolved-boundary",
-        "preserveStructure": true
-      },
-      {
-        "path": "src/components/settings/changelog-preview.ts",
         "reasonCode": "compiler-unresolved-boundary",
         "preserveStructure": true
       },
@@ -253,11 +238,6 @@
         "preserveStructure": true
       },
       {
-        "path": "src/components/ui/bb-logo.tsx",
-        "reasonCode": "compiler-unresolved-boundary",
-        "preserveStructure": true
-      },
-      {
         "path": "src/components/workspace-open-target/WorkspaceOpenTargetIcon.tsx",
         "reasonCode": "compiler-unresolved-boundary",
         "preserveStructure": true
@@ -273,27 +253,12 @@
         "preserveStructure": true
       },
       {
-        "path": "src/hooks/projectMentionSuggestions.ts",
-        "reasonCode": "compiler-unresolved-boundary",
-        "preserveStructure": true
-      },
-      {
         "path": "src/hooks/queries/environment-queries.ts",
         "reasonCode": "compiler-unresolved-boundary",
         "preserveStructure": true
       },
       {
         "path": "src/hooks/queries/system-queries.ts",
-        "reasonCode": "compiler-unresolved-boundary",
-        "preserveStructure": true
-      },
-      {
-        "path": "src/hooks/sectionMentionSuggestions.ts",
-        "reasonCode": "compiler-unresolved-boundary",
-        "preserveStructure": true
-      },
-      {
-        "path": "src/hooks/threadMentionSuggestions.ts",
         "reasonCode": "compiler-unresolved-boundary",
         "preserveStructure": true
       },
@@ -339,11 +304,6 @@
       },
       {
         "path": "src/lib/app-surface.ts",
-        "reasonCode": "compiler-unresolved-boundary",
-        "preserveStructure": true
-      },
-      {
-        "path": "src/lib/command-palette/palette-ranking.ts",
         "reasonCode": "compiler-unresolved-boundary",
         "preserveStructure": true
       },
@@ -444,11 +404,6 @@
       },
       {
         "path": "src/views/MachineSettingsView.tsx",
-        "reasonCode": "compiler-unresolved-boundary",
-        "preserveStructure": true
-      },
-      {
-        "path": "src/views/RootComposeEmptyWelcome.tsx",
         "reasonCode": "compiler-unresolved-boundary",
         "preserveStructure": true
       },
@@ -3922,38 +3877,33 @@
   },
   "blockers": {
     "runtime": {
-      "count": 132,
+      "count": 118,
       "categories": {
-        "unresolved-workspace-package": 118,
-        "unresolved-workspace-export": 6,
+        "unresolved-workspace-package": 113,
         "conditional-import": 3,
-        "unresolved-local": 4,
+        "unresolved-workspace-export": 1,
         "dynamic-nonliteral": 1
       }
     },
     "test": {
-      "count": 146,
+      "count": 145,
       "categories": {
         "unresolved-workspace-package": 144,
-        "unresolved-workspace-export": 1,
         "require-nonliteral": 1
       }
     },
     "story": {
-      "count": 20,
+      "count": 19,
       "categories": {
         "unresolved-workspace-package": 18,
-        "unresolved-workspace-export": 1,
         "unresolved-local": 1
       }
     },
     "build": {
-      "count": 13,
+      "count": 10,
       "categories": {
         "unresolved-local": 4,
-        "unresolved-workspace-export": 1,
-        "unresolved-workspace-package": 6,
-        "tsconfig-extends": 2
+        "unresolved-workspace-package": 6
       }
     }
   },
@@ -4268,7 +4218,7 @@
           "asset-build",
           "retain-verbatim"
         ],
-        "dependencyCount": 221,
+        "dependencyCount": 222,
         "dependsOnBatchIds": [
           "W-603-02",
           "W-603-03",
@@ -4348,7 +4298,7 @@
           "adapt-boundary",
           "retain-verbatim"
         ],
-        "dependencyCount": 245,
+        "dependencyCount": 246,
         "dependsOnBatchIds": [
           "W-603-01",
           "W-603-02",
@@ -4415,7 +4365,7 @@
           "adapt-boundary",
           "retain-verbatim"
         ],
-        "dependencyCount": 94,
+        "dependencyCount": 95,
         "dependsOnBatchIds": [
           "W-603-01",
           "W-603-02",
@@ -4513,7 +4463,7 @@
           "delete-unsupported",
           "verification-only"
         ],
-        "dependencyCount": 219,
+        "dependencyCount": 220,
         "dependsOnBatchIds": [
           "W-603-01",
           "W-603-02",
@@ -4576,7 +4526,7 @@
           "delete-unsupported",
           "verification-only"
         ],
-        "dependencyCount": 214,
+        "dependencyCount": 215,
         "dependsOnBatchIds": [
           "W-603-01",
           "W-603-02",
@@ -4625,7 +4575,7 @@
           "delete-unsupported",
           "verification-only"
         ],
-        "dependencyCount": 178,
+        "dependencyCount": 179,
         "dependsOnBatchIds": [
           "W-603-01",
           "W-603-02",
@@ -4951,8 +4901,8 @@
       "runtimeTypeImports": 0,
       "verificationValueImports": 0,
       "verificationTypeImports": 0,
-      "decision": "adapter",
-      "reasonCode": "adapt-build-config-boundary",
+      "decision": "reuse",
+      "reasonCode": "pinned-exact-build-config",
       "runtimeAllowed": false
     },
     {

@@ -10,7 +10,7 @@ UI package 追溯；不能改用 bb `main`、版本错位的 npm 包或 opaque b
 
 - manifest-driven source registry（`loom.ui-provenance/v3`）：app、package 与 standalone source/blob 的
   upstream/local path、disposition 和 snapshot kind；W-607 的 exact roots 与
-  跨 package 的 exact blob overlay 先以 planned entry 登记；
+  跨 package exact blob overlay 已 materialize，并逐项记录 Git tree/blob/mode；
 - pinned checkout 中 `apps/app` 的 tree、`package.json` bytes/SHA-256、完整
   dependency snapshot/digest，以及 7 个 upstream package tree/package.json
   dependency digest；
@@ -71,11 +71,14 @@ RPC。首次 app adaptation 必须把 app 状态从 `exact-snapshot` 切换为
 | Core UI | `ui/packages/core-ui` | domain | 保留 source；纯 presentation helper |
 | Shared UI | `ui/packages/shared-ui` | React、Radix、icons、`clsx` 等 | 保留 source；由未来 app 按需引用，不能重复 vendor |
 | Desktop contract | `ui/packages/desktop-contract` | `zod` | 保留类型边界；不恢复 Electron/desktop runtime |
+| TypeScript config | `ui/packages/tsconfig` | pinned bb build config | 精确源码复用；供 app analyzer 与后续 product build 使用 |
+| Fuzzy match | `ui/packages/fuzzy-match` | `fzf` | 精确源码复用；保留原 27 项 package tests |
+| Static product inputs | root changelog/metadata/logo，`ui/vitest.shared.ts` | pinned blobs | 精确内容与 mode；不引入平台 runtime |
 | `apps/app` assembly | `apps/app`（精确快照） | pinned bb source；当前不在 pnpm workspace，不进入默认 build/runtime | 已导入；后续独立 source port |
 | bb plugin runtime | 不存在 | 任意 JS plugin host、发现和生命周期 | 移除；禁止加入闭包 |
 
-七个 package 的传递 workspace 依赖，以及 runtime/development 外部依赖，均由
-manifest 机器计算；这让 source、build、test 三种闭包都可审阅。未来 app 应
+七个 adapted package、两个 exact source package 及其传递 workspace 依赖，以及
+runtime/development 外部依赖，均由 manifest 机器计算；这让 source、build、test 三种闭包都可审阅。未来 app 应
 引用这些 workspace package，而不是再复制一份 domain、thread-view 或 shared
 UI。
 

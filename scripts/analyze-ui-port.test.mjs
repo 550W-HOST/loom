@@ -4,7 +4,7 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
-import { assertBatchCoverage, assertCleanAppStatus, assertSourceInventory, batchDetails, canonicalEdgeKey, classifyPath, extractCompilerImports, generatePlan, isNodeBuiltin, packageExportTarget, preProcessImportSpecifiers, resolvePathMappedFile, resolveWithCompilerModule, scanCssImports, scanHtmlImports } from "./analyze-ui-port.mjs";
+import { assertBatchCoverage, assertCleanAppStatus, assertSourceInventory, batchDetails, canonicalEdgeKey, classifyPath, extractCompilerImports, generatePlan, isNodeBuiltin, packageExportTarget, preProcessImportSpecifiers, resolvePathMappedFile, resolveWithCompilerModule, scanCssImports, scanHtmlImports, stripResourceQueryAndHash } from "./analyze-ui-port.mjs";
 
 const fixtureRoot = path.join(path.dirname(fileURLToPath(import.meta.url)), "fixtures");
 
@@ -58,6 +58,12 @@ test("path mappings resolve static assets and distinguish missing alias targets"
   });
   assert.deepEqual(resolvePathMappedFile("@/missing.svg", options, fixtureRoot), { matched: true, path: null });
   assert.deepEqual(resolvePathMappedFile("external-package", options, fixtureRoot), { matched: false, path: null });
+});
+
+test("resource query and hash suffixes do not become filesystem path text", () => {
+  assert.equal(stripResourceQueryAndHash("../../CHANGELOG.md?raw"), "../../CHANGELOG.md");
+  assert.equal(stripResourceQueryAndHash("./icon.svg#symbol"), "./icon.svg");
+  assert.equal(stripResourceQueryAndHash("./plain.ts"), "./plain.ts");
 });
 
 test("builtin resolver recognizes bare and node-prefixed Node modules", () => {
@@ -122,10 +128,11 @@ test("the real app corpus is complete, partitioned and compiler-consistent", () 
   assert.equal(nodes.get("src/App.legacy-automation-routes.test.tsx").disposition, "verification-only");
   const edgeIndexes = Object.fromEntries(plan.graph.edgeFields.map((field, index) => [field, index]));
   assert.ok(plan.graph.edges.some((edge) => plan.graph.fileTable[edge[edgeIndexes.fromFileIndex]] === "src/App.tsx" && typeof edge[edgeIndexes.specifier] === "string" && edge[edgeIndexes.specifier].startsWith("@/") && typeof edge[edgeIndexes.toFileIndexOrPath] === "number"));
-  assert.equal(plan.workspacePackages.find((item) => item.name === "@bb/tsconfig").decision, "adapter");
-  assert.equal(plan.resolver.configDiagnostics, 2);
+  assert.equal(plan.workspacePackages.find((item) => item.name === "@bb/tsconfig").decision, "reuse");
+  assert.equal(plan.resolver.configDiagnostics, 0);
   assert.equal(Object.values(plan.compileBlockers).flat().filter((blocker) => blocker.specifier?.startsWith("node:") || blocker.specifier === "path").length, 0);
   assert.equal(Object.values(plan.compileBlockers).flat().filter((blocker) => blocker.specifier?.startsWith("@/assets/workspace-open-target-icons/")).length, 0);
+  assert.equal(Object.values(plan.compileBlockers).flat().filter((blocker) => blocker.specifier === "../../../../../CHANGELOG.md?raw").length, 0);
   assert.equal(plan.graph.edges.filter((edge) => typeof edge[edgeIndexes.specifier] === "string" && edge[edgeIndexes.specifier].startsWith("@/assets/workspace-open-target-icons/") && typeof edge[edgeIndexes.toFileIndexOrPath] === "number").length, 29);
   for (const file of ["src/components/ui/markdown-message-directives.tsx", "src/components/ui/markdown-prompt-mentions.tsx", "src/components/ui/markdown-thread-mentions.tsx"]) assert.equal(nodes.get(file).disposition, "retain-verbatim");
 });

@@ -105,7 +105,8 @@ This issue is the mechanical source import only; the reference client remains
 the served UI until a later integration stage. The exact snapshot and its patch
 ledger are checked by `scripts/check-ui-provenance.mjs`. The source/package
 registry is manifest-driven. Standalone exact source roots and blobs are
-registered alongside adapted packages; a file blob may overlay an adapted
+registered alongside adapted packages; W-607 materializes the pinned tsconfig,
+fuzzy-match, update-state, changelog, logo, and test-config inputs. A file blob may overlay an adapted
 package, while an exact directory root may not overlap any registered root.
 Every later app adaptation must switch the app registry entry to the closed
 `source-port`/`adapted-source` state and add a one-file ledger entry with its upstream and
