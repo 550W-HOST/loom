@@ -1,5 +1,5 @@
 {
-  "format": "loom.ui-provenance/v2",
+  "format": "loom.ui-provenance/v3",
   "generator": "scripts/check-ui-provenance.mjs",
   "registry": {
     "app": {
@@ -16003,6 +16003,7 @@
         "name": "@bb/domain",
         "upstreamPath": "packages/domain",
         "disposition": "retain-source",
+        "gitTree": "8395669cb2aad0c54e08c8be0920bc56fd9e86af",
         "path": "ui/packages/domain",
         "tree": {
           "files": 30,
@@ -16026,6 +16027,7 @@
         "name": "@bb/server-contract",
         "upstreamPath": "packages/server-contract",
         "disposition": "retain-source",
+        "gitTree": "f08b1afd098811f4b68bfa69b1396c0c5717abfa",
         "path": "ui/packages/server-contract",
         "tree": {
           "files": 3,
@@ -16050,6 +16052,7 @@
         "name": "@bb/thread-view",
         "upstreamPath": "packages/thread-view",
         "disposition": "retain-source",
+        "gitTree": "5366b1ad3ea053c7555ab80573323c55dc2e310e",
         "path": "ui/packages/thread-view",
         "tree": {
           "files": 61,
@@ -16079,6 +16082,7 @@
         "name": "@bb/client-core",
         "upstreamPath": "packages/client-core",
         "disposition": "retain-source",
+        "gitTree": "d5aa16e770331bae1e28eca81da28b047783cbef",
         "path": "ui/packages/client-core",
         "tree": {
           "files": 49,
@@ -16111,6 +16115,7 @@
         "name": "@bb/core-ui",
         "upstreamPath": "packages/core-ui",
         "disposition": "retain-source",
+        "gitTree": "782dafc487875296395d1a297f4cd0c9690717fc",
         "path": "ui/packages/core-ui",
         "tree": {
           "files": 9,
@@ -16138,6 +16143,7 @@
         "name": "@bb/shared-ui",
         "upstreamPath": "packages/shared-ui",
         "disposition": "retain-source",
+        "gitTree": "7421a6f4b9d291d11dc5f4757c105439c3a9bb66",
         "path": "ui/packages/shared-ui",
         "tree": {
           "files": 83,
@@ -16219,6 +16225,7 @@
         "name": "@bb/desktop-contract",
         "upstreamPath": "packages/desktop-contract",
         "disposition": "retain-source",
+        "gitTree": "d16aa807050a05a96b0f60e6b2a0dd2f9b9a8632",
         "path": "ui/packages/desktop-contract",
         "tree": {
           "files": 3,

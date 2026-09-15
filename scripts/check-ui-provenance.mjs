@@ -17,13 +17,17 @@ const DEFAULT_SOURCE = {
   commitTitle: "Cut startup JavaScript by 81 KiB and restore 5% bundle headroom (#3476)",
 };
 
+const PROVENANCE_FORMAT = "loom.ui-provenance/v3";
 const PATCH_LEDGER_FORMAT = "loom.ui-patch-ledger/v2";
 const PATCH_KINDS = new Set(["modify", "add", "delete", "rename", "mode-change"]);
 const SNAPSHOT_KINDS = new Set(["exact-snapshot", "adapted-source"]);
 const DISPOSITION_SNAPSHOT_KINDS = new Map([
   ["exact-snapshot", "exact-snapshot"],
   ["retain-source", "adapted-source"],
+  ["source-port", "adapted-source"],
 ]);
+const APP_DISPOSITIONS = new Set(["exact-snapshot", "source-port"]);
+const PACKAGE_DISPOSITIONS = new Set(["exact-snapshot", "retain-source"]);
 const STANDALONE_SOURCE_KINDS = new Set(["blob", "source"]);
 const MATERIALIZATION_STATES = new Set(["planned", "materialized"]);
 const GLOB_CHARACTERS = /[*?\[\]{}]/;
@@ -348,8 +352,8 @@ function sourceRegistry(manifest) {
   assertRepositoryPath(app.upstreamPath, "manifest.registry.app.upstreamPath");
   assertRepositoryPath(app.localPath, "manifest.registry.app.localPath");
   assertDispositionSnapshotPair(app, "manifest.registry.app");
-  if (app.disposition !== "exact-snapshot") {
-    throw new Error("manifest.registry.app.disposition must be exact-snapshot");
+  if (!APP_DISPOSITIONS.has(app.disposition)) {
+    throw new Error(`manifest.registry.app.disposition must be one of ${[...APP_DISPOSITIONS].join(", ")}`);
   }
 
   if (!Array.isArray(registry.packages) || registry.packages.length === 0) {
@@ -368,6 +372,9 @@ function sourceRegistry(manifest) {
     assertRepositoryPath(item.upstreamPath, `manifest.registry.packages[${index}].upstreamPath`);
     assertRepositoryPath(item.localPath, `manifest.registry.packages[${index}].localPath`);
     assertDispositionSnapshotPair(item, `manifest.registry.packages[${index}]`);
+    if (!PACKAGE_DISPOSITIONS.has(item.disposition)) {
+      throw new Error(`manifest.registry.packages[${index}].disposition must be one of ${[...PACKAGE_DISPOSITIONS].join(", ")}`);
+    }
     if (names.has(item.name)) throw new Error(`manifest.registry has duplicate package name ${item.name}`);
     registerPath(upstreamEntries, {
       name: item.name,
@@ -597,6 +604,9 @@ function assertCleanGitPath(root, relativePath, label) {
 }
 
 function buildManifest(existing, upstreamRoot) {
+  if (existing?.format !== PROVENANCE_FORMAT) {
+    throw new Error(`unsupported manifest format; expected ${PROVENANCE_FORMAT}`);
+  }
   const registry = sourceRegistry(existing);
   const source = { ...DEFAULT_SOURCE, ...(existing?.source ?? {}) };
   const localPackages = registry.packages.map((entry) => {
@@ -604,6 +614,7 @@ function buildManifest(existing, upstreamRoot) {
     return packageRecord(entry.name, entry.localPath, repoRoot, {
       upstreamPath: entry.upstreamPath,
       disposition: previous?.disposition ?? entry.disposition,
+      gitTree: gitTreeId(entry.localPath, repoRoot),
     });
   });
   const local = {
@@ -631,18 +642,15 @@ function buildManifest(existing, upstreamRoot) {
         disposition: entry.disposition,
         materialization,
       };
-      if (repositoryPathExists(entry.localPath, repoRoot)) {
-        return standaloneRecord(entry, repoRoot, "local");
-      }
-      if (materialization === "materialized") {
-        throw new Error(`${entry.name}: materialized standalone source is missing at ${entry.localPath}`);
-      }
+      const exists = repositoryPathExists(entry.localPath, repoRoot);
+      assertMaterializationState(materialization, exists, entry.name);
+      if (exists) return standaloneRecord(entry, repoRoot, "local");
       return record;
     }),
   };
 
   return {
-    format: "loom.ui-provenance/v2",
+    format: PROVENANCE_FORMAT,
     generator: "scripts/check-ui-provenance.mjs",
     registry,
     source,
@@ -705,6 +713,15 @@ function repositoryPathExists(relativePath, root = repoRoot) {
   } catch (error) {
     if (error.code === "ENOENT") return false;
     throw error;
+  }
+}
+
+function assertMaterializationState(materialization, exists, label) {
+  if (materialization === "planned" && exists) {
+    throw new Error(`${label}: planned standalone source already exists locally`);
+  }
+  if (materialization === "materialized" && !exists) {
+    throw new Error(`${label}: materialized standalone source is missing locally`);
   }
 }
 
@@ -968,9 +985,8 @@ function assertLedgerMatchesDiff(rawPatches, actualPatches, upstreamPath = "apps
   return patches;
 }
 
-function checkPatchLedger(manifest, upstreamRoot) {
+function validatePatchLedger(manifest, ledger, upstreamRoot, localRoot = repoRoot) {
   const registry = sourceRegistry(manifest);
-  const ledger = readJson(patchLedgerPath);
   if (ledger.format !== PATCH_LEDGER_FORMAT) throw new Error(`unsupported app patch ledger format; expected ${PATCH_LEDGER_FORMAT}`);
   assertEqual(ledger.source, {
     repository: manifest.source.repository,
@@ -998,13 +1014,16 @@ function checkPatchLedger(manifest, upstreamRoot) {
     affectedFiles.add(affectedFile);
   }
   if (!Array.isArray(ledger.patches)) throw new Error("app patch ledger patches must be an array");
+  if (registry.app.disposition === "source-port" && !upstreamRoot) {
+    throw new Error("BB_SRC is required to verify a source-port app");
+  }
   if (!upstreamRoot && ledger.patches.length !== 0) {
     throw new Error("BB_SRC is required to recompute non-empty app patch ledger entries");
   }
   if (upstreamRoot) {
     const actualPatches = computePatchDiff(
       upstreamRoot,
-      repoRoot,
+      localRoot,
       registry.app.upstreamPath,
       registry.app.localPath,
     );
@@ -1017,6 +1036,10 @@ function checkPatchLedger(manifest, upstreamRoot) {
   } else {
     assertLedgerMatchesDiff(ledger.patches, [], registry.app.upstreamPath, registry.app.localPath);
   }
+}
+
+function checkPatchLedger(manifest, upstreamRoot) {
+  validatePatchLedger(manifest, readJson(patchLedgerPath), upstreamRoot);
 }
 
 function checkLocalProductApp(manifest, upstreamRoot) {
@@ -1036,6 +1059,9 @@ function checkLocalProductApp(manifest, upstreamRoot) {
     }, "local product app vs upstream snapshot");
     assertCleanGitPath(repoRoot, registry.app.localPath, "local product app");
     if (upstreamRoot) assertExactSourceEntry(registry.app, upstreamRoot, "product app exact snapshot");
+  } else {
+    if (!upstreamRoot) throw new Error("BB_SRC is required to verify a source-port app");
+    assertCleanGitPath(repoRoot, registry.app.localPath, "local source-port app");
   }
 }
 
@@ -1052,12 +1078,8 @@ function checkLocalStandaloneSources(manifest, upstreamRoot, registry) {
     const materialization = entry.materialization ?? "planned";
     assertEqual(item.materialization, materialization, `${item.name} local source materialization`);
     const exists = repositoryPathExists(entry.localPath, repoRoot);
-    if (!exists) {
-      if (materialization === "materialized") {
-        throw new Error(`${item.name}: materialized standalone source is missing at ${entry.localPath}`);
-      }
-      continue;
-    }
+    assertMaterializationState(materialization, exists, item.name);
+    if (!exists) continue;
     assertEqual(standaloneRecord(entry, repoRoot, "local"), item, `${item.name} local standalone source`);
     if (upstreamRoot) assertExactStandaloneEntry(entry, upstreamRoot, `${item.name} exact standalone source`);
   }
@@ -1117,8 +1139,10 @@ function checkUpstream(manifest, root) {
 }
 
 function checkLocal(manifest, upstreamRoot) {
+  if (manifest.format !== PROVENANCE_FORMAT) {
+    throw new Error(`unsupported manifest format; expected ${PROVENANCE_FORMAT}`);
+  }
   const registry = sourceRegistry(manifest);
-  if (manifest.format !== "loom.ui-provenance/v2") throw new Error("unsupported manifest format");
   if (!/^[0-9a-f]{40}$/.test(manifest.source?.commit ?? "")) {
     throw new Error("source.commit must be a full 40-character git commit");
   }
@@ -1145,7 +1169,9 @@ function checkLocal(manifest, upstreamRoot) {
     assertEqual(item.path, entry.localPath, `${item.name} local path`);
     assertEqual(item.upstreamPath, entry.upstreamPath, `${item.name} local upstream path`);
     assertEqual(item.disposition, entry.disposition, `${item.name} local disposition`);
-    gitTreeId(entry.localPath, repoRoot);
+    const actualGitTree = gitTreeId(entry.localPath, repoRoot);
+    if (typeof item.gitTree !== "string") throw new Error(`${item.name} local package gitTree is required`);
+    assertEqual(actualGitTree, item.gitTree, `${item.name} local git tree`);
     const packageJson = readJsonAt(path.posix.join(item.path, "package.json"), repoRoot, `${item.name} local package.json`);
     assertEqual(packageJson.name, item.name, `${item.name} local package name`);
     assertEqual(treeDigest(item.path), item.tree, `${item.name} local/adapted tree`);
@@ -1214,12 +1240,14 @@ function main() {
 }
 
 export {
-  assertLedgerMatchesDiff,
   assertExactBlobEntry,
   assertExactSourceEntry,
   assertExactStandaloneEntry,
+  assertLedgerMatchesDiff,
+  assertMaterializationState,
   computePatchDiff,
   sourceRegistry,
+  validatePatchLedger,
 };
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) main();

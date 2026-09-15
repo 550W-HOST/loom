@@ -107,8 +107,9 @@ ledger are checked by `scripts/check-ui-provenance.mjs`. The source/package
 registry is manifest-driven. Standalone exact source roots and blobs are
 registered alongside adapted packages; a file blob may overlay an adapted
 package, while an exact directory root may not overlap any registered root.
-Every later app adaptation must be a one-file ledger entry with its upstream and
-expected local hash/mode; the checker
+Every later app adaptation must switch the app registry entry to the closed
+`source-port`/`adapted-source` state and add a one-file ledger entry with its upstream and
+expected local hash/mode. In that state `BB_SRC` is mandatory and the checker
 recomputes the diff from `BB_SRC` instead of trusting the ledger alone.
 
 What `apps/app` needs to build, from the bb tree:

@@ -8,7 +8,7 @@ UI package 追溯；不能改用 bb `main`、版本错位的 npm 包或 opaque b
 
 可重现信息集中在 [`ui/provenance.json`](../ui/provenance.json)。它包含：
 
-- manifest-driven source registry：app、package 与 standalone source/blob 的
+- manifest-driven source registry（`loom.ui-provenance/v3`）：app、package 与 standalone source/blob 的
   upstream/local path、disposition 和 snapshot kind；W-607 的 exact roots 与
   跨 package 的 exact blob overlay 先以 planned entry 登记；
 - pinned checkout 中 `apps/app` 的 tree、`package.json` bytes/SHA-256、完整
@@ -56,7 +56,9 @@ issue、owner、reason，以及 upstream/local 的 path、SHA-256 和 git mode�
 因此未登记、重复、重叠、glob、路径、hash 或 mode 漂移都会失败。上游的通用 plugin
 SDK/host/marketplace 不进入发布 runtime；一方 Automations 产品能力则保留 UI，
 并由 loom-native typed API、scheduler、daemon 和 ACP 边界替代其 generic plugin
-RPC。后续 source port 必须在独立提交中通过同一个 ledger 记录每一个删除或适配；
+RPC。首次 app adaptation 必须把 app 状态从 `exact-snapshot` 切换为
+`source-port`/`adapted-source`；该状态强制提供 `BB_SRC` 并验证非空 ledger。
+后续 source port 必须在独立提交中通过同一个 ledger 记录每一个删除或适配；
 不允许选择性重写界面，也不允许通过 npm bundle 绕过源码审查。
 
 | 层 | 当前路径 | 依赖/边界 | 决策 |
@@ -118,7 +120,8 @@ action registry 中删除，不能留下 dead navigation。
    Automations 和样式。
 4. 若 contract 也变化，运行 contract exporter，检查 route/event/wire diff，
    特别确认 149/149 的口径没有静默改变。
-5. 在 source patch 提交中设置 `BB_SRC`，逐文件填写 `ui/app-patch-ledger.json`，
+5. 在 source patch 提交中把 app disposition 切换为 `source-port`，设置 `BB_SRC`，
+   逐文件填写 `ui/app-patch-ledger.json`，
    运行 `pnpm provenance:test` 覆盖 ledger、symlink、mode、source/blob registry
    的负例，再运行
    `node scripts/check-ui-provenance.mjs --write`，审阅 hash、imports 和

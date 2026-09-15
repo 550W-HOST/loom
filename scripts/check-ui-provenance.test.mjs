@@ -9,8 +9,10 @@ import {
   assertExactBlobEntry,
   assertExactSourceEntry,
   assertLedgerMatchesDiff,
+  assertMaterializationState,
   computePatchDiff,
   sourceRegistry,
+  validatePatchLedger,
 } from "./check-ui-provenance.mjs";
 
 const APP_PATH = "apps/app";
@@ -239,13 +241,74 @@ test("requires closed disposition and snapshot pairings", () => {
     disposition: "exact-snapshot",
     snapshot: { kind: "exact-snapshot" },
   })));
-  const manifest = registryManifest();
-  manifest.registry.app = {
-    ...manifest.registry.app,
+
+  const sourcePort = registryManifest();
+  sourcePort.registry.app = {
+    ...sourcePort.registry.app,
+    disposition: "source-port",
+    snapshot: { kind: "adapted-source" },
+  };
+  assert.doesNotThrow(() => sourceRegistry(sourcePort));
+
+  const invalidApp = registryManifest();
+  invalidApp.registry.app = {
+    ...invalidApp.registry.app,
     disposition: "retain-source",
     snapshot: { kind: "adapted-source" },
   };
-  expectFailure(() => sourceRegistry(manifest), "app.disposition must be exact-snapshot");
+  expectFailure(() => sourceRegistry(invalidApp), "app.disposition must be one of");
+
+  expectFailure(
+    () => sourceRegistry(registryManifest({ disposition: "source-port", snapshot: { kind: "adapted-source" } })),
+    "packages\\[0\\].disposition must be one of",
+  );
+});
+
+test("validates a non-empty source-port ledger against the complete recomputed diff", () => {
+  const { root, upstream, local } = fixtureRoots();
+  const manifest = registryManifest();
+  manifest.registry.app = {
+    ...manifest.registry.app,
+    disposition: "source-port",
+    snapshot: { kind: "adapted-source" },
+  };
+  manifest.source = { repository: "https://github.com/get-bb/bb", commit: "a".repeat(40) };
+  const actual = computePatchDiff(upstream, local, APP_PATH, APP_PATH);
+  const ledger = {
+    format: "loom.ui-patch-ledger/v2",
+    source: manifest.source,
+    import: { upstreamPath: APP_PATH, localPath: APP_PATH, disposition: "source-port" },
+    baseline: {
+      kind: "exact-snapshot",
+      owner: "test",
+      issue: "W-600",
+      reason: "fixture baseline",
+      affectedUpstreamFiles: [],
+    },
+    patches: actual.map((patch) => ledgerPatch(patch)),
+  };
+
+  assert.doesNotThrow(() => validatePatchLedger(manifest, ledger, upstream, local));
+  expectFailure(() => validatePatchLedger(manifest, { ...ledger, patches: ledger.patches.slice(1) }, upstream, local), "unregistered app");
+  const forged = structuredClone(ledger);
+  forged.patches[0].local.sha256 = "0".repeat(64);
+  expectFailure(() => validatePatchLedger(manifest, forged, upstream, local), "does not match the recomputed diff");
+  const extra = structuredClone(ledger);
+  extra.patches.push(ledgerPatch({
+    kind: "add",
+    upstream: { path: null, sha256: null, mode: null },
+    local: { path: "apps/app/extra.txt", sha256: "1".repeat(64), mode: "100644" },
+  }));
+  expectFailure(() => validatePatchLedger(manifest, extra, upstream, local), "does not match the recomputed diff");
+  expectFailure(() => validatePatchLedger(manifest, ledger, null, local), "BB_SRC is required");
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("enforces planned and materialized standalone source states bidirectionally", () => {
+  assert.doesNotThrow(() => assertMaterializationState("planned", false, "fixture"));
+  assert.doesNotThrow(() => assertMaterializationState("materialized", true, "fixture"));
+  expectFailure(() => assertMaterializationState("planned", true, "fixture"), "planned standalone source already exists");
+  expectFailure(() => assertMaterializationState("materialized", false, "fixture"), "materialized standalone source is missing");
 });
 
 test("registers standalone exact roots and adapted-package blob overlays without overlap", () => {
