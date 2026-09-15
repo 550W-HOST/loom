@@ -11,21 +11,15 @@ const manifestPath = path.join(repoRoot, "ui", "provenance.json");
 const patchLedgerPath = path.join(repoRoot, "ui", "app-patch-ledger.json");
 const contractManifestPath = path.join(repoRoot, "contracts", "bb", "manifest.json");
 
-const PACKAGE_SOURCES = [
-  ["@bb/domain", "domain"],
-  ["@bb/server-contract", "server-contract"],
-  ["@bb/thread-view", "thread-view"],
-  ["@bb/client-core", "client-core"],
-  ["@bb/core-ui", "core-ui"],
-  ["@bb/shared-ui", "shared-ui"],
-  ["@bb/desktop-contract", "desktop-contract"],
-];
-
 const DEFAULT_SOURCE = {
   repository: "https://github.com/get-bb/bb",
   commit: "fa1f44ebe9e5676004b669e48c99b3c7606466b6",
   commitTitle: "Cut startup JavaScript by 81 KiB and restore 5% bundle headroom (#3476)",
 };
+
+const PATCH_LEDGER_FORMAT = "loom.ui-patch-ledger/v2";
+const PATCH_KINDS = new Set(["modify", "add", "delete", "rename", "mode-change"]);
+const GLOB_CHARACTERS = /[*?\[\]{}]/;
 
 function fail(message) {
   console.error(`ui provenance: ${message}`);
@@ -48,6 +42,12 @@ function fileDigest(relativePath, root = repoRoot) {
   const absolutePath = path.join(root, relativePath);
   const bytes = fs.readFileSync(absolutePath);
   return { bytes: bytes.length, sha256: sha256Bytes(bytes) };
+}
+
+function fileMode(relativePath, root = repoRoot) {
+  const stat = fs.statSync(path.join(root, relativePath));
+  if (!stat.isFile()) throw new Error(`${relativePath}: expected a regular file`);
+  return (stat.mode & 0o111) === 0 ? "100644" : "100755";
 }
 
 function filesUnder(relativePath, root = repoRoot, includeAllFiles = false) {
@@ -127,10 +127,64 @@ function packageRecord(name, relativePath, root, extra = {}) {
   };
 }
 
-function localAppRecord(previous) {
+function assertRepositoryPath(value, label) {
+  if (typeof value !== "string" || value.length === 0) throw new Error(`${label} must be a non-empty path`);
+  if (value.startsWith("/") || value.includes("\\") || path.posix.normalize(value) !== value || value === ".") {
+    throw new Error(`${label} must be a normalized repository-relative path`);
+  }
+  if (value.split("/").includes("..")) throw new Error(`${label} may not escape the repository`);
+}
+
+function sourceRegistry(manifest) {
+  const registry = manifest?.registry;
+  if (!registry || typeof registry !== "object") {
+    throw new Error("manifest.registry is required; migrate the provenance manifest to the registry schema");
+  }
+  const app = registry.app;
+  if (!app || typeof app !== "object") throw new Error("manifest.registry.app is required");
+  for (const field of ["name", "upstreamPath", "localPath", "disposition"]) {
+    if (typeof app[field] !== "string" || app[field].length === 0) {
+      throw new Error(`manifest.registry.app.${field} is required`);
+    }
+  }
+  assertRepositoryPath(app.upstreamPath, "manifest.registry.app.upstreamPath");
+  assertRepositoryPath(app.localPath, "manifest.registry.app.localPath");
+  if (!app.snapshot || typeof app.snapshot.kind !== "string") {
+    throw new Error("manifest.registry.app.snapshot.kind is required");
+  }
+
+  if (!Array.isArray(registry.packages) || registry.packages.length === 0) {
+    throw new Error("manifest.registry.packages must be a non-empty array");
+  }
+  const names = new Set();
+  const upstreamPaths = new Set();
+  const localPaths = new Set();
+  for (const [index, item] of registry.packages.entries()) {
+    if (!item || typeof item !== "object") throw new Error(`manifest.registry.packages[${index}] must be an object`);
+    for (const field of ["name", "upstreamPath", "localPath", "disposition"]) {
+      if (typeof item[field] !== "string" || item[field].length === 0) {
+        throw new Error(`manifest.registry.packages[${index}].${field} is required`);
+      }
+    }
+    assertRepositoryPath(item.upstreamPath, `manifest.registry.packages[${index}].upstreamPath`);
+    assertRepositoryPath(item.localPath, `manifest.registry.packages[${index}].localPath`);
+    if (!item.snapshot || typeof item.snapshot.kind !== "string") {
+      throw new Error(`manifest.registry.packages[${index}].snapshot.kind is required`);
+    }
+    if (names.has(item.name)) throw new Error(`manifest.registry.packages has duplicate name ${item.name}`);
+    if (upstreamPaths.has(item.upstreamPath)) throw new Error(`manifest.registry.packages has duplicate upstream path ${item.upstreamPath}`);
+    if (localPaths.has(item.localPath)) throw new Error(`manifest.registry.packages has duplicate local path ${item.localPath}`);
+    names.add(item.name);
+    upstreamPaths.add(item.upstreamPath);
+    localPaths.add(item.localPath);
+  }
+  return registry;
+}
+
+function localAppRecord(previous, appEntry) {
   const packageJson = readJson(path.join(repoRoot, "ui", "package.json"));
   return {
-    upstreamPath: "apps/app",
+    upstreamPath: appEntry.upstreamPath,
     upstreamDisposition: previous?.upstreamDisposition ?? "defer-source-port",
     localSourcePath: "ui/src",
     localSourceDisposition: previous?.localSourceDisposition ?? "loom-native-reference-client",
@@ -143,24 +197,23 @@ function localAppRecord(previous) {
   };
 }
 
-function upstreamRecord(root, previous) {
+function upstreamRecord(root, previous, registry) {
   if (!root) return previous;
-  const appPackageJson = readJson(path.join(root, "apps", "app", "package.json"));
+  const appEntry = registry.app;
+  const appPackageJson = readJson(path.join(root, appEntry.upstreamPath, "package.json"));
   return {
     repository: DEFAULT_SOURCE.repository,
     commit: gitHead(root),
     app: {
-      path: "apps/app",
-      tree: treeDigest("apps/app", root),
-      gitTree: gitTreeId("apps/app", root),
-      files: fileRecords("apps/app", root),
-      packageJson: fileDigest("apps/app/package.json", root),
+      path: appEntry.upstreamPath,
+      tree: treeDigest(appEntry.upstreamPath, root),
+      gitTree: gitTreeId(appEntry.upstreamPath, root),
+      files: fileRecords(appEntry.upstreamPath, root),
+      packageJson: fileDigest(path.join(appEntry.upstreamPath, "package.json"), root),
       dependencies: dependencySnapshot(appPackageJson),
       dependencyDigest: dependencyDigest(appPackageJson),
     },
-    packages: PACKAGE_SOURCES.map(([name, directory]) =>
-      packageRecord(name, `packages/${directory}`, root),
-    ),
+    packages: registry.packages.map((entry) => packageRecord(entry.name, entry.upstreamPath, root)),
   };
 }
 
@@ -202,37 +255,39 @@ function gitTreeId(relativePath, root) {
 }
 
 function buildManifest(existing, upstreamRoot) {
+  const registry = sourceRegistry(existing);
   const source = { ...DEFAULT_SOURCE, ...(existing?.source ?? {}) };
-  const localPackages = PACKAGE_SOURCES.map(([name, directory]) => {
-    const previous = existing?.local?.packages?.find((item) => item.name === name);
-    return packageRecord(name, `ui/packages/${directory}`, repoRoot, {
-      upstreamPath: previous?.upstreamPath ?? `packages/${directory}`,
-      disposition: previous?.disposition ?? "retain-source",
+  const localPackages = registry.packages.map((entry) => {
+    const previous = existing?.local?.packages?.find((item) => item.name === entry.name);
+    return packageRecord(entry.name, entry.localPath, repoRoot, {
+      upstreamPath: entry.upstreamPath,
+      disposition: previous?.disposition ?? entry.disposition,
     });
   });
   const local = {
-    referenceApp: localAppRecord(existing?.local?.referenceApp ?? existing?.app),
+    referenceApp: localAppRecord(existing?.local?.referenceApp ?? existing?.app, registry.app),
     productApp: {
-      upstreamPath: "apps/app",
-      localPath: "apps/app",
-      disposition: existing?.local?.productApp?.disposition ?? "exact-snapshot",
-      gitTree: gitTreeId("apps/app", repoRoot),
-      snapshot: sourceSnapshot("apps/app"),
+      upstreamPath: registry.app.upstreamPath,
+      localPath: registry.app.localPath,
+      disposition: registry.app.disposition,
+      gitTree: gitTreeId(registry.app.localPath, repoRoot),
+      snapshot: sourceSnapshot(registry.app.localPath),
     },
     packages: localPackages,
-    imports: localPackages.map((item) => ({
-      package: item.name,
-      upstreamPath: item.upstreamPath,
-      localPath: item.path,
-      disposition: item.disposition,
+    imports: registry.packages.map((entry) => ({
+      package: entry.name,
+      upstreamPath: entry.upstreamPath,
+      localPath: entry.localPath,
+      disposition: entry.disposition,
     })),
   };
 
   return {
     format: "loom.ui-provenance/v2",
     generator: "scripts/check-ui-provenance.mjs",
+    registry,
     source,
-    upstream: upstreamRecord(upstreamRoot, existing?.upstream),
+    upstream: upstreamRecord(upstreamRoot, existing?.upstream, registry),
     local,
     contracts: contractRecord(existing?.contracts),
     forbiddenReferenceAppImports: existing?.forbiddenReferenceAppImports ?? [
@@ -267,17 +322,219 @@ function checkSnapshot(relativePath, expected, label, root = repoRoot) {
   }
 }
 
-function checkPatchLedger(manifest) {
+function joinRepositoryPath(directory, relativeFile) {
+  return path.posix.join(directory, relativeFile);
+}
+
+function changeFiles(relativePath, root, displayPath) {
+  return Object.fromEntries(
+    filesUnder(relativePath, root, true).map((relativeFile) => {
+      const digest = fileDigest(path.join(relativePath, relativeFile), root);
+      return [relativeFile, {
+        path: joinRepositoryPath(displayPath, relativeFile),
+        sha256: digest.sha256,
+        mode: fileMode(path.join(relativePath, relativeFile), root),
+      }];
+    }),
+  );
+}
+
+function absentPatchSide() {
+  return { path: null, sha256: null, mode: null };
+}
+
+function patchRecord(kind, upstream = absentPatchSide(), local = absentPatchSide()) {
+  return { kind, upstream, local };
+}
+
+function patchSortKey(patch) {
+  return [patch.kind, patch.upstream.path ?? "", patch.local.path ?? ""].join("\0");
+}
+
+function computePatchDiff(upstreamRoot, localRoot, upstreamPath = "apps/app", localPath = upstreamPath) {
+  const upstreamFiles = changeFiles(upstreamPath, upstreamRoot, upstreamPath);
+  const localFiles = changeFiles(localPath, localRoot, localPath);
+  const upstreamOnly = new Set(Object.keys(upstreamFiles).filter((relativeFile) => !(relativeFile in localFiles)));
+  const localOnly = new Set(Object.keys(localFiles).filter((relativeFile) => !(relativeFile in upstreamFiles)));
+  const patches = [];
+
+  for (const relativeFile of Object.keys(upstreamFiles).sort()) {
+    if (!(relativeFile in localFiles)) continue;
+    const upstream = upstreamFiles[relativeFile];
+    const local = localFiles[relativeFile];
+    if (upstream.sha256 !== local.sha256) patches.push(patchRecord("modify", upstream, local));
+    else if (upstream.mode !== local.mode) patches.push(patchRecord("mode-change", upstream, local));
+  }
+
+  const addedByFingerprint = new Map();
+  for (const relativeFile of [...localOnly].sort()) {
+    const local = localFiles[relativeFile];
+    const fingerprint = `${local.sha256}\0${local.mode}`;
+    const entries = addedByFingerprint.get(fingerprint) ?? [];
+    entries.push(relativeFile);
+    addedByFingerprint.set(fingerprint, entries);
+  }
+
+  for (const relativeFile of [...upstreamOnly].sort()) {
+    const upstream = upstreamFiles[relativeFile];
+    const fingerprint = `${upstream.sha256}\0${upstream.mode}`;
+    const candidates = addedByFingerprint.get(fingerprint) ?? [];
+    if (candidates.length !== 1) continue;
+    const localRelativeFile = candidates[0];
+    addedByFingerprint.delete(fingerprint);
+    localOnly.delete(localRelativeFile);
+    upstreamOnly.delete(relativeFile);
+    patches.push(patchRecord("rename", upstream, localFiles[localRelativeFile]));
+  }
+
+  for (const relativeFile of [...upstreamOnly].sort()) {
+    patches.push(patchRecord("delete", upstreamFiles[relativeFile], absentPatchSide()));
+  }
+  for (const relativeFile of [...localOnly].sort()) {
+    patches.push(patchRecord("add", absentPatchSide(), localFiles[relativeFile]));
+  }
+
+  return patches.sort((left, right) => patchSortKey(left).localeCompare(patchSortKey(right)));
+}
+
+function validatePatchPath(value, label, scopePath) {
+  if (typeof value !== "string" || value.length === 0) throw new Error(`${label} path is required`);
+  if (GLOB_CHARACTERS.test(value)) throw new Error(`${label} uses a glob; patch ledger entries must name one file`);
+  if (value.includes("\\") || value.startsWith("/") || path.posix.normalize(value) !== value) {
+    throw new Error(`${label} path must be a normalized repository-relative path`);
+  }
+  if (value !== scopePath && !value.startsWith(`${scopePath}/`)) {
+    throw new Error(`${label} path ${value} is outside ${scopePath}`);
+  }
+  return value;
+}
+
+function validatePatchSide(value, label, scopePath) {
+  if (value === null) return absentPatchSide();
+  if (!value || typeof value !== "object") throw new Error(`${label} must be an object or null`);
+  const side = {
+    path: value.path ?? null,
+    sha256: value.sha256 ?? null,
+    mode: value.mode ?? null,
+  };
+  const empty = side.path === null && side.sha256 === null && side.mode === null;
+  if (empty) return side;
+  if (side.path === null || side.sha256 === null || side.mode === null) {
+    throw new Error(`${label} must provide path, sha256, and mode together`);
+  }
+  validatePatchPath(side.path, label, scopePath);
+  if (!/^[0-9a-f]{64}$/.test(side.sha256)) throw new Error(`${label}.sha256 must be a 64-character lowercase SHA-256`);
+  if (!/^100[0-7]{3}$/.test(side.mode)) throw new Error(`${label}.mode must be a regular-file git mode`);
+  return side;
+}
+
+function sidePresent(side) {
+  return side.path !== null;
+}
+
+function validatePatchEntry(rawPatch, index, upstreamPath, localPath) {
+  if (!rawPatch || typeof rawPatch !== "object") throw new Error(`app patch ledger patches[${index}] must be an object`);
+  if (!PATCH_KINDS.has(rawPatch.kind)) throw new Error(`app patch ledger patches[${index}] has unsupported kind ${rawPatch.kind}`);
+  for (const field of ["issue", "owner", "reason"]) {
+    if (typeof rawPatch[field] !== "string" || rawPatch[field].length === 0) {
+      throw new Error(`app patch ledger patches[${index}].${field} is required`);
+    }
+  }
+  const upstream = validatePatchSide(rawPatch.upstream, `patches[${index}].upstream`, upstreamPath);
+  const local = validatePatchSide(rawPatch.local, `patches[${index}].local`, localPath);
+  if (rawPatch.kind === "add" && sidePresent(upstream)) throw new Error(`patches[${index}] add must not have an upstream file`);
+  if (rawPatch.kind === "delete" && sidePresent(local)) throw new Error(`patches[${index}] delete must not have a local file`);
+  if (rawPatch.kind === "rename") {
+    if (!sidePresent(upstream) || !sidePresent(local) || upstream.path === local.path) {
+      throw new Error(`patches[${index}] rename must change one existing path to another`);
+    }
+    if (upstream.sha256 !== local.sha256 || upstream.mode !== local.mode) {
+      throw new Error(`patches[${index}] rename must preserve hash and mode; use modify for content changes`);
+    }
+  }
+  if (rawPatch.kind === "mode-change") {
+    if (!sidePresent(upstream) || !sidePresent(local) || upstream.path !== local.path) {
+      throw new Error(`patches[${index}] mode-change must keep one path`);
+    }
+    if (upstream.sha256 !== local.sha256 || upstream.mode === local.mode) {
+      throw new Error(`patches[${index}] mode-change must preserve content and change mode`);
+    }
+  }
+  if (rawPatch.kind === "modify") {
+    if (!sidePresent(upstream) || !sidePresent(local) || upstream.path !== local.path) {
+      throw new Error(`patches[${index}] modify must keep one path`);
+    }
+    if (upstream.sha256 === local.sha256 && upstream.mode === local.mode) {
+      throw new Error(`patches[${index}] modify must change content or mode`);
+    }
+  }
+  return { kind: rawPatch.kind, upstream, local };
+}
+
+function patchFingerprint(patch) {
+  return JSON.stringify({ kind: patch.kind, upstream: patch.upstream, local: patch.local });
+}
+
+function assertNoOverlappingScopes(patches) {
+  for (const sideName of ["upstream", "local"]) {
+    const paths = [];
+    for (const patch of patches) {
+      const value = patch[sideName].path;
+      if (value !== null) paths.push(value);
+    }
+    for (let left = 0; left < paths.length; left += 1) {
+      for (let right = left + 1; right < paths.length; right += 1) {
+        const first = paths[left];
+        const second = paths[right];
+        if (first === second || first.startsWith(`${second}/`) || second.startsWith(`${first}/`)) {
+          throw new Error(`app patch ledger has overlapping ${sideName} scopes: ${first} and ${second}`);
+        }
+      }
+    }
+  }
+}
+
+function assertLedgerMatchesDiff(rawPatches, actualPatches, upstreamPath = "apps/app", localPath = upstreamPath) {
+  if (!Array.isArray(rawPatches)) throw new Error("app patch ledger patches must be an array");
+  const patches = rawPatches.map((patch, index) => validatePatchEntry(patch, index, upstreamPath, localPath));
+
+  const expected = new Map();
+  for (let index = 0; index < patches.length; index += 1) {
+    const fingerprint = patchFingerprint(patches[index]);
+    if (expected.has(fingerprint)) throw new Error(`app patch ledger has duplicate patch entry at index ${index}`);
+    expected.set(fingerprint, index);
+  }
+  assertNoOverlappingScopes(patches);
+
+  const actual = new Map(actualPatches.map((patch) => [patchFingerprint(patch), patch]));
+  for (const [fingerprint, index] of expected) {
+    if (!actual.has(fingerprint)) {
+      throw new Error(`app patch ledger patch ${index} does not match the recomputed diff (kind, path, hash, or mode mismatch)`);
+    }
+  }
+  for (const patch of actualPatches) {
+    if (!expected.has(patchFingerprint(patch))) {
+      throw new Error(`unregistered app ${patch.kind} diff: ${patch.upstream.path ?? patch.local.path}`);
+    }
+  }
+  if (expected.size !== actual.size) {
+    throw new Error(`app patch ledger has ${expected.size} entries but recomputed ${actual.size} app diffs`);
+  }
+  return patches;
+}
+
+function checkPatchLedger(manifest, upstreamRoot) {
+  const registry = sourceRegistry(manifest);
   const ledger = readJson(patchLedgerPath);
-  if (ledger.format !== "loom.ui-patch-ledger/v1") throw new Error("unsupported app patch ledger format");
+  if (ledger.format !== PATCH_LEDGER_FORMAT) throw new Error(`unsupported app patch ledger format; expected ${PATCH_LEDGER_FORMAT}`);
   assertEqual(ledger.source, {
     repository: manifest.source.repository,
     commit: manifest.source.commit,
   }, "app patch ledger source");
   assertEqual(ledger.import, {
-    upstreamPath: "apps/app",
-    localPath: "apps/app",
-    disposition: "exact-snapshot",
+    upstreamPath: registry.app.upstreamPath,
+    localPath: registry.app.localPath,
+    disposition: registry.app.disposition,
   }, "app patch ledger import");
   const baseline = ledger.baseline;
   if (!baseline || baseline.kind !== "exact-snapshot") {
@@ -288,52 +545,75 @@ function checkPatchLedger(manifest) {
       throw new Error(`app patch ledger baseline.${field} is required`);
     }
   }
-  assertEqual(baseline.affectedUpstreamFiles, [], "app patch ledger baseline affected files");
-  if (!Array.isArray(ledger.patches) || ledger.patches.length !== 0) {
-    throw new Error("app patch ledger must have no patches for the exact snapshot baseline");
+  if (!Array.isArray(baseline.affectedUpstreamFiles)) throw new Error("app patch ledger baseline.affectedUpstreamFiles must be an array");
+  if (!Array.isArray(ledger.patches)) throw new Error("app patch ledger patches must be an array");
+  if (!upstreamRoot && ledger.patches.length !== 0) {
+    throw new Error("BB_SRC is required to recompute non-empty app patch ledger entries");
+  }
+  if (upstreamRoot) {
+    const actualPatches = computePatchDiff(
+      upstreamRoot,
+      repoRoot,
+      registry.app.upstreamPath,
+      registry.app.localPath,
+    );
+    assertLedgerMatchesDiff(
+      ledger.patches,
+      actualPatches,
+      registry.app.upstreamPath,
+      registry.app.localPath,
+    );
+  } else {
+    assertLedgerMatchesDiff(ledger.patches, [], registry.app.upstreamPath, registry.app.localPath);
   }
 }
 
 function checkLocalProductApp(manifest) {
+  const registry = sourceRegistry(manifest);
   const productApp = manifest.local.productApp;
   if (!productApp) throw new Error("local.productApp is required");
-  assertEqual(productApp.upstreamPath, "apps/app", "local product app upstream path");
-  assertEqual(productApp.localPath, "apps/app", "local product app path");
-  assertEqual(productApp.disposition, "exact-snapshot", "local product app disposition");
-  assertEqual(productApp.gitTree, gitTreeId("apps/app", repoRoot), "local product app git tree");
-  assertEqual(productApp.gitTree, manifest.upstream.app.gitTree, "local/upstream product app git tree");
-  checkSnapshot("apps/app", productApp.snapshot, "local product app snapshot");
-  checkSnapshot("apps/app", {
-    path: manifest.upstream.app.path,
-    tree: manifest.upstream.app.tree,
-    files: manifest.upstream.app.files,
-  }, "local product app vs upstream snapshot");
+  assertEqual(productApp.upstreamPath, registry.app.upstreamPath, "local product app upstream path");
+  assertEqual(productApp.localPath, registry.app.localPath, "local product app path");
+  assertEqual(productApp.disposition, registry.app.disposition, "local product app disposition");
+  assertEqual(productApp.gitTree, gitTreeId(registry.app.localPath, repoRoot), "local product app git tree");
+  checkSnapshot(registry.app.localPath, productApp.snapshot, "local product app snapshot");
+  if (registry.app.disposition === "exact-snapshot") {
+    assertEqual(productApp.gitTree, manifest.upstream.app.gitTree, "local/upstream product app git tree");
+    checkSnapshot(registry.app.localPath, {
+      path: manifest.upstream.app.path,
+      tree: manifest.upstream.app.tree,
+      files: manifest.upstream.app.files,
+    }, "local product app vs upstream snapshot");
+  }
 }
 
 function checkUpstream(manifest, root) {
+  const registry = sourceRegistry(manifest);
   const head = gitHead(root);
   assertEqual(head, manifest.source.commit, "upstream checkout HEAD");
   assertEqual(manifest.upstream.repository, manifest.source.repository, "upstream repository");
   assertEqual(manifest.upstream.commit, head, "upstream manifest commit");
 
+  const appEntry = registry.app;
   const expectedApp = manifest.upstream.app;
-  assertEqual(expectedApp.path, "apps/app", "upstream app path");
+  assertEqual(expectedApp.path, appEntry.upstreamPath, "upstream app path");
   const appPackageJson = readJson(path.join(root, expectedApp.path, "package.json"));
-  assertEqual(appPackageJson.name, "@bb/app", "upstream app package name");
+  assertEqual(appPackageJson.name, appEntry.name, "upstream app package name");
   assertEqual(sourceSnapshot(expectedApp.path, root), {
     path: expectedApp.path,
     tree: expectedApp.tree,
     files: expectedApp.files,
   }, "upstream apps/app file snapshot");
   assertEqual(gitTreeId(expectedApp.path, root), expectedApp.gitTree, "upstream apps/app git tree");
-  assertEqual(fileDigest(path.join(expectedApp.path, "package.json"), root), expectedApp.packageJson, "upstream apps/app package.json");
-  assertEqual(dependencySnapshot(appPackageJson), expectedApp.dependencies, "upstream apps/app dependencies");
-  assertEqual(dependencyDigest(appPackageJson), expectedApp.dependencyDigest, "upstream apps/app dependency digest");
+  assertEqual(fileDigest(path.join(expectedApp.path, "package.json"), root), expectedApp.packageJson, "upstream app package.json");
+  assertEqual(dependencySnapshot(appPackageJson), expectedApp.dependencies, "upstream app dependencies");
+  assertEqual(dependencyDigest(appPackageJson), expectedApp.dependencyDigest, "upstream app dependency digest");
 
-  assertEqual(manifest.upstream.packages.map((item) => item.name), PACKAGE_SOURCES.map(([name]) => name), "upstream package names");
+  assertEqual(manifest.upstream.packages.map((item) => item.name), registry.packages.map((item) => item.name), "upstream package names");
   for (const item of manifest.upstream.packages) {
-    const expectedPath = `packages/${item.name.slice("@bb/".length)}`;
-    assertEqual(item.path, expectedPath, `${item.name} upstream path`);
+    const entry = registry.packages.find((candidate) => candidate.name === item.name);
+    if (!entry) throw new Error(`${item.name}: package is absent from the source registry`);
+    assertEqual(item.path, entry.upstreamPath, `${item.name} upstream path`);
     const packageJson = readJson(path.join(root, item.path, "package.json"));
     assertEqual(packageJson.name, item.name, `${item.name} upstream package name`);
     assertEqual(treeDigest(item.path, root), item.tree, `${item.name} upstream tree`);
@@ -343,7 +623,8 @@ function checkUpstream(manifest, root) {
   }
 }
 
-function checkLocal(manifest) {
+function checkLocal(manifest, upstreamRoot) {
+  const registry = sourceRegistry(manifest);
   if (manifest.format !== "loom.ui-provenance/v2") throw new Error("unsupported manifest format");
   if (!/^[0-9a-f]{40}$/.test(manifest.source?.commit ?? "")) {
     throw new Error("source.commit must be a full 40-character git commit");
@@ -353,7 +634,7 @@ function checkLocal(manifest) {
   }
   assertEqual(manifest.source.commit, manifest.upstream.commit, "source/upstream commit");
   checkLocalProductApp(manifest);
-  checkPatchLedger(manifest);
+  checkPatchLedger(manifest, upstreamRoot);
 
   const referenceApp = manifest.local.referenceApp;
   const localAppPackageJson = readJson(path.join(repoRoot, "ui", "package.json"));
@@ -363,11 +644,11 @@ function checkLocal(manifest) {
   assertEqual(dependencyDigest(localAppPackageJson), referenceApp.dependencyDigest, "local reference app dependency digest");
   assertEqual(fileDigest(referenceApp.bundlePath), referenceApp.bundle, "local reference app bundle");
 
-  const expectedNames = PACKAGE_SOURCES.map(([name]) => name);
-  assertEqual(manifest.local.packages.map((item) => item.name), expectedNames, "local package names");
+  assertEqual(manifest.local.packages.map((item) => item.name), registry.packages.map((item) => item.name), "local package names");
   for (const item of manifest.local.packages) {
-    const expectedPath = `ui/packages/${item.name.slice("@bb/".length)}`;
-    assertEqual(item.path, expectedPath, `${item.name} local path`);
+    const entry = registry.packages.find((candidate) => candidate.name === item.name);
+    if (!entry) throw new Error(`${item.name}: package is absent from the source registry`);
+    assertEqual(item.path, entry.localPath, `${item.name} local path`);
     const packageJson = readJson(path.join(repoRoot, item.path, "package.json"));
     assertEqual(packageJson.name, item.name, `${item.name} local package name`);
     assertEqual(treeDigest(item.path), item.tree, `${item.name} local/adapted tree`);
@@ -376,13 +657,13 @@ function checkLocal(manifest) {
     assertEqual(dependencyDigest(packageJson), item.dependencyDigest, `${item.name} local dependency digest`);
   }
 
-  assertEqual(manifest.local.imports.map((item) => item.package), expectedNames, "import package names");
+  assertEqual(manifest.local.imports.map((item) => item.package), registry.packages.map((item) => item.name), "import package names");
   for (let index = 0; index < manifest.local.imports.length; index += 1) {
     const imported = manifest.local.imports[index];
-    const packageRecordValue = manifest.local.packages[index];
-    assertEqual(imported.localPath, packageRecordValue.path, `import ${index} local path`);
-    assertEqual(imported.upstreamPath, packageRecordValue.upstreamPath, `import ${index} upstream path`);
-    assertEqual(imported.disposition, packageRecordValue.disposition, `import ${index} disposition`);
+    const entry = registry.packages[index];
+    assertEqual(imported.localPath, entry.localPath, `import ${index} local path`);
+    assertEqual(imported.upstreamPath, entry.upstreamPath, `import ${index} upstream path`);
+    assertEqual(imported.disposition, entry.disposition, `import ${index} disposition`);
   }
 
   const contracts = contractRecord(manifest.contracts);
@@ -406,20 +687,28 @@ function parseUpstreamArgument() {
   return path.resolve(value);
 }
 
-try {
-  const manifest = readJson(manifestPath);
-  const upstreamRoot = parseUpstreamArgument();
-  if (process.argv.includes("--write")) {
-    const next = buildManifest(manifest, upstreamRoot);
-    fs.writeFileSync(manifestPath, `${JSON.stringify(next, null, 2)}\n`);
-    console.log(`wrote ${path.relative(repoRoot, manifestPath)}`);
-    checkLocal(next);
-    if (upstreamRoot) checkUpstream(next, upstreamRoot);
-  } else {
-    checkLocal(manifest);
-    if (upstreamRoot) checkUpstream(manifest, upstreamRoot);
+function main() {
+  try {
+    const manifest = readJson(manifestPath);
+    const upstreamRoot = parseUpstreamArgument();
+    let checkedManifest = manifest;
+    if (process.argv.includes("--write")) {
+      checkedManifest = buildManifest(manifest, upstreamRoot);
+      fs.writeFileSync(manifestPath, `${JSON.stringify(checkedManifest, null, 2)}\n`);
+      console.log(`wrote ${path.relative(repoRoot, manifestPath)}`);
+    }
+    checkLocal(checkedManifest, upstreamRoot);
+    if (upstreamRoot) checkUpstream(checkedManifest, upstreamRoot);
+    console.log(`ui provenance OK: bb ${checkedManifest.source.commit}`);
+  } catch (error) {
+    fail(error.message);
   }
-  console.log(`ui provenance OK: bb ${manifest.source.commit}`);
-} catch (error) {
-  fail(error.message);
 }
+
+export {
+  assertLedgerMatchesDiff,
+  computePatchDiff,
+  sourceRegistry,
+};
+
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) main();

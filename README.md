@@ -81,8 +81,9 @@ docs/
 commit. It is intentionally outside the current pnpm workspace and is not
 included in the default build or server runtime; source-level adaptation is a
 later stage. The baseline, dependency closure and product-surface decisions are
-recorded in [`docs/ui-baseline.md`](docs/ui-baseline.md). The machine-checkable
-hashes and import list live in [`ui/provenance.json`](ui/provenance.json), and
+recorded in [`docs/ui-baseline.md`](docs/ui-baseline.md). The manifest-driven
+machine-checkable registry, hashes and import list live in
+[`ui/provenance.json`](ui/provenance.json), and
 the zero-diff starting point is recorded in
 [`ui/app-patch-ledger.json`](ui/app-patch-ledger.json). The projection package
 sync policy remains in [`docs/ui-package-sync.md`](docs/ui-package-sync.md).

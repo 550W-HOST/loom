@@ -102,8 +102,11 @@ GET /api/v1/threads            → thread list
 The bb app source snapshot is checked in at `apps/app`, but it remains
 intentionally outside the current pnpm workspace and default build/runtime.
 This issue is the mechanical source import only; the reference client remains
-the served UI until a later integration stage. The exact snapshot and its
-zero-diff patch ledger are checked by `scripts/check-ui-provenance.mjs`.
+the served UI until a later integration stage. The exact snapshot and its patch
+ledger are checked by `scripts/check-ui-provenance.mjs`. The source/package
+registry is manifest-driven, and every later app adaptation must be a one-file
+ledger entry with its upstream and expected local hash/mode; the checker
+recomputes the diff from `BB_SRC` instead of trusting the ledger alone.
 
 What `apps/app` needs to build, from the bb tree:
 
@@ -127,7 +130,9 @@ The phased plan, smallest valuable step first:
 2. **Done in W-600.** Check in `apps/app` as the exact source snapshot from
    the pinned commit. It remains outside the workspace and no build/runtime
    integration is enabled yet; `ui/app-patch-ledger.json` records that the
-   initial product-app source diff is zero.
+   initial product-app source diff is zero. `pnpm provenance:test` covers
+   unregistered, duplicate, overlapping, glob, hash, add/delete/rename and mode
+   failures before the pinned checkout check runs.
 3. **Adapt the transport, not the tree.** Replace `@bb/sdk`'s fetch/WS base with
    loom's routes (`/api/v1/...`, `/ws`) and map the thread list and thread
    timeline onto bb's query layer. Ship one screen — list → thread → messages —

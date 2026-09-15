@@ -1,6 +1,82 @@
 {
   "format": "loom.ui-provenance/v2",
   "generator": "scripts/check-ui-provenance.mjs",
+  "registry": {
+    "app": {
+      "name": "@bb/app",
+      "upstreamPath": "apps/app",
+      "localPath": "apps/app",
+      "disposition": "exact-snapshot",
+      "snapshot": {
+        "kind": "exact-snapshot"
+      }
+    },
+    "packages": [
+      {
+        "name": "@bb/domain",
+        "upstreamPath": "packages/domain",
+        "localPath": "ui/packages/domain",
+        "disposition": "retain-source",
+        "snapshot": {
+          "kind": "adapted-source"
+        }
+      },
+      {
+        "name": "@bb/server-contract",
+        "upstreamPath": "packages/server-contract",
+        "localPath": "ui/packages/server-contract",
+        "disposition": "retain-source",
+        "snapshot": {
+          "kind": "adapted-source"
+        }
+      },
+      {
+        "name": "@bb/thread-view",
+        "upstreamPath": "packages/thread-view",
+        "localPath": "ui/packages/thread-view",
+        "disposition": "retain-source",
+        "snapshot": {
+          "kind": "adapted-source"
+        }
+      },
+      {
+        "name": "@bb/client-core",
+        "upstreamPath": "packages/client-core",
+        "localPath": "ui/packages/client-core",
+        "disposition": "retain-source",
+        "snapshot": {
+          "kind": "adapted-source"
+        }
+      },
+      {
+        "name": "@bb/core-ui",
+        "upstreamPath": "packages/core-ui",
+        "localPath": "ui/packages/core-ui",
+        "disposition": "retain-source",
+        "snapshot": {
+          "kind": "adapted-source"
+        }
+      },
+      {
+        "name": "@bb/shared-ui",
+        "upstreamPath": "packages/shared-ui",
+        "localPath": "ui/packages/shared-ui",
+        "disposition": "retain-source",
+        "snapshot": {
+          "kind": "adapted-source"
+        }
+      },
+      {
+        "name": "@bb/desktop-contract",
+        "upstreamPath": "packages/desktop-contract",
+        "localPath": "ui/packages/desktop-contract",
+        "disposition": "retain-source",
+        "snapshot": {
+          "kind": "adapted-source"
+        }
+      }
+    ]
+  },
   "source": {
     "repository": "https://github.com/get-bb/bb",
     "commit": "fa1f44ebe9e5676004b669e48c99b3c7606466b6",
