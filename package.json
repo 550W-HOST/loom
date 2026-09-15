@@ -8,6 +8,9 @@
     "typecheck": "pnpm --filter @loom/ui run typecheck && pnpm --filter './ui/packages/*' run typecheck",
     "test": "pnpm --filter @loom/ui run test && pnpm --filter './ui/packages/*' run test",
     "provenance:check": "node scripts/check-ui-provenance.mjs",
+    "port-plan:check": "node scripts/analyze-ui-port.mjs",
+    "port-plan:write": "node scripts/analyze-ui-port.mjs --write",
+    "port-plan:test": "node --test scripts/analyze-ui-port.test.mjs",
     "example": "tsx ui/examples/thread-timeline.ts"
   },
   "dependencies": {

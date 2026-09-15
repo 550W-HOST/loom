@@ -1,0 +1,7 @@
+/* url("./commented.png") and @import "./commented.css" are not edges. */
+.copy {
+  content: "url('./string.png')";
+  background: url("./image.png");
+}
+@import "./theme.css";
+@import url("./nested.css") screen;
