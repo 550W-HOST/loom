@@ -323,8 +323,8 @@ test("ignores an untracked pnpm dependency symlink but rejects tracked symlinks"
   assert.doesNotThrow(() => assertExactSourceEntry(entry, upstream, "ignored dependency exact", local));
 
   fs.rmSync(path.join(local, "ui/packages/exact/node_modules/dependency"), { force: true });
-  fs.symlinkSync("../../../../vendor/dependency", path.join(local, "ui/packages/exact/tracked-link"), "dir");
-  execFileSync("git", ["-C", local, "add", "-f", "ui/packages/exact/tracked-link"]);
+  fs.symlinkSync("../../../../vendor/dependency", path.join(local, "ui/packages/exact/node_modules/tracked-link"), "dir");
+  execFileSync("git", ["-C", local, "add", "-f", "ui/packages/exact/node_modules/tracked-link"]);
   expectFailure(
     () => computePatchDiff(upstream, local, "packages/exact", "ui/packages/exact"),
     "symbolic.?link",

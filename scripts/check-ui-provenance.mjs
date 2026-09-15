@@ -191,6 +191,13 @@ function isIgnoredGitPath(gitRoot, relativePath) {
   }
 }
 
+function hasTrackedDescendant(trackedPaths, relativePath) {
+  for (const trackedPath of trackedPaths) {
+    if (trackedPath.startsWith(`${relativePath}/`)) return true;
+  }
+  return false;
+}
+
 function filesUnder(relativePath, root = repoRoot, includeAllFiles = false) {
   const absolutePath = repositoryPath(relativePath, root);
   const files = [];
@@ -206,7 +213,8 @@ function filesUnder(relativePath, root = repoRoot, includeAllFiles = false) {
         ? gitPathFromAbsolute(tracked.worktreeRoot, entryPath)
         : null;
       const isTracked = tracked?.tracked.has(gitRelativePath) ?? false;
-      if (!isTracked && tracked && isIgnoredGitPath(tracked.worktreeRoot, gitRelativePath)) continue;
+      const isIgnored = !isTracked && tracked && isIgnoredGitPath(tracked.worktreeRoot, gitRelativePath);
+      if (isIgnored && !hasTrackedDescendant(tracked.tracked, gitRelativePath)) continue;
       if (entry.isSymbolicLink()) {
         throw new Error(`${relativePath}: symbolic links are not allowed (${entryRelativePath})`);
       }
