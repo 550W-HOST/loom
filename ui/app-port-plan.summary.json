@@ -1,7 +1,7 @@
 {
   "format": "loom.app-port-plan-summary/v1",
   "plan": "ui/app-port-plan.json",
-  "planBytes": 1867213,
+  "planBytes": 1956784,
   "source": {
     "root": "apps/app/src",
     "trackedFiles": 1437,
@@ -13,10 +13,10 @@
     "runtimeCompileReachable": 782,
     "runtimeEmittedReachable": 771,
     "dispositions": {
-      "retain-verbatim": 626,
+      "retain-verbatim": 640,
       "adapt-boundary": 87,
       "delete-unsupported": 56,
-      "verification-only": 640,
+      "verification-only": 626,
       "asset-build": 28
     },
     "edges": 9125,
@@ -29,10 +29,10 @@
     "workspacePackages": 124
   },
   "dispositions": {
-    "retain-verbatim": 626,
+    "retain-verbatim": 640,
     "adapt-boundary": 87,
     "delete-unsupported": 56,
-    "verification-only": 640,
+    "verification-only": 626,
     "asset-build": 28
   },
   "exceptions": {
@@ -997,8 +997,8 @@
       },
       {
         "path": "src/components/pickers/model-picker-option.ts",
-        "disposition": "verification-only",
-        "reasonCode": "story-only-reachable"
+        "disposition": "retain-verbatim",
+        "reasonCode": "runtime-graph-node"
       },
       {
         "path": "src/components/pickers/modelPickerCycle.test.ts",
@@ -1702,8 +1702,8 @@
       },
       {
         "path": "src/components/secondary-panel/secondaryPanelTab.ts",
-        "disposition": "verification-only",
-        "reasonCode": "story-only-reachable"
+        "disposition": "retain-verbatim",
+        "reasonCode": "runtime-graph-node"
       },
       {
         "path": "src/components/secondary-panel/secondaryPanelTabState.test.ts",
@@ -1862,8 +1862,8 @@
       },
       {
         "path": "src/components/showcase-hero/showcase-archetype.ts",
-        "disposition": "verification-only",
-        "reasonCode": "story-only-reachable"
+        "disposition": "retain-verbatim",
+        "reasonCode": "runtime-graph-node"
       },
       {
         "path": "src/components/sidebar/BuiltInSidebarSection.test.tsx",
@@ -2437,8 +2437,8 @@
       },
       {
         "path": "src/components/thread/timeline/types.ts",
-        "disposition": "verification-only",
-        "reasonCode": "story-only-reachable"
+        "disposition": "retain-verbatim",
+        "reasonCode": "preserved-product-surface"
       },
       {
         "path": "src/components/thread/timeline/useAutoLoadOlderRows.test.tsx",
@@ -2612,8 +2612,8 @@
       },
       {
         "path": "src/components/ui/markdown-link.ts",
-        "disposition": "verification-only",
-        "reasonCode": "story-only-reachable"
+        "disposition": "retain-verbatim",
+        "reasonCode": "runtime-graph-node"
       },
       {
         "path": "src/components/ui/markdown-local-file-link-normalize.test.ts",
@@ -2787,8 +2787,8 @@
       },
       {
         "path": "src/hooks/cache-effect-types.ts",
-        "disposition": "verification-only",
-        "reasonCode": "story-only-reachable"
+        "disposition": "retain-verbatim",
+        "reasonCode": "runtime-graph-node"
       },
       {
         "path": "src/hooks/cache-owners/cache-owner-registry.test.ts",
@@ -2832,8 +2832,8 @@
       },
       {
         "path": "src/hooks/mutations/mutation-request-types.ts",
-        "disposition": "verification-only",
-        "reasonCode": "story-only-reachable"
+        "disposition": "retain-verbatim",
+        "reasonCode": "preserved-product-surface"
       },
       {
         "path": "src/hooks/mutations/settings-mutations.test.tsx",
@@ -3182,8 +3182,8 @@
       },
       {
         "path": "src/lib/command-palette/palette-action.ts",
-        "disposition": "verification-only",
-        "reasonCode": "test-only-reachable"
+        "disposition": "retain-verbatim",
+        "reasonCode": "runtime-graph-node"
       },
       {
         "path": "src/lib/command-palette/palette-app-commands.test.ts",
@@ -3507,8 +3507,8 @@
       },
       {
         "path": "src/lib/split-layout/types.ts",
-        "disposition": "verification-only",
-        "reasonCode": "story-only-reachable"
+        "disposition": "retain-verbatim",
+        "reasonCode": "runtime-graph-node"
       },
       {
         "path": "src/lib/split-resize-snap.test.ts",
@@ -3542,8 +3542,8 @@
       },
       {
         "path": "src/lib/thread-secondary-panel.ts",
-        "disposition": "verification-only",
-        "reasonCode": "story-only-reachable"
+        "disposition": "retain-verbatim",
+        "reasonCode": "runtime-graph-node"
       },
       {
         "path": "src/lib/thread-tabs-sync.test.ts",
@@ -3667,13 +3667,13 @@
       },
       {
         "path": "src/types/ansi-to-html.d.ts",
-        "disposition": "verification-only",
-        "reasonCode": "unreachable-source-review"
+        "disposition": "retain-verbatim",
+        "reasonCode": "tsconfig-ambient-build-input"
       },
       {
         "path": "src/types/bb-desktop.d.ts",
-        "disposition": "verification-only",
-        "reasonCode": "unreachable-source-review"
+        "disposition": "retain-verbatim",
+        "reasonCode": "tsconfig-ambient-build-input"
       },
       {
         "path": "src/views/MachineSettingsView.test.tsx",
@@ -3872,8 +3872,8 @@
       },
       {
         "path": "src/views/thread-detail/threadDetailMutationTypes.ts",
-        "disposition": "verification-only",
-        "reasonCode": "story-only-reachable"
+        "disposition": "retain-verbatim",
+        "reasonCode": "runtime-graph-node"
       },
       {
         "path": "src/views/thread-detail/threadParentSelectorOptions.test.ts",
@@ -3892,14 +3892,32 @@
       },
       {
         "path": "src/vite-env.d.ts",
-        "disposition": "verification-only",
-        "reasonCode": "unreachable-source-review"
+        "disposition": "retain-verbatim",
+        "reasonCode": "tsconfig-ambient-build-input"
       },
       {
         "path": "src/vite-font-preload.test.ts",
         "disposition": "verification-only",
         "reasonCode": "test-or-story-root"
       }
+    ],
+    "compileOnlyLocal": [
+      "src/components/pickers/model-picker-option.ts",
+      "src/components/secondary-panel/secondaryPanelTab.ts",
+      "src/components/showcase-hero/showcase-archetype.ts",
+      "src/components/thread/timeline/types.ts",
+      "src/components/ui/markdown-link.ts",
+      "src/hooks/cache-effect-types.ts",
+      "src/hooks/mutations/mutation-request-types.ts",
+      "src/lib/command-palette/palette-action.ts",
+      "src/lib/split-layout/types.ts",
+      "src/lib/thread-secondary-panel.ts",
+      "src/views/thread-detail/threadDetailMutationTypes.ts"
+    ],
+    "tsconfigBuildInputs": [
+      "src/types/ansi-to-html.d.ts",
+      "src/types/bb-desktop.d.ts",
+      "src/vite-env.d.ts"
     ]
   },
   "blockers": {
@@ -4015,12 +4033,14 @@
     "assigned": 1437,
     "missing": [],
     "duplicates": [],
-    "crossStageEdges": 3489,
+    "crossStageEdges": 3488,
     "missingCrossStageEdges": 0,
-    "crossChunkEdges": 3489,
+    "crossChunkEdges": 3488,
     "crossChunkOccurrences": 3500,
-    "crossIssueEdges": 1556,
-    "crossIssueOccurrences": 1562,
+    "crossIssueEdges": 1519,
+    "crossIssueOccurrences": 1524,
+    "crossIssueLogicalEdges": 1511,
+    "crossIssueLogicalOccurrences": 1516,
     "missingCrossIssueBatchDependencies": 0
   },
   "batchPlan": {
@@ -4056,9 +4076,10 @@
         "cyclic": true
       }
     ],
-    "crossIssueEdges": 1556,
-    "crossIssueSemanticEdges": 1564,
-    "crossIssueOccurrences": 1562,
+    "crossIssueEdges": 1519,
+    "crossIssueLogicalEdges": 1511,
+    "crossIssueOccurrences": 1524,
+    "crossIssueLogicalOccurrences": 1516,
     "crossIssueCycles": 1,
     "crossStageConflict": true
   },
@@ -4073,6 +4094,7 @@
         "W-603-07",
         "W-604-01",
         "W-604-03",
+        "W-604-04",
         "W-604-05"
       ],
       "W-603-02": [
@@ -4082,10 +4104,8 @@
         "W-603-05",
         "W-603-06",
         "W-603-07",
-        "W-604-01",
         "W-604-02",
-        "W-604-05",
-        "W-604-06"
+        "W-604-05"
       ],
       "W-603-03": [
         "W-603-01",
@@ -4116,11 +4136,8 @@
         "W-603-03",
         "W-603-04",
         "W-603-06",
-        "W-604-01",
         "W-604-03",
-        "W-604-04",
-        "W-604-05",
-        "W-604-06"
+        "W-604-05"
       ],
       "W-603-06": [
         "W-603-01",
@@ -4129,12 +4146,8 @@
         "W-603-04",
         "W-603-05",
         "W-603-07",
-        "W-604-01",
-        "W-604-02",
-        "W-604-03",
         "W-604-04",
-        "W-604-05",
-        "W-604-06"
+        "W-604-05"
       ],
       "W-603-07": [
         "W-603-01",
@@ -4143,7 +4156,9 @@
         "W-603-04",
         "W-603-05",
         "W-603-06",
+        "W-604-01",
         "W-604-02",
+        "W-604-04",
         "W-604-05",
         "W-604-06"
       ],
@@ -4156,7 +4171,6 @@
         "W-603-06",
         "W-603-07",
         "W-604-02",
-        "W-604-03",
         "W-604-04",
         "W-604-05",
         "W-604-06"
@@ -4180,8 +4194,6 @@
         "W-603-04",
         "W-603-05",
         "W-603-06",
-        "W-604-02",
-        "W-604-04",
         "W-604-05",
         "W-604-06"
       ],
@@ -4258,7 +4270,7 @@
           "asset-build",
           "retain-verbatim"
         ],
-        "dependencyCount": 222,
+        "dependencyCount": 221,
         "dependsOnBatchIds": [
           "W-603-02",
           "W-603-03",
@@ -4268,6 +4280,7 @@
           "W-603-07",
           "W-604-01",
           "W-604-03",
+          "W-604-04",
           "W-604-05"
         ],
         "cutPoints": [
@@ -4302,7 +4315,7 @@
           "adapt-boundary",
           "retain-verbatim"
         ],
-        "dependencyCount": 240,
+        "dependencyCount": 233,
         "dependsOnBatchIds": [
           "W-603-01",
           "W-603-03",
@@ -4310,10 +4323,8 @@
           "W-603-05",
           "W-603-06",
           "W-603-07",
-          "W-604-01",
           "W-604-02",
-          "W-604-05",
-          "W-604-06"
+          "W-604-05"
         ],
         "cutPoints": [
           "src/components/plugin/plugin-composer-host.tsx",
@@ -4339,7 +4350,7 @@
           "adapt-boundary",
           "retain-verbatim"
         ],
-        "dependencyCount": 240,
+        "dependencyCount": 245,
         "dependsOnBatchIds": [
           "W-603-01",
           "W-603-02",
@@ -4372,7 +4383,7 @@
           "asset-build",
           "retain-verbatim"
         ],
-        "dependencyCount": 138,
+        "dependencyCount": 135,
         "dependsOnBatchIds": [
           "W-603-01",
           "W-603-02",
@@ -4406,18 +4417,15 @@
           "adapt-boundary",
           "retain-verbatim"
         ],
-        "dependencyCount": 91,
+        "dependencyCount": 94,
         "dependsOnBatchIds": [
           "W-603-01",
           "W-603-02",
           "W-603-03",
           "W-603-04",
           "W-603-06",
-          "W-604-01",
           "W-604-03",
-          "W-604-04",
-          "W-604-05",
-          "W-604-06"
+          "W-604-05"
         ],
         "cutPoints": [
           "src/hooks/usePluginFrontendBoot.ts"
@@ -4437,7 +4445,7 @@
           "adapt-boundary",
           "retain-verbatim"
         ],
-        "dependencyCount": 232,
+        "dependencyCount": 144,
         "dependsOnBatchIds": [
           "W-603-01",
           "W-603-02",
@@ -4445,12 +4453,8 @@
           "W-603-04",
           "W-603-05",
           "W-603-07",
-          "W-604-01",
-          "W-604-02",
-          "W-604-03",
           "W-604-04",
-          "W-604-05",
-          "W-604-06"
+          "W-604-05"
         ],
         "cutPoints": [
           "src/lib/plugin-frontend-boot-schedule.ts",
@@ -4472,12 +4476,12 @@
         "id": "W-603-07",
         "kind": "reviewChunk",
         "executable": false,
-        "fileCount": 21,
+        "fileCount": 35,
         "dispositions": [
           "adapt-boundary",
           "retain-verbatim"
         ],
-        "dependencyCount": 179,
+        "dependencyCount": 254,
         "dependsOnBatchIds": [
           "W-603-01",
           "W-603-02",
@@ -4485,7 +4489,9 @@
           "W-603-04",
           "W-603-05",
           "W-603-06",
+          "W-604-01",
           "W-604-02",
+          "W-604-04",
           "W-604-05",
           "W-604-06"
         ],
@@ -4509,7 +4515,7 @@
           "delete-unsupported",
           "verification-only"
         ],
-        "dependencyCount": 217,
+        "dependencyCount": 219,
         "dependsOnBatchIds": [
           "W-603-01",
           "W-603-02",
@@ -4519,7 +4525,6 @@
           "W-603-06",
           "W-603-07",
           "W-604-02",
-          "W-604-03",
           "W-604-04",
           "W-604-05",
           "W-604-06"
@@ -4555,7 +4560,8 @@
           "src/components/plugin/management/PluginOverviewMarkdown.tsx",
           "src/components/plugin/management/PluginRowSignal.stories.tsx",
           "src/components/plugin/management/PluginRowSignal.test.tsx",
-          "src/components/plugin/management/PluginRowSignal.tsx"
+          "src/components/plugin/management/PluginRowSignal.tsx",
+          "src/components/plugin/management/PluginUpdatesCard.test.tsx"
         ],
         "verificationCommands": [
           "pnpm run port-plan:check",
@@ -4572,7 +4578,7 @@
           "delete-unsupported",
           "verification-only"
         ],
-        "dependencyCount": 215,
+        "dependencyCount": 214,
         "dependsOnBatchIds": [
           "W-603-01",
           "W-603-02",
@@ -4586,7 +4592,6 @@
           "W-604-06"
         ],
         "cutPoints": [
-          "src/components/plugin/management/PluginUpdatesCard.test.tsx",
           "src/components/plugin/management/PluginUpdatesCard.tsx",
           "src/components/plugin/management/UpdatePluginDialog.test.tsx",
           "src/components/plugin/management/UpdatePluginDialog.tsx",
@@ -4603,7 +4608,9 @@
           "src/components/secondary-panel/BrowserTabContent.tsx",
           "src/components/secondary-panel/BrowserTabDeck.tsx",
           "src/components/secondary-panel/browserViewVisibilityCoordinator.ts",
-          "src/components/settings/BrowserImportDialog.tsx"
+          "src/components/settings/BrowserImportDialog.tsx",
+          "src/components/settings/BrowserSettingsSection.tsx",
+          "src/components/settings/BrowserSourceIcon.tsx"
         ],
         "verificationCommands": [
           "pnpm run port-plan:check",
@@ -4620,7 +4627,7 @@
           "delete-unsupported",
           "verification-only"
         ],
-        "dependencyCount": 182,
+        "dependencyCount": 178,
         "dependsOnBatchIds": [
           "W-603-01",
           "W-603-02",
@@ -4628,14 +4635,10 @@
           "W-603-04",
           "W-603-05",
           "W-603-06",
-          "W-604-02",
-          "W-604-04",
           "W-604-05",
           "W-604-06"
         ],
         "cutPoints": [
-          "src/components/settings/BrowserSettingsSection.tsx",
-          "src/components/settings/BrowserSourceIcon.tsx",
           "src/components/settings/browser-import-wizard.ts",
           "src/components/settings/plugin-settings-entries.ts"
         ],
@@ -4654,7 +4657,7 @@
           "delete-unsupported",
           "verification-only"
         ],
-        "dependencyCount": 176,
+        "dependencyCount": 179,
         "dependsOnBatchIds": [
           "W-603-01",
           "W-603-02",
@@ -4675,7 +4678,9 @@
           "src/components/tools/SkillsLibrary.tsx",
           "src/components/tools/skill-taxonomy.ts",
           "src/hooks/cache-owners/plugin-cache-owner.ts",
-          "src/hooks/cache-owners/skills-cache-effects.ts"
+          "src/hooks/cache-owners/skills-cache-effects.ts",
+          "src/hooks/queries/plugin-catalog-queries.ts",
+          "src/hooks/queries/plugin-client.ts"
         ],
         "verificationCommands": [
           "pnpm run port-plan:check",
@@ -4692,7 +4697,7 @@
           "delete-unsupported",
           "verification-only"
         ],
-        "dependencyCount": 173,
+        "dependencyCount": 179,
         "dependsOnBatchIds": [
           "W-603-01",
           "W-603-02",
@@ -4704,8 +4709,6 @@
           "W-604-06"
         ],
         "cutPoints": [
-          "src/hooks/queries/plugin-catalog-queries.ts",
-          "src/hooks/queries/plugin-client.ts",
           "src/hooks/queries/plugin-contribution-queries.ts",
           "src/hooks/queries/plugin-settings-queries.ts",
           "src/hooks/queries/skills-queries.ts",
@@ -4728,12 +4731,12 @@
         "id": "W-604-06",
         "kind": "reviewChunk",
         "executable": false,
-        "fileCount": 96,
+        "fileCount": 82,
         "dispositions": [
           "delete-unsupported",
           "verification-only"
         ],
-        "dependencyCount": 159,
+        "dependencyCount": 150,
         "dependsOnBatchIds": [
           "W-603-01",
           "W-603-02",

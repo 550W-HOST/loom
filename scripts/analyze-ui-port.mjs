@@ -119,6 +119,26 @@ const AUTOMATION_PATHS = new Set([
   "src/lib/route-paths.ts",
 ]);
 
+const TSCONFIG_BUILD_INPUTS = new Set([
+  "src/types/ansi-to-html.d.ts",
+  "src/types/bb-desktop.d.ts",
+  "src/vite-env.d.ts",
+]);
+
+const EXPECTED_COMPILE_ONLY_LOCAL = [
+  "src/components/pickers/model-picker-option.ts",
+  "src/components/secondary-panel/secondaryPanelTab.ts",
+  "src/components/showcase-hero/showcase-archetype.ts",
+  "src/components/thread/timeline/types.ts",
+  "src/components/ui/markdown-link.ts",
+  "src/hooks/cache-effect-types.ts",
+  "src/hooks/mutations/mutation-request-types.ts",
+  "src/lib/command-palette/palette-action.ts",
+  "src/lib/split-layout/types.ts",
+  "src/lib/thread-secondary-panel.ts",
+  "src/views/thread-detail/threadDetailMutationTypes.ts",
+];
+
 const PRESERVED_SURFACE_PREFIXES = [
   "src/components/layout/",
   "src/components/promptbox/",
@@ -685,6 +705,7 @@ function surfaceTags(filePath, disposition) {
   const tags = new Set();
   if (disposition === "asset-build") tags.add("asset");
   if (disposition === "adapt-boundary") tags.add("boundary-adapter");
+  if (TSCONFIG_BUILD_INPUTS.has(filePath)) tags.add("build-input");
   if (isVerificationPath(filePath)) tags.add(layerForPath(filePath) === "story" ? "story" : "test");
   if (AUTOMATION_PATHS.has(filePath) || filePath === "src/components/tools/Automations.stories.tsx") tags.add("automations");
   if (filePath === "src/App.tsx" || filePath.startsWith("src/views/RootCompose")) tags.add("runtime-main");
@@ -702,6 +723,7 @@ function surfaceTags(filePath, disposition) {
 
 export function classifyPath(filePath, fileEdges = [], reachability = { runtime: true, test: false, story: false, build: false }) {
   const extension = path.extname(filePath).toLowerCase();
+  const compileReachable = reachability.compile ?? reachability.runtime;
   if (isVerificationPath(filePath)) {
     return { disposition: "verification-only", reasonCode: "test-or-story-root", preserveStructure: false };
   }
@@ -712,7 +734,10 @@ export function classifyPath(filePath, fileEdges = [], reachability = { runtime:
   if (unsupported) {
     return { disposition: "delete-unsupported", reasonCode: `unsupported-composition:${unsupported}`, preserveStructure: false };
   }
-  if (!reachability.runtime) {
+  if (TSCONFIG_BUILD_INPUTS.has(filePath)) {
+    return { disposition: "retain-verbatim", reasonCode: "tsconfig-ambient-build-input", preserveStructure: false };
+  }
+  if (!compileReachable) {
     return {
       disposition: "verification-only",
       reasonCode: reachability.story ? "story-only-reachable" : reachability.test ? "test-only-reachable" : reachability.build ? "build-only-reachable" : "unreachable-source-review",
@@ -1106,6 +1131,7 @@ export function analyzeApp({ repo = repoRoot, app = path.join(repo, "apps", "app
   const nodes = sourceFiles.sort().map((file) => {
     const classification = classifyPath(file, edges.filter((edge) => edge.from === file), {
       runtime: runtimeReachability.distance.has(file),
+      compile: compileReachability.distance.has(file),
       test: testReachability.distance.has(file),
       story: storyReachability.distance.has(file),
       build: buildReachability.distance.has(file),
@@ -1116,6 +1142,8 @@ export function analyzeApp({ repo = repoRoot, app = path.join(repo, "apps", "app
       reasonCode: classification.reasonCode,
       surfaceTags: surfaceTags(file, classification.disposition),
       runtimeReachable: runtimeReachability.distance.has(file),
+      runtimeCompileReachable: compileReachability.distance.has(file),
+      runtimeEmittedReachable: runtimeReachability.distance.has(file),
       runtimeWitness: runtimeReachability.witness.has(file) ? runtimeReachability.witness.get(file).join(">") : null,
       ...(classification.preserveStructure ? { preserveStructure: true } : {}),
     };
@@ -1148,6 +1176,8 @@ export function analyzeApp({ repo = repoRoot, app = path.join(repo, "apps", "app
   for (const values of Object.values(blockerLayers)) values.sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
 
   const runtimeFiles = nodes.filter((node) => node.runtimeReachable).map((node) => node.path);
+  const compileOnlyLocalPaths = nodes.filter((node) => node.runtimeCompileReachable && !node.runtimeEmittedReachable).map((node) => node.path).sort();
+  if (JSON.stringify(compileOnlyLocalPaths) !== JSON.stringify(EXPECTED_COMPILE_ONLY_LOCAL)) throw new Error(`compile-only local corpus changed: expected ${EXPECTED_COMPILE_ONLY_LOCAL.length}, got ${compileOnlyLocalPaths.length}`);
   const w603Paths = nodes.filter((node) => ["retain-verbatim", "adapt-boundary", "asset-build"].includes(node.disposition)).map((node) => node.path).sort();
   const w604Paths = nodes.filter((node) => ["delete-unsupported", "verification-only"].includes(node.disposition)).map((node) => node.path).sort();
   const rawBatches = {
@@ -1174,8 +1204,9 @@ export function analyzeApp({ repo = repoRoot, app = path.join(repo, "apps", "app
   let crossChunkOccurrences = 0;
   let missingCrossStageEdges = 0;
   let crossIssueEdges = 0;
-  let crossIssueSemanticEdges = 0;
+  let crossIssueLogicalEdges = 0;
   let crossIssueOccurrences = 0;
+  let crossIssueLogicalOccurrences = 0;
   let missingCrossIssueBatchDependencies = 0;
   const crossIssueLogicalKeys = new Set();
   for (const edge of edges) {
@@ -1188,12 +1219,13 @@ export function analyzeApp({ repo = repoRoot, app = path.join(repo, "apps", "app
     crossChunkOccurrences += occurrences;
     if (!sourceBatch.dependsOnBatchIds.includes(targetBatch.id)) missingCrossStageEdges += 1;
     if (sourceBatch.issue !== targetBatch.issue) {
-      crossIssueSemanticEdges += 1;
+      crossIssueEdges += 1;
+      crossIssueOccurrences += occurrences;
       const logicalKey = [edge.from, edge.kind, edge.specifier, edge.to].join("\u0000");
       if (!crossIssueLogicalKeys.has(logicalKey)) {
         crossIssueLogicalKeys.add(logicalKey);
-        crossIssueEdges += 1;
-        crossIssueOccurrences += occurrences;
+        crossIssueLogicalEdges += 1;
+        crossIssueLogicalOccurrences += occurrences;
       }
       if (!sourceBatch.dependsOnBatchIds.includes(targetBatch.id)) missingCrossIssueBatchDependencies += 1;
     }
@@ -1204,8 +1236,13 @@ export function analyzeApp({ repo = repoRoot, app = path.join(repo, "apps", "app
   batchCoverage.crossChunkOccurrences = crossChunkOccurrences;
   batchCoverage.crossIssueEdges = crossIssueEdges;
   batchCoverage.crossIssueOccurrences = crossIssueOccurrences;
+  batchCoverage.crossIssueLogicalEdges = crossIssueLogicalEdges;
+  batchCoverage.crossIssueLogicalOccurrences = crossIssueLogicalOccurrences;
   batchCoverage.missingCrossIssueBatchDependencies = missingCrossIssueBatchDependencies;
   assertBatchCoverage(batchCoverage);
+  const w603Files = new Set(batches["W-603"].flatMap((batch) => batch.files));
+  if (EXPECTED_COMPILE_ONLY_LOCAL.some((file) => !w603Files.has(file) || nodeByPath.get(file)?.disposition === "verification-only")) throw new Error("compile-only local modules must be retained in W-603");
+  if ([...TSCONFIG_BUILD_INPUTS].some((file) => !w603Files.has(file) || nodeByPath.get(file)?.disposition !== "retain-verbatim")) throw new Error("tsconfig ambient declarations must be retained in W-603");
   const batchPlan = {
     kind: "reviewChunks",
     executable: false,
@@ -1218,8 +1255,9 @@ export function analyzeApp({ repo = repoRoot, app = path.join(repo, "apps", "app
       cyclic: group.some((batch) => batch.dependsOnBatchIds.some((id) => id.startsWith(`${issue}-`))),
     })),
     crossIssueEdges,
-    crossIssueSemanticEdges,
+    crossIssueLogicalEdges,
     crossIssueOccurrences,
+    crossIssueLogicalOccurrences,
     crossIssueCycles: batchGraph.stronglyConnectedComponents.filter((component) => component.cyclic && component.batchIds.some((id) => id.startsWith("W-603-")) && component.batchIds.some((id) => id.startsWith("W-604-"))).length,
     crossStageConflict: crossIssueEdges > 0,
   };
@@ -1294,6 +1332,8 @@ export function analyzeApp({ repo = repoRoot, app = path.join(repo, "apps", "app
         runtime: runtimeFiles.length,
         runtimeEmitted: runtimeFiles.length,
         runtimeCompile: compileReachability.distance.size,
+        compileOnlyLocal: compileOnlyLocalPaths.length,
+        runtimeReachableSemantics: "runtimeEmittedReachable",
         test: testReachability.distance.size,
         story: storyReachability.distance.size,
         build: buildReachability.distance.size,
@@ -1314,6 +1354,7 @@ export function analyzeApp({ repo = repoRoot, app = path.join(repo, "apps", "app
     policy: {
       unsupportedCompositionRoots: UNSUPPORTED_COMPOSITION_ROOTS,
       adapterBoundaries: [...ADAPTER_BOUNDARY_PATHS].sort(),
+      tsconfigBuildInputs: [...TSCONFIG_BUILD_INPUTS].sort(),
       deleteClosure: Object.fromEntries([...policyClosure.entries()].map(([root, files]) => [root, files])),
       classificationPriority: ["verification-only", "asset-build", "delete-unsupported", "adapt-boundary", "retain-verbatim"],
     },
@@ -1371,6 +1412,8 @@ function reviewSummary(plan) {
       boundary: plan.nodes.filter((node) => node.disposition === "adapt-boundary").map((node) => ({ path: node.path, reasonCode: node.reasonCode, preserveStructure: node.preserveStructure ?? false })),
       unsupported: plan.nodes.filter((node) => node.disposition === "delete-unsupported").map((node) => ({ path: node.path, reasonCode: node.reasonCode })),
       nonRuntime: plan.nodes.filter((node) => !node.runtimeReachable && node.disposition !== "asset-build").map((node) => ({ path: node.path, disposition: node.disposition, reasonCode: node.reasonCode })),
+      compileOnlyLocal: plan.nodes.filter((node) => node.runtimeCompileReachable && !node.runtimeEmittedReachable).map((node) => node.path),
+      tsconfigBuildInputs: plan.policy.tsconfigBuildInputs,
     },
     blockers: blockerCategories,
     requiredAssertions: plan.assertions,
@@ -1418,6 +1461,8 @@ function checkPlan(plan) {
   assert.equal(plan.source.trackedFiles, 1437);
   assert.equal(plan.source.exactGitTree, expectedAppTree);
   assert.equal(plan.nodes.length, 1437);
+  assert.equal(plan.graph.reachability.compileOnlyLocal, 11);
+  assert.equal(plan.graph.reachability.runtimeReachableSemantics, "runtimeEmittedReachable");
   assert.ok(stableJson(plan).length <= 2 * 1024 * 1024, `plan is larger than 2 MiB: ${stableJson(plan).length}`);
   assert.ok(stableJson(plan).split("\n").length <= 30000, "plan is larger than 30000 lines");
   const paths = plan.nodes.map((node) => node.path);
@@ -1427,12 +1472,15 @@ function checkPlan(plan) {
     assert.equal(Object.prototype.hasOwnProperty.call(node, "bytes"), false);
     assert.equal(Object.prototype.hasOwnProperty.call(node, "sha256"), false);
     assert.ok(Array.isArray(node.surfaceTags));
+    assert.equal(typeof node.runtimeCompileReachable, "boolean");
+    assert.equal(typeof node.runtimeEmittedReachable, "boolean");
   }
   assert.equal(plan.batchCoverage.missing.length, 0);
   assert.equal(plan.batchCoverage.duplicates.length, 0);
   assert.equal(plan.batchCoverage.assigned, 1437);
   assert.equal(plan.batchCoverage.missingCrossStageEdges, 0);
   assert.equal(plan.batchCoverage.missingCrossIssueBatchDependencies, 0);
+  assert.equal(plan.batchCoverage.crossIssueEdges, 1519);
   assert.equal(plan.batchPlan.kind, "reviewChunks");
   assert.equal(plan.batchPlan.executable, false);
   assert.equal(plan.batchPlan.atomicStageCount, 2);
@@ -1440,6 +1488,8 @@ function checkPlan(plan) {
   assert.equal(plan.graph.compilerImportConsistency.extra.length, 0);
   assert.equal(plan.graph.compilerImportConsistency.preProcessFileParity.missing.length, 0);
   assert.equal(plan.graph.compilerImportConsistency.preProcessFileParity.extra.length, 0);
+  assert.equal(plan.graph.typeOnlySemantics.allNamedTypeOnlyImports, 20);
+  assert.equal(plan.resolver.configDiagnostics, 2);
   for (const issue of ["W-603", "W-604"]) {
     assert.ok(Array.isArray(plan.batches[issue]) && plan.batches[issue].length > 0);
     for (const batch of plan.batches[issue]) {

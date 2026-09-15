@@ -89,10 +89,21 @@ test("the real app corpus is complete, partitioned and compiler-consistent", () 
   assert.equal(plan.graph.typeOnlySemantics.allCorpusNamedTypeOnlyImports, 22);
   assert.equal(plan.graph.reachability.runtimeCompile, 782);
   assert.equal(plan.graph.reachability.runtimeEmitted, 771);
-  assert.equal(plan.batchCoverage.crossIssueEdges, 1556);
+  assert.equal(plan.batchCoverage.crossIssueEdges, 1519);
+  assert.equal(plan.batchCoverage.crossIssueLogicalEdges, 1511);
   assert.equal(plan.batchCoverage.missingCrossIssueBatchDependencies, 0);
   assert.equal(plan.batchPlan.kind, "reviewChunks");
   assert.equal(plan.batchPlan.executable, false);
+  assert.equal(plan.graph.reachability.compileOnlyLocal, 11);
+  assert.equal(plan.graph.reachability.runtimeReachableSemantics, "runtimeEmittedReachable");
+  const compileOnly = plan.nodes.filter((node) => node.runtimeCompileReachable && !node.runtimeEmittedReachable);
+  assert.equal(compileOnly.length, 11);
+  assert.equal(compileOnly.some((node) => node.disposition === "verification-only"), false);
+  const w603Files = new Set(plan.batches["W-603"].flatMap((batch) => batch.files));
+  for (const file of ["src/types/ansi-to-html.d.ts", "src/types/bb-desktop.d.ts", "src/vite-env.d.ts"]) {
+    assert.equal(nodes.get(file).disposition, "retain-verbatim");
+    assert.equal(w603Files.has(file), true);
+  }
   assert.equal(nodes.get("src/App.legacy-automation-routes.test.tsx").runtimeReachable, false);
   assert.equal(nodes.get("src/App.legacy-automation-routes.test.tsx").disposition, "verification-only");
   const edgeIndexes = Object.fromEntries(plan.graph.edgeFields.map((field, index) => [field, index]));
