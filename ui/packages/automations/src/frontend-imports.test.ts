@@ -72,10 +72,16 @@ function workspaceSourceFile(packageName: string, subpath: string): string {
     isRecord(manifest) && isRecord(manifest.exports)
       ? manifest.exports[`.${subpath}`]
       : undefined;
-  const source = isRecord(entry) ? entry.source : undefined;
-  if (typeof source !== "string") {
+  const source = isRecord(entry)
+    ? [entry.source, entry.types, entry.default].find(
+        (candidate): candidate is string => typeof candidate === "string",
+      )
+    : typeof entry === "string"
+      ? entry
+      : undefined;
+  if (source === undefined) {
     throw new Error(
-      `${packageName}${subpath} has no "source" export in its package.json`,
+      `${packageName}${subpath} has no browser source export in its package.json`,
     );
   }
   return resolve(packageDir, source);
@@ -144,8 +150,9 @@ describe("automations frontend bundle", () => {
         "detail-view.tsx",
         "overview-view.tsx",
         "lib/format-schedule.ts",
-        "../../packages/domain/src/update-state.ts",
-        "../../packages/shared-ui/src/components/ui/button.tsx",
+        "src/runtime.tsx",
+        "../domain/src/update-state.ts",
+        "../shared-ui/src/components/ui/button.tsx",
       ]),
     );
   });
@@ -154,6 +161,24 @@ describe("automations frontend bundle", () => {
     expect(() =>
       resolveLocalModule(FRONTEND_ENTRY, "@bb/plugin-interaction-contracts"),
     ).toThrow(/plugin-interaction-contracts/);
+  });
+
+  it("imports neither the generic plugin SDK nor server runtimes", () => {
+    const offenders = [...reached]
+      .flatMap(([file, specifiers]) =>
+        specifiers.map((specifier) => ({
+          file: relative(PLUGIN_ROOT, file),
+          specifier,
+        })),
+      )
+      .filter(
+        ({ specifier }) =>
+          specifier === "@get-bb/plugin-sdk" ||
+          specifier.startsWith("@get-bb/plugin-sdk/") ||
+          specifier === "better-sqlite3" ||
+          specifier.startsWith("node:"),
+      );
+    expect(offenders).toEqual([]);
   });
 
   it("never reaches the zod schema module through a value import", () => {

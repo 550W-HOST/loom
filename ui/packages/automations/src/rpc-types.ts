@@ -329,10 +329,14 @@ export const projectAutomationInputSchema = z
     automationId: z.string().min(1),
   })
   .strict();
+export type ProjectAutomationInput = z.infer<
+  typeof projectAutomationInputSchema
+>;
 
 export const listAutomationsInputSchema = z
   .object({ projectId: z.string().min(1) })
   .strict();
+export type ListAutomationsInput = z.infer<typeof listAutomationsInputSchema>;
 
 export const createAutomationInputSchema = z
   .object({
@@ -398,6 +402,7 @@ export const automationRunsInputSchema = projectAutomationInputSchema
     cursor: z.string().min(1).optional(),
   })
   .strict();
+export type AutomationRunsInput = z.input<typeof automationRunsInputSchema>;
 export type ResolvedAutomationRunsInput = z.output<
   typeof automationRunsInputSchema
 >;

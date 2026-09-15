@@ -1,20 +1,23 @@
 // @vitest-environment jsdom
 
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import type { ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type {
-  ExperimentalPermissionModePickerProps,
-  ExperimentalProviderModelPickerProps,
-} from "@get-bb/plugin-sdk/app";
+import { createUnavailableAutomationsClient } from "./client.js";
+import {
+  AutomationsRuntimeProvider,
+  type AutomationPermissionModePickerProps,
+  type AutomationProviderModelPickerProps,
+} from "./runtime.js";
 import type { AgentExecutionUpdate, AutomationResponse } from "./rpc-types.js";
 
-vi.mock("@get-bb/plugin-sdk/app", () => ({
-  experimental_ProviderModelPicker: ({
+const editorAdapters = {
+  ProviderModelPicker: ({
     onChange,
     routing,
     allowProviderChange,
     disabled,
-  }: ExperimentalProviderModelPickerProps) => (
+  }: AutomationProviderModelPickerProps) => (
     <button
       type="button"
       disabled={disabled}
@@ -41,13 +44,13 @@ vi.mock("@get-bb/plugin-sdk/app", () => ({
       Choose Claude
     </button>
   ),
-  experimental_PermissionModePicker: ({
+  PermissionModePicker: ({
     providerId,
     value,
     onChange,
     routing,
     disabled,
-  }: ExperimentalPermissionModePickerProps) => (
+  }: AutomationPermissionModePickerProps) => (
     <button
       type="button"
       aria-label="Permission mode"
@@ -59,7 +62,26 @@ vi.mock("@get-bb/plugin-sdk/app", () => ({
       {value}
     </button>
   ),
-}));
+};
+
+const client = createUnavailableAutomationsClient();
+const navigation = {
+  toCompose: vi.fn(),
+  toThread: vi.fn(),
+  toPanel: vi.fn(),
+};
+
+function renderWithRuntime(node: ReactNode) {
+  return render(
+    <AutomationsRuntimeProvider
+      client={client}
+      navigation={navigation}
+      editorAdapters={editorAdapters}
+    >
+      {node}
+    </AutomationsRuntimeProvider>,
+  );
+}
 
 import { AutomationDetailView } from "../detail-view.js";
 
@@ -98,7 +120,7 @@ describe("automation provider and model picker", () => {
       throw new Error("Expected an agent automation fixture");
     }
     const onUpdate = vi.fn(async (_update: AgentExecutionUpdate) => {});
-    render(
+    renderWithRuntime(
       <AutomationDetailView
         automation={{
           ...automation,
@@ -154,7 +176,7 @@ describe("automation provider and model picker", () => {
 
   it("persists the host picker's coherent tuple and reconciles permissions", () => {
     const onUpdate = vi.fn(async (_update: AgentExecutionUpdate) => {});
-    render(
+    renderWithRuntime(
       <AutomationDetailView
         automation={automation}
         projectLabel="Test project"

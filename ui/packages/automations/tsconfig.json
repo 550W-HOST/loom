@@ -1,30 +1,30 @@
 {
+  "extends": [
+    "@bb/tsconfig/base.json",
+    "@bb/tsconfig/typecheck-overrides.json"
+  ],
   "compilerOptions": {
-    "strict": true,
-    "target": "ES2022",
-    "module": "ESNext",
-    "moduleResolution": "bundler",
     "jsx": "react-jsx",
-    "lib": ["ES2022", "DOM", "DOM.Iterable"],
-    "esModuleInterop": true,
-    "noEmit": true,
-    "skipLibCheck": true,
-    "types": ["node", "vitest/globals"],
-    "paths": {
-      "@get-bb/plugin-sdk": [
-        "../../packages/plugin-sdk/bundled-types/bb-plugin-sdk.d.ts"
-      ],
-      "@get-bb/plugin-sdk/app": [
-        "../../packages/plugin-sdk/bundled-types/bb-plugin-sdk-app.d.ts"
-      ],
-      "@/*": ["./*"]
-    }
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "rootDir": ".",
+    "types": ["node", "vitest/globals"]
   },
   "include": [
-    "src/**/*.ts",
-    "src/**/*.tsx",
     "app.tsx",
     "detail-view.tsx",
-    "lib"
+    "metadata.tsx",
+    "overview-view.tsx",
+    "lib/format-schedule.ts",
+    "src/client.ts",
+    "src/limits.ts",
+    "src/rpc-types.ts",
+    "src/runtime.tsx",
+    "src/automation-provider-model-picker.test.tsx",
+    "src/automation-safety-docs.test.ts",
+    "src/client.test.ts",
+    "src/format-schedule.test.ts",
+    "src/frontend-imports.test.ts",
+    "src/panel.test.tsx"
   ]
 }

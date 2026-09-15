@@ -1,63 +1,70 @@
 {
   "name": "bb-plugin-automations",
   "version": "0.1.0",
-  "description": "Schedule recurring and one-shot agent or script work.",
+  "description": "Loom-native Automations browser UI boundary.",
   "private": true,
   "type": "module",
+  "sideEffects": false,
   "exports": {
-    "./detail-view": "./detail-view.tsx",
-    "./overview-view": "./overview-view.tsx",
-    "./rpc-types": "./src/rpc-types.ts"
-  },
-  "engines": {
-    "bb": ">=0.0",
-    "bbPluginSdk": ">=0.4.13"
-  },
-  "bb": {
-    "name": "Automations",
-    "description": "Schedule recurring and one-shot agent or script work.",
-    "branding": {
-      "icon": "Repeat"
+    ".": {
+      "source": "./app.tsx",
+      "types": "./app.tsx",
+      "default": "./app.tsx"
     },
-    "server": "./src/server.ts",
-    "app": "./app.tsx",
-    "skills": [
-      "skills"
-    ]
+    "./panel": {
+      "source": "./app.tsx",
+      "types": "./app.tsx",
+      "default": "./app.tsx"
+    },
+    "./detail-view": {
+      "source": "./detail-view.tsx",
+      "types": "./detail-view.tsx",
+      "default": "./detail-view.tsx"
+    },
+    "./overview-view": {
+      "source": "./overview-view.tsx",
+      "types": "./overview-view.tsx",
+      "default": "./overview-view.tsx"
+    },
+    "./client": {
+      "source": "./src/client.ts",
+      "types": "./src/client.ts",
+      "default": "./src/client.ts"
+    },
+    "./runtime": {
+      "source": "./src/runtime.tsx",
+      "types": "./src/runtime.tsx",
+      "default": "./src/runtime.tsx"
+    },
+    "./rpc-types": {
+      "source": "./src/rpc-types.ts",
+      "types": "./src/rpc-types.ts",
+      "default": "./src/rpc-types.ts"
+    }
   },
-  "keywords": [
-    "bb-plugin"
-  ],
   "scripts": {
+    "build": "tsc --noEmit",
+    "clean": "rimraf dist tsconfig.tsbuildinfo",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run --config vitest.config.ts",
-    "prepare:bundled": "bb-plugin-build prepare-bundled"
+    "test": "vitest run --config vitest.config.ts"
   },
   "dependencies": {
+    "@bb/domain": "workspace:*",
     "@bb/shared-ui": "workspace:*",
-    "@radix-ui/react-slot": "^1.3.0",
-    "cron-parser": "^5.5.0",
     "cronstrue": "^3.14.0",
-    "zod": "^4.3.6",
-    "@bb/domain": "workspace:*"
+    "react": "^19.0.0",
+    "sonner": "^1.7.4",
+    "zod": "^4.3.6"
   },
   "devDependencies": {
-    "@bb/plugin-build": "workspace:*",
-    "@get-bb/plugin-sdk": "workspace:*",
-    "@radix-ui/react-dialog": "^1.1.19",
-    "@radix-ui/react-dropdown-menu": "^2.1.20",
+    "@bb/tsconfig": "workspace:*",
     "@testing-library/react": "^16.3.2",
-    "@types/better-sqlite3": "^7.6.12",
     "@types/node": "^22.0.0",
     "@types/react": "^19.0.0",
-    "better-sqlite3": "12.10.0",
+    "@types/react-dom": "^19.0.0",
     "jsdom": "^29.0.1",
-    "react": "^19.0.0",
     "react-dom": "^19.0.0",
-    "sonner": "^1.7.4",
     "typescript": "npm:@typescript/typescript6@^6.0.2",
-    "typescript-7": "npm:typescript@^7.0.2",
-    "vaul": "^1.1.2",
     "vitest": "^4.1.1"
   }
 }

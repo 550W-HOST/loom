@@ -1,15 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { buildAutomationEditThreadPrompt } from "@bb/shared-ui/resource-edit-prompt";
-import {
-  definePluginApp,
-  useBbNavigate,
-  useRealtime,
-  useRpc,
-  type PluginNavPanelProps,
-} from "@get-bb/plugin-sdk/app";
-import type { automationRpcContract } from "./src/rpc.js";
 import { toast } from "sonner";
+import type { AutomationsClient } from "./src/client.js";
+import {
+  AutomationsRuntimeProvider,
+  useAutomationsClient,
+  useAutomationsNavigation,
+  type AutomationEditorAdapters,
+  type AutomationsNavigation,
+} from "./src/runtime.js";
 import type {
   AutomationResponse,
   AutomationReadResult,
@@ -17,7 +17,7 @@ import type {
   AutomationRunListResponse,
   AutomationRunResponse,
   AutomationsOverviewResponse,
-} from "@/src/rpc-types";
+} from "./src/rpc-types.js";
 import { AutomationDetailView } from "./detail-view";
 import {
   AutomationOverviewView,
@@ -38,12 +38,26 @@ import {
 import { ResourceListState } from "@bb/shared-ui/resource-list";
 import { cn } from "@bb/shared-ui/lib/utils";
 
-const PANEL_PATH = "automations";
 const PERSONAL_PROJECT_ID = "proj_personal";
 type OverviewEntry = AutomationsOverviewResponse["automations"][number];
 
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function useRealtime(
+  _channel: "automations",
+  onSignal: (payload: unknown) => void,
+): void {
+  const client = useAutomationsClient();
+  const listenerRef = useRef(onSignal);
+  useEffect(() => {
+    listenerRef.current = onSignal;
+  }, [onSignal]);
+  useEffect(
+    () => client.subscribe((signal) => listenerRef.current(signal)),
+    [client],
+  );
 }
 
 interface DetailRoute {
@@ -90,7 +104,7 @@ function useOverview(): {
   error: string | null;
   refetch: () => void;
 } {
-  const rpc = useRpc<typeof automationRpcContract>();
+  const rpc = useAutomationsClient();
   const [state, setState] = useState<{
     entries: OverviewEntry[] | null;
     error: string | null;
@@ -169,7 +183,7 @@ function useAutomation(route: DetailRoute): {
   missing: boolean;
   refetch: () => void;
 } {
-  const rpc = useRpc<typeof automationRpcContract>();
+  const rpc = useAutomationsClient();
   const { projectId, automationId } = route;
   const [state, setState] = useState<{
     automation: AutomationReadResult | null;
@@ -223,7 +237,7 @@ interface RunsState {
 function useRuns(
   route: DetailRoute,
 ): RunsState & { loadMore: () => void; retry: () => void } {
-  const rpc = useRpc<typeof automationRpcContract>();
+  const rpc = useAutomationsClient();
   const { projectId, automationId } = route;
   const [state, setState] = useState<RunsState>({
     runs: [],
@@ -316,7 +330,7 @@ function useRuns(
 }
 
 function useMutations() {
-  const rpc = useRpc<typeof automationRpcContract>();
+  const rpc = useAutomationsClient();
   type MutationMethod =
     | "automations_pause"
     | "automations_resume"
@@ -397,7 +411,7 @@ function OverviewView({
   activeMode: AutomationCollectionMode;
   onModeChange: (mode: AutomationCollectionMode) => void;
 }) {
-  const navigate = useBbNavigate();
+  const navigate = useAutomationsNavigation();
   const { entries, error, refetch } = useOverview();
   const mutations = useMutations();
 
@@ -446,7 +460,7 @@ function DetailView({
   initialEditing: boolean;
   onBack: () => void;
 }) {
-  const navigate = useBbNavigate();
+  const navigate = useAutomationsNavigation();
   const { automation, error, missing, refetch } = useAutomation(route);
   const [editingRequested, setEditingRequested] = useState(initialEditing);
   const overviewState = useOverview();
@@ -657,29 +671,27 @@ function AutomationsPageFrame({
   );
 }
 
-function AutomationsPanel({ subPath }: PluginNavPanelProps) {
-  const navigate = useBbNavigate();
+function AutomationsPanelContent({ subPath }: { subPath: string }) {
+  const navigate = useAutomationsNavigation();
   const parsedRoute = useMemo(() => parseSubPath(subPath), [subPath]);
   const collectionMode: AutomationCollectionMode =
     subPath === "browse" ? "browse" : "installed";
   const openDetail = useCallback(
     (next: DetailRoute, options?: { editing?: boolean }) => {
-      navigate.toPluginPanel(PANEL_PATH, {
-        subPath: `${next.projectId}/${next.automationId}${
+      navigate.toPanel(
+        `${next.projectId}/${next.automationId}${
           options?.editing ? "/edit" : ""
         }`,
-      });
+      );
     },
     [navigate],
   );
   const backToList = useCallback(() => {
-    navigate.toPluginPanel(PANEL_PATH, { subPath: "" });
+    navigate.toPanel("");
   }, [navigate]);
   const changeCollectionMode = useCallback(
     (mode: AutomationCollectionMode) => {
-      navigate.toPluginPanel(PANEL_PATH, {
-        subPath: mode === "browse" ? "browse" : "",
-      });
+      navigate.toPanel(mode === "browse" ? "browse" : "");
     },
     [navigate],
   );
@@ -705,12 +717,28 @@ function AutomationsPanel({ subPath }: PluginNavPanelProps) {
   );
 }
 
-export default definePluginApp((app) => {
-  app.slots.navPanel({
-    id: "automations",
-    title: "Automations",
-    icon: "Repeat",
-    path: PANEL_PATH,
-    component: AutomationsPanel,
-  });
-});
+export interface AutomationsPanelProps {
+  subPath: string;
+  client: AutomationsClient;
+  navigation: AutomationsNavigation;
+  editorAdapters?: AutomationEditorAdapters;
+}
+
+export function AutomationsPanel({
+  subPath,
+  client,
+  navigation,
+  editorAdapters,
+}: AutomationsPanelProps) {
+  return (
+    <AutomationsRuntimeProvider
+      client={client}
+      navigation={navigation}
+      {...(editorAdapters === undefined ? {} : { editorAdapters })}
+    >
+      <AutomationsPanelContent subPath={subPath} />
+    </AutomationsRuntimeProvider>
+  );
+}
+
+export default AutomationsPanel;

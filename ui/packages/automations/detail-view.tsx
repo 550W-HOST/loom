@@ -9,11 +9,11 @@ import type {
   AgentExecutionUpdate,
 } from "./src/rpc-types";
 import {
-  experimental_PermissionModePicker as PermissionModePicker,
-  experimental_ProviderModelPicker as ProviderModelPicker,
-  type ExperimentalProviderModelPickerRouting,
-  type ExperimentalProviderModelPickerValue,
-} from "@get-bb/plugin-sdk/app";
+  PermissionModePicker,
+  ProviderModelPicker,
+  type AutomationProviderModelRouting,
+  type AutomationProviderModelValue,
+} from "./src/runtime.js";
 import { RUN_STATE_PRESENTATION } from "@bb/domain/update-state";
 import { Button } from "@bb/shared-ui/button";
 import { COARSE_POINTER_HOVER_REVEAL_VISIBLE_CLASS } from "@bb/shared-ui/coarse-pointer-visibility";
@@ -83,7 +83,7 @@ const PERSONAL_PROJECT_ID = "proj_personal";
 
 function providerModelValue(
   execution: Extract<AutomationExecution, { mode: "agent" }>,
-): ExperimentalProviderModelPickerValue {
+): AutomationProviderModelValue {
   return {
     providerId: execution.providerId,
     model: execution.model,
@@ -96,7 +96,7 @@ function providerModelValue(
 
 function providerModelRouting(
   environment: AgentEnvironment,
-): ExperimentalProviderModelPickerRouting | undefined {
+): AutomationProviderModelRouting | undefined {
   if (environment.type === "reuse") {
     return { kind: "environment", environmentId: environment.environmentId };
   }
