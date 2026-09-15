@@ -2,6 +2,7 @@
 
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import { builtinModules } from "node:module";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -17,6 +18,7 @@ const SOURCE_EXTENSIONS = new Set([".ts", ".tsx", ".js", ".jsx", ".mts", ".cts",
 const CSS_EXTENSIONS = new Set([".css"]);
 const HTML_EXTENSIONS = new Set([".html", ".htm"]);
 const ASSET_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".ico", ".woff", ".woff2"]);
+const NODE_BUILTIN_MODULES = new Set(builtinModules.map((name) => name.replace(/^node:/, "")));
 const CONDITIONAL_KINDS = new Set([
   ts.SyntaxKind.IfStatement,
   ts.SyntaxKind.ConditionalExpression,
@@ -170,8 +172,12 @@ function packageName(specifier) {
   return specifier.split("/")[0];
 }
 
+export function isNodeBuiltin(specifier) {
+  return NODE_BUILTIN_MODULES.has(specifier.replace(/^node:/, ""));
+}
+
 function isPackageSpecifier(specifier) {
-  return !specifier.startsWith(".") && !specifier.startsWith("/") && !specifier.startsWith("@/") && !specifier.startsWith("node:");
+  return !specifier.startsWith(".") && !specifier.startsWith("/") && !specifier.startsWith("@/") && !isNodeBuiltin(specifier);
 }
 
 function trackedFiles(repo, relativePath) {
@@ -251,6 +257,27 @@ function stringLiteralValue(node) {
   return node && (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) ? node.text : null;
 }
 
+function declarationIsTypeOnly(node) {
+  if (node.isTypeOnly) return true;
+  const clause = node.importClause;
+  if (!clause) return false;
+  if (clause.isTypeOnly || clause.name || !clause.namedBindings) return Boolean(clause.isTypeOnly);
+  if (ts.isNamespaceImport(clause.namedBindings)) return false;
+  return clause.namedBindings.elements.length > 0 && clause.namedBindings.elements.every((element) => element.isTypeOnly === true);
+}
+
+function importTypeOnlyForm(node) {
+  if (node.importClause?.isTypeOnly) return "import-clause";
+  const namedBindings = node.importClause?.namedBindings;
+  if (namedBindings && ts.isNamedImports(namedBindings) && namedBindings.elements.length > 0 && namedBindings.elements.every((element) => element.isTypeOnly === true)) return "named-specifiers";
+  return null;
+}
+
+function exportDeclarationIsTypeOnly(node) {
+  if (node.isTypeOnly) return true;
+  return Boolean(node.exportClause) && ts.isNamedExports(node.exportClause) && node.exportClause.elements.length > 0 && node.exportClause.elements.every((element) => element.isTypeOnly === true);
+}
+
 function conditionalAncestor(ancestors) {
   return ancestors.some((ancestor) => CONDITIONAL_KINDS.has(ancestor.kind));
 }
@@ -259,7 +286,7 @@ export function extractCompilerImports(filePath, text) {
   const sourceFile = ts.createSourceFile(filePath, text, ts.ScriptTarget.Latest, true, scriptKind(filePath));
   const imports = [];
   const blockers = [];
-  const addImport = (node, specifier, kind, typeOnly, ancestors) => {
+  const addImport = (node, specifier, kind, typeOnly, ancestors, typeOnlyForm = null) => {
     const conditional = conditionalAncestor(ancestors);
     imports.push({
       specifier,
@@ -267,6 +294,7 @@ export function extractCompilerImports(filePath, text) {
       typeOnly: Boolean(typeOnly),
       conditional,
       line: sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line + 1,
+      ...(typeOnlyForm ? { typeOnlyForm } : {}),
     });
   };
   const addDynamic = (node, kind, ancestors) => {
@@ -286,10 +314,10 @@ export function extractCompilerImports(filePath, text) {
   function visit(node, ancestors) {
     if (ts.isImportDeclaration(node)) {
       const specifier = stringLiteralValue(node.moduleSpecifier);
-      if (specifier !== null) addImport(node, specifier, "static", node.importClause?.isTypeOnly, ancestors);
+      if (specifier !== null) addImport(node, specifier, "static", declarationIsTypeOnly(node), ancestors, importTypeOnlyForm(node));
     } else if (ts.isExportDeclaration(node)) {
       const specifier = node.moduleSpecifier ? stringLiteralValue(node.moduleSpecifier) : null;
-      if (specifier !== null) addImport(node, specifier, "re-export", node.isTypeOnly, ancestors);
+      if (specifier !== null) addImport(node, specifier, "re-export", exportDeclarationIsTypeOnly(node), ancestors);
     } else if (ts.isImportEqualsDeclaration(node)) {
       const reference = node.moduleReference;
       if (ts.isExternalModuleReference(reference)) {
@@ -600,8 +628,8 @@ function resolverFor(repo, app, options, packageMap, declared) {
     if (fs.existsSync(targetPath)) return { status: "resolved-workspace", path: relativeTo(app, targetPath), package: name };
     return { status: "unresolved-workspace-export", package: name };
   };
-  return (specifier, containingFile) => {
-    if (specifier.startsWith("node:")) return { status: "builtin", package: specifier };
+  return (specifier, containingFile, typeOnly = false) => {
+    if (isNodeBuiltin(specifier)) return { status: "builtin", package: specifier };
     const workspaceResult = isPackageSpecifier(specifier) ? resolveWorkspace(specifier) : null;
     if (workspaceResult) return workspaceResult;
     const resolved = resolveWithTs(specifier, containingFile);
@@ -619,6 +647,7 @@ function resolverFor(repo, app, options, packageMap, declared) {
     }
     const name = packageName(specifier);
     const declaration = declared.get(name);
+    if (typeOnly && !declaration && declared.has(`@types/${name}`)) return { status: "declared-type-package", package: name, typePackage: `@types/${name}` };
     if (declaration?.version?.startsWith("workspace:") && !packageMap.has(name)) return { status: "unresolved-workspace-package", package: name };
     if (declaration) return { status: "declared-external", package: name };
     return { status: "unresolved-external", package: name };
@@ -628,7 +657,7 @@ function resolverFor(repo, app, options, packageMap, declared) {
 function dependencyDeclarations(packageJson) {
   const result = new Map();
   for (const group of ["dependencies", "devDependencies", "peerDependencies", "optionalDependencies"]) {
-    for (const [name, version] of Object.entries(packageJson[group] ?? {})) result.set(name, { group, version });
+  for (const [name, version] of Object.entries(packageJson[group] ?? {})) result.set(name, { group, version });
   }
   return result;
 }
@@ -691,12 +720,14 @@ export function classifyPath(filePath, fileEdges = [], reachability = { runtime:
     };
   }
   const unresolvedBoundary = fileEdges.find((edge) =>
-    edge.status === "unresolved-workspace-package" ||
-    edge.status === "unresolved-workspace-export" ||
-    edge.status === "unresolved-local" ||
-    edge.status === "non-literal" ||
-    edge.status === "unresolved-external" ||
-    edge.package === "@get-bb/plugin-sdk",
+    (!(edge.typeOnly && edge.package === "@get-bb/plugin-sdk") && (
+      edge.status === "unresolved-workspace-package" ||
+      edge.status === "unresolved-workspace-export" ||
+      edge.status === "unresolved-local" ||
+      edge.status === "non-literal" ||
+      edge.status === "unresolved-external"
+    )) ||
+    (edge.package === "@get-bb/plugin-sdk" && !edge.typeOnly),
   );
   if (unresolvedBoundary) {
     return {
@@ -743,11 +774,16 @@ function buildPackageDecisions(appPackageJson, declarations, actualImports, pack
   const names = new Set([...declarations.keys(), ...actualImports.keys()]);
   return [...names].sort().map((name) => {
     const declaration = declarations.get(name);
-    const actual = actualImports.get(name) ?? { total: 0, runtime: 0, test: 0, story: 0 };
+    const actual = actualImports.get(name) ?? { total: 0, runtime: 0, runtimeValue: 0, runtimeType: 0, test: 0, story: 0, verificationValue: 0, verificationType: 0 };
     const override = PACKAGE_DECISION_OVERRIDES.get(name);
-    const [decision, reasonCode, runtimeAllowed] = override ?? (packageMap.has(name)
-      ? ["reuse", "existing-workspace-source", true]
-      : ["reuse", "declared-external-package", true]);
+    const typePackage = !declaration && actual.runtimeType > 0 && declarations.has(`@types/${name}`) ? `@types/${name}` : null;
+    const typeOnlyRuntime = actual.runtime > 0 && actual.runtimeValue === 0;
+    const [decision, reasonCode, runtimeAllowed] = override ?? (typePackage
+      ? ["reuse", `declared-type-package:${typePackage}`, false]
+      : packageMap.has(name)
+        ? ["reuse", "existing-workspace-source", true]
+        : ["reuse", "declared-external-package", true]);
+    const effectiveRuntimeAllowed = override ? runtimeAllowed : typeOnlyRuntime ? false : actual.runtimeValue > 0;
     return {
       name,
       declaredAs: declaration?.group ?? null,
@@ -756,11 +792,16 @@ function buildPackageDecisions(appPackageJson, declarations, actualImports, pack
       sourcePath: packageMap.get(name) ? relativeTo(repoRoot, packageMap.get(name).root) : null,
       actualImports: actual.total,
       runtimeImports: actual.runtime,
+      runtimeValueImports: actual.runtimeValue,
+      runtimeTypeImports: actual.runtimeType,
       verificationImports: actual.test + actual.story,
+      verificationValueImports: actual.verificationValue,
+      verificationTypeImports: actual.verificationType,
+      ...(typePackage ? { typePackage } : {}),
       decision,
       disposition: decision === "adapter" ? "adapt-boundary" : decision === "remove" ? "delete-unsupported" : decision === "copy" ? "copy-source" : decision === "reuse" ? "reuse-source" : decision,
       reasonCode,
-      runtimeAllowed,
+      runtimeAllowed: effectiveRuntimeAllowed,
     };
   });
 }
@@ -784,8 +825,8 @@ function batchFiles(paths, issue, size = 120) {
   return batches;
 }
 
-export function batchDetails(rawBatches, edges, nodeByPath, issue) {
-  const batchByFile = new Map(rawBatches.flatMap((batch) => batch.files.map((file) => [file, batch])));
+export function batchDetails(rawBatches, edges, nodeByPath, issue, globalBatchByFile = null) {
+  const batchByFile = globalBatchByFile ?? new Map(rawBatches.flatMap((batch) => batch.files.map((file) => [file, batch])));
   return rawBatches.map((batch) => {
     const fileSet = new Set(batch.files);
     const dependencies = new Set();
@@ -804,6 +845,8 @@ export function batchDetails(rawBatches, edges, nodeByPath, issue) {
     if (cutPoints.length === 0) cutPoints.push(issue === "W-603" ? "preserve-product-composition" : "unsupported-composition-policy");
     return {
       ...batch,
+      kind: "reviewChunk",
+      executable: false,
       dependencies: [...dependencies].sort(),
       dependsOnBatchIds: [...dependsOnBatchIds].sort(),
       cutPoints: [...new Set(cutPoints)].sort(),
@@ -918,7 +961,7 @@ export function assertSourceInventory(sourceFiles) {
 }
 
 export function assertBatchCoverage(batchCoverage) {
-  if (batchCoverage.missing.length || batchCoverage.duplicates.length || batchCoverage.assigned !== batchCoverage.expected) throw new Error("W-603/W-604 batch partition is incomplete");
+  if (batchCoverage.missing.length || batchCoverage.duplicates.length || batchCoverage.assigned !== batchCoverage.expected || batchCoverage.missingCrossStageEdges || batchCoverage.missingCrossIssueBatchDependencies) throw new Error("W-603/W-604 batch partition is incomplete");
 }
 
 export function analyzeApp({ repo = repoRoot, app = path.join(repo, "apps", "app") } = {}) {
@@ -935,12 +978,13 @@ export function analyzeApp({ repo = repoRoot, app = path.join(repo, "apps", "app
   const preProcessRecords = [];
   const blockers = [];
   const actualImports = new Map();
-  const edgeMap = new Map();
+  const compileEdgeMap = new Map();
+  const runtimeEdgeMap = new Map();
   const edgeIndex = new Map();
   const addEdge = (from, extracted, origin) => {
     const resolution = extracted.specifier === null
       ? { status: "non-literal" }
-      : resolver(extracted.specifier, path.join(app, from));
+      : resolver(extracted.specifier, path.join(app, from), Boolean(extracted.typeOnly));
     const edge = {
       from,
       kind: extracted.kind,
@@ -965,8 +1009,12 @@ export function analyzeApp({ repo = repoRoot, app = path.join(repo, "apps", "app
     edgeIndex.set(key, edges.length);
     edges.push(edge);
     if (edge.to && edge.status === "resolved-local") {
-      if (!edgeMap.has(from)) edgeMap.set(from, []);
-      edgeMap.get(from).push(edge);
+      if (!compileEdgeMap.has(from)) compileEdgeMap.set(from, []);
+      compileEdgeMap.get(from).push(edge);
+      if (!edge.typeOnly) {
+        if (!runtimeEdgeMap.has(from)) runtimeEdgeMap.set(from, []);
+        runtimeEdgeMap.get(from).push(edge);
+      }
     }
     return edge;
   };
@@ -981,15 +1029,27 @@ export function analyzeApp({ repo = repoRoot, app = path.join(repo, "apps", "app
       preProcessRecords.push(...preProcessImportSpecifiers(text).map((specifier) => ({ from: file, specifier })));
       for (const record of extracted.imports) {
         const edge = addEdge(file, { ...record, specifier: record.specifier }, "typescript");
-        compilerRecords.push({ from: file, kind: record.kind, specifier: record.specifier, typeOnly: Boolean(record.typeOnly), conditional: Boolean(record.conditional), line: record.line });
+        compilerRecords.push({ from: file, kind: record.kind, specifier: record.specifier, typeOnly: Boolean(record.typeOnly), typeOnlyForm: record.typeOnlyForm ?? null, conditional: Boolean(record.conditional), line: record.line });
         if (isPackageSpecifier(record.specifier)) {
           const name = packageName(record.specifier);
-          const actual = actualImports.get(name) ?? { total: 0, runtime: 0, test: 0, story: 0 };
+          const actual = actualImports.get(name) ?? { total: 0, runtime: 0, runtimeValue: 0, runtimeType: 0, test: 0, story: 0, verificationValue: 0, verificationType: 0 };
           actual.total += 1;
           const layer = layerForPath(file);
-          if (layer === "runtime") actual.runtime += 1;
-          if (layer === "test") actual.test += 1;
-          if (layer === "story") actual.story += 1;
+          if (layer === "runtime") {
+            actual.runtime += 1;
+            if (record.typeOnly) actual.runtimeType += 1;
+            else actual.runtimeValue += 1;
+          }
+          if (layer === "test") {
+            actual.test += 1;
+            if (record.typeOnly) actual.verificationType += 1;
+            else actual.verificationValue += 1;
+          }
+          if (layer === "story") {
+            actual.story += 1;
+            if (record.typeOnly) actual.verificationType += 1;
+            else actual.verificationValue += 1;
+          }
           actualImports.set(name, actual);
         }
         if (edge.status === "unresolved-local" || edge.status === "unresolved-workspace-export" || edge.status === "unresolved-workspace-package" || edge.status === "unresolved-external") {
@@ -1029,15 +1089,19 @@ export function analyzeApp({ repo = repoRoot, app = path.join(repo, "apps", "app
   const preProcessMissing = compilerLiteralKeys.filter((key, index) => key !== preProcessKeys[index]);
   const preProcessExtra = preProcessKeys.filter((key, index) => key !== compilerLiteralKeys[index]);
   if (preProcessMissing.length || preProcessExtra.length) throw new Error(`preProcessFile import parity mismatch: missing=${preProcessMissing.length} extra=${preProcessExtra.length}`);
+  const allCorpusNamedTypeOnlyImports = compilerRecords.filter((record) => record.typeOnlyForm === "named-specifiers").length;
+  const storyNamedTypeOnlyImports = compilerRecords.filter((record) => record.typeOnlyForm === "named-specifiers" && layerForPath(record.from) === "story").length;
+  const allNamedTypeOnlyImports = allCorpusNamedTypeOnlyImports - storyNamedTypeOnlyImports;
 
   const runtimeRoots = allFiles.includes("src/main.tsx") ? ["src/main.tsx"] : [];
   const testRoots = sourceFiles.filter((file) => layerForPath(file) === "test").sort();
   const storyRoots = sourceFiles.filter((file) => layerForPath(file) === "story").sort();
   const buildRoots = allFiles.filter((file) => layerForPath(file) === "build" && (SOURCE_EXTENSIONS.has(path.extname(file).toLowerCase()) || HTML_EXTENSIONS.has(path.extname(file).toLowerCase()))).sort();
-  const runtimeReachability = walkReachability(runtimeRoots, edgeMap);
-  const testReachability = walkReachability(testRoots, edgeMap);
-  const storyReachability = walkReachability(storyRoots, edgeMap);
-  const buildReachability = walkReachability(buildRoots, edgeMap);
+  const compileReachability = walkReachability(runtimeRoots, compileEdgeMap);
+  const runtimeReachability = walkReachability(runtimeRoots, runtimeEdgeMap);
+  const testReachability = walkReachability(testRoots, compileEdgeMap);
+  const storyReachability = walkReachability(storyRoots, compileEdgeMap);
+  const buildReachability = walkReachability(buildRoots, compileEdgeMap);
 
   const nodes = sourceFiles.sort().map((file) => {
     const classification = classifyPath(file, edges.filter((edge) => edge.from === file), {
@@ -1063,7 +1127,7 @@ export function analyzeApp({ repo = repoRoot, app = path.join(repo, "apps", "app
   for (const root of UNSUPPORTED_COMPOSITION_ROOTS) {
     const rootFiles = directUnsupported.filter((file) => underRoot(file, root));
     if (!rootFiles.length) continue;
-    const closure = walkReachability(rootFiles, edgeMap).distance;
+    const closure = walkReachability(rootFiles, compileEdgeMap).distance;
     const files = [...closure.keys()].filter((file) => appSourceSet.has(file)).sort();
     policyClosure.set(root, files);
   }
@@ -1086,9 +1150,14 @@ export function analyzeApp({ repo = repoRoot, app = path.join(repo, "apps", "app
   const runtimeFiles = nodes.filter((node) => node.runtimeReachable).map((node) => node.path);
   const w603Paths = nodes.filter((node) => ["retain-verbatim", "adapt-boundary", "asset-build"].includes(node.disposition)).map((node) => node.path).sort();
   const w604Paths = nodes.filter((node) => ["delete-unsupported", "verification-only"].includes(node.disposition)).map((node) => node.path).sort();
+  const rawBatches = {
+    "W-603": batchFiles(w603Paths, "W-603"),
+    "W-604": batchFiles(w604Paths, "W-604"),
+  };
+  const globalBatchByFile = new Map(Object.values(rawBatches).flatMap((group) => group.flatMap((batch) => batch.files.map((file) => [file, batch]))));
   const batches = {
-    "W-603": batchDetails(batchFiles(w603Paths, "W-603"), edges, nodeByPath, "W-603"),
-    "W-604": batchDetails(batchFiles(w604Paths, "W-604"), edges, nodeByPath, "W-604"),
+    "W-603": batchDetails(rawBatches["W-603"], edges, nodeByPath, "W-603", globalBatchByFile),
+    "W-604": batchDetails(rawBatches["W-604"], edges, nodeByPath, "W-604", globalBatchByFile),
   };
   const batchGraph = batchDependencyGraph(batches);
   const assigned = [...batches["W-603"], ...batches["W-604"]].flatMap((batch) => batch.files);
@@ -1100,7 +1169,60 @@ export function analyzeApp({ repo = repoRoot, app = path.join(repo, "apps", "app
     missing: sourceFiles.filter((file) => !assignedCounts.has(file)),
     duplicates: [...assignedCounts.entries()].filter(([, count]) => count > 1).map(([file]) => file).sort(),
   };
+  const batchByFile = new Map([...batches["W-603"], ...batches["W-604"]].flatMap((batch) => batch.files.map((file) => [file, batch])));
+  let crossChunkEdges = 0;
+  let crossChunkOccurrences = 0;
+  let missingCrossStageEdges = 0;
+  let crossIssueEdges = 0;
+  let crossIssueSemanticEdges = 0;
+  let crossIssueOccurrences = 0;
+  let missingCrossIssueBatchDependencies = 0;
+  const crossIssueLogicalKeys = new Set();
+  for (const edge of edges) {
+    if (!edge.to) continue;
+    const sourceBatch = batchByFile.get(edge.from);
+    const targetBatch = batchByFile.get(edge.to);
+    if (!sourceBatch || !targetBatch || sourceBatch.id === targetBatch.id) continue;
+    const occurrences = edge.occurrences ?? 1;
+    crossChunkEdges += 1;
+    crossChunkOccurrences += occurrences;
+    if (!sourceBatch.dependsOnBatchIds.includes(targetBatch.id)) missingCrossStageEdges += 1;
+    if (sourceBatch.issue !== targetBatch.issue) {
+      crossIssueSemanticEdges += 1;
+      const logicalKey = [edge.from, edge.kind, edge.specifier, edge.to].join("\u0000");
+      if (!crossIssueLogicalKeys.has(logicalKey)) {
+        crossIssueLogicalKeys.add(logicalKey);
+        crossIssueEdges += 1;
+        crossIssueOccurrences += occurrences;
+      }
+      if (!sourceBatch.dependsOnBatchIds.includes(targetBatch.id)) missingCrossIssueBatchDependencies += 1;
+    }
+  }
+  batchCoverage.crossStageEdges = crossChunkEdges;
+  batchCoverage.missingCrossStageEdges = missingCrossStageEdges;
+  batchCoverage.crossChunkEdges = crossChunkEdges;
+  batchCoverage.crossChunkOccurrences = crossChunkOccurrences;
+  batchCoverage.crossIssueEdges = crossIssueEdges;
+  batchCoverage.crossIssueOccurrences = crossIssueOccurrences;
+  batchCoverage.missingCrossIssueBatchDependencies = missingCrossIssueBatchDependencies;
   assertBatchCoverage(batchCoverage);
+  const batchPlan = {
+    kind: "reviewChunks",
+    executable: false,
+    schedulingUnits: "issueStagesWithSCCConflicts",
+    atomicStageCount: Object.keys(batches).length,
+    sccCount: batchGraph.stronglyConnectedComponents.length,
+    atomicStages: Object.entries(batches).map(([issue, group]) => ({
+      issue,
+      batchIds: group.map((batch) => batch.id),
+      cyclic: group.some((batch) => batch.dependsOnBatchIds.some((id) => id.startsWith(`${issue}-`))),
+    })),
+    crossIssueEdges,
+    crossIssueSemanticEdges,
+    crossIssueOccurrences,
+    crossIssueCycles: batchGraph.stronglyConnectedComponents.filter((component) => component.cyclic && component.batchIds.some((id) => id.startsWith("W-603-")) && component.batchIds.some((id) => id.startsWith("W-604-"))).length,
+    crossStageConflict: crossIssueEdges > 0,
+  };
 
   const requiredAppEdge = edges.some((edge) => edge.from === "src/App.tsx" && edge.origin === "typescript" && edge.specifier === "react-router-dom");
   const requiredRouteEdge = edges.some((edge) => edge.from === "src/App.tsx" && edge.origin === "typescript" && edge.specifier === "./lib/route-paths");
@@ -1158,6 +1280,11 @@ export function analyzeApp({ repo = repoRoot, app = path.join(repo, "apps", "app
           specifiers: edges.filter((edge) => edge.origin === "html").reduce((sum, edge) => sum + (edge.occurrences ?? 1), 0),
         },
       },
+      typeOnlySemantics: {
+        allNamedTypeOnlyImports,
+        storyNamedTypeOnlyImports,
+        allCorpusNamedTypeOnlyImports,
+      },
       requiredImports: [
         { source: "src/App.tsx", kind: "static", specifier: "react-router-dom" },
         { source: "src/App.tsx", kind: "static", specifier: "./lib/route-paths" },
@@ -1165,6 +1292,8 @@ export function analyzeApp({ repo = repoRoot, app = path.join(repo, "apps", "app
       externalModules: [...new Set(edges.filter((edge) => edge.package && edge.status !== "builtin").map((edge) => edge.package))].sort(),
       reachability: {
         runtime: runtimeFiles.length,
+        runtimeEmitted: runtimeFiles.length,
+        runtimeCompile: compileReachability.distance.size,
         test: testReachability.distance.size,
         story: storyReachability.distance.size,
         build: buildReachability.distance.size,
@@ -1192,6 +1321,7 @@ export function analyzeApp({ repo = repoRoot, app = path.join(repo, "apps", "app
     compileBlockers: blockerLayers,
     batches,
     batchGraph,
+    batchPlan,
     batchCoverage,
     assertions: {
       appImports: {
@@ -1210,6 +1340,8 @@ export function analyzeApp({ repo = repoRoot, app = path.join(repo, "apps", "app
     summary: {
       nodes: nodes.length,
       runtimeReachable: runtimeFiles.length,
+      runtimeCompileReachable: compileReachability.distance.size,
+      runtimeEmittedReachable: runtimeFiles.length,
       dispositions: Object.fromEntries(["retain-verbatim", "adapt-boundary", "delete-unsupported", "verification-only", "asset-build"].map((value) => [value, nodes.filter((node) => node.disposition === value).length])),
       edges: edges.length,
       blockers: Object.fromEntries(Object.entries(blockerLayers).map(([layer, values]) => [layer, values.length])),
@@ -1245,9 +1377,12 @@ function reviewSummary(plan) {
     compilerConsistency: plan.graph.compilerImportConsistency,
     parsers: plan.graph.parsers,
     batchCoverage: plan.batchCoverage,
+    batchPlan: plan.batchPlan,
     batchGraph: plan.batchGraph,
     batches: Object.fromEntries(Object.entries(plan.batches).map(([issue, batches]) => [issue, batches.map((batch) => ({
       id: batch.id,
+      kind: batch.kind,
+      executable: batch.executable,
       fileCount: batch.files.length,
       dispositions: batch.dispositions,
       dependencyCount: batch.dependencies.length,
@@ -1260,6 +1395,10 @@ function reviewSummary(plan) {
       declaredAs: item.declaredAs,
       actualImports: item.actualImports,
       runtimeImports: item.runtimeImports,
+      runtimeValueImports: item.runtimeValueImports,
+      runtimeTypeImports: item.runtimeTypeImports,
+      verificationValueImports: item.verificationValueImports,
+      verificationTypeImports: item.verificationTypeImports,
       decision: item.decision,
       reasonCode: item.reasonCode,
       runtimeAllowed: item.runtimeAllowed,
@@ -1292,6 +1431,11 @@ function checkPlan(plan) {
   assert.equal(plan.batchCoverage.missing.length, 0);
   assert.equal(plan.batchCoverage.duplicates.length, 0);
   assert.equal(plan.batchCoverage.assigned, 1437);
+  assert.equal(plan.batchCoverage.missingCrossStageEdges, 0);
+  assert.equal(plan.batchCoverage.missingCrossIssueBatchDependencies, 0);
+  assert.equal(plan.batchPlan.kind, "reviewChunks");
+  assert.equal(plan.batchPlan.executable, false);
+  assert.equal(plan.batchPlan.atomicStageCount, 2);
   assert.equal(plan.graph.compilerImportConsistency.missing.length, 0);
   assert.equal(plan.graph.compilerImportConsistency.extra.length, 0);
   assert.equal(plan.graph.compilerImportConsistency.preProcessFileParity.missing.length, 0);

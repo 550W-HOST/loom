@@ -1,7 +1,7 @@
 {
   "format": "loom.app-port-plan-summary/v1",
   "plan": "ui/app-port-plan.json",
-  "planBytes": 1852232,
+  "planBytes": 1867213,
   "source": {
     "root": "apps/app/src",
     "trackedFiles": 1437,
@@ -9,28 +9,30 @@
   },
   "summary": {
     "nodes": 1437,
-    "runtimeReachable": 782,
+    "runtimeReachable": 771,
+    "runtimeCompileReachable": 782,
+    "runtimeEmittedReachable": 771,
     "dispositions": {
-      "retain-verbatim": 597,
-      "adapt-boundary": 127,
+      "retain-verbatim": 626,
+      "adapt-boundary": 87,
       "delete-unsupported": 56,
-      "verification-only": 629,
+      "verification-only": 640,
       "asset-build": 28
     },
-    "edges": 9124,
+    "edges": 9125,
     "blockers": {
-      "runtime": 159,
-      "test": 147,
+      "runtime": 156,
+      "test": 146,
       "story": 25,
-      "build": 15
+      "build": 13
     },
-    "workspacePackages": 125
+    "workspacePackages": 124
   },
   "dispositions": {
-    "retain-verbatim": 597,
-    "adapt-boundary": 127,
+    "retain-verbatim": 626,
+    "adapt-boundary": 87,
     "delete-unsupported": 56,
-    "verification-only": 629,
+    "verification-only": 640,
     "asset-build": 28
   },
   "exceptions": {
@@ -38,16 +40,6 @@
       {
         "path": "src/App.tsx",
         "reasonCode": "loom-boundary-preserves-composition",
-        "preserveStructure": true
-      },
-      {
-        "path": "src/components/code/DiffHost.tsx",
-        "reasonCode": "generic-plugin-sdk-boundary",
-        "preserveStructure": true
-      },
-      {
-        "path": "src/components/code/code-rendering.ts",
-        "reasonCode": "generic-plugin-sdk-boundary",
         "preserveStructure": true
       },
       {
@@ -66,11 +58,6 @@
         "preserveStructure": true
       },
       {
-        "path": "src/components/git-diff/GitDiffCardBody.tsx",
-        "reasonCode": "generic-plugin-sdk-boundary",
-        "preserveStructure": true
-      },
-      {
         "path": "src/components/layout/AppLayout.tsx",
         "reasonCode": "loom-boundary-preserves-composition",
         "preserveStructure": true
@@ -81,28 +68,13 @@
         "preserveStructure": true
       },
       {
-        "path": "src/components/plugin/AppFileExternalNavigationDispatcher.tsx",
-        "reasonCode": "generic-plugin-sdk-boundary",
-        "preserveStructure": true
-      },
-      {
         "path": "src/components/plugin/AppFileExternalNavigationHost.tsx",
-        "reasonCode": "generic-plugin-sdk-boundary",
+        "reasonCode": "loom-boundary-preserves-composition",
         "preserveStructure": true
       },
       {
         "path": "src/components/plugin/ComposerExtensionHost.tsx",
-        "reasonCode": "generic-plugin-sdk-boundary",
-        "preserveStructure": true
-      },
-      {
-        "path": "src/components/plugin/ExperimentalFileLink.tsx",
-        "reasonCode": "generic-plugin-sdk-boundary",
-        "preserveStructure": true
-      },
-      {
-        "path": "src/components/plugin/ExperimentalFileLinkMenu.tsx",
-        "reasonCode": "generic-plugin-sdk-boundary",
+        "reasonCode": "loom-boundary-preserves-composition",
         "preserveStructure": true
       },
       {
@@ -111,23 +83,13 @@
         "preserveStructure": true
       },
       {
-        "path": "src/components/plugin/PluginBranchPicker.tsx",
-        "reasonCode": "generic-plugin-sdk-boundary",
-        "preserveStructure": true
-      },
-      {
         "path": "src/components/plugin/PluginComposerActions.tsx",
-        "reasonCode": "generic-plugin-sdk-boundary",
+        "reasonCode": "loom-boundary-preserves-composition",
         "preserveStructure": true
       },
       {
         "path": "src/components/plugin/PluginComposerBanners.tsx",
-        "reasonCode": "generic-plugin-sdk-boundary",
-        "preserveStructure": true
-      },
-      {
-        "path": "src/components/plugin/PluginDiff.tsx",
-        "reasonCode": "generic-plugin-sdk-boundary",
+        "reasonCode": "loom-boundary-preserves-composition",
         "preserveStructure": true
       },
       {
@@ -142,17 +104,7 @@
       },
       {
         "path": "src/components/plugin/PluginNewThreadComposer.tsx",
-        "reasonCode": "generic-plugin-sdk-boundary",
-        "preserveStructure": true
-      },
-      {
-        "path": "src/components/plugin/PluginPanelActions.tsx",
-        "reasonCode": "generic-plugin-sdk-boundary",
-        "preserveStructure": true
-      },
-      {
-        "path": "src/components/plugin/PluginPanelRightPanelHost.tsx",
-        "reasonCode": "generic-plugin-sdk-boundary",
+        "reasonCode": "loom-boundary-preserves-composition",
         "preserveStructure": true
       },
       {
@@ -161,48 +113,18 @@
         "preserveStructure": true
       },
       {
-        "path": "src/components/plugin/PluginPermissionModePicker.tsx",
-        "reasonCode": "generic-plugin-sdk-boundary",
-        "preserveStructure": true
-      },
-      {
         "path": "src/components/plugin/PluginProviderModelPicker.tsx",
-        "reasonCode": "generic-plugin-sdk-boundary",
+        "reasonCode": "loom-boundary-preserves-composition",
         "preserveStructure": true
       },
       {
         "path": "src/components/plugin/PluginSidebarFooterItems.tsx",
-        "reasonCode": "generic-plugin-sdk-boundary",
+        "reasonCode": "loom-boundary-preserves-composition",
         "preserveStructure": true
       },
       {
         "path": "src/components/plugin/PluginSlotMount.tsx",
         "reasonCode": "loom-boundary-preserves-composition",
-        "preserveStructure": true
-      },
-      {
-        "path": "src/components/plugin/PluginSourceCode.tsx",
-        "reasonCode": "generic-plugin-sdk-boundary",
-        "preserveStructure": true
-      },
-      {
-        "path": "src/components/plugin/PluginThreadChat.tsx",
-        "reasonCode": "generic-plugin-sdk-boundary",
-        "preserveStructure": true
-      },
-      {
-        "path": "src/components/plugin/PluginUrlLink.tsx",
-        "reasonCode": "generic-plugin-sdk-boundary",
-        "preserveStructure": true
-      },
-      {
-        "path": "src/components/plugin/composer-slot-hooks.ts",
-        "reasonCode": "generic-plugin-sdk-boundary",
-        "preserveStructure": true
-      },
-      {
-        "path": "src/components/plugin/file-opener-tabs.ts",
-        "reasonCode": "generic-plugin-sdk-boundary",
         "preserveStructure": true
       },
       {
@@ -217,7 +139,7 @@
       },
       {
         "path": "src/components/plugin/plugin-execution-routing.ts",
-        "reasonCode": "generic-plugin-sdk-boundary",
+        "reasonCode": "loom-boundary-preserves-composition",
         "preserveStructure": true
       },
       {
@@ -227,37 +149,17 @@
       },
       {
         "path": "src/components/plugin/plugin-thread-panel-navigation.tsx",
-        "reasonCode": "generic-plugin-sdk-boundary",
-        "preserveStructure": true
-      },
-      {
-        "path": "src/components/plugin/usePluginBranchPickerState.ts",
-        "reasonCode": "generic-plugin-sdk-boundary",
-        "preserveStructure": true
-      },
-      {
-        "path": "src/components/promptbox/FollowUpPromptBox.tsx",
-        "reasonCode": "generic-plugin-sdk-boundary",
+        "reasonCode": "loom-boundary-preserves-composition",
         "preserveStructure": true
       },
       {
         "path": "src/components/promptbox/NewThreadComposer.tsx",
-        "reasonCode": "generic-plugin-sdk-boundary",
+        "reasonCode": "loom-boundary-preserves-composition",
         "preserveStructure": true
       },
       {
         "path": "src/components/promptbox/NewThreadPromptBox.tsx",
-        "reasonCode": "generic-plugin-sdk-boundary",
-        "preserveStructure": true
-      },
-      {
-        "path": "src/components/promptbox/PromptBoxInternal.tsx",
-        "reasonCode": "generic-plugin-sdk-boundary",
-        "preserveStructure": true
-      },
-      {
-        "path": "src/components/promptbox/editor/prompt-decoration-extension.ts",
-        "reasonCode": "generic-plugin-sdk-boundary",
+        "reasonCode": "loom-boundary-preserves-composition",
         "preserveStructure": true
       },
       {
@@ -273,11 +175,6 @@
       {
         "path": "src/components/secondary-panel/ThreadMetadataContent.tsx",
         "reasonCode": "compiler-unresolved-boundary",
-        "preserveStructure": true
-      },
-      {
-        "path": "src/components/secondary-panel/git-diff/git-diff-fixed-tab-navigation.ts",
-        "reasonCode": "generic-plugin-sdk-boundary",
         "preserveStructure": true
       },
       {
@@ -316,11 +213,6 @@
         "preserveStructure": true
       },
       {
-        "path": "src/components/sidebar/SidebarNavigationRegion.tsx",
-        "reasonCode": "generic-plugin-sdk-boundary",
-        "preserveStructure": true
-      },
-      {
         "path": "src/components/sidebar/SidebarPluginAttentionGlyph.tsx",
         "reasonCode": "loom-boundary-preserves-composition",
         "preserveStructure": true
@@ -331,33 +223,13 @@
         "preserveStructure": true
       },
       {
-        "path": "src/components/sidebar/ThreadRow.tsx",
-        "reasonCode": "generic-plugin-sdk-boundary",
-        "preserveStructure": true
-      },
-      {
-        "path": "src/components/sidebar/sidebarNavigationItems.ts",
-        "reasonCode": "generic-plugin-sdk-boundary",
-        "preserveStructure": true
-      },
-      {
         "path": "src/components/thread/ThreadWorkspaceOpenButton.tsx",
         "reasonCode": "compiler-unresolved-boundary",
         "preserveStructure": true
       },
       {
         "path": "src/components/thread/timeline/PluginTimelineRendererBody.tsx",
-        "reasonCode": "generic-plugin-sdk-boundary",
-        "preserveStructure": true
-      },
-      {
-        "path": "src/components/thread/timeline/ThreadTimelineRows.tsx",
-        "reasonCode": "generic-plugin-sdk-boundary",
-        "preserveStructure": true
-      },
-      {
-        "path": "src/components/thread/timeline/types.ts",
-        "reasonCode": "generic-plugin-sdk-boundary",
+        "reasonCode": "loom-boundary-preserves-composition",
         "preserveStructure": true
       },
       {
@@ -382,26 +254,6 @@
       },
       {
         "path": "src/components/ui/bb-logo.tsx",
-        "reasonCode": "compiler-unresolved-boundary",
-        "preserveStructure": true
-      },
-      {
-        "path": "src/components/ui/markdown-document-link-routing.ts",
-        "reasonCode": "generic-plugin-sdk-boundary",
-        "preserveStructure": true
-      },
-      {
-        "path": "src/components/ui/markdown-message-directives.tsx",
-        "reasonCode": "compiler-unresolved-boundary",
-        "preserveStructure": true
-      },
-      {
-        "path": "src/components/ui/markdown-prompt-mentions.tsx",
-        "reasonCode": "compiler-unresolved-boundary",
-        "preserveStructure": true
-      },
-      {
-        "path": "src/components/ui/markdown-thread-mentions.tsx",
         "reasonCode": "compiler-unresolved-boundary",
         "preserveStructure": true
       },
@@ -467,7 +319,7 @@
       },
       {
         "path": "src/hooks/useResolvedLiveFileTarget.ts",
-        "reasonCode": "generic-plugin-sdk-boundary",
+        "reasonCode": "compiler-unresolved-boundary",
         "preserveStructure": true
       },
       {
@@ -486,16 +338,6 @@
         "preserveStructure": true
       },
       {
-        "path": "src/lib/app-fixed-tab-navigation.tsx",
-        "reasonCode": "generic-plugin-sdk-boundary",
-        "preserveStructure": true
-      },
-      {
-        "path": "src/lib/app-navigation-host.tsx",
-        "reasonCode": "generic-plugin-sdk-boundary",
-        "preserveStructure": true
-      },
-      {
         "path": "src/lib/app-surface.ts",
         "reasonCode": "compiler-unresolved-boundary",
         "preserveStructure": true
@@ -503,11 +345,6 @@
       {
         "path": "src/lib/command-palette/palette-ranking.ts",
         "reasonCode": "compiler-unresolved-boundary",
-        "preserveStructure": true
-      },
-      {
-        "path": "src/lib/composer-text-effects.ts",
-        "reasonCode": "generic-plugin-sdk-boundary",
         "preserveStructure": true
       },
       {
@@ -546,11 +383,6 @@
         "preserveStructure": true
       },
       {
-        "path": "src/lib/plugin-code-theme.ts",
-        "reasonCode": "generic-plugin-sdk-boundary",
-        "preserveStructure": true
-      },
-      {
         "path": "src/lib/plugin-frontend-boot-schedule.ts",
         "reasonCode": "loom-boundary-preserves-composition",
         "preserveStructure": true
@@ -571,52 +403,22 @@
         "preserveStructure": true
       },
       {
-        "path": "src/lib/plugin-json-value.ts",
-        "reasonCode": "generic-plugin-sdk-boundary",
-        "preserveStructure": true
-      },
-      {
-        "path": "src/lib/plugin-message-actions.ts",
-        "reasonCode": "generic-plugin-sdk-boundary",
-        "preserveStructure": true
-      },
-      {
         "path": "src/lib/plugin-sdk-app-impl.tsx",
-        "reasonCode": "generic-plugin-sdk-boundary",
+        "reasonCode": "loom-boundary-preserves-composition",
         "preserveStructure": true
       },
       {
         "path": "src/lib/plugin-sdk-hooks.ts",
-        "reasonCode": "generic-plugin-sdk-boundary",
-        "preserveStructure": true
-      },
-      {
-        "path": "src/lib/plugin-sidebar-hooks.ts",
-        "reasonCode": "generic-plugin-sdk-boundary",
-        "preserveStructure": true
-      },
-      {
-        "path": "src/lib/plugin-sidebar-split.ts",
-        "reasonCode": "generic-plugin-sdk-boundary",
-        "preserveStructure": true
-      },
-      {
-        "path": "src/lib/plugin-sidebar-threads.ts",
-        "reasonCode": "generic-plugin-sdk-boundary",
+        "reasonCode": "loom-boundary-preserves-composition",
         "preserveStructure": true
       },
       {
         "path": "src/lib/plugin-slot-resolvers.ts",
-        "reasonCode": "generic-plugin-sdk-boundary",
+        "reasonCode": "loom-boundary-preserves-composition",
         "preserveStructure": true
       },
       {
         "path": "src/lib/plugin-slots.ts",
-        "reasonCode": "generic-plugin-sdk-boundary",
-        "preserveStructure": true
-      },
-      {
-        "path": "src/lib/plugin-thread-row-status.ts",
         "reasonCode": "generic-plugin-sdk-boundary",
         "preserveStructure": true
       },
@@ -1192,6 +994,11 @@
         "path": "src/components/pickers/environment-picker-value.test.ts",
         "disposition": "verification-only",
         "reasonCode": "test-or-story-root"
+      },
+      {
+        "path": "src/components/pickers/model-picker-option.ts",
+        "disposition": "verification-only",
+        "reasonCode": "story-only-reachable"
       },
       {
         "path": "src/components/pickers/modelPickerCycle.test.ts",
@@ -1894,6 +1701,11 @@
         "reasonCode": "test-or-story-root"
       },
       {
+        "path": "src/components/secondary-panel/secondaryPanelTab.ts",
+        "disposition": "verification-only",
+        "reasonCode": "story-only-reachable"
+      },
+      {
         "path": "src/components/secondary-panel/secondaryPanelTabState.test.ts",
         "disposition": "verification-only",
         "reasonCode": "test-or-story-root"
@@ -2047,6 +1859,11 @@
         "path": "src/components/settings/settings-nav.test.tsx",
         "disposition": "verification-only",
         "reasonCode": "test-or-story-root"
+      },
+      {
+        "path": "src/components/showcase-hero/showcase-archetype.ts",
+        "disposition": "verification-only",
+        "reasonCode": "story-only-reachable"
       },
       {
         "path": "src/components/sidebar/BuiltInSidebarSection.test.tsx",
@@ -2619,6 +2436,11 @@
         "reasonCode": "test-or-story-root"
       },
       {
+        "path": "src/components/thread/timeline/types.ts",
+        "disposition": "verification-only",
+        "reasonCode": "story-only-reachable"
+      },
+      {
         "path": "src/components/thread/timeline/useAutoLoadOlderRows.test.tsx",
         "disposition": "verification-only",
         "reasonCode": "test-or-story-root"
@@ -2787,6 +2609,11 @@
         "path": "src/components/ui/markdown-katex-loader.test.tsx",
         "disposition": "verification-only",
         "reasonCode": "test-or-story-root"
+      },
+      {
+        "path": "src/components/ui/markdown-link.ts",
+        "disposition": "verification-only",
+        "reasonCode": "story-only-reachable"
       },
       {
         "path": "src/components/ui/markdown-local-file-link-normalize.test.ts",
@@ -2959,6 +2786,11 @@
         "reasonCode": "test-or-story-root"
       },
       {
+        "path": "src/hooks/cache-effect-types.ts",
+        "disposition": "verification-only",
+        "reasonCode": "story-only-reachable"
+      },
+      {
         "path": "src/hooks/cache-owners/cache-owner-registry.test.ts",
         "disposition": "verification-only",
         "reasonCode": "test-or-story-root"
@@ -2997,6 +2829,11 @@
         "path": "src/hooks/environment-cache-effects.test.ts",
         "disposition": "verification-only",
         "reasonCode": "test-or-story-root"
+      },
+      {
+        "path": "src/hooks/mutations/mutation-request-types.ts",
+        "disposition": "verification-only",
+        "reasonCode": "story-only-reachable"
       },
       {
         "path": "src/hooks/mutations/settings-mutations.test.tsx",
@@ -3344,6 +3181,11 @@
         "reasonCode": "test-or-story-root"
       },
       {
+        "path": "src/lib/command-palette/palette-action.ts",
+        "disposition": "verification-only",
+        "reasonCode": "test-only-reachable"
+      },
+      {
         "path": "src/lib/command-palette/palette-app-commands.test.ts",
         "disposition": "verification-only",
         "reasonCode": "test-or-story-root"
@@ -3664,6 +3506,11 @@
         "reasonCode": "test-or-story-root"
       },
       {
+        "path": "src/lib/split-layout/types.ts",
+        "disposition": "verification-only",
+        "reasonCode": "story-only-reachable"
+      },
+      {
         "path": "src/lib/split-resize-snap.test.ts",
         "disposition": "verification-only",
         "reasonCode": "test-or-story-root"
@@ -3692,6 +3539,11 @@
         "path": "src/lib/thread-provisioning-failure.test.ts",
         "disposition": "verification-only",
         "reasonCode": "test-or-story-root"
+      },
+      {
+        "path": "src/lib/thread-secondary-panel.ts",
+        "disposition": "verification-only",
+        "reasonCode": "story-only-reachable"
       },
       {
         "path": "src/lib/thread-tabs-sync.test.ts",
@@ -4019,6 +3871,11 @@
         "reasonCode": "test-or-story-root"
       },
       {
+        "path": "src/views/thread-detail/threadDetailMutationTypes.ts",
+        "disposition": "verification-only",
+        "reasonCode": "story-only-reachable"
+      },
+      {
         "path": "src/views/thread-detail/threadParentSelectorOptions.test.ts",
         "disposition": "verification-only",
         "reasonCode": "test-or-story-root"
@@ -4047,22 +3904,21 @@
   },
   "blockers": {
     "runtime": {
-      "count": 159,
+      "count": 156,
       "categories": {
         "unresolved-workspace-package": 118,
         "unresolved-workspace-export": 6,
         "conditional-import": 3,
         "unresolved-local": 4,
-        "unresolved-external": 27,
+        "unresolved-external": 24,
         "dynamic-nonliteral": 1
       }
     },
     "test": {
-      "count": 147,
+      "count": 146,
       "categories": {
         "unresolved-workspace-package": 144,
         "unresolved-workspace-export": 1,
-        "unresolved-external": 1,
         "require-nonliteral": 1
       }
     },
@@ -4076,12 +3932,11 @@
       }
     },
     "build": {
-      "count": 15,
+      "count": 13,
       "categories": {
         "unresolved-local": 4,
         "unresolved-workspace-export": 1,
         "unresolved-workspace-package": 6,
-        "unresolved-external": 2,
         "tsconfig-extends": 2
       }
     }
@@ -4159,7 +4014,53 @@
     "expected": 1437,
     "assigned": 1437,
     "missing": [],
-    "duplicates": []
+    "duplicates": [],
+    "crossStageEdges": 3489,
+    "missingCrossStageEdges": 0,
+    "crossChunkEdges": 3489,
+    "crossChunkOccurrences": 3500,
+    "crossIssueEdges": 1556,
+    "crossIssueOccurrences": 1562,
+    "missingCrossIssueBatchDependencies": 0
+  },
+  "batchPlan": {
+    "kind": "reviewChunks",
+    "executable": false,
+    "schedulingUnits": "issueStagesWithSCCConflicts",
+    "atomicStageCount": 2,
+    "sccCount": 1,
+    "atomicStages": [
+      {
+        "issue": "W-603",
+        "batchIds": [
+          "W-603-01",
+          "W-603-02",
+          "W-603-03",
+          "W-603-04",
+          "W-603-05",
+          "W-603-06",
+          "W-603-07"
+        ],
+        "cyclic": true
+      },
+      {
+        "issue": "W-604",
+        "batchIds": [
+          "W-604-01",
+          "W-604-02",
+          "W-604-03",
+          "W-604-04",
+          "W-604-05",
+          "W-604-06"
+        ],
+        "cyclic": true
+      }
+    ],
+    "crossIssueEdges": 1556,
+    "crossIssueSemanticEdges": 1564,
+    "crossIssueOccurrences": 1562,
+    "crossIssueCycles": 1,
+    "crossStageConflict": true
   },
   "batchGraph": {
     "dependsOnBatchIds": {
@@ -4169,7 +4070,10 @@
         "W-603-04",
         "W-603-05",
         "W-603-06",
-        "W-603-07"
+        "W-603-07",
+        "W-604-01",
+        "W-604-03",
+        "W-604-05"
       ],
       "W-603-02": [
         "W-603-01",
@@ -4177,14 +4081,22 @@
         "W-603-04",
         "W-603-05",
         "W-603-06",
-        "W-603-07"
+        "W-603-07",
+        "W-604-01",
+        "W-604-02",
+        "W-604-05",
+        "W-604-06"
       ],
       "W-603-03": [
         "W-603-01",
         "W-603-02",
         "W-603-04",
         "W-603-05",
-        "W-603-06"
+        "W-603-06",
+        "W-604-02",
+        "W-604-03",
+        "W-604-04",
+        "W-604-05"
       ],
       "W-603-04": [
         "W-603-01",
@@ -4192,21 +4104,37 @@
         "W-603-03",
         "W-603-05",
         "W-603-06",
-        "W-603-07"
+        "W-603-07",
+        "W-604-01",
+        "W-604-02",
+        "W-604-04",
+        "W-604-05"
       ],
       "W-603-05": [
         "W-603-01",
         "W-603-02",
         "W-603-03",
         "W-603-04",
-        "W-603-06"
+        "W-603-06",
+        "W-604-01",
+        "W-604-03",
+        "W-604-04",
+        "W-604-05",
+        "W-604-06"
       ],
       "W-603-06": [
         "W-603-01",
         "W-603-02",
         "W-603-03",
         "W-603-04",
-        "W-603-05"
+        "W-603-05",
+        "W-603-07",
+        "W-604-01",
+        "W-604-02",
+        "W-604-03",
+        "W-604-04",
+        "W-604-05",
+        "W-604-06"
       ],
       "W-603-07": [
         "W-603-01",
@@ -4214,25 +4142,56 @@
         "W-603-03",
         "W-603-04",
         "W-603-05",
-        "W-603-06"
+        "W-603-06",
+        "W-604-02",
+        "W-604-05",
+        "W-604-06"
       ],
       "W-604-01": [
+        "W-603-01",
+        "W-603-02",
+        "W-603-03",
+        "W-603-04",
+        "W-603-05",
+        "W-603-06",
+        "W-603-07",
         "W-604-02",
+        "W-604-03",
         "W-604-04",
         "W-604-05",
         "W-604-06"
       ],
       "W-604-02": [
+        "W-603-01",
+        "W-603-02",
+        "W-603-04",
+        "W-603-05",
+        "W-603-06",
+        "W-603-07",
         "W-604-03",
         "W-604-04",
         "W-604-05",
         "W-604-06"
       ],
       "W-604-03": [
+        "W-603-01",
+        "W-603-02",
+        "W-603-03",
+        "W-603-04",
+        "W-603-05",
+        "W-603-06",
+        "W-604-02",
+        "W-604-04",
         "W-604-05",
         "W-604-06"
       ],
       "W-604-04": [
+        "W-603-01",
+        "W-603-02",
+        "W-603-03",
+        "W-603-04",
+        "W-603-05",
+        "W-603-06",
         "W-604-01",
         "W-604-02",
         "W-604-03",
@@ -4240,10 +4199,23 @@
         "W-604-06"
       ],
       "W-604-05": [
+        "W-603-01",
+        "W-603-02",
+        "W-603-03",
+        "W-603-04",
+        "W-603-05",
+        "W-603-06",
         "W-604-04",
         "W-604-06"
       ],
       "W-604-06": [
+        "W-603-01",
+        "W-603-02",
+        "W-603-03",
+        "W-603-04",
+        "W-603-05",
+        "W-603-06",
+        "W-603-07",
         "W-604-01",
         "W-604-04",
         "W-604-05"
@@ -4259,13 +4231,7 @@
           "W-603-04",
           "W-603-05",
           "W-603-06",
-          "W-603-07"
-        ],
-        "cyclic": true
-      },
-      {
-        "component": 1,
-        "batchIds": [
+          "W-603-07",
           "W-604-01",
           "W-604-02",
           "W-604-03",
@@ -4277,28 +4243,32 @@
       }
     ],
     "dependencyOrder": [
-      0,
-      1
+      0
     ]
   },
   "batches": {
     "W-603": [
       {
         "id": "W-603-01",
+        "kind": "reviewChunk",
+        "executable": false,
         "fileCount": 120,
         "dispositions": [
           "adapt-boundary",
           "asset-build",
           "retain-verbatim"
         ],
-        "dependencyCount": 221,
+        "dependencyCount": 222,
         "dependsOnBatchIds": [
           "W-603-02",
           "W-603-03",
           "W-603-04",
           "W-603-05",
           "W-603-06",
-          "W-603-07"
+          "W-603-07",
+          "W-604-01",
+          "W-604-03",
+          "W-604-05"
         ],
         "cutPoints": [
           "src/App.tsx",
@@ -4325,19 +4295,25 @@
       },
       {
         "id": "W-603-02",
+        "kind": "reviewChunk",
+        "executable": false,
         "fileCount": 120,
         "dispositions": [
           "adapt-boundary",
           "retain-verbatim"
         ],
-        "dependencyCount": 233,
+        "dependencyCount": 240,
         "dependsOnBatchIds": [
           "W-603-01",
           "W-603-03",
           "W-603-04",
           "W-603-05",
           "W-603-06",
-          "W-603-07"
+          "W-603-07",
+          "W-604-01",
+          "W-604-02",
+          "W-604-05",
+          "W-604-06"
         ],
         "cutPoints": [
           "src/components/plugin/plugin-composer-host.tsx",
@@ -4356,18 +4332,24 @@
       },
       {
         "id": "W-603-03",
+        "kind": "reviewChunk",
+        "executable": false,
         "fileCount": 120,
         "dispositions": [
           "adapt-boundary",
           "retain-verbatim"
         ],
-        "dependencyCount": 245,
+        "dependencyCount": 240,
         "dependsOnBatchIds": [
           "W-603-01",
           "W-603-02",
           "W-603-04",
           "W-603-05",
-          "W-603-06"
+          "W-603-06",
+          "W-604-02",
+          "W-604-03",
+          "W-604-04",
+          "W-604-05"
         ],
         "cutPoints": [
           "src/components/sidebar/PluginThreadList.tsx",
@@ -4382,20 +4364,26 @@
       },
       {
         "id": "W-603-04",
+        "kind": "reviewChunk",
+        "executable": false,
         "fileCount": 120,
         "dispositions": [
           "adapt-boundary",
           "asset-build",
           "retain-verbatim"
         ],
-        "dependencyCount": 135,
+        "dependencyCount": 138,
         "dependsOnBatchIds": [
           "W-603-01",
           "W-603-02",
           "W-603-03",
           "W-603-05",
           "W-603-06",
-          "W-603-07"
+          "W-603-07",
+          "W-604-01",
+          "W-604-02",
+          "W-604-04",
+          "W-604-05"
         ],
         "cutPoints": [
           "src/components/tools/PluginCapabilities.tsx",
@@ -4411,18 +4399,25 @@
       },
       {
         "id": "W-603-05",
+        "kind": "reviewChunk",
+        "executable": false,
         "fileCount": 120,
         "dispositions": [
           "adapt-boundary",
           "retain-verbatim"
         ],
-        "dependencyCount": 94,
+        "dependencyCount": 91,
         "dependsOnBatchIds": [
           "W-603-01",
           "W-603-02",
           "W-603-03",
           "W-603-04",
-          "W-603-06"
+          "W-603-06",
+          "W-604-01",
+          "W-604-03",
+          "W-604-04",
+          "W-604-05",
+          "W-604-06"
         ],
         "cutPoints": [
           "src/hooks/usePluginFrontendBoot.ts"
@@ -4435,18 +4430,27 @@
       },
       {
         "id": "W-603-06",
+        "kind": "reviewChunk",
+        "executable": false,
         "fileCount": 120,
         "dispositions": [
           "adapt-boundary",
           "retain-verbatim"
         ],
-        "dependencyCount": 151,
+        "dependencyCount": 232,
         "dependsOnBatchIds": [
           "W-603-01",
           "W-603-02",
           "W-603-03",
           "W-603-04",
-          "W-603-05"
+          "W-603-05",
+          "W-603-07",
+          "W-604-01",
+          "W-604-02",
+          "W-604-03",
+          "W-604-04",
+          "W-604-05",
+          "W-604-06"
         ],
         "cutPoints": [
           "src/lib/plugin-frontend-boot-schedule.ts",
@@ -4466,19 +4470,24 @@
       },
       {
         "id": "W-603-07",
-        "fileCount": 32,
+        "kind": "reviewChunk",
+        "executable": false,
+        "fileCount": 21,
         "dispositions": [
           "adapt-boundary",
           "retain-verbatim"
         ],
-        "dependencyCount": 246,
+        "dependencyCount": 179,
         "dependsOnBatchIds": [
           "W-603-01",
           "W-603-02",
           "W-603-03",
           "W-603-04",
           "W-603-05",
-          "W-603-06"
+          "W-603-06",
+          "W-604-02",
+          "W-604-05",
+          "W-604-06"
         ],
         "cutPoints": [
           "preserve-product-composition"
@@ -4493,14 +4502,24 @@
     "W-604": [
       {
         "id": "W-604-01",
+        "kind": "reviewChunk",
+        "executable": false,
         "fileCount": 120,
         "dispositions": [
           "delete-unsupported",
           "verification-only"
         ],
-        "dependencyCount": 219,
+        "dependencyCount": 217,
         "dependsOnBatchIds": [
+          "W-603-01",
+          "W-603-02",
+          "W-603-03",
+          "W-603-04",
+          "W-603-05",
+          "W-603-06",
+          "W-603-07",
           "W-604-02",
+          "W-604-03",
           "W-604-04",
           "W-604-05",
           "W-604-06"
@@ -4536,8 +4555,7 @@
           "src/components/plugin/management/PluginOverviewMarkdown.tsx",
           "src/components/plugin/management/PluginRowSignal.stories.tsx",
           "src/components/plugin/management/PluginRowSignal.test.tsx",
-          "src/components/plugin/management/PluginRowSignal.tsx",
-          "src/components/plugin/management/PluginUpdatesCard.test.tsx"
+          "src/components/plugin/management/PluginRowSignal.tsx"
         ],
         "verificationCommands": [
           "pnpm run port-plan:check",
@@ -4547,19 +4565,28 @@
       },
       {
         "id": "W-604-02",
+        "kind": "reviewChunk",
+        "executable": false,
         "fileCount": 120,
         "dispositions": [
           "delete-unsupported",
           "verification-only"
         ],
-        "dependencyCount": 214,
+        "dependencyCount": 215,
         "dependsOnBatchIds": [
+          "W-603-01",
+          "W-603-02",
+          "W-603-04",
+          "W-603-05",
+          "W-603-06",
+          "W-603-07",
           "W-604-03",
           "W-604-04",
           "W-604-05",
           "W-604-06"
         ],
         "cutPoints": [
+          "src/components/plugin/management/PluginUpdatesCard.test.tsx",
           "src/components/plugin/management/PluginUpdatesCard.tsx",
           "src/components/plugin/management/UpdatePluginDialog.test.tsx",
           "src/components/plugin/management/UpdatePluginDialog.tsx",
@@ -4576,9 +4603,7 @@
           "src/components/secondary-panel/BrowserTabContent.tsx",
           "src/components/secondary-panel/BrowserTabDeck.tsx",
           "src/components/secondary-panel/browserViewVisibilityCoordinator.ts",
-          "src/components/settings/BrowserImportDialog.tsx",
-          "src/components/settings/BrowserSettingsSection.tsx",
-          "src/components/settings/BrowserSourceIcon.tsx"
+          "src/components/settings/BrowserImportDialog.tsx"
         ],
         "verificationCommands": [
           "pnpm run port-plan:check",
@@ -4588,17 +4613,29 @@
       },
       {
         "id": "W-604-03",
+        "kind": "reviewChunk",
+        "executable": false,
         "fileCount": 120,
         "dispositions": [
           "delete-unsupported",
           "verification-only"
         ],
-        "dependencyCount": 178,
+        "dependencyCount": 182,
         "dependsOnBatchIds": [
+          "W-603-01",
+          "W-603-02",
+          "W-603-03",
+          "W-603-04",
+          "W-603-05",
+          "W-603-06",
+          "W-604-02",
+          "W-604-04",
           "W-604-05",
           "W-604-06"
         ],
         "cutPoints": [
+          "src/components/settings/BrowserSettingsSection.tsx",
+          "src/components/settings/BrowserSourceIcon.tsx",
           "src/components/settings/browser-import-wizard.ts",
           "src/components/settings/plugin-settings-entries.ts"
         ],
@@ -4610,13 +4647,21 @@
       },
       {
         "id": "W-604-04",
+        "kind": "reviewChunk",
+        "executable": false,
         "fileCount": 120,
         "dispositions": [
           "delete-unsupported",
           "verification-only"
         ],
-        "dependencyCount": 179,
+        "dependencyCount": 176,
         "dependsOnBatchIds": [
+          "W-603-01",
+          "W-603-02",
+          "W-603-03",
+          "W-603-04",
+          "W-603-05",
+          "W-603-06",
           "W-604-01",
           "W-604-02",
           "W-604-03",
@@ -4630,9 +4675,7 @@
           "src/components/tools/SkillsLibrary.tsx",
           "src/components/tools/skill-taxonomy.ts",
           "src/hooks/cache-owners/plugin-cache-owner.ts",
-          "src/hooks/cache-owners/skills-cache-effects.ts",
-          "src/hooks/queries/plugin-catalog-queries.ts",
-          "src/hooks/queries/plugin-client.ts"
+          "src/hooks/cache-owners/skills-cache-effects.ts"
         ],
         "verificationCommands": [
           "pnpm run port-plan:check",
@@ -4642,17 +4685,27 @@
       },
       {
         "id": "W-604-05",
+        "kind": "reviewChunk",
+        "executable": false,
         "fileCount": 120,
         "dispositions": [
           "delete-unsupported",
           "verification-only"
         ],
-        "dependencyCount": 179,
+        "dependencyCount": 173,
         "dependsOnBatchIds": [
+          "W-603-01",
+          "W-603-02",
+          "W-603-03",
+          "W-603-04",
+          "W-603-05",
+          "W-603-06",
           "W-604-04",
           "W-604-06"
         ],
         "cutPoints": [
+          "src/hooks/queries/plugin-catalog-queries.ts",
+          "src/hooks/queries/plugin-client.ts",
           "src/hooks/queries/plugin-contribution-queries.ts",
           "src/hooks/queries/plugin-settings-queries.ts",
           "src/hooks/queries/skills-queries.ts",
@@ -4673,13 +4726,22 @@
       },
       {
         "id": "W-604-06",
-        "fileCount": 85,
+        "kind": "reviewChunk",
+        "executable": false,
+        "fileCount": 96,
         "dispositions": [
           "delete-unsupported",
           "verification-only"
         ],
-        "dependencyCount": 150,
+        "dependencyCount": 159,
         "dependsOnBatchIds": [
+          "W-603-01",
+          "W-603-02",
+          "W-603-03",
+          "W-603-04",
+          "W-603-05",
+          "W-603-06",
+          "W-603-07",
           "W-604-01",
           "W-604-04",
           "W-604-05"
@@ -4702,6 +4764,10 @@
       "declaredAs": "dependencies",
       "actualImports": 204,
       "runtimeImports": 153,
+      "runtimeValueImports": 107,
+      "runtimeTypeImports": 46,
+      "verificationValueImports": 40,
+      "verificationTypeImports": 10,
       "decision": "reuse",
       "reasonCode": "existing-workspace-source",
       "runtimeAllowed": true
@@ -4711,6 +4777,10 @@
       "declaredAs": "dependencies",
       "actualImports": 6,
       "runtimeImports": 2,
+      "runtimeValueImports": 2,
+      "runtimeTypeImports": 0,
+      "verificationValueImports": 2,
+      "verificationTypeImports": 0,
       "decision": "adapter",
       "reasonCode": "adapt-config-boundary",
       "runtimeAllowed": false
@@ -4720,6 +4790,10 @@
       "declaredAs": "dependencies",
       "actualImports": 24,
       "runtimeImports": 19,
+      "runtimeValueImports": 18,
+      "runtimeTypeImports": 1,
+      "verificationValueImports": 1,
+      "verificationTypeImports": 4,
       "decision": "reuse",
       "reasonCode": "existing-workspace-source",
       "runtimeAllowed": true
@@ -4729,6 +4803,10 @@
       "declaredAs": "dependencies",
       "actualImports": 31,
       "runtimeImports": 14,
+      "runtimeValueImports": 2,
+      "runtimeTypeImports": 12,
+      "verificationValueImports": 1,
+      "verificationTypeImports": 15,
       "decision": "reuse",
       "reasonCode": "existing-workspace-source",
       "runtimeAllowed": true
@@ -4738,6 +4816,10 @@
       "declaredAs": "dependencies",
       "actualImports": 373,
       "runtimeImports": 208,
+      "runtimeValueImports": 80,
+      "runtimeTypeImports": 128,
+      "verificationValueImports": 49,
+      "verificationTypeImports": 111,
       "decision": "reuse",
       "reasonCode": "existing-workspace-source",
       "runtimeAllowed": true
@@ -4747,6 +4829,10 @@
       "declaredAs": "dependencies",
       "actualImports": 5,
       "runtimeImports": 5,
+      "runtimeValueImports": 5,
+      "runtimeTypeImports": 0,
+      "verificationValueImports": 0,
+      "verificationTypeImports": 0,
       "decision": "copy",
       "reasonCode": "copy-source-utility",
       "runtimeAllowed": true
@@ -4756,6 +4842,10 @@
       "declaredAs": "dependencies",
       "actualImports": 50,
       "runtimeImports": 31,
+      "runtimeValueImports": 5,
+      "runtimeTypeImports": 26,
+      "verificationValueImports": 4,
+      "verificationTypeImports": 13,
       "decision": "adapter",
       "reasonCode": "adapt-daemon-boundary",
       "runtimeAllowed": false
@@ -4765,6 +4855,10 @@
       "declaredAs": "dependencies",
       "actualImports": 4,
       "runtimeImports": 2,
+      "runtimeValueImports": 1,
+      "runtimeTypeImports": 1,
+      "verificationValueImports": 2,
+      "verificationTypeImports": 0,
       "decision": "adapter",
       "reasonCode": "adapt-browser-capability-boundary",
       "runtimeAllowed": false
@@ -4774,6 +4868,10 @@
       "declaredAs": "dependencies",
       "actualImports": 18,
       "runtimeImports": 12,
+      "runtimeValueImports": 9,
+      "runtimeTypeImports": 3,
+      "verificationValueImports": 6,
+      "verificationTypeImports": 0,
       "decision": "adapter",
       "reasonCode": "adapt-typed-client-boundary",
       "runtimeAllowed": false
@@ -4783,6 +4881,10 @@
       "declaredAs": "dependencies",
       "actualImports": 255,
       "runtimeImports": 142,
+      "runtimeValueImports": 13,
+      "runtimeTypeImports": 129,
+      "verificationValueImports": 3,
+      "verificationTypeImports": 107,
       "decision": "reuse",
       "reasonCode": "existing-workspace-source",
       "runtimeAllowed": true
@@ -4792,6 +4894,10 @@
       "declaredAs": "dependencies",
       "actualImports": 949,
       "runtimeImports": 822,
+      "runtimeValueImports": 807,
+      "runtimeTypeImports": 15,
+      "verificationValueImports": 115,
+      "verificationTypeImports": 8,
       "decision": "reuse",
       "reasonCode": "existing-workspace-source",
       "runtimeAllowed": true
@@ -4801,6 +4907,10 @@
       "declaredAs": "dependencies",
       "actualImports": 1,
       "runtimeImports": 0,
+      "runtimeValueImports": 0,
+      "runtimeTypeImports": 0,
+      "verificationValueImports": 1,
+      "verificationTypeImports": 0,
       "decision": "adapter",
       "reasonCode": "adapt-template-boundary",
       "runtimeAllowed": false
@@ -4810,6 +4920,10 @@
       "declaredAs": "devDependencies",
       "actualImports": 94,
       "runtimeImports": 0,
+      "runtimeValueImports": 0,
+      "runtimeTypeImports": 0,
+      "verificationValueImports": 92,
+      "verificationTypeImports": 0,
       "decision": "remove",
       "reasonCode": "verification-only-helper",
       "runtimeAllowed": false
@@ -4819,6 +4933,10 @@
       "declaredAs": "dependencies",
       "actualImports": 35,
       "runtimeImports": 23,
+      "runtimeValueImports": 15,
+      "runtimeTypeImports": 8,
+      "verificationValueImports": 4,
+      "verificationTypeImports": 8,
       "decision": "reuse",
       "reasonCode": "existing-workspace-source",
       "runtimeAllowed": true
@@ -4828,6 +4946,10 @@
       "declaredAs": "devDependencies",
       "actualImports": 0,
       "runtimeImports": 0,
+      "runtimeValueImports": 0,
+      "runtimeTypeImports": 0,
+      "verificationValueImports": 0,
+      "verificationTypeImports": 0,
       "decision": "adapter",
       "reasonCode": "adapt-build-config-boundary",
       "runtimeAllowed": false
@@ -4837,6 +4959,10 @@
       "declaredAs": "dependencies",
       "actualImports": 20,
       "runtimeImports": 16,
+      "runtimeValueImports": 12,
+      "runtimeTypeImports": 4,
+      "verificationValueImports": 1,
+      "verificationTypeImports": 3,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
       "runtimeAllowed": true
@@ -4846,6 +4972,10 @@
       "declaredAs": "dependencies",
       "actualImports": 12,
       "runtimeImports": 12,
+      "runtimeValueImports": 12,
+      "runtimeTypeImports": 0,
+      "verificationValueImports": 0,
+      "verificationTypeImports": 0,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
       "runtimeAllowed": true
@@ -4855,6 +4985,10 @@
       "declaredAs": "dependencies",
       "actualImports": 6,
       "runtimeImports": 6,
+      "runtimeValueImports": 5,
+      "runtimeTypeImports": 1,
+      "verificationValueImports": 0,
+      "verificationTypeImports": 0,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
       "runtimeAllowed": true
@@ -4864,15 +4998,23 @@
       "declaredAs": "dependencies",
       "actualImports": 0,
       "runtimeImports": 0,
+      "runtimeValueImports": 0,
+      "runtimeTypeImports": 0,
+      "verificationValueImports": 0,
+      "verificationTypeImports": 0,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
-      "runtimeAllowed": true
+      "runtimeAllowed": false
     },
     {
       "name": "@get-bb/plugin-sdk",
       "declaredAs": "dependencies",
       "actualImports": 99,
       "runtimeImports": 66,
+      "runtimeValueImports": 5,
+      "runtimeTypeImports": 61,
+      "verificationValueImports": 3,
+      "verificationTypeImports": 30,
       "decision": "adapter",
       "reasonCode": "generic-plugin-sdk-boundary",
       "runtimeAllowed": false
@@ -4882,15 +5024,23 @@
       "declaredAs": "dependencies",
       "actualImports": 0,
       "runtimeImports": 0,
+      "runtimeValueImports": 0,
+      "runtimeTypeImports": 0,
+      "verificationValueImports": 0,
+      "verificationTypeImports": 0,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
-      "runtimeAllowed": true
+      "runtimeAllowed": false
     },
     {
       "name": "@hugeicons/core-free-icons",
       "declaredAs": "dependencies",
       "actualImports": 1,
       "runtimeImports": 1,
+      "runtimeValueImports": 1,
+      "runtimeTypeImports": 0,
+      "verificationValueImports": 0,
+      "verificationTypeImports": 0,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
       "runtimeAllowed": true
@@ -4900,6 +5050,10 @@
       "declaredAs": "dependencies",
       "actualImports": 1,
       "runtimeImports": 1,
+      "runtimeValueImports": 1,
+      "runtimeTypeImports": 0,
+      "verificationValueImports": 0,
+      "verificationTypeImports": 0,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
       "runtimeAllowed": true
@@ -4909,15 +5063,23 @@
       "declaredAs": "devDependencies",
       "actualImports": 2,
       "runtimeImports": 0,
+      "runtimeValueImports": 0,
+      "runtimeTypeImports": 0,
+      "verificationValueImports": 0,
+      "verificationTypeImports": 0,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
-      "runtimeAllowed": true
+      "runtimeAllowed": false
     },
     {
       "name": "@pierre/diffs",
       "declaredAs": "dependencies",
       "actualImports": 33,
       "runtimeImports": 23,
+      "runtimeValueImports": 12,
+      "runtimeTypeImports": 11,
+      "verificationValueImports": 3,
+      "verificationTypeImports": 6,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
       "runtimeAllowed": true
@@ -4927,6 +5089,10 @@
       "declaredAs": "dependencies",
       "actualImports": 2,
       "runtimeImports": 2,
+      "runtimeValueImports": 2,
+      "runtimeTypeImports": 0,
+      "verificationValueImports": 0,
+      "verificationTypeImports": 0,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
       "runtimeAllowed": true
@@ -4936,15 +5102,23 @@
       "declaredAs": "dependencies",
       "actualImports": 0,
       "runtimeImports": 0,
+      "runtimeValueImports": 0,
+      "runtimeTypeImports": 0,
+      "verificationValueImports": 0,
+      "verificationTypeImports": 0,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
-      "runtimeAllowed": true
+      "runtimeAllowed": false
     },
     {
       "name": "@radix-ui/react-alert-dialog",
       "declaredAs": "dependencies",
       "actualImports": 1,
       "runtimeImports": 1,
+      "runtimeValueImports": 1,
+      "runtimeTypeImports": 0,
+      "verificationValueImports": 0,
+      "verificationTypeImports": 0,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
       "runtimeAllowed": true
@@ -4954,42 +5128,62 @@
       "declaredAs": "dependencies",
       "actualImports": 0,
       "runtimeImports": 0,
+      "runtimeValueImports": 0,
+      "runtimeTypeImports": 0,
+      "verificationValueImports": 0,
+      "verificationTypeImports": 0,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
-      "runtimeAllowed": true
+      "runtimeAllowed": false
     },
     {
       "name": "@radix-ui/react-avatar",
       "declaredAs": "dependencies",
       "actualImports": 0,
       "runtimeImports": 0,
+      "runtimeValueImports": 0,
+      "runtimeTypeImports": 0,
+      "verificationValueImports": 0,
+      "verificationTypeImports": 0,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
-      "runtimeAllowed": true
+      "runtimeAllowed": false
     },
     {
       "name": "@radix-ui/react-checkbox",
       "declaredAs": "dependencies",
       "actualImports": 0,
       "runtimeImports": 0,
+      "runtimeValueImports": 0,
+      "runtimeTypeImports": 0,
+      "verificationValueImports": 0,
+      "verificationTypeImports": 0,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
-      "runtimeAllowed": true
+      "runtimeAllowed": false
     },
     {
       "name": "@radix-ui/react-collapsible",
       "declaredAs": "dependencies",
       "actualImports": 0,
       "runtimeImports": 0,
+      "runtimeValueImports": 0,
+      "runtimeTypeImports": 0,
+      "verificationValueImports": 0,
+      "verificationTypeImports": 0,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
-      "runtimeAllowed": true
+      "runtimeAllowed": false
     },
     {
       "name": "@radix-ui/react-compose-refs",
       "declaredAs": "dependencies",
       "actualImports": 3,
       "runtimeImports": 3,
+      "runtimeValueImports": 3,
+      "runtimeTypeImports": 0,
+      "verificationValueImports": 0,
+      "verificationTypeImports": 0,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
       "runtimeAllowed": true
@@ -4999,6 +5193,10 @@
       "declaredAs": "dependencies",
       "actualImports": 1,
       "runtimeImports": 1,
+      "runtimeValueImports": 1,
+      "runtimeTypeImports": 0,
+      "verificationValueImports": 0,
+      "verificationTypeImports": 0,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
       "runtimeAllowed": true
@@ -5008,6 +5206,10 @@
       "declaredAs": "dependencies",
       "actualImports": 2,
       "runtimeImports": 1,
+      "runtimeValueImports": 1,
+      "runtimeTypeImports": 0,
+      "verificationValueImports": 0,
+      "verificationTypeImports": 0,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
       "runtimeAllowed": true
@@ -5017,6 +5219,10 @@
       "declaredAs": "dependencies",
       "actualImports": 1,
       "runtimeImports": 1,
+      "runtimeValueImports": 1,
+      "runtimeTypeImports": 0,
+      "verificationValueImports": 0,
+      "verificationTypeImports": 0,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
       "runtimeAllowed": true
@@ -5026,6 +5232,10 @@
       "declaredAs": "dependencies",
       "actualImports": 1,
       "runtimeImports": 1,
+      "runtimeValueImports": 1,
+      "runtimeTypeImports": 0,
+      "verificationValueImports": 0,
+      "verificationTypeImports": 0,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
       "runtimeAllowed": true
@@ -5035,15 +5245,23 @@
       "declaredAs": "dependencies",
       "actualImports": 0,
       "runtimeImports": 0,
+      "runtimeValueImports": 0,
+      "runtimeTypeImports": 0,
+      "verificationValueImports": 0,
+      "verificationTypeImports": 0,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
-      "runtimeAllowed": true
+      "runtimeAllowed": false
     },
     {
       "name": "@radix-ui/react-menubar",
       "declaredAs": "dependencies",
       "actualImports": 1,
       "runtimeImports": 1,
+      "runtimeValueImports": 1,
+      "runtimeTypeImports": 0,
+      "verificationValueImports": 0,
+      "verificationTypeImports": 0,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
       "runtimeAllowed": true
@@ -5053,6 +5271,10 @@
       "declaredAs": "dependencies",
       "actualImports": 1,
       "runtimeImports": 1,
+      "runtimeValueImports": 1,
+      "runtimeTypeImports": 0,
+      "verificationValueImports": 0,
+      "verificationTypeImports": 0,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
       "runtimeAllowed": true
@@ -5062,6 +5284,10 @@
       "declaredAs": "dependencies",
       "actualImports": 3,
       "runtimeImports": 3,
+      "runtimeValueImports": 3,
+      "runtimeTypeImports": 0,
+      "verificationValueImports": 0,
+      "verificationTypeImports": 0,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
       "runtimeAllowed": true
@@ -5071,33 +5297,49 @@
       "declaredAs": "dependencies",
       "actualImports": 0,
       "runtimeImports": 0,
+      "runtimeValueImports": 0,
+      "runtimeTypeImports": 0,
+      "verificationValueImports": 0,
+      "verificationTypeImports": 0,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
-      "runtimeAllowed": true
+      "runtimeAllowed": false
     },
     {
       "name": "@radix-ui/react-radio-group",
       "declaredAs": "dependencies",
       "actualImports": 0,
       "runtimeImports": 0,
+      "runtimeValueImports": 0,
+      "runtimeTypeImports": 0,
+      "verificationValueImports": 0,
+      "verificationTypeImports": 0,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
-      "runtimeAllowed": true
+      "runtimeAllowed": false
     },
     {
       "name": "@radix-ui/react-scroll-area",
       "declaredAs": "dependencies",
       "actualImports": 0,
       "runtimeImports": 0,
+      "runtimeValueImports": 0,
+      "runtimeTypeImports": 0,
+      "verificationValueImports": 0,
+      "verificationTypeImports": 0,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
-      "runtimeAllowed": true
+      "runtimeAllowed": false
     },
     {
       "name": "@radix-ui/react-select",
       "declaredAs": "dependencies",
       "actualImports": 1,
       "runtimeImports": 1,
+      "runtimeValueImports": 1,
+      "runtimeTypeImports": 0,
+      "verificationValueImports": 0,
+      "verificationTypeImports": 0,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
       "runtimeAllowed": true
@@ -5107,24 +5349,36 @@
       "declaredAs": "dependencies",
       "actualImports": 0,
       "runtimeImports": 0,
+      "runtimeValueImports": 0,
+      "runtimeTypeImports": 0,
+      "verificationValueImports": 0,
+      "verificationTypeImports": 0,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
-      "runtimeAllowed": true
+      "runtimeAllowed": false
     },
     {
       "name": "@radix-ui/react-slider",
       "declaredAs": "dependencies",
       "actualImports": 0,
       "runtimeImports": 0,
+      "runtimeValueImports": 0,
+      "runtimeTypeImports": 0,
+      "verificationValueImports": 0,
+      "verificationTypeImports": 0,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
-      "runtimeAllowed": true
+      "runtimeAllowed": false
     },
     {
       "name": "@radix-ui/react-slot",
       "declaredAs": "dependencies",
       "actualImports": 2,
       "runtimeImports": 2,
+      "runtimeValueImports": 2,
+      "runtimeTypeImports": 0,
+      "verificationValueImports": 0,
+      "verificationTypeImports": 0,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
       "runtimeAllowed": true
@@ -5134,33 +5388,49 @@
       "declaredAs": "dependencies",
       "actualImports": 0,
       "runtimeImports": 0,
+      "runtimeValueImports": 0,
+      "runtimeTypeImports": 0,
+      "verificationValueImports": 0,
+      "verificationTypeImports": 0,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
-      "runtimeAllowed": true
+      "runtimeAllowed": false
     },
     {
       "name": "@radix-ui/react-toggle",
       "declaredAs": "dependencies",
       "actualImports": 0,
       "runtimeImports": 0,
+      "runtimeValueImports": 0,
+      "runtimeTypeImports": 0,
+      "verificationValueImports": 0,
+      "verificationTypeImports": 0,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
-      "runtimeAllowed": true
+      "runtimeAllowed": false
     },
     {
       "name": "@radix-ui/react-toggle-group",
       "declaredAs": "dependencies",
       "actualImports": 0,
       "runtimeImports": 0,
+      "runtimeValueImports": 0,
+      "runtimeTypeImports": 0,
+      "verificationValueImports": 0,
+      "verificationTypeImports": 0,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
-      "runtimeAllowed": true
+      "runtimeAllowed": false
     },
     {
       "name": "@radix-ui/react-tooltip",
       "declaredAs": "dependencies",
       "actualImports": 1,
       "runtimeImports": 1,
+      "runtimeValueImports": 1,
+      "runtimeTypeImports": 0,
+      "verificationValueImports": 0,
+      "verificationTypeImports": 0,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
       "runtimeAllowed": true
@@ -5170,24 +5440,36 @@
       "declaredAs": "devDependencies",
       "actualImports": 1,
       "runtimeImports": 0,
+      "runtimeValueImports": 0,
+      "runtimeTypeImports": 0,
+      "verificationValueImports": 0,
+      "verificationTypeImports": 0,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
-      "runtimeAllowed": true
+      "runtimeAllowed": false
     },
     {
       "name": "@tailwindcss/vite",
       "declaredAs": "devDependencies",
       "actualImports": 3,
       "runtimeImports": 0,
+      "runtimeValueImports": 0,
+      "runtimeTypeImports": 0,
+      "verificationValueImports": 0,
+      "verificationTypeImports": 0,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
-      "runtimeAllowed": true
+      "runtimeAllowed": false
     },
     {
       "name": "@tanstack/react-query",
       "declaredAs": "dependencies",
       "actualImports": 156,
       "runtimeImports": 88,
+      "runtimeValueImports": 57,
+      "runtimeTypeImports": 31,
+      "verificationValueImports": 61,
+      "verificationTypeImports": 4,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
       "runtimeAllowed": true
@@ -5197,6 +5479,10 @@
       "declaredAs": "dependencies",
       "actualImports": 4,
       "runtimeImports": 4,
+      "runtimeValueImports": 4,
+      "runtimeTypeImports": 0,
+      "verificationValueImports": 0,
+      "verificationTypeImports": 0,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
       "runtimeAllowed": true
@@ -5206,15 +5492,23 @@
       "declaredAs": "devDependencies",
       "actualImports": 312,
       "runtimeImports": 0,
+      "runtimeValueImports": 0,
+      "runtimeTypeImports": 0,
+      "verificationValueImports": 312,
+      "verificationTypeImports": 0,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
-      "runtimeAllowed": true
+      "runtimeAllowed": false
     },
     {
       "name": "@tiptap/core",
       "declaredAs": "dependencies",
       "actualImports": 14,
       "runtimeImports": 6,
+      "runtimeValueImports": 4,
+      "runtimeTypeImports": 2,
+      "verificationValueImports": 8,
+      "verificationTypeImports": 0,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
       "runtimeAllowed": true
@@ -5224,6 +5518,10 @@
       "declaredAs": "dependencies",
       "actualImports": 1,
       "runtimeImports": 1,
+      "runtimeValueImports": 1,
+      "runtimeTypeImports": 0,
+      "verificationValueImports": 0,
+      "verificationTypeImports": 0,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
       "runtimeAllowed": true
@@ -5233,6 +5531,10 @@
       "declaredAs": "dependencies",
       "actualImports": 1,
       "runtimeImports": 1,
+      "runtimeValueImports": 1,
+      "runtimeTypeImports": 0,
+      "verificationValueImports": 0,
+      "verificationTypeImports": 0,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
       "runtimeAllowed": true
@@ -5242,6 +5544,10 @@
       "declaredAs": "dependencies",
       "actualImports": 27,
       "runtimeImports": 15,
+      "runtimeValueImports": 7,
+      "runtimeTypeImports": 8,
+      "verificationValueImports": 12,
+      "verificationTypeImports": 0,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
       "runtimeAllowed": true
@@ -5251,6 +5557,10 @@
       "declaredAs": "dependencies",
       "actualImports": 6,
       "runtimeImports": 6,
+      "runtimeValueImports": 4,
+      "runtimeTypeImports": 2,
+      "verificationValueImports": 0,
+      "verificationTypeImports": 0,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
       "runtimeAllowed": true
@@ -5260,6 +5570,10 @@
       "declaredAs": "dependencies",
       "actualImports": 7,
       "runtimeImports": 1,
+      "runtimeValueImports": 1,
+      "runtimeTypeImports": 0,
+      "verificationValueImports": 6,
+      "verificationTypeImports": 0,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
       "runtimeAllowed": true
@@ -5269,60 +5583,88 @@
       "declaredAs": "dependencies",
       "actualImports": 0,
       "runtimeImports": 0,
+      "runtimeValueImports": 0,
+      "runtimeTypeImports": 0,
+      "verificationValueImports": 0,
+      "verificationTypeImports": 0,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
-      "runtimeAllowed": true
+      "runtimeAllowed": false
     },
     {
       "name": "@types/mdast",
       "declaredAs": "devDependencies",
       "actualImports": 0,
       "runtimeImports": 0,
+      "runtimeValueImports": 0,
+      "runtimeTypeImports": 0,
+      "verificationValueImports": 0,
+      "verificationTypeImports": 0,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
-      "runtimeAllowed": true
+      "runtimeAllowed": false
     },
     {
       "name": "@types/node",
       "declaredAs": "devDependencies",
       "actualImports": 0,
       "runtimeImports": 0,
+      "runtimeValueImports": 0,
+      "runtimeTypeImports": 0,
+      "verificationValueImports": 0,
+      "verificationTypeImports": 0,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
-      "runtimeAllowed": true
+      "runtimeAllowed": false
     },
     {
       "name": "@types/react",
       "declaredAs": "devDependencies",
       "actualImports": 0,
       "runtimeImports": 0,
+      "runtimeValueImports": 0,
+      "runtimeTypeImports": 0,
+      "verificationValueImports": 0,
+      "verificationTypeImports": 0,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
-      "runtimeAllowed": true
+      "runtimeAllowed": false
     },
     {
       "name": "@types/react-dom",
       "declaredAs": "devDependencies",
       "actualImports": 0,
       "runtimeImports": 0,
+      "runtimeValueImports": 0,
+      "runtimeTypeImports": 0,
+      "verificationValueImports": 0,
+      "verificationTypeImports": 0,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
-      "runtimeAllowed": true
+      "runtimeAllowed": false
     },
     {
       "name": "@vitejs/plugin-react",
       "declaredAs": "devDependencies",
       "actualImports": 2,
       "runtimeImports": 0,
+      "runtimeValueImports": 0,
+      "runtimeTypeImports": 0,
+      "verificationValueImports": 0,
+      "verificationTypeImports": 0,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
-      "runtimeAllowed": true
+      "runtimeAllowed": false
     },
     {
       "name": "@xterm/addon-fit",
       "declaredAs": "dependencies",
       "actualImports": 2,
       "runtimeImports": 2,
+      "runtimeValueImports": 1,
+      "runtimeTypeImports": 1,
+      "verificationValueImports": 0,
+      "verificationTypeImports": 0,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
       "runtimeAllowed": true
@@ -5332,6 +5674,10 @@
       "declaredAs": "dependencies",
       "actualImports": 1,
       "runtimeImports": 1,
+      "runtimeValueImports": 1,
+      "runtimeTypeImports": 0,
+      "verificationValueImports": 0,
+      "verificationTypeImports": 0,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
       "runtimeAllowed": true
@@ -5341,6 +5687,10 @@
       "declaredAs": "dependencies",
       "actualImports": 1,
       "runtimeImports": 1,
+      "runtimeValueImports": 1,
+      "runtimeTypeImports": 0,
+      "verificationValueImports": 0,
+      "verificationTypeImports": 0,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
       "runtimeAllowed": true
@@ -5350,6 +5700,10 @@
       "declaredAs": "dependencies",
       "actualImports": 1,
       "runtimeImports": 1,
+      "runtimeValueImports": 1,
+      "runtimeTypeImports": 0,
+      "verificationValueImports": 0,
+      "verificationTypeImports": 0,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
       "runtimeAllowed": true
@@ -5359,6 +5713,10 @@
       "declaredAs": "dependencies",
       "actualImports": 6,
       "runtimeImports": 4,
+      "runtimeValueImports": 2,
+      "runtimeTypeImports": 2,
+      "verificationValueImports": 2,
+      "verificationTypeImports": 0,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
       "runtimeAllowed": true
@@ -5368,6 +5726,10 @@
       "declaredAs": "dependencies",
       "actualImports": 1,
       "runtimeImports": 1,
+      "runtimeValueImports": 1,
+      "runtimeTypeImports": 0,
+      "verificationValueImports": 0,
+      "verificationTypeImports": 0,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
       "runtimeAllowed": true
@@ -5377,15 +5739,23 @@
       "declaredAs": "devDependencies",
       "actualImports": 0,
       "runtimeImports": 0,
+      "runtimeValueImports": 0,
+      "runtimeTypeImports": 0,
+      "verificationValueImports": 0,
+      "verificationTypeImports": 0,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
-      "runtimeAllowed": true
+      "runtimeAllowed": false
     },
     {
       "name": "bb-plugin-automations",
       "declaredAs": "devDependencies",
       "actualImports": 9,
       "runtimeImports": 0,
+      "runtimeValueImports": 0,
+      "runtimeTypeImports": 0,
+      "verificationValueImports": 6,
+      "verificationTypeImports": 3,
       "decision": "adapter",
       "reasonCode": "automations-native-port-W-599",
       "runtimeAllowed": false
@@ -5395,6 +5765,10 @@
       "declaredAs": "dependencies",
       "actualImports": 1,
       "runtimeImports": 1,
+      "runtimeValueImports": 1,
+      "runtimeTypeImports": 0,
+      "verificationValueImports": 0,
+      "verificationTypeImports": 0,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
       "runtimeAllowed": true
@@ -5404,6 +5778,10 @@
       "declaredAs": "dependencies",
       "actualImports": 2,
       "runtimeImports": 1,
+      "runtimeValueImports": 1,
+      "runtimeTypeImports": 0,
+      "verificationValueImports": 1,
+      "verificationTypeImports": 0,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
       "runtimeAllowed": true
@@ -5413,42 +5791,62 @@
       "declaredAs": "dependencies",
       "actualImports": 0,
       "runtimeImports": 0,
+      "runtimeValueImports": 0,
+      "runtimeTypeImports": 0,
+      "verificationValueImports": 0,
+      "verificationTypeImports": 0,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
-      "runtimeAllowed": true
+      "runtimeAllowed": false
     },
     {
       "name": "date-fns",
       "declaredAs": "dependencies",
       "actualImports": 0,
       "runtimeImports": 0,
+      "runtimeValueImports": 0,
+      "runtimeTypeImports": 0,
+      "verificationValueImports": 0,
+      "verificationTypeImports": 0,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
-      "runtimeAllowed": true
+      "runtimeAllowed": false
     },
     {
       "name": "embla-carousel-react",
       "declaredAs": "dependencies",
       "actualImports": 0,
       "runtimeImports": 0,
+      "runtimeValueImports": 0,
+      "runtimeTypeImports": 0,
+      "verificationValueImports": 0,
+      "verificationTypeImports": 0,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
-      "runtimeAllowed": true
+      "runtimeAllowed": false
     },
     {
       "name": "input-otp",
       "declaredAs": "dependencies",
       "actualImports": 0,
       "runtimeImports": 0,
+      "runtimeValueImports": 0,
+      "runtimeTypeImports": 0,
+      "verificationValueImports": 0,
+      "verificationTypeImports": 0,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
-      "runtimeAllowed": true
+      "runtimeAllowed": false
     },
     {
       "name": "jotai",
       "declaredAs": "dependencies",
       "actualImports": 134,
       "runtimeImports": 90,
+      "runtimeValueImports": 89,
+      "runtimeTypeImports": 1,
+      "verificationValueImports": 39,
+      "verificationTypeImports": 4,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
       "runtimeAllowed": true
@@ -5458,6 +5856,10 @@
       "declaredAs": "dependencies",
       "actualImports": 8,
       "runtimeImports": 8,
+      "runtimeValueImports": 8,
+      "runtimeTypeImports": 0,
+      "verificationValueImports": 0,
+      "verificationTypeImports": 0,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
       "runtimeAllowed": true
@@ -5467,6 +5869,10 @@
       "declaredAs": "dependencies",
       "actualImports": 1,
       "runtimeImports": 1,
+      "runtimeValueImports": 1,
+      "runtimeTypeImports": 0,
+      "verificationValueImports": 0,
+      "verificationTypeImports": 0,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
       "runtimeAllowed": true
@@ -5476,42 +5882,62 @@
       "declaredAs": "devDependencies",
       "actualImports": 0,
       "runtimeImports": 0,
+      "runtimeValueImports": 0,
+      "runtimeTypeImports": 0,
+      "verificationValueImports": 0,
+      "verificationTypeImports": 0,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
-      "runtimeAllowed": true
+      "runtimeAllowed": false
     },
     {
       "name": "lucide-react",
       "declaredAs": "dependencies",
       "actualImports": 0,
       "runtimeImports": 0,
+      "runtimeValueImports": 0,
+      "runtimeTypeImports": 0,
+      "verificationValueImports": 0,
+      "verificationTypeImports": 0,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
-      "runtimeAllowed": true
+      "runtimeAllowed": false
     },
     {
       "name": "mdast",
       "declaredAs": null,
       "actualImports": 4,
       "runtimeImports": 3,
+      "runtimeValueImports": 0,
+      "runtimeTypeImports": 3,
+      "verificationValueImports": 0,
+      "verificationTypeImports": 1,
       "decision": "reuse",
-      "reasonCode": "declared-external-package",
-      "runtimeAllowed": true
+      "reasonCode": "declared-type-package:@types/mdast",
+      "runtimeAllowed": false
     },
     {
       "name": "mdast-util-to-hast",
       "declaredAs": "devDependencies",
       "actualImports": 3,
       "runtimeImports": 3,
+      "runtimeValueImports": 0,
+      "runtimeTypeImports": 3,
+      "verificationValueImports": 0,
+      "verificationTypeImports": 0,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
-      "runtimeAllowed": true
+      "runtimeAllowed": false
     },
     {
       "name": "mermaid",
       "declaredAs": "dependencies",
       "actualImports": 4,
       "runtimeImports": 4,
+      "runtimeValueImports": 1,
+      "runtimeTypeImports": 3,
+      "verificationValueImports": 0,
+      "verificationTypeImports": 0,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
       "runtimeAllowed": true
@@ -5521,6 +5947,10 @@
       "declaredAs": "dependencies",
       "actualImports": 3,
       "runtimeImports": 3,
+      "runtimeValueImports": 3,
+      "runtimeTypeImports": 0,
+      "verificationValueImports": 0,
+      "verificationTypeImports": 0,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
       "runtimeAllowed": true
@@ -5530,24 +5960,23 @@
       "declaredAs": "devDependencies",
       "actualImports": 0,
       "runtimeImports": 0,
+      "runtimeValueImports": 0,
+      "runtimeTypeImports": 0,
+      "verificationValueImports": 0,
+      "verificationTypeImports": 0,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
-      "runtimeAllowed": true
+      "runtimeAllowed": false
     },
     {
       "name": "partysocket",
       "declaredAs": "dependencies",
       "actualImports": 1,
       "runtimeImports": 1,
-      "decision": "reuse",
-      "reasonCode": "declared-external-package",
-      "runtimeAllowed": true
-    },
-    {
-      "name": "path",
-      "declaredAs": null,
-      "actualImports": 2,
-      "runtimeImports": 0,
+      "runtimeValueImports": 1,
+      "runtimeTypeImports": 0,
+      "verificationValueImports": 0,
+      "verificationTypeImports": 0,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
       "runtimeAllowed": true
@@ -5557,6 +5986,10 @@
       "declaredAs": "dependencies",
       "actualImports": 627,
       "runtimeImports": 430,
+      "runtimeValueImports": 370,
+      "runtimeTypeImports": 60,
+      "verificationValueImports": 124,
+      "verificationTypeImports": 64,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
       "runtimeAllowed": true
@@ -5566,15 +5999,23 @@
       "declaredAs": "dependencies",
       "actualImports": 0,
       "runtimeImports": 0,
+      "runtimeValueImports": 0,
+      "runtimeTypeImports": 0,
+      "verificationValueImports": 0,
+      "verificationTypeImports": 0,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
-      "runtimeAllowed": true
+      "runtimeAllowed": false
     },
     {
       "name": "react-dom",
       "declaredAs": "dependencies",
       "actualImports": 27,
       "runtimeImports": 13,
+      "runtimeValueImports": 13,
+      "runtimeTypeImports": 0,
+      "verificationValueImports": 14,
+      "verificationTypeImports": 0,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
       "runtimeAllowed": true
@@ -5584,15 +6025,23 @@
       "declaredAs": "dependencies",
       "actualImports": 0,
       "runtimeImports": 0,
+      "runtimeValueImports": 0,
+      "runtimeTypeImports": 0,
+      "verificationValueImports": 0,
+      "verificationTypeImports": 0,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
-      "runtimeAllowed": true
+      "runtimeAllowed": false
     },
     {
       "name": "react-markdown",
       "declaredAs": "dependencies",
       "actualImports": 7,
       "runtimeImports": 7,
+      "runtimeValueImports": 4,
+      "runtimeTypeImports": 3,
+      "verificationValueImports": 0,
+      "verificationTypeImports": 0,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
       "runtimeAllowed": true
@@ -5602,6 +6051,10 @@
       "declaredAs": "dependencies",
       "actualImports": 10,
       "runtimeImports": 6,
+      "runtimeValueImports": 5,
+      "runtimeTypeImports": 1,
+      "verificationValueImports": 3,
+      "verificationTypeImports": 1,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
       "runtimeAllowed": true
@@ -5611,6 +6064,10 @@
       "declaredAs": "dependencies",
       "actualImports": 169,
       "runtimeImports": 70,
+      "runtimeValueImports": 69,
+      "runtimeTypeImports": 1,
+      "verificationValueImports": 90,
+      "verificationTypeImports": 6,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
       "runtimeAllowed": true
@@ -5620,15 +6077,23 @@
       "declaredAs": "dependencies",
       "actualImports": 0,
       "runtimeImports": 0,
+      "runtimeValueImports": 0,
+      "runtimeTypeImports": 0,
+      "verificationValueImports": 0,
+      "verificationTypeImports": 0,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
-      "runtimeAllowed": true
+      "runtimeAllowed": false
     },
     {
       "name": "rehype-katex",
       "declaredAs": "dependencies",
       "actualImports": 1,
       "runtimeImports": 1,
+      "runtimeValueImports": 1,
+      "runtimeTypeImports": 0,
+      "verificationValueImports": 0,
+      "verificationTypeImports": 0,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
       "runtimeAllowed": true
@@ -5638,6 +6103,10 @@
       "declaredAs": "dependencies",
       "actualImports": 1,
       "runtimeImports": 1,
+      "runtimeValueImports": 1,
+      "runtimeTypeImports": 0,
+      "verificationValueImports": 0,
+      "verificationTypeImports": 0,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
       "runtimeAllowed": true
@@ -5647,6 +6116,10 @@
       "declaredAs": "dependencies",
       "actualImports": 1,
       "runtimeImports": 1,
+      "runtimeValueImports": 1,
+      "runtimeTypeImports": 0,
+      "verificationValueImports": 0,
+      "verificationTypeImports": 0,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
       "runtimeAllowed": true
@@ -5656,6 +6129,10 @@
       "declaredAs": "dependencies",
       "actualImports": 1,
       "runtimeImports": 1,
+      "runtimeValueImports": 1,
+      "runtimeTypeImports": 0,
+      "verificationValueImports": 0,
+      "verificationTypeImports": 0,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
       "runtimeAllowed": true
@@ -5665,6 +6142,10 @@
       "declaredAs": "dependencies",
       "actualImports": 1,
       "runtimeImports": 1,
+      "runtimeValueImports": 1,
+      "runtimeTypeImports": 0,
+      "verificationValueImports": 0,
+      "verificationTypeImports": 0,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
       "runtimeAllowed": true
@@ -5674,6 +6155,10 @@
       "declaredAs": "dependencies",
       "actualImports": 3,
       "runtimeImports": 3,
+      "runtimeValueImports": 3,
+      "runtimeTypeImports": 0,
+      "verificationValueImports": 0,
+      "verificationTypeImports": 0,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
       "runtimeAllowed": true
@@ -5683,6 +6168,10 @@
       "declaredAs": "dependencies",
       "actualImports": 1,
       "runtimeImports": 1,
+      "runtimeValueImports": 1,
+      "runtimeTypeImports": 0,
+      "verificationValueImports": 0,
+      "verificationTypeImports": 0,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
       "runtimeAllowed": true
@@ -5692,6 +6181,10 @@
       "declaredAs": "dependencies",
       "actualImports": 1,
       "runtimeImports": 1,
+      "runtimeValueImports": 1,
+      "runtimeTypeImports": 0,
+      "verificationValueImports": 0,
+      "verificationTypeImports": 0,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
       "runtimeAllowed": true
@@ -5701,15 +6194,23 @@
       "declaredAs": "devDependencies",
       "actualImports": 1,
       "runtimeImports": 0,
+      "runtimeValueImports": 0,
+      "runtimeTypeImports": 0,
+      "verificationValueImports": 0,
+      "verificationTypeImports": 0,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
-      "runtimeAllowed": true
+      "runtimeAllowed": false
     },
     {
       "name": "sonner",
       "declaredAs": "dependencies",
       "actualImports": 7,
       "runtimeImports": 4,
+      "runtimeValueImports": 3,
+      "runtimeTypeImports": 1,
+      "verificationValueImports": 3,
+      "verificationTypeImports": 0,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
       "runtimeAllowed": true
@@ -5719,6 +6220,10 @@
       "declaredAs": "dependencies",
       "actualImports": 2,
       "runtimeImports": 2,
+      "runtimeValueImports": 2,
+      "runtimeTypeImports": 0,
+      "verificationValueImports": 0,
+      "verificationTypeImports": 0,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
       "runtimeAllowed": true
@@ -5728,6 +6233,10 @@
       "declaredAs": "dependencies",
       "actualImports": 1,
       "runtimeImports": 1,
+      "runtimeValueImports": 1,
+      "runtimeTypeImports": 0,
+      "verificationValueImports": 0,
+      "verificationTypeImports": 0,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
       "runtimeAllowed": true
@@ -5737,42 +6246,62 @@
       "declaredAs": "devDependencies",
       "actualImports": 0,
       "runtimeImports": 0,
+      "runtimeValueImports": 0,
+      "runtimeTypeImports": 0,
+      "verificationValueImports": 0,
+      "verificationTypeImports": 0,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
-      "runtimeAllowed": true
+      "runtimeAllowed": false
     },
     {
       "name": "tw-animate-css",
       "declaredAs": "dependencies",
       "actualImports": 0,
       "runtimeImports": 0,
+      "runtimeValueImports": 0,
+      "runtimeTypeImports": 0,
+      "verificationValueImports": 0,
+      "verificationTypeImports": 0,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
-      "runtimeAllowed": true
+      "runtimeAllowed": false
     },
     {
       "name": "typescript",
       "declaredAs": "devDependencies",
       "actualImports": 1,
       "runtimeImports": 0,
+      "runtimeValueImports": 0,
+      "runtimeTypeImports": 0,
+      "verificationValueImports": 1,
+      "verificationTypeImports": 0,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
-      "runtimeAllowed": true
+      "runtimeAllowed": false
     },
     {
       "name": "typescript-7",
       "declaredAs": "devDependencies",
       "actualImports": 0,
       "runtimeImports": 0,
+      "runtimeValueImports": 0,
+      "runtimeTypeImports": 0,
+      "verificationValueImports": 0,
+      "verificationTypeImports": 0,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
-      "runtimeAllowed": true
+      "runtimeAllowed": false
     },
     {
       "name": "unist-util-visit",
       "declaredAs": "dependencies",
       "actualImports": 3,
       "runtimeImports": 3,
+      "runtimeValueImports": 3,
+      "runtimeTypeImports": 0,
+      "verificationValueImports": 0,
+      "verificationTypeImports": 0,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
       "runtimeAllowed": true
@@ -5782,6 +6311,10 @@
       "declaredAs": "dependencies",
       "actualImports": 7,
       "runtimeImports": 6,
+      "runtimeValueImports": 6,
+      "runtimeTypeImports": 0,
+      "verificationValueImports": 0,
+      "verificationTypeImports": 1,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
       "runtimeAllowed": true
@@ -5791,6 +6324,10 @@
       "declaredAs": "dependencies",
       "actualImports": 1,
       "runtimeImports": 1,
+      "runtimeValueImports": 1,
+      "runtimeTypeImports": 0,
+      "verificationValueImports": 0,
+      "verificationTypeImports": 0,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
       "runtimeAllowed": true
@@ -5800,24 +6337,36 @@
       "declaredAs": "devDependencies",
       "actualImports": 8,
       "runtimeImports": 0,
+      "runtimeValueImports": 0,
+      "runtimeTypeImports": 0,
+      "verificationValueImports": 1,
+      "verificationTypeImports": 0,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
-      "runtimeAllowed": true
+      "runtimeAllowed": false
     },
     {
       "name": "vitest",
       "declaredAs": null,
       "actualImports": 509,
       "runtimeImports": 0,
+      "runtimeValueImports": 0,
+      "runtimeTypeImports": 0,
+      "verificationValueImports": 509,
+      "verificationTypeImports": 0,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
-      "runtimeAllowed": true
+      "runtimeAllowed": false
     },
     {
       "name": "zod",
       "declaredAs": "dependencies",
       "actualImports": 15,
       "runtimeImports": 14,
+      "runtimeValueImports": 13,
+      "runtimeTypeImports": 1,
+      "verificationValueImports": 1,
+      "verificationTypeImports": 0,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
       "runtimeAllowed": true

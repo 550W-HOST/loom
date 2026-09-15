@@ -4,7 +4,7 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
-import { assertBatchCoverage, assertCleanAppStatus, assertSourceInventory, batchDetails, canonicalEdgeKey, classifyPath, extractCompilerImports, generatePlan, packageExportTarget, preProcessImportSpecifiers, resolveWithCompilerModule, scanCssImports, scanHtmlImports } from "./analyze-ui-port.mjs";
+import { assertBatchCoverage, assertCleanAppStatus, assertSourceInventory, batchDetails, canonicalEdgeKey, classifyPath, extractCompilerImports, generatePlan, isNodeBuiltin, packageExportTarget, preProcessImportSpecifiers, resolveWithCompilerModule, scanCssImports, scanHtmlImports } from "./analyze-ui-port.mjs";
 
 const fixtureRoot = path.join(path.dirname(fileURLToPath(import.meta.url)), "fixtures");
 
@@ -13,6 +13,8 @@ test("compiler AST extraction handles multiline, re-export, import type, dynamic
   const result = extractCompilerImports("compiler-imports.ts", fixture);
   assert.deepEqual(result.imports.map((item) => item.specifier), [
     "./multiline",
+    "./named-type",
+    "./mixed-type",
     "./re-export",
     "./types",
     "./lazy",
@@ -26,7 +28,10 @@ test("compiler AST extraction handles multiline, re-export, import type, dynamic
 
 test("preProcessFile independently sees the same literal corpus imports", () => {
   const fixture = fs.readFileSync(path.join(fixtureRoot, "compiler-imports.ts"), "utf8");
-  assert.deepEqual(preProcessImportSpecifiers(fixture), ["./multiline", "./re-export", "./types", "./lazy", "./conditional", "./required"]);
+  const result = extractCompilerImports("compiler-imports.ts", fixture);
+  assert.deepEqual(preProcessImportSpecifiers(fixture), ["./multiline", "./named-type", "./mixed-type", "./re-export", "./types", "./lazy", "./conditional", "./required"]);
+  assert.equal(result.imports.find((item) => item.specifier === "./named-type").typeOnlyForm, "named-specifiers");
+  assert.equal(result.imports.find((item) => item.specifier === "./mixed-type").typeOnly, false);
 });
 
 test("compiler module resolution honors a tsconfig path alias", () => {
@@ -39,6 +44,14 @@ test("compiler module resolution honors a tsconfig path alias", () => {
     pathsBasePath: fixtureRoot,
   });
   assert.equal(resolved, path.join(fixtureRoot, "alias-target.ts"));
+});
+
+test("builtin resolver recognizes bare and node-prefixed Node modules", () => {
+  const fixture = fs.readFileSync(path.join(fixtureRoot, "node-builtins.ts"), "utf8");
+  assert.deepEqual(extractCompilerImports("node-builtins.ts", fixture).imports.map((item) => item.specifier), ["path", "node:fs"]);
+  assert.equal(isNodeBuiltin("path"), true);
+  assert.equal(isNodeBuiltin("node:fs"), true);
+  assert.equal(isNodeBuiltin("not-a-builtin"), false);
 });
 
 test("edge aggregation retains type-only and conditional semantics", () => {
@@ -71,10 +84,23 @@ test("the real app corpus is complete, partitioned and compiler-consistent", () 
   assert.equal(plan.graph.compilerImportConsistency.compilerSpecifiers, plan.graph.compilerImportConsistency.graphSpecifiers);
   assert.equal(plan.graph.compilerImportConsistency.preProcessFileParity.missing.length, 0);
   assert.equal(plan.graph.compilerImportConsistency.preProcessFileParity.extra.length, 0);
+  assert.equal(plan.graph.parsers.typescript.preProcessFileSpecifiers, 9184);
+  assert.equal(plan.graph.typeOnlySemantics.allNamedTypeOnlyImports, 20);
+  assert.equal(plan.graph.typeOnlySemantics.allCorpusNamedTypeOnlyImports, 22);
+  assert.equal(plan.graph.reachability.runtimeCompile, 782);
+  assert.equal(plan.graph.reachability.runtimeEmitted, 771);
+  assert.equal(plan.batchCoverage.crossIssueEdges, 1556);
+  assert.equal(plan.batchCoverage.missingCrossIssueBatchDependencies, 0);
+  assert.equal(plan.batchPlan.kind, "reviewChunks");
+  assert.equal(plan.batchPlan.executable, false);
   assert.equal(nodes.get("src/App.legacy-automation-routes.test.tsx").runtimeReachable, false);
   assert.equal(nodes.get("src/App.legacy-automation-routes.test.tsx").disposition, "verification-only");
   const edgeIndexes = Object.fromEntries(plan.graph.edgeFields.map((field, index) => [field, index]));
   assert.ok(plan.graph.edges.some((edge) => plan.graph.fileTable[edge[edgeIndexes.fromFileIndex]] === "src/App.tsx" && typeof edge[edgeIndexes.specifier] === "string" && edge[edgeIndexes.specifier].startsWith("@/") && typeof edge[edgeIndexes.toFileIndexOrPath] === "number"));
+  assert.equal(plan.workspacePackages.find((item) => item.name === "@bb/tsconfig").decision, "adapter");
+  assert.equal(plan.resolver.configDiagnostics, 2);
+  assert.equal(Object.values(plan.compileBlockers).flat().filter((blocker) => blocker.specifier?.startsWith("node:") || blocker.specifier === "path").length, 0);
+  for (const file of ["src/components/ui/markdown-message-directives.tsx", "src/components/ui/markdown-prompt-mentions.tsx", "src/components/ui/markdown-thread-mentions.tsx"]) assert.equal(nodes.get(file).disposition, "retain-verbatim");
 });
 
 test("a newly tracked upstream source cannot silently become classified", () => {
