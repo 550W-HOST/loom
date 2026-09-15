@@ -163,7 +163,7 @@ const PACKAGE_DECISION_OVERRIDES = new Map([
   ["@bb/fuzzy-match", ["copy", "copy-source-utility", true]],
   ["@bb/host-daemon-contract", ["adapter", "browser-safe-daemon-contract-boundary", true]],
   ["@bb/mobile-bridge", ["reuse", "pinned-browser-bridge-source", true]],
-  ["@bb/sdk", ["adapter", "adapt-typed-client-boundary", false]],
+  ["@bb/sdk", ["adapter", "compile-only-browser-sdk-W-593", true]],
   ["@bb/templates", ["adapter", "adapt-template-boundary", false]],
   ["@get-bb/plugin-sdk", ["adapter", "generic-plugin-sdk-boundary", false]],
   ["@bb/test-helpers", ["remove", "verification-only-helper", false]],

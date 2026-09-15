@@ -111,6 +111,8 @@ package, while an exact directory root may not overlap any registered root.
 The platform closure exposes browser-safe config and host schemas only: direct
 host-daemon access fails with a typed unavailable error, and Hono/provider-bridge
 runtime code is not exported. The mobile bridge remains an exact source reuse.
+The browser SDK exposes the current app method surface but rejects every operation
+without network access until W-593 installs the loom contract mapping.
 Every later app adaptation must switch the app registry entry to the closed
 `source-port`/`adapted-source` state and add a one-file ledger entry with its upstream and
 expected local hash/mode. In that state `BB_SRC` is mandatory and the checker

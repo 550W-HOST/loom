@@ -101,6 +101,15 @@
         "snapshot": {
           "kind": "exact-snapshot"
         }
+      },
+      {
+        "name": "@bb/sdk",
+        "upstreamPath": "packages/sdk",
+        "localPath": "ui/packages/sdk",
+        "disposition": "retain-source",
+        "snapshot": {
+          "kind": "adapted-source"
+        }
       }
     ],
     "sources": [
@@ -8322,6 +8331,44 @@
           "optionalDependencies": {}
         },
         "dependencyDigest": "5881b4534afa64462f49675f284afddbbc123dc30c15e7d3a22e10e01d951ad9"
+      },
+      {
+        "name": "@bb/sdk",
+        "gitTree": "179379a5a243fd69dd381179444546b4c44e57a2",
+        "path": "packages/sdk",
+        "tree": {
+          "files": 38,
+          "sha256": "882b172dce9ab393f851dfaf92f9f8bc827c68ee8d2ec81bd2c2cd71a1fa2a57"
+        },
+        "packageJson": {
+          "bytes": 1813,
+          "sha256": "af9da9750901773096daa83348bb4029ce382545695bb23a7efc94649c75ad7e"
+        },
+        "dependencies": {
+          "dependencies": {
+            "@bb/config": "workspace:*",
+            "@bb/core-ui": "workspace:*",
+            "@bb/domain": "workspace:*",
+            "@bb/host-daemon-contract": "workspace:*",
+            "@bb/server-contract": "workspace:*",
+            "@bb/templates": "workspace:*",
+            "hono": "^4.7.0",
+            "ws": "^8.19.0",
+            "zod": "^4.3.6"
+          },
+          "devDependencies": {
+            "@bb/tsconfig": "workspace:*",
+            "@types/node": "^22.0.0",
+            "@types/ws": "^8.18.1",
+            "esbuild": "^0.28.0",
+            "typescript": "npm:@typescript/typescript6@^6.0.2",
+            "typescript-7": "npm:typescript@^7.0.2",
+            "vitest": "^4.1.1"
+          },
+          "peerDependencies": {},
+          "optionalDependencies": {}
+        },
+        "dependencyDigest": "ad2771256af61482b6b558d276150b7067be895ecb6ce7d2ab30d5df83aa6ec8"
       }
     ],
     "sources": [
@@ -16493,6 +16540,35 @@
           "optionalDependencies": {}
         },
         "dependencyDigest": "5881b4534afa64462f49675f284afddbbc123dc30c15e7d3a22e10e01d951ad9"
+      },
+      {
+        "name": "@bb/sdk",
+        "upstreamPath": "packages/sdk",
+        "disposition": "retain-source",
+        "gitTree": "8bb24dda8e89d2b762edf87c248af1e76b524780",
+        "path": "ui/packages/sdk",
+        "tree": {
+          "files": 39,
+          "sha256": "37b6e9f9362d87f923f7d275eae657c442d96932901e1720b8c67a30c69bd2e4"
+        },
+        "packageJson": {
+          "bytes": 810,
+          "sha256": "40294f6b95f7fc005da9310c28db5a52bc4968e4b3db49ec138129c1076c2d5f"
+        },
+        "dependencies": {
+          "dependencies": {
+            "@bb/core-ui": "workspace:*"
+          },
+          "devDependencies": {
+            "@bb/tsconfig": "workspace:*",
+            "@types/node": "^22.0.0",
+            "typescript": "npm:@typescript/typescript6@^6.0.2",
+            "vitest": "^4.1.1"
+          },
+          "peerDependencies": {},
+          "optionalDependencies": {}
+        },
+        "dependencyDigest": "dd285359dc8de0378fb33d8a699e2e9dd0351bc44b9bf63ec969b4799127c4c0"
       }
     ],
     "imports": [
@@ -16555,6 +16631,12 @@
         "upstreamPath": "packages/mobile-bridge",
         "localPath": "ui/packages/mobile-bridge",
         "disposition": "exact-snapshot"
+      },
+      {
+        "package": "@bb/sdk",
+        "upstreamPath": "packages/sdk",
+        "localPath": "ui/packages/sdk",
+        "disposition": "retain-source"
       }
     ],
     "sources": [

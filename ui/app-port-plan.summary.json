@@ -1,7 +1,7 @@
 {
   "format": "loom.app-port-plan-summary/v1",
   "plan": "ui/app-port-plan.json",
-  "planBytes": 1943307,
+  "planBytes": 1940630,
   "source": {
     "root": "apps/app/src",
     "trackedFiles": 1437,
@@ -13,24 +13,24 @@
     "runtimeCompileReachable": 807,
     "runtimeEmittedReachable": 796,
     "dispositions": {
-      "retain-verbatim": 678,
-      "adapt-boundary": 49,
+      "retain-verbatim": 687,
+      "adapt-boundary": 40,
       "delete-unsupported": 56,
       "verification-only": 626,
       "asset-build": 28
     },
     "edges": 9125,
     "blockers": {
-      "runtime": 83,
-      "test": 128,
+      "runtime": 71,
+      "test": 122,
       "story": 15,
       "build": 6
     },
     "workspacePackages": 124
   },
   "dispositions": {
-    "retain-verbatim": 678,
-    "adapt-boundary": 49,
+    "retain-verbatim": 687,
+    "adapt-boundary": 40,
     "delete-unsupported": 56,
     "verification-only": 626,
     "asset-build": 28
@@ -45,11 +45,6 @@
       {
         "path": "src/components/commands/CommandPalette.tsx",
         "reasonCode": "loom-boundary-preserves-composition",
-        "preserveStructure": true
-      },
-      {
-        "path": "src/components/dialogs/ProjectMachineSetupDialog.tsx",
-        "reasonCode": "compiler-unresolved-boundary",
         "preserveStructure": true
       },
       {
@@ -153,18 +148,8 @@
         "preserveStructure": true
       },
       {
-        "path": "src/components/secondary-panel/git-diff/useDiffFileContentsRequester.ts",
-        "reasonCode": "compiler-unresolved-boundary",
-        "preserveStructure": true
-      },
-      {
         "path": "src/components/sidebar/PluginThreadList.tsx",
         "reasonCode": "loom-boundary-preserves-composition",
-        "preserveStructure": true
-      },
-      {
-        "path": "src/components/sidebar/ProjectList.tsx",
-        "reasonCode": "compiler-unresolved-boundary",
         "preserveStructure": true
       },
       {
@@ -198,33 +183,13 @@
         "preserveStructure": true
       },
       {
-        "path": "src/components/workspace/workspace-status.tsx",
-        "reasonCode": "compiler-unresolved-boundary",
-        "preserveStructure": true
-      },
-      {
-        "path": "src/hooks/queries/environment-queries.ts",
-        "reasonCode": "compiler-unresolved-boundary",
-        "preserveStructure": true
-      },
-      {
         "path": "src/hooks/usePluginFrontendBoot.ts",
         "reasonCode": "loom-boundary-preserves-composition",
         "preserveStructure": true
       },
       {
-        "path": "src/lib/lifecycle-errors.ts",
-        "reasonCode": "compiler-unresolved-boundary",
-        "preserveStructure": true
-      },
-      {
         "path": "src/lib/live-file-navigation.ts",
         "reasonCode": "generic-plugin-sdk-boundary",
-        "preserveStructure": true
-      },
-      {
-        "path": "src/lib/mutation-errors.ts",
-        "reasonCode": "compiler-unresolved-boundary",
         "preserveStructure": true
       },
       {
@@ -249,7 +214,7 @@
       },
       {
         "path": "src/lib/plugin-frontend.ts",
-        "reasonCode": "compiler-unresolved-boundary",
+        "reasonCode": "generic-plugin-sdk-boundary",
         "preserveStructure": true
       },
       {
@@ -270,16 +235,6 @@
       {
         "path": "src/lib/plugin-slots.ts",
         "reasonCode": "generic-plugin-sdk-boundary",
-        "preserveStructure": true
-      },
-      {
-        "path": "src/lib/project-branch-options.ts",
-        "reasonCode": "compiler-unresolved-boundary",
-        "preserveStructure": true
-      },
-      {
-        "path": "src/lib/sdk.ts",
-        "reasonCode": "compiler-unresolved-boundary",
         "preserveStructure": true
       }
     ],
@@ -3732,18 +3687,18 @@
   },
   "blockers": {
     "runtime": {
-      "count": 83,
+      "count": 71,
       "categories": {
-        "unresolved-workspace-package": 78,
+        "unresolved-workspace-package": 66,
         "conditional-import": 3,
         "unresolved-workspace-export": 1,
         "dynamic-nonliteral": 1
       }
     },
     "test": {
-      "count": 128,
+      "count": 122,
       "categories": {
-        "unresolved-workspace-package": 127,
+        "unresolved-workspace-package": 121,
         "require-nonliteral": 1
       }
     },
@@ -4073,7 +4028,7 @@
           "asset-build",
           "retain-verbatim"
         ],
-        "dependencyCount": 223,
+        "dependencyCount": 224,
         "dependsOnBatchIds": [
           "W-603-02",
           "W-603-03",
@@ -4118,7 +4073,7 @@
           "adapt-boundary",
           "retain-verbatim"
         ],
-        "dependencyCount": 234,
+        "dependencyCount": 235,
         "dependsOnBatchIds": [
           "W-603-01",
           "W-603-03",
@@ -4153,7 +4108,7 @@
           "adapt-boundary",
           "retain-verbatim"
         ],
-        "dependencyCount": 247,
+        "dependencyCount": 248,
         "dependsOnBatchIds": [
           "W-603-01",
           "W-603-02",
@@ -4186,7 +4141,7 @@
           "asset-build",
           "retain-verbatim"
         ],
-        "dependencyCount": 159,
+        "dependencyCount": 160,
         "dependsOnBatchIds": [
           "W-603-01",
           "W-603-02",
@@ -4220,7 +4175,7 @@
           "adapt-boundary",
           "retain-verbatim"
         ],
-        "dependencyCount": 98,
+        "dependencyCount": 99,
         "dependsOnBatchIds": [
           "W-603-01",
           "W-603-02",
@@ -4248,7 +4203,7 @@
           "adapt-boundary",
           "retain-verbatim"
         ],
-        "dependencyCount": 148,
+        "dependencyCount": 149,
         "dependsOnBatchIds": [
           "W-603-01",
           "W-603-02",
@@ -4317,7 +4272,7 @@
           "delete-unsupported",
           "verification-only"
         ],
-        "dependencyCount": 221,
+        "dependencyCount": 222,
         "dependsOnBatchIds": [
           "W-603-01",
           "W-603-02",
@@ -4429,7 +4384,7 @@
           "delete-unsupported",
           "verification-only"
         ],
-        "dependencyCount": 180,
+        "dependencyCount": 181,
         "dependsOnBatchIds": [
           "W-603-01",
           "W-603-02",
@@ -4459,7 +4414,7 @@
           "delete-unsupported",
           "verification-only"
         ],
-        "dependencyCount": 183,
+        "dependencyCount": 184,
         "dependsOnBatchIds": [
           "W-603-01",
           "W-603-02",
@@ -4538,7 +4493,7 @@
           "delete-unsupported",
           "verification-only"
         ],
-        "dependencyCount": 152,
+        "dependencyCount": 153,
         "dependsOnBatchIds": [
           "W-603-01",
           "W-603-02",
@@ -4678,8 +4633,8 @@
       "verificationValueImports": 6,
       "verificationTypeImports": 0,
       "decision": "adapter",
-      "reasonCode": "adapt-typed-client-boundary",
-      "runtimeAllowed": false
+      "reasonCode": "compile-only-browser-sdk-W-593",
+      "runtimeAllowed": true
     },
     {
       "name": "@bb/server-contract",

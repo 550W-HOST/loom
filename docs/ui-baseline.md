@@ -76,11 +76,12 @@ RPC。首次 app adaptation 必须把 app 状态从 `exact-snapshot` 切换为
 | Config | `ui/packages/config` | domain、zod | 仅公开 app 使用的 browser/build exports；server/desktop exports 不进入 closure |
 | Host daemon contract | `ui/packages/host-daemon-contract` | zod | browser schema/types + typed unavailable local client；无 Hono、provider bridge 或 daemon socket |
 | Mobile bridge | `ui/packages/mobile-bridge` | zod | 精确 browser-safe source reuse；不引入 native runtime |
+| Browser SDK | `ui/packages/sdk` | core-ui | compile-only method surface；调用统一 typed unavailable，W-593 替换为 loom contract mapping |
 | Static product inputs | root changelog/metadata/logo，`ui/vitest.shared.ts` | pinned blobs | 精确内容与 mode；不引入平台 runtime |
 | `apps/app` assembly | `apps/app`（精确快照） | pinned bb source；当前不在 pnpm workspace，不进入默认 build/runtime | 已导入；后续独立 source port |
 | bb plugin runtime | 不存在 | 任意 JS plugin host、发现和生命周期 | 移除；禁止加入闭包 |
 
-九个 adapted package、三个 exact source package 及其传递 workspace 依赖，以及
+十个 adapted package、三个 exact source package 及其传递 workspace 依赖，以及
 runtime/development 外部依赖，均由 manifest 机器计算；这让 source、build、test 三种闭包都可审阅。未来 app 应
 引用这些 workspace package，而不是再复制一份 domain、thread-view 或 shared
 UI。
