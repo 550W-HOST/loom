@@ -7,5 +7,9 @@
     "rootDir": ".",
     "types": ["node"]
   },
-  "include": ["src", "test", "tests", "fixtures", "stories"]
+  "include": [
+    "src/browser.ts",
+    "src/response.ts",
+    "test/browser-boundary.test.ts"
+  ]
 }

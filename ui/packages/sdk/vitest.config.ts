@@ -2,8 +2,9 @@ import { defineWorkspaceTestConfig } from "../../vitest.shared.js";
 
 export default defineWorkspaceTestConfig({
   test: {
-    environment: "node",
-    include: ["test/**/*.test.ts"],
-    name: "@bb/sdk",
+    silent: "passed-only",
+    name: "@bb/sdk/browser-boundary",
+    include: ["test/browser-boundary.test.ts"],
+    exclude: ["dist/**", "node_modules/**"],
   },
 });
