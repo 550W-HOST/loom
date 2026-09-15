@@ -129,6 +129,11 @@ test("the real app corpus is complete, partitioned and compiler-consistent", () 
   const edgeIndexes = Object.fromEntries(plan.graph.edgeFields.map((field, index) => [field, index]));
   assert.ok(plan.graph.edges.some((edge) => plan.graph.fileTable[edge[edgeIndexes.fromFileIndex]] === "src/App.tsx" && typeof edge[edgeIndexes.specifier] === "string" && edge[edgeIndexes.specifier].startsWith("@/") && typeof edge[edgeIndexes.toFileIndexOrPath] === "number"));
   assert.equal(plan.workspacePackages.find((item) => item.name === "@bb/tsconfig").decision, "reuse");
+  for (const name of ["@bb/config", "@bb/host-daemon-contract", "@bb/mobile-bridge"]) {
+    const item = plan.workspacePackages.find((candidate) => candidate.name === name);
+    assert.equal(item.runtimeAllowed, true);
+  }
+  assert.equal(plan.workspacePackages.find((item) => item.name === "@bb/mobile-bridge").decision, "reuse");
   assert.equal(plan.resolver.configDiagnostics, 0);
   assert.equal(Object.values(plan.compileBlockers).flat().filter((blocker) => blocker.specifier?.startsWith("node:") || blocker.specifier === "path").length, 0);
   assert.equal(Object.values(plan.compileBlockers).flat().filter((blocker) => blocker.specifier?.startsWith("@/assets/workspace-open-target-icons/")).length, 0);

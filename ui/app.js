@@ -19852,6 +19852,12 @@ var environmentSchema = external_exports.object({
   updatedAt: external_exports.number()
 });
 
+// packages/domain/src/feature-flags.ts
+var featureFlagsSchema = external_exports.object({
+  placeholder: external_exports.boolean(),
+  timelineWindowEventBudget: external_exports.number().int().positive()
+});
+
 // packages/domain/src/git-checkout.ts
 var gitBranchForbiddenCharacterPattern = /[\u0000-\u001f\u007f\\:~^?*\[]/u;
 var gitBranchWhitespacePattern = /[ \t]/u;

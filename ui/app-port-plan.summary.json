@@ -1,7 +1,7 @@
 {
   "format": "loom.app-port-plan-summary/v1",
   "plan": "ui/app-port-plan.json",
-  "planBytes": 1952147,
+  "planBytes": 1943307,
   "source": {
     "root": "apps/app/src",
     "trackedFiles": 1437,
@@ -13,24 +13,24 @@
     "runtimeCompileReachable": 807,
     "runtimeEmittedReachable": 796,
     "dispositions": {
-      "retain-verbatim": 649,
-      "adapt-boundary": 78,
+      "retain-verbatim": 678,
+      "adapt-boundary": 49,
       "delete-unsupported": 56,
       "verification-only": 626,
       "asset-build": 28
     },
     "edges": 9125,
     "blockers": {
-      "runtime": 118,
-      "test": 145,
-      "story": 19,
-      "build": 10
+      "runtime": 83,
+      "test": 128,
+      "story": 15,
+      "build": 6
     },
     "workspacePackages": 124
   },
   "dispositions": {
-    "retain-verbatim": 649,
-    "adapt-boundary": 78,
+    "retain-verbatim": 678,
+    "adapt-boundary": 49,
     "delete-unsupported": 56,
     "verification-only": 626,
     "asset-build": 28
@@ -49,11 +49,6 @@
       },
       {
         "path": "src/components/dialogs/ProjectMachineSetupDialog.tsx",
-        "reasonCode": "compiler-unresolved-boundary",
-        "preserveStructure": true
-      },
-      {
-        "path": "src/components/dialogs/ProjectPathDialog.tsx",
         "reasonCode": "compiler-unresolved-boundary",
         "preserveStructure": true
       },
@@ -158,32 +153,7 @@
         "preserveStructure": true
       },
       {
-        "path": "src/components/provider-cli/provider-cli-install-store.ts",
-        "reasonCode": "compiler-unresolved-boundary",
-        "preserveStructure": true
-      },
-      {
-        "path": "src/components/provider-cli/provider-cli-install.tsx",
-        "reasonCode": "compiler-unresolved-boundary",
-        "preserveStructure": true
-      },
-      {
-        "path": "src/components/secondary-panel/ThreadMetadataContent.tsx",
-        "reasonCode": "compiler-unresolved-boundary",
-        "preserveStructure": true
-      },
-      {
         "path": "src/components/secondary-panel/git-diff/useDiffFileContentsRequester.ts",
-        "reasonCode": "compiler-unresolved-boundary",
-        "preserveStructure": true
-      },
-      {
-        "path": "src/components/settings/MachinesSettingsSection.tsx",
-        "reasonCode": "compiler-unresolved-boundary",
-        "preserveStructure": true
-      },
-      {
-        "path": "src/components/settings/UsageLimitsSettingsSection.tsx",
         "reasonCode": "compiler-unresolved-boundary",
         "preserveStructure": true
       },
@@ -200,16 +170,6 @@
       {
         "path": "src/components/sidebar/SidebarPluginAttentionGlyph.tsx",
         "reasonCode": "loom-boundary-preserves-composition",
-        "preserveStructure": true
-      },
-      {
-        "path": "src/components/sidebar/SidebarUpdatesBadge.tsx",
-        "reasonCode": "compiler-unresolved-boundary",
-        "preserveStructure": true
-      },
-      {
-        "path": "src/components/thread/ThreadWorkspaceOpenButton.tsx",
-        "reasonCode": "compiler-unresolved-boundary",
         "preserveStructure": true
       },
       {
@@ -238,16 +198,6 @@
         "preserveStructure": true
       },
       {
-        "path": "src/components/workspace-open-target/WorkspaceOpenTargetIcon.tsx",
-        "reasonCode": "compiler-unresolved-boundary",
-        "preserveStructure": true
-      },
-      {
-        "path": "src/components/workspace-open-target/workspace-open-target-display.ts",
-        "reasonCode": "compiler-unresolved-boundary",
-        "preserveStructure": true
-      },
-      {
         "path": "src/components/workspace/workspace-status.tsx",
         "reasonCode": "compiler-unresolved-boundary",
         "preserveStructure": true
@@ -258,58 +208,8 @@
         "preserveStructure": true
       },
       {
-        "path": "src/hooks/queries/system-queries.ts",
-        "reasonCode": "compiler-unresolved-boundary",
-        "preserveStructure": true
-      },
-      {
-        "path": "src/hooks/useLocalOpenTargets.ts",
-        "reasonCode": "compiler-unresolved-boundary",
-        "preserveStructure": true
-      },
-      {
-        "path": "src/hooks/useLocalPathPicker.tsx",
-        "reasonCode": "compiler-unresolved-boundary",
-        "preserveStructure": true
-      },
-      {
         "path": "src/hooks/usePluginFrontendBoot.ts",
         "reasonCode": "loom-boundary-preserves-composition",
-        "preserveStructure": true
-      },
-      {
-        "path": "src/hooks/useQuickCreateProject.tsx",
-        "reasonCode": "compiler-unresolved-boundary",
-        "preserveStructure": true
-      },
-      {
-        "path": "src/hooks/useResolvedLiveFileTarget.ts",
-        "reasonCode": "compiler-unresolved-boundary",
-        "preserveStructure": true
-      },
-      {
-        "path": "src/hooks/useUpdateInventory.ts",
-        "reasonCode": "compiler-unresolved-boundary",
-        "preserveStructure": true
-      },
-      {
-        "path": "src/hooks/useWorkspaceOpenTargets.ts",
-        "reasonCode": "compiler-unresolved-boundary",
-        "preserveStructure": true
-      },
-      {
-        "path": "src/lib/api-host-daemon.ts",
-        "reasonCode": "compiler-unresolved-boundary",
-        "preserveStructure": true
-      },
-      {
-        "path": "src/lib/app-surface.ts",
-        "reasonCode": "compiler-unresolved-boundary",
-        "preserveStructure": true
-      },
-      {
-        "path": "src/lib/host-update-status.ts",
-        "reasonCode": "compiler-unresolved-boundary",
         "preserveStructure": true
       },
       {
@@ -324,16 +224,6 @@
       },
       {
         "path": "src/lib/mutation-errors.ts",
-        "reasonCode": "compiler-unresolved-boundary",
-        "preserveStructure": true
-      },
-      {
-        "path": "src/lib/native-shell/native-shell.ts",
-        "reasonCode": "compiler-unresolved-boundary",
-        "preserveStructure": true
-      },
-      {
-        "path": "src/lib/native-shell/use-native-shell.ts",
         "reasonCode": "compiler-unresolved-boundary",
         "preserveStructure": true
       },
@@ -389,41 +279,6 @@
       },
       {
         "path": "src/lib/sdk.ts",
-        "reasonCode": "compiler-unresolved-boundary",
-        "preserveStructure": true
-      },
-      {
-        "path": "src/lib/system-config-atoms.ts",
-        "reasonCode": "compiler-unresolved-boundary",
-        "preserveStructure": true
-      },
-      {
-        "path": "src/lib/workspace-open-target-preference.ts",
-        "reasonCode": "compiler-unresolved-boundary",
-        "preserveStructure": true
-      },
-      {
-        "path": "src/views/MachineSettingsView.tsx",
-        "reasonCode": "compiler-unresolved-boundary",
-        "preserveStructure": true
-      },
-      {
-        "path": "src/views/RootComposePanelTabContent.tsx",
-        "reasonCode": "compiler-unresolved-boundary",
-        "preserveStructure": true
-      },
-      {
-        "path": "src/views/SettingsView.tsx",
-        "reasonCode": "compiler-unresolved-boundary",
-        "preserveStructure": true
-      },
-      {
-        "path": "src/views/thread-detail/ThreadDetailView.tsx",
-        "reasonCode": "compiler-unresolved-boundary",
-        "preserveStructure": true
-      },
-      {
-        "path": "src/views/thread-detail/threadWorkspaceOpenPath.ts",
         "reasonCode": "compiler-unresolved-boundary",
         "preserveStructure": true
       }
@@ -3877,33 +3732,33 @@
   },
   "blockers": {
     "runtime": {
-      "count": 118,
+      "count": 83,
       "categories": {
-        "unresolved-workspace-package": 113,
+        "unresolved-workspace-package": 78,
         "conditional-import": 3,
         "unresolved-workspace-export": 1,
         "dynamic-nonliteral": 1
       }
     },
     "test": {
-      "count": 145,
+      "count": 128,
       "categories": {
-        "unresolved-workspace-package": 144,
+        "unresolved-workspace-package": 127,
         "require-nonliteral": 1
       }
     },
     "story": {
-      "count": 19,
+      "count": 15,
       "categories": {
-        "unresolved-workspace-package": 18,
+        "unresolved-workspace-package": 14,
         "unresolved-local": 1
       }
     },
     "build": {
-      "count": 10,
+      "count": 6,
       "categories": {
         "unresolved-local": 4,
-        "unresolved-workspace-package": 6
+        "unresolved-workspace-package": 2
       }
     }
   },
@@ -4218,7 +4073,7 @@
           "asset-build",
           "retain-verbatim"
         ],
-        "dependencyCount": 222,
+        "dependencyCount": 223,
         "dependsOnBatchIds": [
           "W-603-02",
           "W-603-03",
@@ -4263,7 +4118,7 @@
           "adapt-boundary",
           "retain-verbatim"
         ],
-        "dependencyCount": 233,
+        "dependencyCount": 234,
         "dependsOnBatchIds": [
           "W-603-01",
           "W-603-03",
@@ -4298,7 +4153,7 @@
           "adapt-boundary",
           "retain-verbatim"
         ],
-        "dependencyCount": 246,
+        "dependencyCount": 247,
         "dependsOnBatchIds": [
           "W-603-01",
           "W-603-02",
@@ -4331,7 +4186,7 @@
           "asset-build",
           "retain-verbatim"
         ],
-        "dependencyCount": 158,
+        "dependencyCount": 159,
         "dependsOnBatchIds": [
           "W-603-01",
           "W-603-02",
@@ -4365,7 +4220,7 @@
           "adapt-boundary",
           "retain-verbatim"
         ],
-        "dependencyCount": 95,
+        "dependencyCount": 98,
         "dependsOnBatchIds": [
           "W-603-01",
           "W-603-02",
@@ -4393,7 +4248,7 @@
           "adapt-boundary",
           "retain-verbatim"
         ],
-        "dependencyCount": 144,
+        "dependencyCount": 148,
         "dependsOnBatchIds": [
           "W-603-01",
           "W-603-02",
@@ -4426,10 +4281,9 @@
         "executable": false,
         "fileCount": 35,
         "dispositions": [
-          "adapt-boundary",
           "retain-verbatim"
         ],
-        "dependencyCount": 254,
+        "dependencyCount": 255,
         "dependsOnBatchIds": [
           "W-603-01",
           "W-603-02",
@@ -4463,7 +4317,7 @@
           "delete-unsupported",
           "verification-only"
         ],
-        "dependencyCount": 220,
+        "dependencyCount": 221,
         "dependsOnBatchIds": [
           "W-603-01",
           "W-603-02",
@@ -4526,7 +4380,7 @@
           "delete-unsupported",
           "verification-only"
         ],
-        "dependencyCount": 215,
+        "dependencyCount": 216,
         "dependsOnBatchIds": [
           "W-603-01",
           "W-603-02",
@@ -4575,7 +4429,7 @@
           "delete-unsupported",
           "verification-only"
         ],
-        "dependencyCount": 179,
+        "dependencyCount": 180,
         "dependsOnBatchIds": [
           "W-603-01",
           "W-603-02",
@@ -4645,7 +4499,7 @@
           "delete-unsupported",
           "verification-only"
         ],
-        "dependencyCount": 179,
+        "dependencyCount": 182,
         "dependsOnBatchIds": [
           "W-603-01",
           "W-603-02",
@@ -4684,7 +4538,7 @@
           "delete-unsupported",
           "verification-only"
         ],
-        "dependencyCount": 150,
+        "dependencyCount": 152,
         "dependsOnBatchIds": [
           "W-603-01",
           "W-603-02",
@@ -4733,8 +4587,8 @@
       "verificationValueImports": 2,
       "verificationTypeImports": 0,
       "decision": "adapter",
-      "reasonCode": "adapt-config-boundary",
-      "runtimeAllowed": false
+      "reasonCode": "browser-safe-config-boundary",
+      "runtimeAllowed": true
     },
     {
       "name": "@bb/core-ui",
@@ -4798,8 +4652,8 @@
       "verificationValueImports": 4,
       "verificationTypeImports": 13,
       "decision": "adapter",
-      "reasonCode": "adapt-daemon-boundary",
-      "runtimeAllowed": false
+      "reasonCode": "browser-safe-daemon-contract-boundary",
+      "runtimeAllowed": true
     },
     {
       "name": "@bb/mobile-bridge",
@@ -4810,9 +4664,9 @@
       "runtimeTypeImports": 1,
       "verificationValueImports": 2,
       "verificationTypeImports": 0,
-      "decision": "adapter",
-      "reasonCode": "adapt-browser-capability-boundary",
-      "runtimeAllowed": false
+      "decision": "reuse",
+      "reasonCode": "pinned-browser-bridge-source",
+      "runtimeAllowed": true
     },
     {
       "name": "@bb/sdk",

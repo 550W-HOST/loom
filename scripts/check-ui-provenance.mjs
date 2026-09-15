@@ -609,14 +609,13 @@ function buildManifest(existing, upstreamRoot) {
   }
   const registry = sourceRegistry(existing);
   const source = { ...DEFAULT_SOURCE, ...(existing?.source ?? {}) };
-  const localPackages = registry.packages.map((entry) => {
-    const previous = existing?.local?.packages?.find((item) => item.name === entry.name);
-    return packageRecord(entry.name, entry.localPath, repoRoot, {
+  const localPackages = registry.packages.map((entry) =>
+    packageRecord(entry.name, entry.localPath, repoRoot, {
       upstreamPath: entry.upstreamPath,
-      disposition: previous?.disposition ?? entry.disposition,
+      disposition: entry.disposition,
       gitTree: gitTreeId(entry.localPath, repoRoot),
-    });
-  });
+    }),
+  );
   const local = {
     referenceApp: localAppRecord(existing?.local?.referenceApp ?? existing?.app, registry.app),
     productApp: {

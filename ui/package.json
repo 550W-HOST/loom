@@ -6,7 +6,7 @@
     "build": "node scripts/build.mjs",
     "dev": "node scripts/dev-server.mjs",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run --passWithNoTests"
+    "test": "vitest run --config vitest.reference.config.ts --passWithNoTests"
   },
   "dependencies": {
     "@bb/domain": "workspace:*",

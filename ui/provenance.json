@@ -74,6 +74,33 @@
         "snapshot": {
           "kind": "adapted-source"
         }
+      },
+      {
+        "name": "@bb/config",
+        "upstreamPath": "packages/config",
+        "localPath": "ui/packages/config",
+        "disposition": "retain-source",
+        "snapshot": {
+          "kind": "adapted-source"
+        }
+      },
+      {
+        "name": "@bb/host-daemon-contract",
+        "upstreamPath": "packages/host-daemon-contract",
+        "localPath": "ui/packages/host-daemon-contract",
+        "disposition": "retain-source",
+        "snapshot": {
+          "kind": "adapted-source"
+        }
+      },
+      {
+        "name": "@bb/mobile-bridge",
+        "upstreamPath": "packages/mobile-bridge",
+        "localPath": "ui/packages/mobile-bridge",
+        "disposition": "exact-snapshot",
+        "snapshot": {
+          "kind": "exact-snapshot"
+        }
       }
     ],
     "sources": [
@@ -148,6 +175,17 @@
         "kind": "blob",
         "upstreamPath": "vitest.shared.ts",
         "localPath": "ui/vitest.shared.ts",
+        "disposition": "exact-snapshot",
+        "snapshot": {
+          "kind": "exact-snapshot"
+        },
+        "materialization": "materialized"
+      },
+      {
+        "name": "@bb/domain/feature-flags",
+        "kind": "blob",
+        "upstreamPath": "packages/domain/src/feature-flags.ts",
+        "localPath": "ui/packages/domain/src/feature-flags.ts",
         "disposition": "exact-snapshot",
         "snapshot": {
           "kind": "exact-snapshot"
@@ -8198,6 +8236,92 @@
           "optionalDependencies": {}
         },
         "dependencyDigest": "329b7e024c5d37daa8efc428ae34f70870e99b4ff5468695f3e71f622527e0c6"
+      },
+      {
+        "name": "@bb/config",
+        "gitTree": "909e70175ae38dac512f434852bca38695673659",
+        "path": "packages/config",
+        "tree": {
+          "files": 41,
+          "sha256": "56af9da6b8c62f5b06a5dd6c666dfc2fb89e61e9985b588db2a177a31504eb53"
+        },
+        "packageJson": {
+          "bytes": 4248,
+          "sha256": "d78e0fb981b7c054e78a178375d89fae857afc357aa4cd13dd52a808420038e0"
+        },
+        "dependencies": {
+          "dependencies": {
+            "@bb/domain": "workspace:*",
+            "zod": "4.3.6"
+          },
+          "devDependencies": {
+            "@bb/tsconfig": "workspace:*",
+            "@types/node": "^22.0.0",
+            "typescript": "npm:@typescript/typescript6@^6.0.2",
+            "typescript-7": "npm:typescript@^7.0.2"
+          },
+          "peerDependencies": {},
+          "optionalDependencies": {}
+        },
+        "dependencyDigest": "4fcb3cac9496fe9a2441d0a7eff706cd8063c3b863c9131aa24fd589dd8e9c4e"
+      },
+      {
+        "name": "@bb/host-daemon-contract",
+        "gitTree": "54d13729ad9bafe7795af8a8c96627d38ecc11e1",
+        "path": "packages/host-daemon-contract",
+        "tree": {
+          "files": 16,
+          "sha256": "aa70b4a3bcb0d7db5baf457313e8ab1b9b50bf55a4611d0ddd20cbab0691da6e"
+        },
+        "packageJson": {
+          "bytes": 1257,
+          "sha256": "9b3598af41f234f4584379f9b381ba7f046fd2f57bcffb743f4a83f22167d299"
+        },
+        "dependencies": {
+          "dependencies": {
+            "@bb/domain": "workspace:*",
+            "@bb/hono-typed-routes": "workspace:*",
+            "@bb/provider-bridge-protocol": "workspace:*",
+            "hono": "^4.7.0",
+            "zod": "^4.3.6"
+          },
+          "devDependencies": {
+            "@bb/test-helpers": "workspace:*",
+            "@bb/tsconfig": "workspace:*",
+            "@types/node": "^22.0.0",
+            "typescript": "npm:@typescript/typescript6@^6.0.2",
+            "typescript-7": "npm:typescript@^7.0.2"
+          },
+          "peerDependencies": {},
+          "optionalDependencies": {}
+        },
+        "dependencyDigest": "c5ee4ccbc9f4425aa1579db19d4f80dc2d91f81dfb1c36c8ccfd59afd5ac5558"
+      },
+      {
+        "name": "@bb/mobile-bridge",
+        "gitTree": "7fcbd4c34945c89ac8d2fa442d613c88b8fef252",
+        "path": "packages/mobile-bridge",
+        "tree": {
+          "files": 12,
+          "sha256": "d7a009599f16459954793507b1a34baf2c214cf517061fc87688d916077543bf"
+        },
+        "packageJson": {
+          "bytes": 607,
+          "sha256": "c34fd731182fc3c86f91699ed8ed74a666574ea7d88130006714730c03c1e237"
+        },
+        "dependencies": {
+          "dependencies": {
+            "zod": "^4.3.6"
+          },
+          "devDependencies": {
+            "@bb/tsconfig": "workspace:*",
+            "typescript": "npm:@typescript/typescript6@^6.0.2",
+            "vitest": "^4.1.1"
+          },
+          "peerDependencies": {},
+          "optionalDependencies": {}
+        },
+        "dependencyDigest": "5881b4534afa64462f49675f284afddbbc123dc30c15e7d3a22e10e01d951ad9"
       }
     ],
     "sources": [
@@ -8339,6 +8463,19 @@
           "sha256": "da30a3adfc5dfc2f06e40a8026737ce03bdaf08414e388e6f47354793427cb9d",
           "mode": "100644"
         }
+      },
+      {
+        "name": "@bb/domain/feature-flags",
+        "kind": "blob",
+        "path": "packages/domain/src/feature-flags.ts",
+        "disposition": "exact-snapshot",
+        "materialization": "materialized",
+        "gitBlob": "ae8bf32142dcc803bf094094558aafd55c9a0414",
+        "file": {
+          "bytes": 337,
+          "sha256": "4a4fff9d6f94eb41af7baeff8d8a7295147ca87fa0ff56a0555cd945159d3c00",
+          "mode": "100644"
+        }
       }
     ]
   },
@@ -8353,8 +8490,8 @@
         "sha256": "d54cebb6556bc4d0e0a198fcf9e8487ccc2cad930b21ae98e8845e421bd91cd2"
       },
       "packageJson": {
-        "bytes": 471,
-        "sha256": "a69401b9661cdcd9219308e5ff9ba36a3dd3e5ae1f966bca2f093e74167574f0"
+        "bytes": 507,
+        "sha256": "df0f2e26511045a756e20f8a9abf6e7bc833ae6d63a844db2185b7519c40542d"
       },
       "dependencies": {
         "dependencies": {
@@ -8373,8 +8510,8 @@
       "dependencyDigest": "d4fe9eceba8c40e09ab7f77258786956a027269ac7d032bd212e245baaed5776",
       "bundlePath": "ui/app.js",
       "bundle": {
-        "bytes": 1191491,
-        "sha256": "3468d861059419aabef6452234f31889929ab6bb444e1d1ff35dd07ca025a919"
+        "bytes": 1191702,
+        "sha256": "b825c2f5356575a1ded40eb8ca3fa454c76cb63a32499ee457a09f66797d8048"
       }
     },
     "productApp": {
@@ -16027,11 +16164,11 @@
         "name": "@bb/domain",
         "upstreamPath": "packages/domain",
         "disposition": "retain-source",
-        "gitTree": "86dbfb647311e5fd8b9d0e24a3747e2b7499efe3",
+        "gitTree": "1ef199d29d4c1c4a599e665879d9e8e0a55c1ca4",
         "path": "ui/packages/domain",
         "tree": {
-          "files": 31,
-          "sha256": "9e28ddf20272857972bab21c5ee33ead7fe5cb8081e0d6b0168d1c9634adaab3"
+          "files": 32,
+          "sha256": "90e62bc954be7f1738ca3b6692061cecf97e5c60e281cccd61816623c289e56a"
         },
         "packageJson": {
           "bytes": 474,
@@ -16268,6 +16405,94 @@
           "optionalDependencies": {}
         },
         "dependencyDigest": "4eb696954e82eee2c7d4f9c0865da7728c2a66107b80cc37ec322266012fb512"
+      },
+      {
+        "name": "@bb/config",
+        "upstreamPath": "packages/config",
+        "disposition": "retain-source",
+        "gitTree": "a592f25be22e3538e59794c911f1ecd8d8dcb525",
+        "path": "ui/packages/config",
+        "tree": {
+          "files": 41,
+          "sha256": "eb35fd25dd95f6c48865fa06a4cddffb00c5a385457e21eba9ff08426e162484"
+        },
+        "packageJson": {
+          "bytes": 1091,
+          "sha256": "b3e7a7eff0b29663fa3ba9d57c1f30451c123baa6c6acea6313bb03f63ecc801"
+        },
+        "dependencies": {
+          "dependencies": {
+            "@bb/domain": "workspace:*",
+            "zod": "4.3.6"
+          },
+          "devDependencies": {
+            "@bb/tsconfig": "workspace:*",
+            "@types/node": "^22.0.0",
+            "typescript": "npm:@typescript/typescript6@^6.0.2",
+            "typescript-7": "npm:typescript@^7.0.2",
+            "vitest": "^4.1.1"
+          },
+          "peerDependencies": {},
+          "optionalDependencies": {}
+        },
+        "dependencyDigest": "e1c80d19052e2642fd85c36704e5cfc5340c1ad61a8a3871989285d0209d4a31"
+      },
+      {
+        "name": "@bb/host-daemon-contract",
+        "upstreamPath": "packages/host-daemon-contract",
+        "disposition": "retain-source",
+        "gitTree": "317e6ad478fac03f1f0ab2c1cb80599aa3429f03",
+        "path": "ui/packages/host-daemon-contract",
+        "tree": {
+          "files": 18,
+          "sha256": "26241c4956cca01d6ea0e7860226c54faedc588fbc94f3b8cdf93efbd2867df9"
+        },
+        "packageJson": {
+          "bytes": 1047,
+          "sha256": "5795eb081bd055ddebb3413629a829764de0404a8efcd8d2efce0b612bc6bf58"
+        },
+        "dependencies": {
+          "dependencies": {
+            "zod": "^4.3.6"
+          },
+          "devDependencies": {
+            "@bb/tsconfig": "workspace:*",
+            "@types/node": "^22.0.0",
+            "typescript": "npm:@typescript/typescript6@^6.0.2",
+            "vitest": "^4.1.1"
+          },
+          "peerDependencies": {},
+          "optionalDependencies": {}
+        },
+        "dependencyDigest": "8a5d4f71b4a4b17549523c37655ca9ba9de815789a9aacdb7a0fe547f68c0903"
+      },
+      {
+        "name": "@bb/mobile-bridge",
+        "upstreamPath": "packages/mobile-bridge",
+        "disposition": "exact-snapshot",
+        "gitTree": "7fcbd4c34945c89ac8d2fa442d613c88b8fef252",
+        "path": "ui/packages/mobile-bridge",
+        "tree": {
+          "files": 12,
+          "sha256": "d7a009599f16459954793507b1a34baf2c214cf517061fc87688d916077543bf"
+        },
+        "packageJson": {
+          "bytes": 607,
+          "sha256": "c34fd731182fc3c86f91699ed8ed74a666574ea7d88130006714730c03c1e237"
+        },
+        "dependencies": {
+          "dependencies": {
+            "zod": "^4.3.6"
+          },
+          "devDependencies": {
+            "@bb/tsconfig": "workspace:*",
+            "typescript": "npm:@typescript/typescript6@^6.0.2",
+            "vitest": "^4.1.1"
+          },
+          "peerDependencies": {},
+          "optionalDependencies": {}
+        },
+        "dependencyDigest": "5881b4534afa64462f49675f284afddbbc123dc30c15e7d3a22e10e01d951ad9"
       }
     ],
     "imports": [
@@ -16312,6 +16537,24 @@
         "upstreamPath": "packages/desktop-contract",
         "localPath": "ui/packages/desktop-contract",
         "disposition": "retain-source"
+      },
+      {
+        "package": "@bb/config",
+        "upstreamPath": "packages/config",
+        "localPath": "ui/packages/config",
+        "disposition": "retain-source"
+      },
+      {
+        "package": "@bb/host-daemon-contract",
+        "upstreamPath": "packages/host-daemon-contract",
+        "localPath": "ui/packages/host-daemon-contract",
+        "disposition": "retain-source"
+      },
+      {
+        "package": "@bb/mobile-bridge",
+        "upstreamPath": "packages/mobile-bridge",
+        "localPath": "ui/packages/mobile-bridge",
+        "disposition": "exact-snapshot"
       }
     ],
     "sources": [
@@ -16451,6 +16694,19 @@
         "file": {
           "bytes": 11015,
           "sha256": "da30a3adfc5dfc2f06e40a8026737ce03bdaf08414e388e6f47354793427cb9d",
+          "mode": "100644"
+        }
+      },
+      {
+        "name": "@bb/domain/feature-flags",
+        "kind": "blob",
+        "path": "ui/packages/domain/src/feature-flags.ts",
+        "disposition": "exact-snapshot",
+        "materialization": "materialized",
+        "gitBlob": "ae8bf32142dcc803bf094094558aafd55c9a0414",
+        "file": {
+          "bytes": 337,
+          "sha256": "4a4fff9d6f94eb41af7baeff8d8a7295147ca87fa0ff56a0555cd945159d3c00",
           "mode": "100644"
         }
       }
