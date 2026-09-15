@@ -1,58 +1,59 @@
+import type { z } from "zod";
 import type {
-  AutomationListResponse,
-  AutomationReadResult,
-  AutomationResponse,
-  AutomationRunListResponse,
-  AutomationRunRpcResponse,
-  AutomationRunsInput,
-  AutomationsOverviewResponse,
-  CreateAutomationInput,
-  ListAutomationsInput,
-  ProjectAutomationInput,
-  RunAutomationInput,
-  UpdateAutomationRequest,
+  automationListResponseSchema,
+  automationReadResultSchema,
+  automationResponseSchema,
+  automationRunListResponseSchema,
+  automationRunRpcResponseSchema,
+  automationRunsInputSchema,
+  automationsOverviewResponseSchema,
+  createAutomationInputSchema,
+  listAutomationsInputSchema,
+  projectAutomationInputSchema,
+  runAutomationInputSchema,
+  updateAutomationInputSchema,
 } from "./rpc-types.js";
 
 export interface AutomationOperationMap {
   automations_overview: {
     input: null;
-    output: AutomationsOverviewResponse;
+    output: z.output<typeof automationsOverviewResponseSchema>;
   };
   automations_list: {
-    input: ListAutomationsInput;
-    output: AutomationListResponse;
+    input: z.input<typeof listAutomationsInputSchema>;
+    output: z.output<typeof automationListResponseSchema>;
   };
   automations_get: {
-    input: ProjectAutomationInput;
-    output: AutomationReadResult;
+    input: z.input<typeof projectAutomationInputSchema>;
+    output: z.output<typeof automationReadResultSchema>;
   };
   automations_create: {
-    input: CreateAutomationInput;
-    output: AutomationResponse;
+    input: z.input<typeof createAutomationInputSchema>;
+    output: z.output<typeof automationResponseSchema>;
   };
   automations_update: {
-    input: UpdateAutomationRequest;
-    output: AutomationResponse;
+    input: z.input<typeof updateAutomationInputSchema>;
+    output: z.output<typeof automationResponseSchema>;
   };
   automations_delete: {
-    input: ProjectAutomationInput;
+    input: z.input<typeof projectAutomationInputSchema>;
     output: { ok: true };
   };
   automations_pause: {
-    input: ProjectAutomationInput;
-    output: AutomationResponse;
+    input: z.input<typeof projectAutomationInputSchema>;
+    output: z.output<typeof automationResponseSchema>;
   };
   automations_resume: {
-    input: ProjectAutomationInput;
-    output: AutomationResponse;
+    input: z.input<typeof projectAutomationInputSchema>;
+    output: z.output<typeof automationResponseSchema>;
   };
   automations_run: {
-    input: RunAutomationInput;
-    output: AutomationRunRpcResponse;
+    input: z.input<typeof runAutomationInputSchema>;
+    output: z.output<typeof automationRunRpcResponseSchema>;
   };
   automations_runs: {
-    input: AutomationRunsInput;
-    output: AutomationRunListResponse;
+    input: z.input<typeof automationRunsInputSchema>;
+    output: z.output<typeof automationRunListResponseSchema>;
   };
 }
 

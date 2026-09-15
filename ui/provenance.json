@@ -16628,11 +16628,11 @@
         "name": "bb-plugin-automations",
         "upstreamPath": "plugins/automations",
         "disposition": "retain-source",
-        "gitTree": "89456f79e9ede93453a6ef1001fa57d26361e39b",
+        "gitTree": "8ce8d24238dc47f39ee4cc5e4e203600ddc8f0ed",
         "path": "ui/packages/automations",
         "tree": {
           "files": 42,
-          "sha256": "cc6cba4ac475beb86a6a1299800d79ec8ebe23a86b2cf0aa3483cafe98fb6a16"
+          "sha256": "ee049fae9830558690af27f7e223a02e8e6b017eb19ca9d9a7a48f09c44b5aa0"
         },
         "packageJson": {
           "bytes": 1818,
