@@ -7,6 +7,10 @@
     ".": {
       "types": "./src/index.ts",
       "default": "./src/index.ts"
+    },
+    "./update-state": {
+      "types": "./src/update-state.ts",
+      "default": "./src/update-state.ts"
     }
   },
   "scripts": {
