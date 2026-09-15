@@ -1,6 +1,7 @@
 export * from "./active-thinking.js";
 export * from "./background-task.js";
 export * from "./environment.js";
+export * from "./feature-flags.js";
 export * from "./git-checkout.js";
 export * from "./host.js";
 export * from "./item-presentation.js";

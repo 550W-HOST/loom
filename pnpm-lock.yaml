@@ -81,6 +81,31 @@ importers:
         specifier: ^3.2.4
         version: 3.2.7(@types/node@22.20.2)(tsx@4.23.13)
 
+  ui/packages/config:
+    dependencies:
+      '@bb/domain':
+        specifier: workspace:*
+        version: link:../domain
+      zod:
+        specifier: 4.3.6
+        version: 4.3.6
+    devDependencies:
+      '@bb/tsconfig':
+        specifier: workspace:*
+        version: link:../tsconfig
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.20.2
+      typescript:
+        specifier: npm:@typescript/typescript6@^6.0.2
+        version: '@typescript/typescript6@6.0.2'
+      typescript-7:
+        specifier: npm:typescript@^7.0.2
+        version: typescript@7.0.2
+      vitest:
+        specifier: ^4.1.1
+        version: 4.1.11(@types/node@22.20.2)(vite@7.3.6(@types/node@22.20.2)(tsx@4.23.13))
+
   ui/packages/core-ui:
     dependencies:
       '@bb/domain':
@@ -124,6 +149,41 @@ importers:
       typescript-7:
         specifier: npm:typescript@^7.0.2
         version: typescript@7.0.2
+      vitest:
+        specifier: ^4.1.1
+        version: 4.1.11(@types/node@22.20.2)(vite@7.3.6(@types/node@22.20.2)(tsx@4.23.13))
+
+  ui/packages/host-daemon-contract:
+    dependencies:
+      zod:
+        specifier: ^4.3.6
+        version: 4.3.6
+    devDependencies:
+      '@bb/tsconfig':
+        specifier: workspace:*
+        version: link:../tsconfig
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.20.2
+      typescript:
+        specifier: npm:@typescript/typescript6@^6.0.2
+        version: '@typescript/typescript6@6.0.2'
+      vitest:
+        specifier: ^4.1.1
+        version: 4.1.11(@types/node@22.20.2)(vite@7.3.6(@types/node@22.20.2)(tsx@4.23.13))
+
+  ui/packages/mobile-bridge:
+    dependencies:
+      zod:
+        specifier: ^4.3.6
+        version: 4.3.6
+    devDependencies:
+      '@bb/tsconfig':
+        specifier: workspace:*
+        version: link:../tsconfig
+      typescript:
+        specifier: npm:@typescript/typescript6@^6.0.2
+        version: '@typescript/typescript6@6.0.2'
       vitest:
         specifier: ^4.1.1
         version: 4.1.11(@types/node@22.20.2)(vite@7.3.6(@types/node@22.20.2)(tsx@4.23.13))
@@ -2029,6 +2089,9 @@ packages:
     engines: {node: '>=8'}
     hasBin: true
 
+  zod@4.3.6:
+    resolution: {integrity: sha512-rftlrkhHZOcjDwkGlnUtZZkvaPHCsDATp4pGpuOOMDaTdDDXF91wuVDJoWoPsKX/3YPQ5fHuF3STjcYyKr+Qhg==}
+
   zod@4.6.2:
     resolution: {integrity: sha512-lh5RCAGFa1Cm2hjtNwLQhSs/AsqdWnTQaBER9fEwN/88pSh7KOtJavtBx/0VlkN/uFd61SwYmljLMDAsHlvzBQ==}
 
@@ -3607,5 +3670,7 @@ snapshots:
     dependencies:
       siginfo: 2.0.0
       stackback: 0.0.2
+
+  zod@4.3.6: {}
 
   zod@4.6.2: {}

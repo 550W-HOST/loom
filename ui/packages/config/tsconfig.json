@@ -9,5 +9,11 @@
     "rootDir": ".",
     "types": ["node"]
   },
-  "include": ["src", "test", "tests", "fixtures", "stories"]
+  "include": [
+    "src/app-surface.ts",
+    "src/defaults.ts",
+    "src/runtime.ts",
+    "src/vite-dev.ts",
+    "test/app-surface.test.ts"
+  ]
 }

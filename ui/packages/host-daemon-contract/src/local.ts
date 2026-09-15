@@ -1,7 +1,4 @@
-import type { Hono } from "hono";
-import { hc } from "hono/client";
 import { z } from "zod";
-import type { EmptyInput, Endpoint } from "@bb/hono-typed-routes";
 
 export const DEFAULT_HOST_DAEMON_LOCAL_HEALTH_PATH = "/health";
 export const DEFAULT_HOST_DAEMON_LOCAL_BIND_HOST = "127.0.0.1";
@@ -261,27 +258,51 @@ export type ProviderCliInstallEvent = z.infer<
   typeof providerCliInstallEventSchema
 >;
 
-export type HostDaemonLocalSchema = {
+export interface HostDaemonLocalResponse<T> {
+  readonly ok: boolean;
+  readonly status: number;
+  json(): Promise<T>;
+  text(): Promise<string>;
+}
+
+export interface HostDaemonLocalClient {
   [DEFAULT_HOST_DAEMON_LOCAL_HEALTH_PATH]: {
-    $get: Endpoint<EmptyInput, HealthResponse>;
+    $get(): Promise<HostDaemonLocalResponse<HealthResponse>>;
   };
-  "/workspace-open-targets": {
-    $get: Endpoint<
-      { query?: WorkspaceOpenTargetsQuery },
-      WorkspaceOpenTargetsResponse
-    >;
+  "workspace-open-targets": {
+    $get(input?: {
+      query?: WorkspaceOpenTargetsQuery;
+    }): Promise<HostDaemonLocalResponse<WorkspaceOpenTargetsResponse>>;
   };
-  "/open-in-target": {
-    $post: Endpoint<{ json: OpenInTargetRequest }, Record<string, never>>;
+  "open-in-target": {
+    $post(input: {
+      json: OpenInTargetRequest;
+    }): Promise<HostDaemonLocalResponse<Record<string, never>>>;
   };
-  "/status": {
-    $get: Endpoint<EmptyInput, StatusResponse>;
+  status: {
+    $get(): Promise<HostDaemonLocalResponse<StatusResponse>>;
   };
-};
+}
 
-type HostDaemonLocalRoutes = Hono<{}, HostDaemonLocalSchema, "/">;
+export class HostDaemonLocalUnavailableError extends Error {
+  readonly code = "host_daemon_local_unavailable";
 
-export function createHostDaemonLocalClient(baseUrl: string) {
+  constructor(readonly baseUrl: string) {
+    super("Direct host-daemon access is unavailable in the loom browser client");
+    this.name = "HostDaemonLocalUnavailableError";
+  }
+}
+
+export function createHostDaemonLocalClient(
+  baseUrl: string,
+): HostDaemonLocalClient {
   const normalizedBaseUrl = baseUrl.replace(/\/$/, "");
-  return hc<HostDaemonLocalRoutes>(normalizedBaseUrl);
+  const unavailable = (): Promise<never> =>
+    Promise.reject(new HostDaemonLocalUnavailableError(normalizedBaseUrl));
+  return {
+    [DEFAULT_HOST_DAEMON_LOCAL_HEALTH_PATH]: { $get: unavailable },
+    "workspace-open-targets": { $get: unavailable },
+    "open-in-target": { $post: unavailable },
+    status: { $get: unavailable },
+  };
 }
