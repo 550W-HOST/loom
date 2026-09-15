@@ -1,6 +1,82 @@
 {
   "format": "loom.ui-provenance/v2",
   "generator": "scripts/check-ui-provenance.mjs",
+  "registry": {
+    "app": {
+      "name": "@bb/app",
+      "upstreamPath": "apps/app",
+      "localPath": "apps/app",
+      "disposition": "exact-snapshot",
+      "snapshot": {
+        "kind": "exact-snapshot"
+      }
+    },
+    "packages": [
+      {
+        "name": "@bb/domain",
+        "upstreamPath": "packages/domain",
+        "localPath": "ui/packages/domain",
+        "disposition": "retain-source",
+        "snapshot": {
+          "kind": "adapted-source"
+        }
+      },
+      {
+        "name": "@bb/server-contract",
+        "upstreamPath": "packages/server-contract",
+        "localPath": "ui/packages/server-contract",
+        "disposition": "retain-source",
+        "snapshot": {
+          "kind": "adapted-source"
+        }
+      },
+      {
+        "name": "@bb/thread-view",
+        "upstreamPath": "packages/thread-view",
+        "localPath": "ui/packages/thread-view",
+        "disposition": "retain-source",
+        "snapshot": {
+          "kind": "adapted-source"
+        }
+      },
+      {
+        "name": "@bb/client-core",
+        "upstreamPath": "packages/client-core",
+        "localPath": "ui/packages/client-core",
+        "disposition": "retain-source",
+        "snapshot": {
+          "kind": "adapted-source"
+        }
+      },
+      {
+        "name": "@bb/core-ui",
+        "upstreamPath": "packages/core-ui",
+        "localPath": "ui/packages/core-ui",
+        "disposition": "retain-source",
+        "snapshot": {
+          "kind": "adapted-source"
+        }
+      },
+      {
+        "name": "@bb/shared-ui",
+        "upstreamPath": "packages/shared-ui",
+        "localPath": "ui/packages/shared-ui",
+        "disposition": "retain-source",
+        "snapshot": {
+          "kind": "adapted-source"
+        }
+      },
+      {
+        "name": "@bb/desktop-contract",
+        "upstreamPath": "packages/desktop-contract",
+        "localPath": "ui/packages/desktop-contract",
+        "disposition": "retain-source",
+        "snapshot": {
+          "kind": "adapted-source"
+        }
+      }
+    ]
+  },
   "source": {
     "repository": "https://github.com/get-bb/bb",
     "commit": "fa1f44ebe9e5676004b669e48c99b3c7606466b6",
@@ -7787,6 +7863,7 @@
     "packages": [
       {
         "name": "@bb/domain",
+        "gitTree": "3a6a1bcf6666625d78cf1d6274a5c73439c072ac",
         "path": "packages/domain",
         "tree": {
           "files": 110,
@@ -7813,6 +7890,7 @@
       },
       {
         "name": "@bb/server-contract",
+        "gitTree": "f9679a03e0bd6951b1eaee86eca4500d465c6fa8",
         "path": "packages/server-contract",
         "tree": {
           "files": 30,
@@ -7845,6 +7923,7 @@
       },
       {
         "name": "@bb/thread-view",
+        "gitTree": "2dc7f76bb81f151c59696ab24353c2f02d43d6f2",
         "path": "packages/thread-view",
         "tree": {
           "files": 86,
@@ -7873,6 +7952,7 @@
       },
       {
         "name": "@bb/client-core",
+        "gitTree": "118e3cfca8b76d21d05ea77df4ec5fdce7d397a5",
         "path": "packages/client-core",
         "tree": {
           "files": 70,
@@ -7905,6 +7985,7 @@
       },
       {
         "name": "@bb/core-ui",
+        "gitTree": "e1ba42708555c3e67d53343d5de70db556fd6939",
         "path": "packages/core-ui",
         "tree": {
           "files": 14,
@@ -7932,6 +8013,7 @@
       },
       {
         "name": "@bb/shared-ui",
+        "gitTree": "12160e11b8d30fb1cd7f82b0c96a68a5d23597fd",
         "path": "packages/shared-ui",
         "tree": {
           "files": 83,
@@ -8012,6 +8094,7 @@
       },
       {
         "name": "@bb/desktop-contract",
+        "gitTree": "39daa8a1e39e3d6f03415479ca6c54271eb232bf",
         "path": "packages/desktop-contract",
         "tree": {
           "files": 10,

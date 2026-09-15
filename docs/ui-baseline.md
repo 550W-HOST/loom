@@ -8,6 +8,8 @@ UI package 追溯；不能改用 bb `main`、版本错位的 npm 包或 opaque b
 
 可重现信息集中在 [`ui/provenance.json`](../ui/provenance.json)。它包含：
 
+- manifest-driven source registry：app 与 package 的 upstream/local path、
+  disposition，以及为未来 exact package snapshot 保留的 snapshot kind；
 - pinned checkout 中 `apps/app` 的 tree、`package.json` bytes/SHA-256、完整
   dependency snapshot/digest，以及 7 个 upstream package tree/package.json
   dependency digest；
@@ -29,8 +31,8 @@ node scripts/check-ui-provenance.mjs --upstream /path/to/bb-at-fa1f44ebe9e567600
 
 默认模式只读并失败于任何 local/reference source、adapted package、contract
 artifact 或禁止 app import 漂移。设置 `BB_SRC` 或传入 `--upstream` 后，检查器
-还会读取 checkout 的实际 `git rev-parse HEAD`，并重算 pinned `apps/app`、其
-`package.json` dependency digest 和七个 upstream package tree/digest。CI 在
+还会读取 checkout 的实际 `git rev-parse HEAD`，并按 manifest registry 重算 pinned
+`apps/app`、其 `package.json` dependency digest 和每个 upstream package tree/digest。CI 在
 运行 upstream 模式前从 manifest 的 pin fetch 一个干净 checkout。`--write` 只
 更新由当前 checkout 推导的 hash；source commit、路径和迁移 disposition 仍由
 清单中的审阅字段决定。contract 内容本身仍由
@@ -44,7 +46,11 @@ artifact 或禁止 app import 漂移。设置 `BB_SRC` 或传入 `--upstream` �
 仍是 loom-native 的 reference client，`ui/app.js` 是其可重建的服务产物。
 `ui/provenance.json` 现在同时保存 upstream 的 commit/tree、完整 app 文件集合及
 逐文件 bytes/SHA-256，以及本地 product-app 快照；校验器会把两者逐项比较。初始
-无修改状态由 `ui/app-patch-ledger.json` 记录。上游的通用 plugin
+初始无修改状态由 `ui/app-patch-ledger.json` 记录。ledger v2 只接受逐文件
+`modify`、`add`、`delete`、`rename` 和 `mode-change` 记录；每条记录必须有
+issue、owner、reason，以及 upstream/local 的 path、SHA-256 和 git mode。校验器
+从 `BB_SRC` 的 pinned clean checkout 和本地树重新计算 diff，逐一匹配 ledger，
+因此未登记、重复、重叠、glob、路径、hash 或 mode 漂移都会失败。上游的通用 plugin
 SDK/host/marketplace 不进入发布 runtime；一方 Automations 产品能力则保留 UI，
 并由 loom-native typed API、scheduler、daemon 和 ACP 边界替代其 generic plugin
 RPC。后续 source port 必须在独立提交中通过同一个 ledger 记录每一个删除或适配；
@@ -109,7 +115,9 @@ action registry 中删除，不能留下 dead navigation。
    Automations 和样式。
 4. 若 contract 也变化，运行 contract exporter，检查 route/event/wire diff，
    特别确认 149/149 的口径没有静默改变。
-5. 运行 `node scripts/check-ui-provenance.mjs --write`，审阅 hash、imports 和
+5. 在 source patch 提交中设置 `BB_SRC`，逐文件填写 `ui/app-patch-ledger.json`，
+   运行 `pnpm provenance:test` 覆盖 ledger 的负例，再运行
+   `node scripts/check-ui-provenance.mjs --write`，审阅 hash、imports 和
    disposition；source pin 变化必须和 package/contract 变化在同一 PR 说明。
 6. 运行 UI typecheck、test、build 以及 Rust contract/API coverage 检查。
 

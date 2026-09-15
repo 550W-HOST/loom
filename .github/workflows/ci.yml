@@ -234,7 +234,7 @@ jobs:
       # The source-level provenance check covers the app source tree, generated
       # bundle, imported package closure and the contract manifest in one place.
       - name: UI source provenance
-        run: BB_SRC="$RUNNER_TEMP/bb-ui" pnpm run provenance:check
+        run: pnpm run provenance:test && BB_SRC="$RUNNER_TEMP/bb-ui" pnpm run provenance:check
 
       - name: Product app port plan
         run: pnpm run port-plan:test && pnpm run port-plan:check

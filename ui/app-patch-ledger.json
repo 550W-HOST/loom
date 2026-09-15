@@ -1,5 +1,5 @@
 {
-  "format": "loom.ui-patch-ledger/v1",
+  "format": "loom.ui-patch-ledger/v2",
   "source": {
     "repository": "https://github.com/get-bb/bb",
     "commit": "fa1f44ebe9e5676004b669e48c99b3c7606466b6"
