@@ -1,27 +1,27 @@
 {
   "format": "loom.app-port-plan-summary/v2",
   "plan": "ui/app-port-plan.json",
-  "planBytes": 1956097,
+  "planBytes": 1956925,
   "source": {
     "root": "apps/app/src",
-    "trackedFiles": 1372,
+    "trackedFiles": 1373,
     "disposition": "source-port",
     "baselineGitTree": "8ba6eb6f3d2f67f8ba2703f1fd0c123f788c6d52",
-    "localGitTree": "1e6d18d60901e35a540b6dc812153288d18f5af6"
+    "localGitTree": "9de9f86bf2b8df187317327e225903a3c7e03da2"
   },
   "summary": {
-    "nodes": 1372,
+    "nodes": 1373,
     "runtimeReachable": 681,
-    "runtimeCompileReachable": 692,
+    "runtimeCompileReachable": 693,
     "runtimeEmittedReachable": 681,
     "dispositions": {
-      "retain-verbatim": 641,
+      "retain-verbatim": 642,
       "adapt-boundary": 27,
       "delete-unsupported": 0,
       "verification-only": 676,
       "asset-build": 28
     },
-    "edges": 8207,
+    "edges": 8214,
     "blockers": {
       "runtime": 3,
       "test": 222,
@@ -31,7 +31,7 @@
     "workspacePackages": 124
   },
   "dispositions": {
-    "retain-verbatim": 641,
+    "retain-verbatim": 642,
     "adapt-boundary": 27,
     "delete-unsupported": 0,
     "verification-only": 676,
@@ -2903,6 +2903,11 @@
         "reasonCode": "test-or-story-root"
       },
       {
+        "path": "src/lib/loom-api-args.ts",
+        "disposition": "retain-verbatim",
+        "reasonCode": "runtime-graph-node"
+      },
+      {
         "path": "src/lib/loopback-hostname.test.ts",
         "disposition": "verification-only",
         "reasonCode": "test-or-story-root"
@@ -3637,6 +3642,7 @@
       "src/hooks/cache-effect-types.ts",
       "src/hooks/mutations/mutation-request-types.ts",
       "src/lib/command-palette/palette-action.ts",
+      "src/lib/loom-api-args.ts",
       "src/lib/split-layout/types.ts",
       "src/lib/thread-secondary-panel.ts",
       "src/views/thread-detail/threadDetailMutationTypes.ts"
@@ -3717,22 +3723,22 @@
     }
   },
   "compilerConsistency": {
-    "compilerSpecifiers": 8266,
-    "graphSpecifiers": 8266,
+    "compilerSpecifiers": 8274,
+    "graphSpecifiers": 8274,
     "missing": [],
     "extra": [],
     "preProcessFileParity": {
-      "compilerLiteralSpecifiers": 8265,
-      "preProcessFileSpecifiers": 8265,
+      "compilerLiteralSpecifiers": 8273,
+      "preProcessFileSpecifiers": 8273,
       "missing": [],
       "extra": []
     }
   },
   "parsers": {
     "typescript": {
-      "files": 1365,
-      "specifiers": 8266,
-      "preProcessFileSpecifiers": 8265
+      "files": 1366,
+      "specifiers": 8274,
+      "preProcessFileSpecifiers": 8273
     },
     "css": {
       "files": 4,
@@ -3744,8 +3750,8 @@
     }
   },
   "batchCoverage": {
-    "expected": 1372,
-    "assigned": 1372,
+    "expected": 1373,
+    "assigned": 1373,
     "missing": [],
     "duplicates": [],
     "crossStageEdges": 2951,
@@ -4105,7 +4111,7 @@
         "id": "W-603-06",
         "kind": "reviewChunk",
         "executable": false,
-        "fileCount": 96,
+        "fileCount": 97,
         "dispositions": [
           "adapt-boundary",
           "retain-verbatim"
@@ -4375,10 +4381,10 @@
     {
       "name": "@bb/domain",
       "declaredAs": "dependencies",
-      "actualImports": 360,
-      "runtimeImports": 194,
+      "actualImports": 361,
+      "runtimeImports": 195,
       "runtimeValueImports": 66,
-      "runtimeTypeImports": 128,
+      "runtimeTypeImports": 129,
       "verificationValueImports": 49,
       "verificationTypeImports": 112,
       "decision": "reuse",
