@@ -1,40 +1,40 @@
 {
   "format": "loom.app-port-plan-summary/v2",
   "plan": "ui/app-port-plan.json",
-  "planBytes": 1942585,
+  "planBytes": 1956925,
   "source": {
     "root": "apps/app/src",
-    "trackedFiles": 1354,
+    "trackedFiles": 1373,
     "disposition": "source-port",
     "baselineGitTree": "8ba6eb6f3d2f67f8ba2703f1fd0c123f788c6d52",
-    "localGitTree": "8fc172b52213f3a34539cb8e39d6a9b6a1096bff"
+    "localGitTree": "9de9f86bf2b8df187317327e225903a3c7e03da2"
   },
   "summary": {
-    "nodes": 1354,
-    "runtimeReachable": 672,
-    "runtimeCompileReachable": 683,
-    "runtimeEmittedReachable": 672,
+    "nodes": 1373,
+    "runtimeReachable": 681,
+    "runtimeCompileReachable": 693,
+    "runtimeEmittedReachable": 681,
     "dispositions": {
-      "retain-verbatim": 632,
+      "retain-verbatim": 642,
       "adapt-boundary": 27,
       "delete-unsupported": 0,
-      "verification-only": 667,
+      "verification-only": 676,
       "asset-build": 28
     },
-    "edges": 8153,
+    "edges": 8214,
     "blockers": {
       "runtime": 3,
-      "test": 224,
+      "test": 222,
       "story": 28,
       "build": 6
     },
     "workspacePackages": 124
   },
   "dispositions": {
-    "retain-verbatim": 632,
+    "retain-verbatim": 642,
     "adapt-boundary": 27,
     "delete-unsupported": 0,
-    "verification-only": 667,
+    "verification-only": 676,
     "asset-build": 28
   },
   "exceptions": {
@@ -264,11 +264,6 @@
       },
       {
         "path": "src/components/create-via-prompt-examples.test.ts",
-        "disposition": "verification-only",
-        "reasonCode": "test-or-story-root"
-      },
-      {
-        "path": "src/components/dialogs/AddMachineDialog.test.tsx",
         "disposition": "verification-only",
         "reasonCode": "test-or-story-root"
       },
@@ -2758,6 +2753,11 @@
         "reasonCode": "test-or-story-root"
       },
       {
+        "path": "src/lib/api-server.type-tests.ts",
+        "disposition": "verification-only",
+        "reasonCode": "unreachable-source-review"
+      },
+      {
         "path": "src/lib/app-fixed-tab-navigation.test.ts",
         "disposition": "verification-only",
         "reasonCode": "test-or-story-root"
@@ -2901,6 +2901,11 @@
         "path": "src/lib/local-host-daemon-access.test.ts",
         "disposition": "verification-only",
         "reasonCode": "test-or-story-root"
+      },
+      {
+        "path": "src/lib/loom-api-args.ts",
+        "disposition": "retain-verbatim",
+        "reasonCode": "runtime-graph-node"
       },
       {
         "path": "src/lib/loopback-hostname.test.ts",
@@ -3258,12 +3263,52 @@
         "reasonCode": "test-or-story-root"
       },
       {
+        "path": "src/loom/LoomShellBoundary.test.tsx",
+        "disposition": "verification-only",
+        "reasonCode": "test-or-story-root"
+      },
+      {
+        "path": "src/loom/add-machine-workflow.test.tsx",
+        "disposition": "verification-only",
+        "reasonCode": "test-or-story-root"
+      },
+      {
+        "path": "src/loom/api-client.test.ts",
+        "disposition": "verification-only",
+        "reasonCode": "test-or-story-root"
+      },
+      {
         "path": "src/loom/browser-boundaries.test.ts",
         "disposition": "verification-only",
         "reasonCode": "test-or-story-root"
       },
       {
+        "path": "src/loom/file-content-urls.test.ts",
+        "disposition": "verification-only",
+        "reasonCode": "test-or-story-root"
+      },
+      {
+        "path": "src/loom/loom-native-boundaries.test.ts",
+        "disposition": "verification-only",
+        "reasonCode": "test-or-story-root"
+      },
+      {
+        "path": "src/loom/machine-pairing.test.tsx",
+        "disposition": "verification-only",
+        "reasonCode": "test-or-story-root"
+      },
+      {
         "path": "src/loom/product-composition.test.ts",
+        "disposition": "verification-only",
+        "reasonCode": "test-or-story-root"
+      },
+      {
+        "path": "src/loom/retry-classification.test.ts",
+        "disposition": "verification-only",
+        "reasonCode": "test-or-story-root"
+      },
+      {
+        "path": "src/loom/shell-bootstrap.test.tsx",
         "disposition": "verification-only",
         "reasonCode": "test-or-story-root"
       },
@@ -3309,6 +3354,11 @@
       },
       {
         "path": "src/test/fixtures/terminal-sessions.ts",
+        "disposition": "verification-only",
+        "reasonCode": "test-or-story-root"
+      },
+      {
+        "path": "src/test/fixtures/thread-list-entry.ts",
         "disposition": "verification-only",
         "reasonCode": "test-or-story-root"
       },
@@ -3592,6 +3642,7 @@
       "src/hooks/cache-effect-types.ts",
       "src/hooks/mutations/mutation-request-types.ts",
       "src/lib/command-palette/palette-action.ts",
+      "src/lib/loom-api-args.ts",
       "src/lib/split-layout/types.ts",
       "src/lib/thread-secondary-panel.ts",
       "src/views/thread-detail/threadDetailMutationTypes.ts"
@@ -3610,10 +3661,10 @@
       }
     },
     "test": {
-      "count": 224,
+      "count": 222,
       "categories": {
         "unresolved-local": 106,
-        "unresolved-external": 117,
+        "unresolved-external": 115,
         "require-nonliteral": 1
       }
     },
@@ -3672,22 +3723,22 @@
     }
   },
   "compilerConsistency": {
-    "compilerSpecifiers": 8210,
-    "graphSpecifiers": 8210,
+    "compilerSpecifiers": 8274,
+    "graphSpecifiers": 8274,
     "missing": [],
     "extra": [],
     "preProcessFileParity": {
-      "compilerLiteralSpecifiers": 8209,
-      "preProcessFileSpecifiers": 8209,
+      "compilerLiteralSpecifiers": 8273,
+      "preProcessFileSpecifiers": 8273,
       "missing": [],
       "extra": []
     }
   },
   "parsers": {
     "typescript": {
-      "files": 1347,
-      "specifiers": 8210,
-      "preProcessFileSpecifiers": 8209
+      "files": 1366,
+      "specifiers": 8274,
+      "preProcessFileSpecifiers": 8273
     },
     "css": {
       "files": 4,
@@ -3699,18 +3750,18 @@
     }
   },
   "batchCoverage": {
-    "expected": 1354,
-    "assigned": 1354,
+    "expected": 1373,
+    "assigned": 1373,
     "missing": [],
     "duplicates": [],
-    "crossStageEdges": 2928,
+    "crossStageEdges": 2951,
     "missingCrossStageEdges": 0,
-    "crossChunkEdges": 2928,
-    "crossChunkOccurrences": 2939,
-    "crossIssueEdges": 1326,
-    "crossIssueOccurrences": 1331,
-    "crossIssueLogicalEdges": 1317,
-    "crossIssueLogicalOccurrences": 1322,
+    "crossChunkEdges": 2951,
+    "crossChunkOccurrences": 2964,
+    "crossIssueEdges": 1344,
+    "crossIssueOccurrences": 1351,
+    "crossIssueLogicalEdges": 1335,
+    "crossIssueLogicalOccurrences": 1342,
     "missingCrossIssueBatchDependencies": 0
   },
   "batchPlan": {
@@ -3745,10 +3796,10 @@
         "cyclic": true
       }
     ],
-    "crossIssueEdges": 1326,
-    "crossIssueLogicalEdges": 1317,
-    "crossIssueOccurrences": 1331,
-    "crossIssueLogicalOccurrences": 1322,
+    "crossIssueEdges": 1344,
+    "crossIssueLogicalEdges": 1335,
+    "crossIssueOccurrences": 1351,
+    "crossIssueLogicalOccurrences": 1342,
     "crossIssueCycles": 0,
     "crossStageConflict": true
   },
@@ -3912,7 +3963,7 @@
           "asset-build",
           "retain-verbatim"
         ],
-        "dependencyCount": 191,
+        "dependencyCount": 190,
         "dependsOnBatchIds": [
           "W-603-02",
           "W-603-03",
@@ -4007,7 +4058,7 @@
           "asset-build",
           "retain-verbatim"
         ],
-        "dependencyCount": 138,
+        "dependencyCount": 141,
         "dependsOnBatchIds": [
           "W-603-01",
           "W-603-02",
@@ -4033,7 +4084,7 @@
           "adapt-boundary",
           "retain-verbatim"
         ],
-        "dependencyCount": 83,
+        "dependencyCount": 86,
         "dependsOnBatchIds": [
           "W-603-01",
           "W-603-02",
@@ -4060,12 +4111,12 @@
         "id": "W-603-06",
         "kind": "reviewChunk",
         "executable": false,
-        "fileCount": 87,
+        "fileCount": 97,
         "dispositions": [
           "adapt-boundary",
           "retain-verbatim"
         ],
-        "dependencyCount": 258,
+        "dependencyCount": 254,
         "dependsOnBatchIds": [
           "W-603-01",
           "W-603-02",
@@ -4168,7 +4219,7 @@
         "dispositions": [
           "verification-only"
         ],
-        "dependencyCount": 152,
+        "dependencyCount": 153,
         "dependsOnBatchIds": [
           "W-603-01",
           "W-603-02",
@@ -4196,7 +4247,7 @@
         "dispositions": [
           "verification-only"
         ],
-        "dependencyCount": 205,
+        "dependencyCount": 207,
         "dependsOnBatchIds": [
           "W-603-01",
           "W-603-02",
@@ -4225,7 +4276,7 @@
         "dispositions": [
           "verification-only"
         ],
-        "dependencyCount": 183,
+        "dependencyCount": 186,
         "dependsOnBatchIds": [
           "W-603-01",
           "W-603-03",
@@ -4249,11 +4300,11 @@
         "id": "W-604-06",
         "kind": "reviewChunk",
         "executable": false,
-        "fileCount": 67,
+        "fileCount": 76,
         "dispositions": [
           "verification-only"
         ],
-        "dependencyCount": 138,
+        "dependencyCount": 151,
         "dependsOnBatchIds": [
           "W-603-01",
           "W-603-02",
@@ -4330,12 +4381,12 @@
     {
       "name": "@bb/domain",
       "declaredAs": "dependencies",
-      "actualImports": 358,
-      "runtimeImports": 193,
+      "actualImports": 361,
+      "runtimeImports": 195,
       "runtimeValueImports": 66,
-      "runtimeTypeImports": 127,
+      "runtimeTypeImports": 129,
       "verificationValueImports": 49,
-      "verificationTypeImports": 111,
+      "verificationTypeImports": 112,
       "decision": "reuse",
       "reasonCode": "existing-workspace-source",
       "runtimeAllowed": true
@@ -4382,10 +4433,10 @@
     {
       "name": "@bb/sdk",
       "declaredAs": "dependencies",
-      "actualImports": 16,
-      "runtimeImports": 10,
+      "actualImports": 15,
+      "runtimeImports": 9,
       "runtimeValueImports": 7,
-      "runtimeTypeImports": 3,
+      "runtimeTypeImports": 2,
       "verificationValueImports": 6,
       "verificationTypeImports": 0,
       "decision": "adapter",
@@ -4395,12 +4446,12 @@
     {
       "name": "@bb/server-contract",
       "declaredAs": "dependencies",
-      "actualImports": 235,
-      "runtimeImports": 122,
+      "actualImports": 238,
+      "runtimeImports": 126,
       "runtimeValueImports": 9,
-      "runtimeTypeImports": 113,
+      "runtimeTypeImports": 117,
       "verificationValueImports": 3,
-      "verificationTypeImports": 107,
+      "verificationTypeImports": 106,
       "decision": "reuse",
       "reasonCode": "existing-workspace-source",
       "runtimeAllowed": true
@@ -4408,9 +4459,9 @@
     {
       "name": "@bb/shared-ui",
       "declaredAs": "dependencies",
-      "actualImports": 799,
-      "runtimeImports": 672,
-      "runtimeValueImports": 661,
+      "actualImports": 800,
+      "runtimeImports": 673,
+      "runtimeValueImports": 662,
       "runtimeTypeImports": 11,
       "verificationValueImports": 115,
       "verificationTypeImports": 8,
@@ -4434,11 +4485,11 @@
     {
       "name": "@bb/test-helpers",
       "declaredAs": null,
-      "actualImports": 94,
+      "actualImports": 92,
       "runtimeImports": 0,
       "runtimeValueImports": 0,
       "runtimeTypeImports": 0,
-      "verificationValueImports": 92,
+      "verificationValueImports": 90,
       "verificationTypeImports": 0,
       "decision": "remove",
       "reasonCode": "verification-only-helper",
@@ -4980,11 +5031,11 @@
     {
       "name": "@tanstack/react-query",
       "declaredAs": "dependencies",
-      "actualImports": 139,
-      "runtimeImports": 71,
-      "runtimeValueImports": 42,
+      "actualImports": 144,
+      "runtimeImports": 72,
+      "runtimeValueImports": 43,
       "runtimeTypeImports": 29,
-      "verificationValueImports": 61,
+      "verificationValueImports": 65,
       "verificationTypeImports": 4,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
@@ -5006,11 +5057,11 @@
     {
       "name": "@testing-library/react",
       "declaredAs": "devDependencies",
-      "actualImports": 312,
+      "actualImports": 315,
       "runtimeImports": 0,
       "runtimeValueImports": 0,
       "runtimeTypeImports": 0,
-      "verificationValueImports": 312,
+      "verificationValueImports": 315,
       "verificationTypeImports": 0,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
@@ -5500,10 +5551,10 @@
     {
       "name": "react",
       "declaredAs": "dependencies",
-      "actualImports": 567,
-      "runtimeImports": 370,
+      "actualImports": 568,
+      "runtimeImports": 371,
       "runtimeValueImports": 312,
-      "runtimeTypeImports": 58,
+      "runtimeTypeImports": 59,
       "verificationValueImports": 124,
       "verificationTypeImports": 64,
       "decision": "reuse",
@@ -5578,11 +5629,11 @@
     {
       "name": "react-router-dom",
       "declaredAs": "dependencies",
-      "actualImports": 153,
-      "runtimeImports": 54,
-      "runtimeValueImports": 53,
+      "actualImports": 151,
+      "runtimeImports": 53,
+      "runtimeValueImports": 52,
       "runtimeTypeImports": 1,
-      "verificationValueImports": 90,
+      "verificationValueImports": 89,
       "verificationTypeImports": 6,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
@@ -5864,11 +5915,11 @@
     {
       "name": "vitest",
       "declaredAs": null,
-      "actualImports": 512,
+      "actualImports": 519,
       "runtimeImports": 0,
       "runtimeValueImports": 0,
       "runtimeTypeImports": 0,
-      "verificationValueImports": 511,
+      "verificationValueImports": 518,
       "verificationTypeImports": 0,
       "decision": "reuse",
       "reasonCode": "declared-external-package",

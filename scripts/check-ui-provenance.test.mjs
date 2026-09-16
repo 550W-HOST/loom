@@ -6,6 +6,7 @@ import path from "node:path";
 import test from "node:test";
 
 import {
+  assertAttributionPreserved,
   assertExactBlobEntry,
   assertExactSourceEntry,
   assertLedgerMatchesDiff,
@@ -417,3 +418,94 @@ function writeRepositoryFile(root, relativePath, content, mode = 0o644) {
   fs.writeFileSync(absolutePath, content, { mode });
   fs.chmodSync(absolutePath, mode);
 }
+
+// The ledger's `--write` flow regenerates every patch entry, and the validators
+// below it only ever compared hashes. That is how a later stage silently
+// relabelled an earlier stage's entire audit trail: the diffs still matched, so
+// nothing objected. These lock the attribution rule in place.
+test("preserves attribution when a patch diff is unchanged", () => {
+  const previous = [
+    {
+      kind: "add",
+      upstream: { path: null, sha256: null, mode: null },
+      local: { path: "apps/app/src/a.ts", sha256: "aaa", mode: "100644" },
+      issue: "W-604",
+      owner: "PuQing",
+      reason: "introduced by the source port",
+    },
+  ];
+  const unchanged = structuredClone(previous);
+  assert.doesNotThrow(() =>
+    assertAttributionPreserved(previous, unchanged),
+  );
+});
+
+test("rejects re-attributing an unchanged diff", () => {
+  const previous = [
+    {
+      kind: "add",
+      upstream: { path: null, sha256: null, mode: null },
+      local: { path: "apps/app/src/a.ts", sha256: "aaa", mode: "100644" },
+      issue: "W-604",
+      owner: "PuQing",
+      reason: "introduced by the source port",
+    },
+  ];
+  const relabelled = [
+    {
+      ...structuredClone(previous[0]),
+      issue: "W-593",
+      reason: "later stage regeneration overwrote the history",
+    },
+  ];
+  expectFailure(
+    () => assertAttributionPreserved(previous, relabelled),
+    "re-attributed an unchanged diff",
+  );
+});
+
+test("allows a changed diff to carry new attribution", () => {
+  const previous = [
+    {
+      kind: "modify",
+      upstream: { path: "apps/app/src/a.ts", sha256: "up", mode: "100644" },
+      local: { path: "apps/app/src/a.ts", sha256: "old", mode: "100644" },
+      issue: "W-604",
+      owner: "PuQing",
+      reason: "source port adaptation",
+    },
+  ];
+  const changed = [
+    {
+      ...structuredClone(previous[0]),
+      kind: "add",
+      upstream: { path: null, sha256: null, mode: null },
+      local: { path: "apps/app/src/a.ts", sha256: "new", mode: "100644" },
+      issue: "W-593",
+      reason: "rewritten for the typed boundary",
+    },
+  ];
+  assert.doesNotThrow(() => assertAttributionPreserved(previous, changed));
+});
+
+test("allows a combined attribution when the diff really did change", () => {
+  const previous = [
+    {
+      kind: "modify",
+      upstream: { path: "apps/app/src/a.ts", sha256: "up", mode: "100644" },
+      local: { path: "apps/app/src/a.ts", sha256: "old", mode: "100644" },
+      issue: "W-604",
+      owner: "PuQing",
+      reason: "source port adaptation",
+    },
+  ];
+  const changed = [
+    {
+      ...structuredClone(previous[0]),
+      local: { path: "apps/app/src/a.ts", sha256: "new", mode: "100644" },
+      issue: "W-604+W-593",
+      reason: "both stages changed this file",
+    },
+  ];
+  assert.doesNotThrow(() => assertAttributionPreserved(previous, changed));
+});

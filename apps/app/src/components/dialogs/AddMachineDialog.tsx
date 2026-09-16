@@ -1,8 +1,6 @@
-import { useEffect, useRef, useState } from "react";
-import { Link } from "react-router-dom";
+import { useEffect, useState } from "react";
 import { useMutation } from "@tanstack/react-query";
 import type { Host } from "@bb/domain";
-import { z } from "zod";
 import { Button } from "@bb/shared-ui/button";
 import {
   Dialog,
@@ -16,85 +14,21 @@ import { Icon } from "@bb/shared-ui/icon";
 import { MachineStatusDot } from "@/components/machines/MachineStatusDot";
 import { useHosts } from "@/hooks/queries/host-queries";
 import { useClipboardCopy } from "@/lib/clipboard";
-import { isLocalOnlyUrl } from "@/lib/loopback-hostname";
-import {
-  getPluginConfigurationRoutePath,
-  getPluginDetailRoutePath,
-} from "@/lib/route-paths";
-import { BbHttpError, sdk } from "@/lib/sdk";
 import { getMutationErrorMessage } from "@/lib/mutation-errors";
+import {
+  createLoomJoinCode,
+  LOOM_MACHINE_INSTALL_UNAVAILABLE_REASON,
+  resolveLoomPairingState,
+} from "@/lib/loom-machine-pairing";
+
+/** Shown before a join code exists, so the notice never renders empty. */
+const LOOM_MACHINE_INSTALL_UNAVAILABLE_REASON_FALLBACK =
+  LOOM_MACHINE_INSTALL_UNAVAILABLE_REASON;
 
 interface AddMachineDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   serverUrl: string | null;
-}
-
-const connectMachineCodeSchema = z.object({
-  code: z.string(),
-  expiresAt: z.number(),
-  serverUrl: z.string(),
-});
-
-const pluginRpcErrorEnvelopeSchema = z.object({
-  error: z.object({ message: z.string() }),
-});
-
-type ConnectMachineCode = z.infer<typeof connectMachineCodeSchema>;
-
-function isNotPairedRpcError(error: BbHttpError): boolean {
-  const envelope = pluginRpcErrorEnvelopeSchema.safeParse(error.body);
-  return envelope.success && envelope.data.error.message === "not_paired";
-}
-
-type ConnectMachineCodeResult =
-  | { kind: "issued"; code: ConnectMachineCode }
-  | { kind: "unpaired" }
-  | { kind: "disabled" }
-  | { kind: "unavailable" };
-
-async function isConnectPluginDisabled(): Promise<boolean> {
-  try {
-    const {
-      plugins,
-    }: {
-      plugins: Array<{ id: string; enabled: boolean }>;
-    } = await sdk.plugins.list();
-    const connect = plugins.find((plugin) => plugin.id === "connect");
-    return connect !== undefined && !connect.enabled;
-  } catch {
-    return false;
-  }
-}
-
-async function createConnectMachineCode(): Promise<ConnectMachineCodeResult> {
-  try {
-    const code = await sdk.plugins.callRpc({
-      pluginId: "connect",
-      method: "createMachineCode",
-      input: null,
-      outputSchema: connectMachineCodeSchema,
-    });
-    return { kind: "issued", code };
-  } catch (error) {
-    if (!(error instanceof BbHttpError)) throw error;
-    if (
-      error.code === "not_paired" ||
-      isNotPairedRpcError(error) ||
-      error.status === 404
-    ) {
-      return { kind: "unpaired" };
-    }
-    if (error.status === 503) {
-      return (await isConnectPluginDisabled())
-        ? { kind: "disabled" }
-        : { kind: "unavailable" };
-    }
-    if (error.status === 422) {
-      return { kind: "unavailable" };
-    }
-    throw error;
-  }
 }
 
 export function AddMachineDialog({
@@ -123,80 +57,9 @@ function formatCountdown(remainingMs: number): string {
   return `${minutes}:${seconds.toString().padStart(2, "0")}`;
 }
 
-function pairingCommand(
-  joinCode: string,
-  hostId: string,
-  machineCode: ConnectMachineCode | null,
-  directServerUrl: string | null,
-): string | null {
-  const serverUrl = machineCode?.serverUrl ?? directServerUrl;
-  if (serverUrl === null) return null;
-  const machineFlag =
-    machineCode === null ? "" : ` --machine-code ${machineCode.code}`;
-  return `curl -fL --progress-meter --connect-timeout 10 --max-time 60 --retry 2 ${serverUrl}/install.sh | sh -s -- --join-code ${joinCode} --host-id ${hostId} --server ${serverUrl}${machineFlag}`;
-}
-
-const REMOTE_ACCESS_ROUTE = getPluginConfigurationRoutePath({
-  pluginId: "connect",
-});
-const CONNECT_PLUGIN_ROUTE = getPluginDetailRoutePath({
-  pluginId: "connect",
-  view: "installed",
-});
-
-function UnreachableServerNotice({
-  serverUrl,
-  reason,
-}: {
-  serverUrl: string;
-  reason: "unpaired" | "disabled";
-}) {
-  return (
-    <div
-      role="status"
-      aria-live="polite"
-      className="space-y-2 rounded-md border border-border bg-muted/40 p-3"
-    >
-      <p className="text-sm text-foreground">
-        Another machine cannot use this address.
-      </p>
-      <p className="text-xs text-subtle-foreground">
-        The pairing command would target{" "}
-        <span className="font-mono">{serverUrl}</span>, which points to the
-        machine that runs it, not to this bb.{" "}
-        {reason === "disabled"
-          ? "The Connect plugin is disabled, so remote access is off. Enable it, then come back here to get a pairing command that works from anywhere."
-          : "Set up remote access first, then come back here to get a pairing command that works from anywhere."}
-      </p>
-      <div className="flex items-center gap-2">
-        <Button
-          asChild
-          size="sm"
-          variant="outline"
-          className="h-7 px-2.5 text-xs"
-        >
-          {reason === "disabled" ? (
-            <Link to={CONNECT_PLUGIN_ROUTE}>Enable the Connect plugin</Link>
-          ) : (
-            <Link to={REMOTE_ACCESS_ROUTE}>Set up remote access</Link>
-          )}
-        </Button>
-        <a
-          href="https://github.com/get-bb/bb/blob/main/docs/multiple-devices.md"
-          target="_blank"
-          rel="noreferrer"
-          className="text-xs text-subtle-foreground underline underline-offset-2"
-        >
-          Other options
-        </a>
-      </div>
-    </div>
-  );
-}
-
 function AddMachineDialogContent({
   onOpenChange,
-  serverUrl,
+  serverUrl: _serverUrl,
 }: {
   onOpenChange: (open: boolean) => void;
   serverUrl: string | null;
@@ -204,94 +67,86 @@ function AddMachineDialogContent({
   const hostsQuery = useHosts();
   const mintJoinCode = useMutation({
     meta: { showErrorToast: false },
-    mutationFn: async () => {
-      const [join, machine] = await Promise.all([
-        sdk.hosts.createJoinCode(),
-        createConnectMachineCode(),
-      ]);
-      return { join, machine };
-    },
+    // The join code is real and contract-backed, so it is still minted. What is
+    // not real is the install command, which this dialog refuses to invent.
+    mutationFn: () => createLoomJoinCode(),
   });
   const mint = mintJoinCode.mutate;
   useEffect(() => {
     mint();
   }, [mint]);
 
-  const baselineHostIds = useRef<Set<string> | null>(null);
-  if (baselineHostIds.current === null && hostsQuery.data !== undefined) {
-    baselineHostIds.current = new Set(hostsQuery.data.map((host) => host.id));
-  }
-  const connectedNewHost: Host | null =
-    (baselineHostIds.current !== null
-      ? hostsQuery.data?.find(
-          (host) =>
-            host.status === "connected" &&
-            !baselineHostIds.current?.has(host.id),
-        )
-      : undefined) ?? null;
+  // Hosts are read once, on demand, and only to answer "is a new machine here
+  // yet?" when the user asks. There is no subscription and no polling: before
+  // W-587's realtime work lands, watching for a connection would mean either
+  // spinning forever or implying a live view that does not exist.
+  const [knownHostIds, setKnownHostIds] = useState<ReadonlySet<string> | null>(
+    null,
+  );
+  const hostsData = hostsQuery.data;
+  useEffect(() => {
+    if (hostsData === undefined) return;
+    setKnownHostIds((previous) => {
+      if (previous === null) return new Set(hostsData.map((host) => host.id));
+      return previous;
+    });
+  }, [hostsData]);
 
-  const joinCode = mintJoinCode.data?.join ?? null;
-  const machineCodeResult = mintJoinCode.data?.machine ?? null;
-  const machineCode =
-    machineCodeResult?.kind === "issued" ? machineCodeResult.code : null;
-  const expiresAt =
-    joinCode === null
+  const pairedNewHost: Host | null =
+    knownHostIds === null
       ? null
-      : Math.min(joinCode.expiresAt, machineCode?.expiresAt ?? Infinity);
-  const localOnlyServerUrl =
-    serverUrl !== null && isLocalOnlyUrl(serverUrl) ? serverUrl : null;
-  const unreachable =
-    (machineCodeResult?.kind === "unpaired" ||
-      machineCodeResult?.kind === "disabled") &&
-    localOnlyServerUrl !== null
-      ? { serverUrl: localOnlyServerUrl, reason: machineCodeResult.kind }
-      : null;
-  const connectUnavailable =
-    machineCodeResult?.kind === "unavailable" && localOnlyServerUrl !== null;
-  const showCommand =
-    joinCode !== null && unreachable === null && !connectUnavailable;
+      : (hostsData?.find(
+          (host) => host.status === "connected" && !knownHostIds.has(host.id),
+        ) ?? null);
+
+  const pairing = mintJoinCode.data
+    ? resolveLoomPairingState(mintJoinCode.data)
+    : null;
 
   const [now, setNow] = useState(() => Date.now());
-  const hasCountdown = showCommand && expiresAt !== null;
+  const hasCountdown = mintJoinCode.data !== undefined;
   useEffect(() => {
     if (!hasCountdown) return;
     const interval = window.setInterval(() => setNow(Date.now()), 1000);
     return () => window.clearInterval(interval);
   }, [hasCountdown]);
-  const remainingMs =
-    hasCountdown && expiresAt !== null ? expiresAt - now : null;
+  const expiresAt = mintJoinCode.data?.expiresAt ?? null;
+  const remainingMs = expiresAt !== null ? expiresAt - now : null;
   const expired = remainingMs !== null && remainingMs <= 0;
-  const command =
-    showCommand && joinCode !== null
-      ? pairingCommand(
-          joinCode.joinCode,
-          joinCode.hostId,
-          machineCode,
-          serverUrl,
-        )
-      : null;
-  const { copied, copy } = useClipboardCopy({ text: command ?? "" });
+
+  const { copied, copy } = useClipboardCopy({
+    text: mintJoinCode.data?.joinCode ?? "",
+  });
 
   return (
     <>
       <DialogHeader>
         <DialogTitle>Add a machine</DialogTitle>
         <DialogDescription>
-          {unreachable !== null
-            ? "Pair a machine to run projects and threads on it."
-            : "Run this command on the machine you want to add. It installs bb and keeps the machine connected to this server."}
+          Pair a machine to run projects and threads on it.
         </DialogDescription>
       </DialogHeader>
       <div className="space-y-3">
-        {mintJoinCode.isError || connectUnavailable ? (
+        <div
+          role="status"
+          data-testid="loom-machine-install-unavailable"
+          className="space-y-2 rounded-md border border-border bg-muted/40 p-3"
+        >
+          <p className="text-sm text-foreground">
+            Automatic machine setup isn&rsquo;t available yet.
+          </p>
+          <p className="text-xs text-subtle-foreground">
+            {pairing?.reason ?? LOOM_MACHINE_INSTALL_UNAVAILABLE_REASON_FALLBACK}
+          </p>
+        </div>
+
+        {mintJoinCode.isError ? (
           <div className="space-y-2">
             <p className="text-sm text-destructive">
-              {connectUnavailable
-                ? "Remote access isn't ready yet."
-                : getMutationErrorMessage({
-                    error: mintJoinCode.error,
-                    fallbackMessage: "Couldn't create a join code.",
-                  })}
+              {getMutationErrorMessage({
+                error: mintJoinCode.error,
+                fallbackMessage: "Couldn't create a join code.",
+              })}
             </p>
             <Button
               type="button"
@@ -302,20 +157,24 @@ function AddMachineDialogContent({
               Try again
             </Button>
           </div>
-        ) : unreachable !== null ? (
-          <UnreachableServerNotice
-            serverUrl={unreachable.serverUrl}
-            reason={unreachable.reason}
-          />
-        ) : command !== null ? (
+        ) : mintJoinCode.data === undefined ? (
+          <p className="flex items-center gap-2 text-sm text-muted-foreground">
+            <Icon name="Spinner" className="size-4 shrink-0 animate-spin" />
+            Creating a join code…
+          </p>
+        ) : (
           <div
-            data-add-machine-command
-            className="overflow-hidden rounded-md border border-border bg-muted/30"
+            data-testid="loom-machine-join-code"
+            className="space-y-2 rounded-md border border-border bg-muted/30 p-3"
           >
-            <pre className="overflow-x-auto whitespace-pre-wrap break-all p-3 font-mono text-xs text-foreground">
-              {command}
+            <p className="text-xs text-subtle-foreground">
+              This server&rsquo;s join code, for an operator who already has the
+              binaries:
+            </p>
+            <pre className="overflow-x-auto whitespace-pre-wrap break-all font-mono text-xs text-foreground">
+              {mintJoinCode.data.joinCode}
             </pre>
-            <div className="flex flex-wrap items-center gap-2 border-t border-border px-3 py-2">
+            <div className="flex flex-wrap items-center gap-2">
               {expired ? (
                 <>
                   <span className="text-xs text-subtle-foreground">
@@ -345,47 +204,43 @@ function AddMachineDialogContent({
                 disabled={expired}
                 onClick={() => void copy()}
               >
-                {copied ? "Copied" : "Copy"}
+                {copied ? "Copied" : "Copy code"}
               </Button>
             </div>
           </div>
-        ) : (
-          <p className="flex items-center gap-2 text-sm text-muted-foreground">
-            <Icon name="Spinner" className="size-4 shrink-0 animate-spin" />
-            Creating a join code…
+        )}
+
+        {/* Explicitly manual: no auto-detection and no indefinite spinner. */}
+        <div className="flex items-center gap-2.5 rounded-md bg-muted/40 px-3 py-2.5">
+          {pairedNewHost !== null ? (
+            <>
+              <MachineStatusDot connected />
+              <span className="min-w-0 flex-1 truncate text-sm text-foreground">
+                {pairedNewHost.name} is connected
+              </span>
+            </>
+          ) : (
+            <span className="min-w-0 flex-1 text-sm text-muted-foreground">
+              Check whether a machine has joined.
+            </span>
+          )}
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            className="h-7 shrink-0 px-2.5 text-xs"
+            disabled={hostsQuery.isFetching}
+            onClick={() => void hostsQuery.refetch()}
+          >
+            {hostsQuery.isFetching ? "Checking…" : "Refresh"}
+          </Button>
+        </div>
+        {hostsQuery.isError ? (
+          <p role="alert" className="text-xs text-destructive">
+            Couldn&rsquo;t check connected machines. The join code above is
+            unaffected.
           </p>
-        )}
-        {unreachable !== null ? null : (
-          <div className="flex items-center gap-2.5 rounded-md bg-muted/40 px-3 py-2.5">
-            {connectedNewHost !== null ? (
-              <>
-                <MachineStatusDot connected />
-                <span className="min-w-0 flex-1 truncate text-sm text-foreground">
-                  {connectedNewHost.name} connected
-                </span>
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="ghost"
-                  className="h-7 shrink-0 px-2 text-xs"
-                  onClick={() => onOpenChange(false)}
-                >
-                  Set up a project on it →
-                </Button>
-              </>
-            ) : (
-              <>
-                <Icon
-                  name="Spinner"
-                  className="size-4 shrink-0 animate-spin text-muted-foreground"
-                />
-                <span className="text-sm text-muted-foreground">
-                  Waiting for the machine to connect…
-                </span>
-              </>
-            )}
-          </div>
-        )}
+        ) : null}
       </div>
       <DialogFooter>
         <Button

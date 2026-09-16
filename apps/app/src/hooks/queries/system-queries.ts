@@ -12,7 +12,6 @@ import type {
 } from "@bb/domain";
 import { SYSTEM_EXECUTION_OPTIONS_QUERY_KEY } from "@/hooks/queries/query-keys";
 import { permissionModeValues } from "@bb/domain";
-import { toRecord } from "@bb/core-ui";
 import type {
   SystemCliSkillsStatusResponse,
   SystemExecutionOptionsResponse,
@@ -25,7 +24,14 @@ import type {
   ProviderUsage,
   ProviderUsageResponse,
 } from "@bb/host-daemon-contract";
-import { BbHttpError, sdk } from "@/lib/sdk";
+import { sdk } from "@/lib/sdk";
+import { loomApiJson } from "@/lib/loom-http";
+import {
+  readSystemExecutionOptions,
+  readSystemProviderStates,
+  readSystemProviders,
+  readSystemVersion,
+} from "@/lib/loom-system-readers";
 import {
   modelCatalogCacheKey,
   readCachedModelCatalog,
@@ -161,9 +167,11 @@ export function findCachedProviderInfo(
   return null;
 }
 
-function isAbortLikeError(error: unknown): boolean {
-  return toRecord(error)?.name === "AbortError";
-}
+import {
+  isAbortError,
+  isRetryableHttpStatus,
+  readHttpStatus,
+} from "@/lib/http-retry-classification";
 
 function shouldRetrySystemExecutionOptions(
   failureCount: number,
@@ -173,12 +181,16 @@ function shouldRetrySystemExecutionOptions(
     return false;
   }
 
-  if (isAbortLikeError(error)) {
+  if (isAbortError(error)) {
     return false;
   }
 
-  if (error instanceof BbHttpError) {
-    return error.status === 408 || error.status === 429 || error.status >= 500;
+  // Structural, so this issue's `LoomHttpError` is classified like the SDK's
+  // `BbHttpError` instead of falling through to "retry everything" — which
+  // would have retried a 404 or a 422.
+  const status = readHttpStatus(error);
+  if (status !== null) {
+    return isRetryableHttpStatus(status);
   }
 
   return true;
@@ -227,23 +239,17 @@ export function useSystemProviders(args: UseSystemProvidersArgs = {}) {
     queryFn: async ({ signal }) => {
       const capabilityFilter =
         args.capability === undefined ? {} : { capability: args.capability };
-      const providers = await (args.environmentId !== undefined
-        ? sdk.providers.list({
-            ...capabilityFilter,
-            environmentId: args.environmentId,
-            signal,
-          })
-        : args.hostId !== undefined
-          ? sdk.providers.list({
-              ...capabilityFilter,
-              hostId: args.hostId,
-              signal,
-            })
-          : sdk.providers.list({ ...capabilityFilter, signal }));
+      const providers = await readSystemProviders(
+        args.environmentId !== undefined
+          ? { ...capabilityFilter, environmentId: args.environmentId, signal }
+          : args.hostId !== undefined
+            ? { ...capabilityFilter, hostId: args.hostId, signal }
+            : { ...capabilityFilter, signal },
+      );
       if (capability === null) {
-        writeCachedProviderList(providersCacheKey, providers);
+        writeCachedProviderList(providersCacheKey, [...providers]);
       }
-      return providers;
+      return [...providers];
     },
     enabled,
     staleTime: 60_000,
@@ -297,7 +303,7 @@ export function useSystemExecutionOptions(
       providerId,
     }),
     queryFn: async ({ signal }) => {
-      const response = await sdk.system.executionOptions({
+      const response = await readSystemExecutionOptions({
         environmentId: args.environmentId,
         hostId: args.hostId,
         providerId: args.providerId,
@@ -333,7 +339,11 @@ export function useSystemExecutionOptions(
 export function systemConfigQueryOptions() {
   return queryOptions({
     queryKey: systemConfigQueryKey(),
-    queryFn: ({ signal }) => sdk.system.config({ signal }),
+    // Shares its key with the shell boundary, so it must use the same
+    // same-origin reader: a background refetch through a separate client
+    // would overwrite the shell's data (or fail where the shell succeeded).
+    queryFn: ({ signal }) =>
+      loomApiJson("system.config", { signal }),
     staleTime: 60_000,
   });
 }
@@ -386,7 +396,7 @@ export function useCliSkillsStatus(options?: QueryOptions) {
 export function useSystemVersion(options?: QueryOptions) {
   return useQuery<SystemVersionResponse>({
     queryKey: systemVersionQueryKey(),
-    queryFn: ({ signal }) => sdk.system.version({ signal }),
+    queryFn: ({ signal }) => readSystemVersion({ signal }),
     enabled: options?.enabled ?? true,
     ...SERVER_SESSION_QUERY_POLICY,
   });
@@ -425,7 +435,7 @@ export function useSystemProviderStates(
   return useQuery<SystemProviderStatesResponse>({
     queryKey: systemProviderStatesQueryKey({ environmentId, hostId }),
     queryFn: ({ signal }) =>
-      sdk.system.providerStates({
+      readSystemProviderStates({
         environmentId: options.environmentId,
         hostId: options.hostId,
         signal,

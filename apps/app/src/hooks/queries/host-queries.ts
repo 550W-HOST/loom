@@ -3,6 +3,7 @@ import { keepPreviousData, skipToken, useQuery } from "@tanstack/react-query";
 import type { Host } from "@bb/domain";
 import type { HostDirectoryListing } from "@bb/server-contract";
 import { sdk } from "@/lib/sdk";
+import { loomApiJson } from "@/lib/loom-http";
 import { useHostListRealtimeSubscription } from "@/hooks/useRealtimeSubscription";
 import { useSystemConfig } from "@/hooks/queries/system-queries";
 import {
@@ -18,7 +19,11 @@ export function useHosts(options?: QueryOptions) {
 
   return useQuery<Host[]>({
     queryKey: hostsQueryKey(),
-    queryFn: ({ signal }) => sdk.hosts.list({ signal }),
+    // `sdk.hosts.list` is a compile-only stub whose every call rejects, so
+    // anything watching for a newly connected machine (the Add Machine dialog)
+    // waited forever. The contract route answers a bare array of hosts.
+    queryFn: ({ signal }) =>
+      loomApiJson("hosts.list", { signal }),
     enabled,
     staleTime: 60_000,
   });

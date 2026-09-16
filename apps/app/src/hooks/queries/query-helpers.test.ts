@@ -82,7 +82,9 @@ describe("isTransientReadError", () => {
   it("matches browser transport failures but not HTTP responses", () => {
     expect(isTransientReadError(new TypeError("Failed to fetch"))).toBe(true);
     expect(isTransientReadError(new TypeError("Load failed"))).toBe(true);
-    expect(isTransientReadError({ name: "AbortError" })).toBe(true);
+    // A cancelled request is a decision, not a failure: retrying it would
+    // resurrect work the caller deliberately stopped.
+    expect(isTransientReadError({ name: "AbortError" })).toBe(false);
     expect(
       isTransientReadError(
         new HttpError({ status: 404, message: "Not found" }),

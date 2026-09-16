@@ -16,6 +16,7 @@ export default defineConfig({
     include: [
       "src/loom/**/*.test.ts",
       "src/loom/**/*.test.tsx",
+      "src/hooks/queries/sidebar-navigation-query.test.tsx",
       "src/App.hash-navigation.test.tsx",
       "src/lib/route-paths.test.ts",
       "src/lib/split-layout/persistence.test.ts",
