@@ -93,7 +93,7 @@ function ShellDegradedBanner({
       role="status"
       aria-live="polite"
       data-testid="loom-shell-degraded"
-      className="flex flex-wrap items-center gap-2 border-b border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-foreground"
+      className="flex flex-wrap items-center gap-2 rounded-md border border-destructive/40 bg-card px-3 py-2 text-xs text-foreground shadow-lg"
     >
       <span className="font-medium">Storage is degraded.</span>
       <span className="min-w-0 flex-1 text-muted-foreground">
@@ -120,7 +120,7 @@ function ShellStaleDataNotice() {
       role="status"
       aria-live="polite"
       data-testid="loom-shell-stale"
-      className="border-b border-border bg-muted/40 px-3 py-2 text-xs text-muted-foreground"
+      className="rounded-md border border-border bg-card px-3 py-2 text-xs text-muted-foreground shadow-lg"
     >
       Showing saved projects and threads — the server could not be reached to
       refresh them.
@@ -189,14 +189,31 @@ export function LoomShellBoundary({ children }: LoomShellBoundaryProps) {
 
   const backendError = health.data?.backend_error;
 
+  // The banner is an overlay, not a layout sibling: the shell's sidebar and
+  // page chrome are `fixed` to the viewport, so inserting a row above them
+  // displaced the sidebar and clipped the banner behind it. `children` keeps
+  // the exact layout contract it had before this boundary existed.
   return (
-    <div className="flex h-dvh min-h-0 w-full flex-col">
+    <>
+      {children}
       {backendError ? (
-        <ShellDegradedBanner detail={backendError} onRetry={retryAll} />
+        <div
+          className="pointer-events-none fixed inset-x-0 top-0 z-50 flex justify-center px-3 pt-[env(safe-area-inset-top)]"
+          data-testid="loom-shell-banner-layer"
+        >
+          <div className="pointer-events-auto mt-2 max-w-3xl">
+            <ShellDegradedBanner detail={backendError} onRetry={retryAll} />
+          </div>
+        </div>
       ) : null}
-      {sidebar.isError ? <ShellStaleDataNotice /> : null}
-      <div className="min-h-0 flex-1">{children}</div>
-    </div>
+      {sidebar.isError ? (
+        <div className="pointer-events-none fixed inset-x-0 bottom-0 z-50 flex justify-center px-3 pb-[calc(env(safe-area-inset-bottom)+0.75rem)]">
+          <div className="pointer-events-auto max-w-3xl">
+            <ShellStaleDataNotice />
+          </div>
+        </div>
+      ) : null}
+    </>
   );
 }
 
