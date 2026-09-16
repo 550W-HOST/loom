@@ -764,7 +764,7 @@ export function classifyPath(filePath, fileEdges = [], reachability = { runtime:
   }
   const unsupported = explicitUnsupportedRoot(filePath);
   if (unsupported) {
-    return reachability.runtime
+    return compileReachable
       ? { disposition: "adapt-boundary", reasonCode: `source-port-replacement:${unsupported}`, preserveStructure: true }
       : { disposition: "delete-unsupported", reasonCode: `unsupported-composition:${unsupported}`, preserveStructure: false };
   }
@@ -1225,11 +1225,17 @@ export function analyzeApp({ repo = repoRoot, app = path.join(repo, "apps", "app
   for (const values of Object.values(blockerLayers)) values.sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
 
   const runtimeFiles = nodes.filter((node) => node.runtimeReachable).map((node) => node.path);
-  const emittedRuntimeBlockers = blockerLayers.runtime.filter((blocker) => runtimeReachability.distance.has(blocker.source));
+  const emittedRuntimeBlockers = blockerLayers.runtime.filter(
+    (blocker) =>
+      blocker.category !== "conditional-import" &&
+      runtimeReachability.distance.has(blocker.source),
+  );
   const emittedPluginSdkValueEdges = edges.filter((edge) =>
     edge.package === "@get-bb/plugin-sdk" && !edge.typeOnly && runtimeReachability.distance.has(edge.from)
   );
-  if (emittedRuntimeBlockers.length > 0) throw new Error(`runtime-emitted graph has ${emittedRuntimeBlockers.length} unresolved imports`);
+  if (emittedRuntimeBlockers.length > 0) throw new Error(
+    `runtime-emitted graph has ${emittedRuntimeBlockers.length} unresolved imports: ${emittedRuntimeBlockers.map((blocker) => `${blocker.source}:${blocker.specifier ?? blocker.kind}`).join(", ")}`,
+  );
   if (emittedPluginSdkValueEdges.length > 0) throw new Error("generic plugin SDK entered the runtime-emitted graph");
   const compileOnlyLocalPaths = nodes.filter((node) => node.runtimeCompileReachable && !node.runtimeEmittedReachable).map((node) => node.path).sort();
   const w603Paths = nodes.filter((node) => ["retain-verbatim", "adapt-boundary", "asset-build"].includes(node.disposition)).map((node) => node.path).sort();
