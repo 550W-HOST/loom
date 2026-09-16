@@ -3120,6 +3120,22 @@
       "issue": "W-593",
       "owner": "PuQing",
       "reason": "Adapt pinned bb source to the loom same-origin typed HTTP boundary, replacing the all-throwing apiClient and the generic plugin pairing path."
+    },
+    {
+      "kind": "modify",
+      "upstream": {
+        "path": "apps/app/src/lib/project-branch-options.ts",
+        "sha256": "8ec7826ad1e5a362d8c0cfbb4242b9b3aaacab58fe1a7baed9b745060c2ea592",
+        "mode": "100644"
+      },
+      "local": {
+        "path": "apps/app/src/lib/project-branch-options.ts",
+        "sha256": "8a604942e413a2e44167ec18bd2a78b94535b1a2e81757a6d3a0076008137ec6",
+        "mode": "100644"
+      },
+      "issue": "W-593",
+      "owner": "PuQing",
+      "reason": "Adapt pinned bb source to the loom same-origin typed HTTP boundary, replacing the all-throwing apiClient, the compile-only SDK result, and the generic plugin pairing path."
     }
   ]
 }
