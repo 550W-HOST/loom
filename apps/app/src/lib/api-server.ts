@@ -52,7 +52,10 @@ export class LoomApiUnknownRouteError extends Error {
 }
 
 export { LoomHttpError, LoomApiMethodError, LoomApiPathParamError } from "./loom-http";
-export { LoomApiBodyNotAllowedError } from "./loom-http";
+export {
+  LoomApiBodyNotAllowedError,
+  LoomApiBodyRequiredError,
+} from "./loom-http";
 
 /** The options bag the ported call sites pass as the second argument. */
 export interface LoomApiCallOptions {

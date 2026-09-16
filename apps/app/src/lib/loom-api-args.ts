@@ -60,10 +60,20 @@ type LoomApiParamPart<Id extends LoomApiRouteId> =
     ? { param: LoomApiParamBagFor<Id> }
     : { param?: never };
 
+/** Whether the contract permits omitting a query object entirely. */
+type LoomApiQueryOptional<Id extends LoomApiRouteId> =
+  LoomApiSpecOf<Id> extends { source: "query" }
+    ? {} extends LoomApiQueryOf<Id>
+      ? true
+      : false
+    : true;
+
 /** The query part: typed, and present only for a `query` route. */
 type LoomApiQueryPart<Id extends LoomApiRouteId> =
   LoomApiSpecOf<Id> extends { source: "query" }
-    ? { query?: LoomApiQueryOf<Id> }
+    ? LoomApiQueryOptional<Id> extends true
+      ? { query?: LoomApiQueryOf<Id> }
+      : { query: LoomApiQueryOf<Id> }
     : { query?: never };
 
 /**
@@ -103,7 +113,7 @@ export type LoomApiArgsOptional<Id extends LoomApiRouteId> =
     ? false
     : LoomApiSpecOf<Id> extends { source: "json" | "form" }
       ? false
-      : true;
+      : LoomApiQueryOptional<Id>;
 
 /**
  * Whether a route's **URL** arguments may be omitted.
@@ -114,7 +124,13 @@ export type LoomApiArgsOptional<Id extends LoomApiRouteId> =
  * like voice transcription, whose URL needs nothing.
  */
 export type LoomApiUrlArgsOptional<Id extends LoomApiRouteId> =
-  LoomApiHasParams<Id> extends true ? false : true;
+  LoomApiHasParams<Id> extends true ? false : LoomApiQueryOptional<Id>;
+
+/** The exported transport's conditional argument tuple. */
+export type LoomApiRequestTuple<Id extends LoomApiRouteId> =
+  LoomApiArgsOptional<Id> extends true
+    ? [args?: LoomApiRequestArgs<Id>]
+    : [args: LoomApiRequestArgs<Id>];
 
 /** Whether a body must be present for this route. */
 export function requestNeedsBody(routeId: LoomApiRouteId): boolean {

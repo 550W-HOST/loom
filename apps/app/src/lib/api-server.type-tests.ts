@@ -137,6 +137,12 @@ void loomApiFetch("system.config", {
 // @ts-expect-error a JSON route requires its body
 void loomApiFetch("hosts.createJoinCode", {});
 
+// @ts-expect-error a JSON route requires its argument bag
+void loomApiFetch("hosts.createJoinCode");
+
+// @ts-expect-error loomApiJson enforces the same required body
+void loomApiJson("hosts.createJoinCode");
+
 // @ts-expect-error a JSON route cannot be sent multipart instead
 void loomApiFetch("hosts.createJoinCode", { formData: new FormData() });
 
@@ -151,6 +157,25 @@ void loomApiFetch("threads.storageContent", {
   // @ts-expect-error `path` is required by the contract query
   query: {},
 });
+
+// @ts-expect-error a required query cannot be omitted entirely
+void loomApiFetch("threads.storageContent", { param: { id: "t1" } });
+
+// @ts-expect-error the high-level seam also requires that query
+void apiClient.threads[":id"]["thread-storage"].content.$get({
+  param: { id: "t1" },
+});
+
+// Optional-query routes may still omit the query object.
+void loomApiFetch("system.providers");
+
+// A multipart route accepts the real browser body object.
+void loomApiFetch("system.voiceTranscription", {
+  formData: new FormData(),
+});
+
+// @ts-expect-error a multipart route requires its argument bag and body
+void loomApiFetch("system.voiceTranscription");
 
 // @ts-expect-error `filePath` is required by the catch-all path
 void loomApiFetch("threads.worktreeFile", { param: { id: "t1" } });

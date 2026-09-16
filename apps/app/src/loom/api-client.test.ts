@@ -13,6 +13,7 @@ import {
 import {
   buildLoomApiUrl,
   LoomApiBodyNotAllowedError,
+  LoomApiBodyRequiredError,
   LoomApiMethodError,
   LoomApiPathParamError,
   LoomApiRouteError,
@@ -536,6 +537,40 @@ describe("the lowest transport enforces the contract request before fetch", () =
         formData: new FormData(),
       } as never),
     ).rejects.toBeInstanceOf(LoomApiBodyNotAllowedError);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("refuses a missing JSON body before fetch", async () => {
+    const fetchMock = stubFetch();
+    const untypedFetch = loomApiFetch as unknown as (
+      routeId: "hosts.createJoinCode",
+    ) => Promise<Response>;
+    const untypedJson = loomApiJson as unknown as (
+      routeId: "hosts.createJoinCode",
+    ) => Promise<unknown>;
+
+    await expect(untypedFetch("hosts.createJoinCode")).rejects.toBeInstanceOf(
+      LoomApiBodyRequiredError,
+    );
+    await expect(untypedJson("hosts.createJoinCode")).rejects.toMatchObject({
+      code: "loom_api_body_required",
+      bodyKind: "JSON",
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("refuses a missing multipart body before fetch", async () => {
+    const fetchMock = stubFetch();
+    const untypedFetch = loomApiFetch as unknown as (
+      routeId: "system.voiceTranscription",
+    ) => Promise<Response>;
+
+    await expect(
+      untypedFetch("system.voiceTranscription"),
+    ).rejects.toMatchObject({
+      code: "loom_api_body_required",
+      bodyKind: "multipart",
+    });
     expect(fetchMock).not.toHaveBeenCalled();
   });
 

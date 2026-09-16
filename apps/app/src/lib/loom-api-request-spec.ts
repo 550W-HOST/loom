@@ -93,11 +93,12 @@ export const LOOM_API_REQUEST_SPECS = {
   },
   "system.version": { source: "query", query: {} as SystemVersionQuery },
   "system.config": { source: "none" },
-  // The contract declares `source: "form"` with a null schema: multipart with
-  // arbitrary string/Blob fields.
+  // The contract declares `source: "form"` with a null schema. The transport
+  // accepts the browser's wire-level FormData object rather than pretending a
+  // plain record is FormData at the fetch boundary.
   "system.voiceTranscription": {
     source: "form",
-    form: {} as Record<string, string | Blob>,
+    form: {} as FormData,
   },
   "threads.hostFileContent": {
     source: "query",

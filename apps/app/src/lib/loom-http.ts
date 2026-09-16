@@ -12,7 +12,10 @@ import {
   LOOM_API_REQUEST_SPECS,
   type LoomApiResponseSpecs,
 } from "./loom-api-request-spec";
-import type { LoomApiRequestArgs } from "./loom-api-args";
+import type {
+  LoomApiRequestArgs,
+  LoomApiRequestTuple,
+} from "./loom-api-args";
 import { appSurfaceRequestInit } from "./app-surface";
 
 /**
@@ -388,6 +391,20 @@ export class LoomApiBodyNotAllowedError extends Error {
   }
 }
 
+/** A route that declares a body was called without one. */
+export class LoomApiBodyRequiredError extends Error {
+  readonly code = "loom_api_body_required";
+
+  constructor(
+    readonly routeId: string,
+    readonly method: string,
+    readonly bodyKind: "JSON" | "multipart",
+  ) {
+    super(`Route ${routeId} (${method}) requires a ${bodyKind} body`);
+    this.name = "LoomApiBodyRequiredError";
+  }
+}
+
 /**
  * Reject anything the route's contract does not allow, **before** `fetch`.
  *
@@ -439,13 +456,20 @@ export function assertLoomRequestAllowed(
       `a query (its contract declares request source \`${source}\`)`,
     );
   }
+  if (source === "json" && !hasJson) {
+    throw new LoomApiBodyRequiredError(routeId, method, "JSON");
+  }
+  if (source === "form" && !hasForm) {
+    throw new LoomApiBodyRequiredError(routeId, method, "multipart");
+  }
 }
 
 /** Perform a contract request and return the raw `Response`. */
 export async function loomApiFetch<Id extends LoomApiRouteId>(
   routeId: Id,
-  args: LoomApiRequestArgs<Id> = {} as LoomApiRequestArgs<Id>,
+  ...argsTuple: LoomApiRequestTuple<Id>
 ): Promise<Response> {
+  const args = (argsTuple[0] ?? {}) as LoomApiRequestArgs<Id>;
   const method = resolveLoomApiMethod(routeId);
   // Fail before building the request, let alone sending it.
   assertLoomRequestAllowed(routeId, args);
@@ -510,9 +534,9 @@ export async function loomNativeJson<TResponse>(
  */
 export async function loomApiJson<Id extends LoomApiRouteId>(
   routeId: Id,
-  args: LoomApiRequestArgs<Id> = {} as LoomApiRequestArgs<Id>,
+  ...argsTuple: LoomApiRequestTuple<Id>
 ): Promise<LoomApiResponseSpecs[Id]> {
-  const response = await loomApiFetch(routeId, args);
+  const response = await loomApiFetch(routeId, ...argsTuple);
   const text = await response.text();
   if (text.length === 0) {
     return undefined as LoomApiResponseSpecs[Id];
