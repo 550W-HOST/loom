@@ -1,11 +1,17 @@
 import type {
   CreateHostJoinCodeResponse,
+  CreateThreadRequest,
   EnvironmentDiffFileQuery,
   ProjectAttachmentContentQuery,
   ProjectBranchesQuery,
+  ProjectDefaultExecutionOptionsQuery,
   ProjectFileContentQuery,
+  SendMessageRequest,
+  SendMessageResponse,
   SidebarBootstrapResponse,
   SystemConfigResponse,
+  SystemEnvironmentProvidersQuery,
+  SystemEnvironmentProvidersResponse,
   SystemExecutionOptionsQuery,
   SystemExecutionOptionsResponse,
   SystemProviderStatesResponse,
@@ -14,10 +20,14 @@ import type {
   SystemVersionQuery,
   SystemVersionResponse,
   ThreadFilesRawQuery,
+  ThreadGetQuery,
   ThreadHostFileContentQuery,
+  ThreadResponse,
   ThreadStorageContentQuery,
+  ThreadTimelineQuery,
+  ThreadTimelineResponse,
 } from "@bb/server-contract";
-import type { Host } from "@bb/domain";
+import type { Environment, Host, ProjectExecutionDefaults } from "@bb/domain";
 
 /**
  * The request shape of every allowlisted route, derived from the exported
@@ -63,6 +73,7 @@ export const LOOM_API_REQUEST_SPECS = {
     source: "query",
     query: {} as EnvironmentDiffFileQuery,
   },
+  "environments.get": { source: "none" },
   "hosts.createJoinCode": { source: "json", json: {} as Record<string, never> },
   "hosts.list": { source: "none" },
   "hosts.updatePermissionCeiling": {
@@ -77,11 +88,19 @@ export const LOOM_API_REQUEST_SPECS = {
     source: "query",
     query: {} as ProjectBranchesQuery,
   },
+  "projects.defaultExecutionOptions": {
+    source: "query",
+    query: {} as ProjectDefaultExecutionOptionsQuery,
+  },
   "projects.fileContent": {
     source: "query",
     query: {} as ProjectFileContentQuery,
   },
   "projects.sidebarBootstrap": { source: "none" },
+  "system.environmentProviders": {
+    source: "query",
+    query: {} as SystemEnvironmentProvidersQuery,
+  },
   "system.executionOptions": {
     source: "query",
     query: {} as SystemExecutionOptionsQuery,
@@ -100,16 +119,20 @@ export const LOOM_API_REQUEST_SPECS = {
     source: "form",
     form: {} as FormData,
   },
+  "threads.create": { source: "json", json: {} as CreateThreadRequest },
+  "threads.get": { source: "query", query: {} as ThreadGetQuery },
   "threads.hostFileContent": {
     source: "query",
     query: {} as ThreadHostFileContentQuery,
   },
   "threads.rawFile": { source: "query", query: {} as ThreadFilesRawQuery },
+  "threads.send": { source: "json", json: {} as SendMessageRequest },
   "threads.storageContent": {
     source: "query",
     query: {} as ThreadStorageContentQuery,
   },
   "threads.storageFile": { source: "none" },
+  "threads.timeline": { source: "query", query: {} as ThreadTimelineQuery },
   "threads.worktreeFile": { source: "none" },
 } as const satisfies Record<string, LoomApiRequestSpec>;
 
@@ -126,22 +149,29 @@ export type SystemProviderStatesQueryShape = SystemProvidersQuery;
 export interface LoomApiResponseSpecs {
   "filePreviews.content": unknown;
   "environments.diffFile": { path: string; content: string; contentEncoding: "base64" | "utf8" };
+  "environments.get": Environment;
   "hosts.createJoinCode": CreateHostJoinCodeResponse;
   "hosts.list": Host[];
   "hosts.updatePermissionCeiling": unknown;
   "projects.attachmentContent": unknown;
   "projects.branchOptions": unknown;
+  "projects.defaultExecutionOptions": ProjectExecutionDefaults | null;
   "projects.fileContent": unknown;
   "projects.sidebarBootstrap": SidebarBootstrapResponse;
+  "system.environmentProviders": SystemEnvironmentProvidersResponse;
   "system.executionOptions": SystemExecutionOptionsResponse;
   "system.providers": SystemProviderInfo[];
   "system.providerStates": SystemProviderStatesResponse;
   "system.version": SystemVersionResponse;
   "system.config": SystemConfigResponse;
   "system.voiceTranscription": { text: string };
+  "threads.create": ThreadResponse;
+  "threads.get": ThreadResponse;
   "threads.hostFileContent": unknown;
   "threads.rawFile": unknown;
+  "threads.send": SendMessageResponse;
   "threads.storageContent": unknown;
   "threads.storageFile": unknown;
+  "threads.timeline": ThreadTimelineResponse;
   "threads.worktreeFile": unknown;
 }
