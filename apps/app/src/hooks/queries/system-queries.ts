@@ -29,6 +29,12 @@ import type {
 import { BbHttpError, sdk } from "@/lib/sdk";
 import { loomApiJson } from "@/lib/loom-http";
 import {
+  readSystemExecutionOptions,
+  readSystemProviderStates,
+  readSystemProviders,
+  readSystemVersion,
+} from "@/lib/loom-system-readers";
+import {
   modelCatalogCacheKey,
   readCachedModelCatalog,
   writeCachedModelCatalog,
@@ -229,23 +235,17 @@ export function useSystemProviders(args: UseSystemProvidersArgs = {}) {
     queryFn: async ({ signal }) => {
       const capabilityFilter =
         args.capability === undefined ? {} : { capability: args.capability };
-      const providers = await (args.environmentId !== undefined
-        ? sdk.providers.list({
-            ...capabilityFilter,
-            environmentId: args.environmentId,
-            signal,
-          })
-        : args.hostId !== undefined
-          ? sdk.providers.list({
-              ...capabilityFilter,
-              hostId: args.hostId,
-              signal,
-            })
-          : sdk.providers.list({ ...capabilityFilter, signal }));
+      const providers = await readSystemProviders(
+        args.environmentId !== undefined
+          ? { ...capabilityFilter, environmentId: args.environmentId, signal }
+          : args.hostId !== undefined
+            ? { ...capabilityFilter, hostId: args.hostId, signal }
+            : { ...capabilityFilter, signal },
+      );
       if (capability === null) {
-        writeCachedProviderList(providersCacheKey, providers);
+        writeCachedProviderList(providersCacheKey, [...providers]);
       }
-      return providers;
+      return [...providers];
     },
     enabled,
     staleTime: 60_000,
@@ -299,7 +299,7 @@ export function useSystemExecutionOptions(
       providerId,
     }),
     queryFn: async ({ signal }) => {
-      const response = await sdk.system.executionOptions({
+      const response = await readSystemExecutionOptions({
         environmentId: args.environmentId,
         hostId: args.hostId,
         providerId: args.providerId,
@@ -392,7 +392,7 @@ export function useCliSkillsStatus(options?: QueryOptions) {
 export function useSystemVersion(options?: QueryOptions) {
   return useQuery<SystemVersionResponse>({
     queryKey: systemVersionQueryKey(),
-    queryFn: ({ signal }) => sdk.system.version({ signal }),
+    queryFn: ({ signal }) => readSystemVersion({ signal }),
     enabled: options?.enabled ?? true,
     ...SERVER_SESSION_QUERY_POLICY,
   });
@@ -431,7 +431,7 @@ export function useSystemProviderStates(
   return useQuery<SystemProviderStatesResponse>({
     queryKey: systemProviderStatesQueryKey({ environmentId, hostId }),
     queryFn: ({ signal }) =>
-      sdk.system.providerStates({
+      readSystemProviderStates({
         environmentId: options.environmentId,
         hostId: options.hostId,
         signal,
