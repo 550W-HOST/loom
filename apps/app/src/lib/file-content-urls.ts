@@ -46,9 +46,12 @@ export function buildThreadStorageRawContentUrl(
   threadId: string,
   path: string,
 ): string {
+  // The path is passed raw: the transport encodes each segment exactly once.
+  // Pre-encoding here encoded it a second time, so a file with a space,
+  // Unicode, or a literal `%` could not be opened.
   return toRelativeUrl(
     apiClient.threads[":id"]["thread-storage"].files[":filePath{.+}"].$url({
-      param: { id: threadId, filePath: encodePathSegments(path) },
+      param: { id: threadId, filePath: path },
     }),
   );
 }
@@ -81,9 +84,10 @@ export function buildThreadWorktreeRawContentUrl(
   threadId: string,
   path: string,
 ): string {
+  // Raw, for the same reason as the thread-storage variant above.
   return toRelativeUrl(
     apiClient.threads[":id"].worktree.files[":filePath{.+}"].$url({
-      param: { id: threadId, filePath: encodePathSegments(path) },
+      param: { id: threadId, filePath: path },
     }),
   );
 }

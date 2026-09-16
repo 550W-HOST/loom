@@ -1037,8 +1037,128 @@ function validatePatchLedger(manifest, ledger, upstreamRoot, localRoot = repoRoo
   }
 }
 
+function assertAttributionPreserved(previousPatches, nextPatches) {
+  if (!Array.isArray(previousPatches) || !Array.isArray(nextPatches)) return;
+  const previousByPath = new Map();
+  for (const patch of previousPatches) {
+    previousByPath.set(
+      patch?.local?.path ?? patch?.upstream?.path,
+      patch,
+    );
+  }
+  for (const patch of nextPatches) {
+    const filePath = patch?.local?.path ?? patch?.upstream?.path;
+    const previous = previousByPath.get(filePath);
+    if (!previous) continue;
+
+    // A path whose recorded change is byte-identical to the previous revision
+    // was not touched by this change, so its issue/owner/reason must not have
+    // moved either. Regenerating the ledger (the documented --write flow)
+    // rewrites every entry, and doing so silently relabels unrelated history —
+    // which is how W-604's audit trail was once erased wholesale.
+    const unchangedDiff =
+      patch.kind === previous.kind &&
+      JSON.stringify(patch.upstream) === JSON.stringify(previous.upstream) &&
+      JSON.stringify(patch.local) === JSON.stringify(previous.local);
+    if (!unchangedDiff) continue;
+
+    const attribution = (entry) =>
+      JSON.stringify({
+        issue: entry.issue,
+        owner: entry.owner,
+        reason: entry.reason,
+      });
+    if (attribution(patch) !== attribution(previous)) {
+      throw new Error(
+        `app patch ledger re-attributed an unchanged diff: ${filePath} ` +
+          `had ${attribution(previous)}, now ${attribution(patch)}. ` +
+          `Preserve the original issue/owner/reason, or record a real change.`,
+      );
+    }
+  }
+}
+
+/**
+ * Compare the on-disk ledger with the ledger in `HEAD`.
+ *
+ * The working tree is the only place the previous revision is available without
+ * a git call, and this check runs inside CI where `HEAD` is the commit under
+ * test. A shallow clone or a detached checkout with no parent simply skips the
+ * comparison rather than failing the build.
+ */
+function assertLedgerAttributionMatchesHead(ledger) {
+  let previousRaw;
+  try {
+    previousRaw = execFileSync(
+      "git",
+      ["show", "HEAD:ui/app-patch-ledger.json"],
+      { cwd: repoRoot, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] },
+    );
+  } catch {
+    return;
+  }
+  let previous;
+  try {
+    previous = JSON.parse(previousRaw);
+  } catch {
+    return;
+  }
+  // The working tree is what is being validated; if it equals HEAD there is
+  // nothing to compare.
+  assertAttributionPreserved(previous.patches, ledger.patches);
+}
+
+/**
+ * The recorded stage history of every `apps/app` path.
+ *
+ * `ui/app-patch-ledger.stages.json` names which issue introduced each path and
+ * at which baseline. It exists because the ledger's per-entry attribution is
+ * regenerated wholesale by tooling, and the hash-only validators downstream
+ * cannot tell "this file is new" from "this file changed" — so a later stage
+ * silently relabelled W-604's entire audit trail. Checking against a committed
+ * record makes that visible in CI, where comparing to `HEAD` cannot (the tree
+ * under test *is* `HEAD`).
+ */
+const patchStagesPath = path.join(repoRoot, "ui", "app-patch-ledger.stages.json");
+
+function checkPatchStages(ledger) {
+  let stages;
+  try {
+    stages = readJson(patchStagesPath);
+  } catch {
+    return;
+  }
+  const stageByPath = new Map();
+  for (const stage of stages.stages ?? []) {
+    for (const stagePath of stage.paths ?? []) {
+      stageByPath.set(stagePath, stage.issue);
+    }
+  }
+
+  for (const patch of ledger.patches ?? []) {
+    const filePath = patch?.local?.path ?? patch?.upstream?.path;
+    const introducingIssue = stageByPath.get(filePath);
+    if (introducingIssue === undefined) continue;
+    if (patch.issue === introducingIssue) continue;
+    // A path whose introducing stage is still part of this entry's recorded
+    // attribution is fine: `W-604+W-593` means both stages touched it.
+    if (typeof patch.issue === "string" && patch.issue.includes(introducingIssue)) {
+      continue;
+    }
+    throw new Error(
+      `app patch ledger lost the stage that introduced ${filePath}: it was ` +
+        `${introducingIssue}, but this entry credits ${JSON.stringify(patch.issue)}. ` +
+        `Credit the introducing stage (e.g. "${introducingIssue}+<this issue>") ` +
+        `rather than replacing it.`,
+    );
+  }
+}
+
 function checkPatchLedger(manifest, upstreamRoot) {
-  validatePatchLedger(manifest, readJson(patchLedgerPath), upstreamRoot);
+  const ledger = readJson(patchLedgerPath);
+  assertLedgerAttributionMatchesHead(ledger);
+  checkPatchStages(ledger);
+  validatePatchLedger(manifest, ledger, upstreamRoot);
 }
 
 function checkLocalProductApp(manifest, upstreamRoot) {
@@ -1239,10 +1359,12 @@ function main() {
 }
 
 export {
+  assertAttributionPreserved,
   assertExactBlobEntry,
   assertExactSourceEntry,
   assertExactStandaloneEntry,
   assertLedgerMatchesDiff,
+  assertLedgerAttributionMatchesHead,
   assertMaterializationState,
   computePatchDiff,
   sourceRegistry,

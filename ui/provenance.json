@@ -8623,8 +8623,8 @@
       "snapshot": {
         "path": "apps/app",
         "tree": {
-          "files": 1458,
-          "sha256": "b9f5e98ceb27ebbe0f9c70cb1abcf38e4257ed5ec9333abac1e759bbcf58120b"
+          "files": 1463,
+          "sha256": "3de8fab08b15f5f7df004759f1994c73d5456a68450ce70cb76019576adb029b"
         },
         "files": [
           {
@@ -8704,8 +8704,8 @@
           },
           {
             "path": "package.json",
-            "bytes": 5203,
-            "sha256": "dadf0c6e649adb89ac7f21801efd2bbae4498a74efb56971817e0a1301b14adc"
+            "bytes": 5247,
+            "sha256": "9e0695480785f4fcd0a5055a136af5b146c160661b8db1ce097729587604d43c"
           },
           {
             "path": "public/apple-touch-icon-blue.png",
@@ -9324,8 +9324,8 @@
           },
           {
             "path": "src/components/dialogs/AddMachineDialog.tsx",
-            "bytes": 10061,
-            "sha256": "3047f0701684d296de646e54048bb5600aeeaea5da82df8faa40fe1a3e53c457"
+            "bytes": 8545,
+            "sha256": "789a3e58c1f4f89f0da770b5c5fb64fb212ce576b704897155e1503e9ec277d9"
           },
           {
             "path": "src/components/dialogs/ConfirmDeleteDialog.tsx",
@@ -13634,8 +13634,8 @@
           },
           {
             "path": "src/hooks/queries/query-helpers.ts",
-            "bytes": 2201,
-            "sha256": "8a26ba86cb57aeeaa5733ddea141e44ec271831425ac246e13904a3dbab64571"
+            "bytes": 2420,
+            "sha256": "54cb5dbc56640c444b85de24ab64d25639c57552f02ee6dbd6a7dc529be3bf7d"
           },
           {
             "path": "src/hooks/queries/query-keys.ts",
@@ -14129,8 +14129,13 @@
           },
           {
             "path": "src/lib/api-server.ts",
-            "bytes": 6803,
-            "sha256": "7568fe0961f9b9c90220a7641127728e16073fdeddc68d2d13dad5be5e0a4ef4"
+            "bytes": 10824,
+            "sha256": "a94b264011c404cb77045e30b244c13ec2c131e799e29811921f2dd701ff27b7"
+          },
+          {
+            "path": "src/lib/api-server.type-tests.ts",
+            "bytes": 4633,
+            "sha256": "117aae3d5107fd70b9c9283a990c9fb7f6528175aeeff6995282d4148446e55e"
           },
           {
             "path": "src/lib/api.ts",
@@ -14379,8 +14384,8 @@
           },
           {
             "path": "src/lib/file-content-urls.ts",
-            "bytes": 2731,
-            "sha256": "76e6760692a7a894c85f040ac144e75e905a42b72b722a69efe483d2ad4ee657"
+            "bytes": 2961,
+            "sha256": "539f23fa29aa232a04da500e30cfe0f87f203d7a26105d5a35ed8de4bf5fbbda"
           },
           {
             "path": "src/lib/file-opener-preference.ts",
@@ -14508,6 +14513,11 @@
             "sha256": "61a6f12ec3760a1f777a570bd567568dbca4c285e69576981909b607128aa017"
           },
           {
+            "path": "src/lib/loom-api-request-spec.ts",
+            "bytes": 3764,
+            "sha256": "37893b0c1a5cbf063d75ceea53c557969d0b38aeae3d2dbf17d7d5fad16acebf"
+          },
+          {
             "path": "src/lib/loom-api-routes.ts",
             "bytes": 5483,
             "sha256": "3a47fed85ae7f00c9910a6125a66b39f5d65297b486b73d4a44cb337ae9a59d7"
@@ -14519,8 +14529,8 @@
           },
           {
             "path": "src/lib/loom-machine-pairing.ts",
-            "bytes": 5064,
-            "sha256": "2e2f2828c53b23b6a53bc200dc3c796335ba99110cdf8a41444b18f8a96035b5"
+            "bytes": 3439,
+            "sha256": "5ad06b297eab36d686a61cc68ccdb89f92ad292aed21a830a21b3406c292bbd8"
           },
           {
             "path": "src/lib/loom-native-routes.ts",
@@ -15348,6 +15358,11 @@
             "sha256": "0e668ddaaa82d69123a77bdfcfd985bc1e602293de2273df5d17720e80eb5e68"
           },
           {
+            "path": "src/loom/file-content-urls.test.ts",
+            "bytes": 4873,
+            "sha256": "12c4d498559c6414673d30e293144280a9a31543dc21523b664ae6786029eba3"
+          },
+          {
             "path": "src/loom/loom-native-boundaries.test.ts",
             "bytes": 3544,
             "sha256": "5c4695a96e857e5dfbb9dcf848baa2571d044bde5cc110d8fbf35dde424236c8"
@@ -15881,6 +15896,16 @@
             "path": "tsconfig.node.json",
             "bytes": 344,
             "sha256": "e4c2c352247723e7f86262886c935280535ae6cac0371875c56f2fc9ae4cfd18"
+          },
+          {
+            "path": "tsconfig.type-tests.json",
+            "bytes": 173,
+            "sha256": "e51e383d8b606e05110fc5a76be57a1f8d2e4185bfef8a7784a6e6aacd7bf4ca"
+          },
+          {
+            "path": "tsconfig.type-tests.tsbuildinfo",
+            "bytes": 103685,
+            "sha256": "dd20f475318007f4d788965254cc4cd5fceaa43f0f1fa56ba5b63de8360d6aeb"
           },
           {
             "path": "vite-bundle-stats.ts",

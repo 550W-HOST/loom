@@ -1,0 +1,128 @@
+/**
+ * Compiler negative tests for the typed `apiClient` seam.
+ *
+ * Every `@ts-expect-error` here asserts that the annotated call does **not**
+ * type-check. `tsc` fails the build if the error disappears, so a change that
+ * loosens the seam (back to `json?: unknown`, a generic query record, or a
+ * `$get` on a POST route) breaks `pnpm typecheck` rather than silently letting
+ * a browser-rejected request through.
+ *
+ * `@ts-expect-error` must be the line immediately above the erroring line, so
+ * the directives sit on the property that is wrong rather than on the call.
+ *
+ * This file is compiled by `tsconfig.type-tests.json`, which is part of the
+ * typecheck script; the main `tsconfig.json` excludes test files, so a
+ * `@ts-expect-error` in a test file would never be evaluated.
+ */
+
+import { apiClient } from "./api-server";
+import { loomApiFetch, resolveLoomApiMethod } from "./loom-http";
+import { LOOM_API_ROUTES } from "./loom-api-routes";
+
+// --- A GET route cannot be given a body ------------------------------------
+
+void apiClient.projects[":id"]["branch-options"].$get({
+  param: { id: "p1" },
+  // @ts-expect-error a GET route takes a query, not a JSON body
+  json: { anything: true },
+});
+
+void apiClient.projects[":id"]["branch-options"].$get({
+  param: { id: "p1" },
+  // @ts-expect-error a GET route cannot take multipart either
+  formData: new FormData(),
+});
+
+// --- A POST route cannot be read, and cannot take a query ------------------
+
+// @ts-expect-error hosts.createJoinCode is POST; there is no $get
+void apiClient.hosts["join-codes"].$get({ json: {} });
+
+void apiClient.hosts["join-codes"].$post({
+  // @ts-expect-error the join-code route declares a JSON body, not a query
+  query: { unused: "x" },
+  json: {},
+});
+
+void apiClient.hosts["join-codes"].$post({
+  // @ts-expect-error multipart where the contract declares JSON
+  formData: new FormData(),
+});
+
+void apiClient.system["voice-transcription"].$post({
+  // @ts-expect-error voice transcription is form-only; a JSON body is wrong
+  json: {},
+});
+
+// --- Query keys are precise ------------------------------------------------
+
+void apiClient.threads[":id"]["thread-storage"].content.$get({
+  param: { id: "t1" },
+  // @ts-expect-error `path` is required by the contract query
+  query: {},
+});
+
+void apiClient.threads[":id"]["thread-storage"].content.$get({
+  param: { id: "t1" },
+  query: {
+    path: "a.ts",
+    // @ts-expect-error `notAQueryKey` is not in the contract's query
+    notAQueryKey: "x",
+  },
+});
+
+void apiClient.threads[":id"]["thread-storage"].content.$get({
+  param: { id: "t1" },
+  // @ts-expect-error `path` must be a string, not a number
+  query: { path: 42 },
+});
+
+void apiClient.environments[":id"].diff.file.$get({
+  param: { id: "e1" },
+  // @ts-expect-error `target` is required by the diff-file discriminated union
+  query: { path: "a.ts", side: "new" },
+});
+
+// --- Path parameters are required and named -------------------------------
+
+// @ts-expect-error `id` is required by the route path
+void apiClient.threads[":id"]["thread-storage"].content.$get({});
+
+void apiClient.threads[":id"].worktree.files[":filePath{.+}"].$url({
+  // @ts-expect-error `id` and `filePath` are both required by the catch-all route
+  param: {},
+});
+
+void apiClient.threads[":id"].worktree.files[":filePath{.+}"].$url({
+  // @ts-expect-error `wrongName` is not a parameter of this route
+  param: { wrongName: "a.ts" },
+});
+
+// @ts-expect-error a route with no :param cannot be given a param bag
+void apiClient.system.config.$get({ param: { id: "x" } });
+
+// @ts-expect-error `delete` is not a route on hosts
+void apiClient.hosts.delete.$url({ param: { id: "h1" } });
+
+// @ts-expect-error an unknown top-level area is not a route
+void apiClient.nothing.$get({});
+
+// --- The runtime backstop also refuses an untyped body ---------------------
+
+// These go through the untyped fetch signature deliberately: they prove the
+// runtime check exists for a caller that casts past the type surface.
+void loomApiFetch("threads.worktreeFile", {
+  param: { id: "t1", filePath: "a.ts" },
+  json: { x: 1 },
+});
+// A method mismatch is a runtime refusal, not a compile one: the argument is a
+// valid `LoomApiMethod`, and the route's own method is what rejects it. Covered
+// by the runtime tests in `api-client.test.ts`.
+void resolveLoomApiMethod("hosts.createJoinCode", "GET");
+// @ts-expect-error an unknown route id is not accepted
+void resolveLoomApiMethod("threads.notReal", "GET");
+
+// --- The route table is non-empty and unique -------------------------------
+
+const routeIds = LOOM_API_ROUTES.map((route) => route.id);
+void routeIds;

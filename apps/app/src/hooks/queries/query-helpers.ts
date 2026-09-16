@@ -52,8 +52,11 @@ function normalizeErrorMessage(message: string): string {
 }
 
 export function isTransientReadError(error: unknown): boolean {
+  // A cancelled request is a decision, not a failure, and must never be
+  // retried: retrying it would resurrect work the caller deliberately stopped.
+  // It is also not reportable, so it is not "transient" either.
   if (isAbortError(error)) {
-    return true;
+    return false;
   }
   // Any client's HTTP error is definitive for its status: a 4xx must not be
   // retried, and a 5xx must be. Classifying structurally means a new client
