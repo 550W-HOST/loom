@@ -1,27 +1,27 @@
 {
   "format": "loom.app-port-plan-summary/v2",
   "plan": "ui/app-port-plan.json",
-  "planBytes": 1942585,
+  "planBytes": 1950492,
   "source": {
     "root": "apps/app/src",
-    "trackedFiles": 1354,
+    "trackedFiles": 1364,
     "disposition": "source-port",
     "baselineGitTree": "8ba6eb6f3d2f67f8ba2703f1fd0c123f788c6d52",
-    "localGitTree": "8fc172b52213f3a34539cb8e39d6a9b6a1096bff"
+    "localGitTree": "a87961fb63564b77b28f2dab07551abae0e55b6f"
   },
   "summary": {
-    "nodes": 1354,
-    "runtimeReachable": 672,
-    "runtimeCompileReachable": 683,
-    "runtimeEmittedReachable": 672,
+    "nodes": 1364,
+    "runtimeReachable": 678,
+    "runtimeCompileReachable": 689,
+    "runtimeEmittedReachable": 678,
     "dispositions": {
-      "retain-verbatim": 632,
+      "retain-verbatim": 638,
       "adapt-boundary": 27,
       "delete-unsupported": 0,
-      "verification-only": 667,
+      "verification-only": 671,
       "asset-build": 28
     },
-    "edges": 8153,
+    "edges": 8189,
     "blockers": {
       "runtime": 3,
       "test": 224,
@@ -31,10 +31,10 @@
     "workspacePackages": 124
   },
   "dispositions": {
-    "retain-verbatim": 632,
+    "retain-verbatim": 638,
     "adapt-boundary": 27,
     "delete-unsupported": 0,
-    "verification-only": 667,
+    "verification-only": 671,
     "asset-build": 28
   },
   "exceptions": {
@@ -3258,12 +3258,32 @@
         "reasonCode": "test-or-story-root"
       },
       {
+        "path": "src/loom/LoomShellBoundary.test.tsx",
+        "disposition": "verification-only",
+        "reasonCode": "test-or-story-root"
+      },
+      {
+        "path": "src/loom/api-client.test.ts",
+        "disposition": "verification-only",
+        "reasonCode": "test-or-story-root"
+      },
+      {
         "path": "src/loom/browser-boundaries.test.ts",
         "disposition": "verification-only",
         "reasonCode": "test-or-story-root"
       },
       {
+        "path": "src/loom/loom-native-boundaries.test.ts",
+        "disposition": "verification-only",
+        "reasonCode": "test-or-story-root"
+      },
+      {
         "path": "src/loom/product-composition.test.ts",
+        "disposition": "verification-only",
+        "reasonCode": "test-or-story-root"
+      },
+      {
+        "path": "src/loom/shell-bootstrap.test.tsx",
         "disposition": "verification-only",
         "reasonCode": "test-or-story-root"
       },
@@ -3672,22 +3692,22 @@
     }
   },
   "compilerConsistency": {
-    "compilerSpecifiers": 8210,
-    "graphSpecifiers": 8210,
+    "compilerSpecifiers": 8246,
+    "graphSpecifiers": 8246,
     "missing": [],
     "extra": [],
     "preProcessFileParity": {
-      "compilerLiteralSpecifiers": 8209,
-      "preProcessFileSpecifiers": 8209,
+      "compilerLiteralSpecifiers": 8245,
+      "preProcessFileSpecifiers": 8245,
       "missing": [],
       "extra": []
     }
   },
   "parsers": {
     "typescript": {
-      "files": 1347,
-      "specifiers": 8210,
-      "preProcessFileSpecifiers": 8209
+      "files": 1357,
+      "specifiers": 8246,
+      "preProcessFileSpecifiers": 8245
     },
     "css": {
       "files": 4,
@@ -3699,18 +3719,18 @@
     }
   },
   "batchCoverage": {
-    "expected": 1354,
-    "assigned": 1354,
+    "expected": 1364,
+    "assigned": 1364,
     "missing": [],
     "duplicates": [],
-    "crossStageEdges": 2928,
+    "crossStageEdges": 2943,
     "missingCrossStageEdges": 0,
-    "crossChunkEdges": 2928,
-    "crossChunkOccurrences": 2939,
-    "crossIssueEdges": 1326,
-    "crossIssueOccurrences": 1331,
-    "crossIssueLogicalEdges": 1317,
-    "crossIssueLogicalOccurrences": 1322,
+    "crossChunkEdges": 2943,
+    "crossChunkOccurrences": 2954,
+    "crossIssueEdges": 1336,
+    "crossIssueOccurrences": 1341,
+    "crossIssueLogicalEdges": 1327,
+    "crossIssueLogicalOccurrences": 1332,
     "missingCrossIssueBatchDependencies": 0
   },
   "batchPlan": {
@@ -3745,10 +3765,10 @@
         "cyclic": true
       }
     ],
-    "crossIssueEdges": 1326,
-    "crossIssueLogicalEdges": 1317,
-    "crossIssueOccurrences": 1331,
-    "crossIssueLogicalOccurrences": 1322,
+    "crossIssueEdges": 1336,
+    "crossIssueLogicalEdges": 1327,
+    "crossIssueOccurrences": 1341,
+    "crossIssueLogicalOccurrences": 1332,
     "crossIssueCycles": 0,
     "crossStageConflict": true
   },
@@ -4033,7 +4053,7 @@
           "adapt-boundary",
           "retain-verbatim"
         ],
-        "dependencyCount": 83,
+        "dependencyCount": 85,
         "dependsOnBatchIds": [
           "W-603-01",
           "W-603-02",
@@ -4060,12 +4080,12 @@
         "id": "W-603-06",
         "kind": "reviewChunk",
         "executable": false,
-        "fileCount": 87,
+        "fileCount": 93,
         "dispositions": [
           "adapt-boundary",
           "retain-verbatim"
         ],
-        "dependencyCount": 258,
+        "dependencyCount": 255,
         "dependsOnBatchIds": [
           "W-603-01",
           "W-603-02",
@@ -4249,11 +4269,11 @@
         "id": "W-604-06",
         "kind": "reviewChunk",
         "executable": false,
-        "fileCount": 67,
+        "fileCount": 71,
         "dispositions": [
           "verification-only"
         ],
-        "dependencyCount": 138,
+        "dependencyCount": 146,
         "dependsOnBatchIds": [
           "W-603-01",
           "W-603-02",
@@ -4395,10 +4415,10 @@
     {
       "name": "@bb/server-contract",
       "declaredAs": "dependencies",
-      "actualImports": 235,
-      "runtimeImports": 122,
+      "actualImports": 236,
+      "runtimeImports": 123,
       "runtimeValueImports": 9,
-      "runtimeTypeImports": 113,
+      "runtimeTypeImports": 114,
       "verificationValueImports": 3,
       "verificationTypeImports": 107,
       "decision": "reuse",
@@ -4980,11 +5000,11 @@
     {
       "name": "@tanstack/react-query",
       "declaredAs": "dependencies",
-      "actualImports": 139,
-      "runtimeImports": 71,
-      "runtimeValueImports": 42,
+      "actualImports": 142,
+      "runtimeImports": 72,
+      "runtimeValueImports": 43,
       "runtimeTypeImports": 29,
-      "verificationValueImports": 61,
+      "verificationValueImports": 63,
       "verificationTypeImports": 4,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
@@ -5006,11 +5026,11 @@
     {
       "name": "@testing-library/react",
       "declaredAs": "devDependencies",
-      "actualImports": 312,
+      "actualImports": 314,
       "runtimeImports": 0,
       "runtimeValueImports": 0,
       "runtimeTypeImports": 0,
-      "verificationValueImports": 312,
+      "verificationValueImports": 314,
       "verificationTypeImports": 0,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
@@ -5500,10 +5520,10 @@
     {
       "name": "react",
       "declaredAs": "dependencies",
-      "actualImports": 567,
-      "runtimeImports": 370,
+      "actualImports": 568,
+      "runtimeImports": 371,
       "runtimeValueImports": 312,
-      "runtimeTypeImports": 58,
+      "runtimeTypeImports": 59,
       "verificationValueImports": 124,
       "verificationTypeImports": 64,
       "decision": "reuse",
@@ -5578,9 +5598,9 @@
     {
       "name": "react-router-dom",
       "declaredAs": "dependencies",
-      "actualImports": 153,
-      "runtimeImports": 54,
-      "runtimeValueImports": 53,
+      "actualImports": 152,
+      "runtimeImports": 53,
+      "runtimeValueImports": 52,
       "runtimeTypeImports": 1,
       "verificationValueImports": 90,
       "verificationTypeImports": 6,
@@ -5864,11 +5884,11 @@
     {
       "name": "vitest",
       "declaredAs": null,
-      "actualImports": 512,
+      "actualImports": 516,
       "runtimeImports": 0,
       "runtimeValueImports": 0,
       "runtimeTypeImports": 0,
-      "verificationValueImports": 511,
+      "verificationValueImports": 515,
       "verificationTypeImports": 0,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
