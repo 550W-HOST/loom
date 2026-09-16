@@ -3136,6 +3136,54 @@
       "issue": "W-593",
       "owner": "PuQing",
       "reason": "Adapt pinned bb source to the loom same-origin typed HTTP boundary, replacing the all-throwing apiClient, the compile-only SDK result, and the generic plugin pairing path."
+    },
+    {
+      "kind": "modify",
+      "upstream": {
+        "path": "apps/app/src/hooks/queries/sidebar-navigation-query.ts",
+        "sha256": "5a73013f04bf80f45cc6bf1ef16b6763f5a1ae852a039648b6c2fcc9aacbbbe1",
+        "mode": "100644"
+      },
+      "local": {
+        "path": "apps/app/src/hooks/queries/sidebar-navigation-query.ts",
+        "sha256": "452720d74b54be4614051420f8411a2bd363a95f929489bc720062d60aaf0d47",
+        "mode": "100644"
+      },
+      "issue": "W-593",
+      "owner": "PuQing",
+      "reason": "Adapt pinned bb source to the loom same-origin typed HTTP boundary, replacing the all-throwing apiClient, the compile-only SDK result, and the generic plugin pairing path."
+    },
+    {
+      "kind": "modify",
+      "upstream": {
+        "path": "apps/app/src/hooks/queries/system-queries.ts",
+        "sha256": "a05adbda71800e661b1297b83d9164671139da3d320715bc764afc565259bf9a",
+        "mode": "100644"
+      },
+      "local": {
+        "path": "apps/app/src/hooks/queries/system-queries.ts",
+        "sha256": "181b767720c3ca09aac4a76eec7657c3e95deffb08b9082b4b5d608e2fc046fb",
+        "mode": "100644"
+      },
+      "issue": "W-593",
+      "owner": "PuQing",
+      "reason": "Adapt pinned bb source to the loom same-origin typed HTTP boundary, replacing the all-throwing apiClient, the compile-only SDK result, and the generic plugin pairing path."
+    },
+    {
+      "kind": "modify",
+      "upstream": {
+        "path": "apps/app/src/hooks/queries/sidebar-navigation-query.test.tsx",
+        "sha256": "55d307d2067278ab3973145ee8029a7aadef09ac9b01dc0cea42d4578519b159",
+        "mode": "100644"
+      },
+      "local": {
+        "path": "apps/app/src/hooks/queries/sidebar-navigation-query.test.tsx",
+        "sha256": "a7053c221d1dd2ec8bb3f6777ffbe9d5ccf3c01d68034d74efe0ea1ad6541f22",
+        "mode": "100644"
+      },
+      "issue": "W-593",
+      "owner": "PuQing",
+      "reason": "Adapt pinned bb source to the loom same-origin typed HTTP boundary, replacing the all-throwing apiClient, the compile-only SDK result, and the generic plugin pairing path."
     }
   ]
 }

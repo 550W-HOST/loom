@@ -6,7 +6,7 @@ import {
   type SidebarBootstrapResponse,
 } from "@bb/server-contract";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { request } from "@/lib/api";
+import { loomApiJson } from "@/lib/loom-http";
 import {
   MAX_CACHED_SIDEBAR_THREADS_PER_PROJECT,
   SIDEBAR_BOOTSTRAP_CACHE_KEY,
@@ -20,14 +20,10 @@ import {
   makeSidebarBootstrapResponse,
 } from "@/test/fixtures/projects";
 
-vi.mock("@/lib/api", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@/lib/api")>();
-  return { ...actual, request: vi.fn() };
+vi.mock("@/lib/loom-http", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/loom-http")>();
+  return { ...actual, loomApiJson: vi.fn() };
 });
-
-vi.mock("@/lib/api-server", () => ({
-  apiClient: { "sidebar-bootstrap": { $get: vi.fn(() => ({})) } },
-}));
 
 vi.mock("@/hooks/useRealtimeSubscription", () => ({
   useEnvironmentListRealtimeSubscription: vi.fn(),
@@ -71,7 +67,7 @@ describe("useSidebarNavigation", () => {
   it("replays the last bootstrap while the live one loads", async () => {
     sidebarBootstrapResponseSchema.parse(BOOTSTRAP);
 
-    vi.mocked(request).mockResolvedValue(BOOTSTRAP);
+    vi.mocked(loomApiJson).mockResolvedValue(BOOTSTRAP);
     const warmHarness = createQueryClientTestHarness();
     const warm = renderHook(() => useSidebarNavigation(), {
       wrapper: warmHarness.wrapper,
@@ -79,18 +75,18 @@ describe("useSidebarNavigation", () => {
     await waitFor(() => expect(warm.result.current.data).toEqual(BOOTSTRAP));
     warm.unmount();
 
-    vi.mocked(request).mockImplementation(pendingForever);
+    vi.mocked(loomApiJson).mockImplementation(pendingForever);
     const reloadHarness = createQueryClientTestHarness();
     const { result } = renderHook(() => useSidebarNavigation(), {
       wrapper: reloadHarness.wrapper,
     });
     expect(result.current.isPlaceholderData).toBe(true);
     expect(result.current.data?.projects[0]?.name).toBe("Felt walk");
-    await waitFor(() => expect(request).toHaveBeenCalled());
+    await waitFor(() => expect(loomApiJson).toHaveBeenCalled());
   });
 
   it("keeps the cold-profile skeleton: no placeholder without a stored bootstrap", () => {
-    vi.mocked(request).mockImplementation(pendingForever);
+    vi.mocked(loomApiJson).mockImplementation(pendingForever);
     const harness = createQueryClientTestHarness();
     const { result } = renderHook(() => useSidebarNavigation(), {
       wrapper: harness.wrapper,
@@ -115,7 +111,7 @@ describe("useSidebarNavigation", () => {
       };
       sidebarBootstrapResponseSchema.parse(large);
 
-      vi.mocked(request).mockResolvedValue(large);
+      vi.mocked(loomApiJson).mockResolvedValue(large);
       const warmHarness = createQueryClientTestHarness();
       const warm = renderHook(() => useSidebarNavigation(), {
         wrapper: warmHarness.wrapper,
@@ -140,7 +136,7 @@ describe("useSidebarNavigation", () => {
       warm.unmount();
 
       resetSidebarBootstrapCacheForTest();
-      vi.mocked(request).mockImplementation(pendingForever);
+      vi.mocked(loomApiJson).mockImplementation(pendingForever);
       const reloadHarness = createQueryClientTestHarness();
       const { result } = renderHook(() => useSidebarNavigation(), {
         wrapper: reloadHarness.wrapper,
@@ -162,7 +158,7 @@ describe("useSidebarNavigation", () => {
         throw new DOMException("quota", "QuotaExceededError");
       });
     try {
-      vi.mocked(request).mockResolvedValue(BOOTSTRAP);
+      vi.mocked(loomApiJson).mockResolvedValue(BOOTSTRAP);
       const harness = createQueryClientTestHarness();
       const { result } = renderHook(() => useSidebarNavigation(), {
         wrapper: harness.wrapper,

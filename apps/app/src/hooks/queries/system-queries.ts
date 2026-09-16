@@ -15,6 +15,7 @@ import { permissionModeValues } from "@bb/domain";
 import { toRecord } from "@bb/core-ui";
 import type {
   SystemCliSkillsStatusResponse,
+  SystemConfigResponse,
   SystemExecutionOptionsResponse,
   SystemProvidersQuery,
   SystemProviderStatesResponse,
@@ -26,6 +27,7 @@ import type {
   ProviderUsageResponse,
 } from "@bb/host-daemon-contract";
 import { BbHttpError, sdk } from "@/lib/sdk";
+import { loomApiJson } from "@/lib/loom-http";
 import {
   modelCatalogCacheKey,
   readCachedModelCatalog,
@@ -333,7 +335,11 @@ export function useSystemExecutionOptions(
 export function systemConfigQueryOptions() {
   return queryOptions({
     queryKey: systemConfigQueryKey(),
-    queryFn: ({ signal }) => sdk.system.config({ signal }),
+    // Shares its key with the shell boundary, so it must use the same
+    // same-origin reader: a background refetch through a separate client
+    // would overwrite the shell's data (or fail where the shell succeeded).
+    queryFn: ({ signal }) =>
+      loomApiJson<SystemConfigResponse>("system.config", { signal }),
     staleTime: 60_000,
   });
 }

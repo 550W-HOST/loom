@@ -3,8 +3,7 @@ import { useCallback } from "react";
 import { PERSONAL_PROJECT_ID, type ThreadListEntry } from "@bb/domain";
 import type { SidebarBootstrapResponse } from "@bb/server-contract";
 import { listSidebarNavigationThreads } from "@/hooks/cache-owners/query-cache";
-import { apiClient } from "@/lib/api-server";
-import { request, requestOptions } from "@/lib/api";
+import { loomApiJson } from "@/lib/loom-http";
 import {
   useEnvironmentListRealtimeSubscription,
   useHostListRealtimeSubscription,
@@ -22,9 +21,11 @@ import {
 function fetchSidebarNavigation(
   signal?: AbortSignal,
 ): Promise<SidebarBootstrapResponse> {
-  return request<SidebarBootstrapResponse>(
-    apiClient["sidebar-bootstrap"].$get(undefined, requestOptions(signal)),
-  );
+  // The shell boundary reads the same query key through the same transport, so
+  // the sidebar cannot load through one client and refetch through another.
+  return loomApiJson<SidebarBootstrapResponse>("projects.sidebarBootstrap", {
+    signal,
+  });
 }
 
 export function useSidebarNavigation(options?: QueryOptions) {

@@ -50,6 +50,13 @@ const SIDEBAR_BODY = {
 
 const SYSTEM_CONFIG_BODY = { generalSettings: {}, serverUrl: "http://localhost" };
 
+function ok(body: unknown) {
+  return new Response(JSON.stringify(body), {
+    status: 200,
+    headers: { "content-type": "application/json" },
+  });
+}
+
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
@@ -156,6 +163,63 @@ describe("loom shell bootstrap", () => {
       "shell",
       "health",
     ]);
+  });
+
+  it("writes the bounded sidebar cache after a successful read", async () => {
+    const { SIDEBAR_BOOTSTRAP_CACHE_KEY } = await import(
+      "@/lib/sidebar-bootstrap-cache"
+    );
+    window.localStorage.clear();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        ok({
+          ...SIDEBAR_BODY,
+          projects: [
+            {
+              id: "proj_1",
+              kind: "standard",
+              name: "One",
+              gitRemoteUrl: null,
+              createdAt: 0,
+              updatedAt: 0,
+              sources: [],
+              threads: [],
+              defaultExecutionOptions: null,
+            },
+          ],
+        }),
+      ),
+    );
+
+    renderQuery(useShellSidebarBootstrap);
+    await waitFor(() => expect(screen.getByText(/proj_1/u)).toBeDefined());
+
+    // The write is deferred off the critical path, so flush the timer/idle
+    // callback before asserting the cache actually holds the response.
+    await waitFor(() => {
+      const stored = window.localStorage.getItem(SIDEBAR_BOOTSTRAP_CACHE_KEY);
+      expect(stored).not.toBeNull();
+      expect(stored).toContain("proj_1");
+    });
+  });
+
+  it("does not invent sidebar data when the request fails", async () => {
+    window.localStorage.clear();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        throw new TypeError("Failed to fetch");
+      }),
+    );
+
+    renderQuery(useShellSidebarBootstrap);
+
+    await waitFor(() => expect(screen.getByText(/error:/u)).toBeDefined());
+    const { SIDEBAR_BOOTSTRAP_CACHE_KEY } = await import(
+      "@/lib/sidebar-bootstrap-cache"
+    );
+    expect(window.localStorage.getItem(SIDEBAR_BOOTSTRAP_CACHE_KEY)).toBeNull();
   });
 
   it("keeps health as the only shell-owned key", () => {
