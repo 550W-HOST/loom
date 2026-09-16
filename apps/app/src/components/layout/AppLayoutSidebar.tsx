@@ -1,10 +1,9 @@
 import { useState, type MouseEvent as ReactMouseEvent } from "react";
 import { AppSidebar } from "@/components/sidebar/AppSidebar";
 import { SettingsSidebar } from "@/components/settings/SettingsSidebar";
-import { ResourceSidebar } from "@/components/tools/ResourceSidebar";
 import { Sidebar, useSidebar } from "@/components/ui/sidebar.js";
 
-export type AppLayoutSidebarMode = "app" | "settings" | "plugins" | "skills";
+export type AppLayoutSidebarMode = "app" | "settings";
 
 interface AppLayoutSidebarProps {
   mode: AppLayoutSidebarMode;
@@ -12,8 +11,6 @@ interface AppLayoutSidebarProps {
   isResizing: boolean;
   appRoutePath: string;
   settingsRoutePath: string;
-  toolsBackRoutePath: string;
-  toolsRoutePath?: string;
 }
 
 export function AppLayoutSidebar({
@@ -22,8 +19,6 @@ export function AppLayoutSidebar({
   isResizing,
   appRoutePath,
   settingsRoutePath,
-  toolsBackRoutePath,
-  toolsRoutePath,
 }: AppLayoutSidebarProps) {
   const { isCompactViewport, isMobileSidebarClosing } = useSidebar();
   const holdCurrentMode = isCompactViewport && isMobileSidebarClosing;
@@ -39,28 +34,16 @@ export function AppLayoutSidebar({
         <AppSidebar
           onResizeMouseDown={onResizeMouseDown}
           isResizing={isResizing}
-          showTopReserve={true}
+          showTopReserve
           settingsRoutePath={settingsRoutePath}
-          toolsRoutePath={toolsRoutePath}
           mobileHosted={{ hidden: renderedMode !== "app" }}
         />
         {renderedMode === "settings" ? (
           <SettingsSidebar
             onResizeMouseDown={onResizeMouseDown}
             isResizing={isResizing}
-            showTopReserve={true}
+            showTopReserve
             appRoutePath={appRoutePath}
-            mobileHosted
-          />
-        ) : null}
-        {renderedMode === "plugins" || renderedMode === "skills" ? (
-          <ResourceSidebar
-            key={renderedMode}
-            workspace={renderedMode}
-            onResizeMouseDown={onResizeMouseDown}
-            isResizing={isResizing}
-            showTopReserve={true}
-            appRoutePath={toolsBackRoutePath}
             mobileHosted
           />
         ) : null}
@@ -73,21 +56,8 @@ export function AppLayoutSidebar({
       <SettingsSidebar
         onResizeMouseDown={onResizeMouseDown}
         isResizing={isResizing}
-        showTopReserve={true}
+        showTopReserve
         appRoutePath={appRoutePath}
-      />
-    );
-  }
-
-  if (renderedMode === "plugins" || renderedMode === "skills") {
-    return (
-      <ResourceSidebar
-        key={renderedMode}
-        workspace={renderedMode}
-        onResizeMouseDown={onResizeMouseDown}
-        isResizing={isResizing}
-        showTopReserve={true}
-        appRoutePath={toolsBackRoutePath}
       />
     );
   }
@@ -96,9 +66,8 @@ export function AppLayoutSidebar({
     <AppSidebar
       onResizeMouseDown={onResizeMouseDown}
       isResizing={isResizing}
-      showTopReserve={true}
+      showTopReserve
       settingsRoutePath={settingsRoutePath}
-      toolsRoutePath={toolsRoutePath}
     />
   );
 }

@@ -2,7 +2,6 @@ import { useMemo, type ReactNode } from "react";
 import type { OpenInTargetContext } from "@bb/host-daemon-contract";
 import type { SidebarProject } from "@/hooks/queries/project-queries";
 import { findLocalPathProjectSourceForHost } from "@bb/domain";
-import type { PluginFileOpenerSource } from "@get-bb/plugin-sdk";
 import type {
   PluginPanelFixedPanelTab,
   SecondaryFileFixedPanelTab,
@@ -26,6 +25,7 @@ import {
   createFileOpenerOriginalTab,
   parseFileOpenerParams,
   type FileOpenerOriginalTab,
+  type PluginFileOpenerSource,
 } from "@/components/plugin/file-opener-tabs";
 import { useEnvironment } from "@/hooks/queries/environment-queries";
 import { useThreadStorageViewer } from "@/components/secondary-panel/useThreadStorageViewer";

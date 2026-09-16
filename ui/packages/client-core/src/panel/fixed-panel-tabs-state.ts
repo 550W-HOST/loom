@@ -7,7 +7,9 @@ import {
 } from "@bb/desktop-contract";
 import {
   terminalCreateTargetSchema,
+  threadTabFileOpenerOwnerSchema,
   type TerminalCreateTarget,
+  type ThreadTabFileOpenerOwner,
 } from "@bb/server-contract";
 import {
   areFilePreviewLineRangesEqual,
@@ -67,6 +69,15 @@ const gitDiffFixedPanelTabSchema = z
   .object({
     id: z.string().min(1),
     kind: z.literal("git-diff"),
+  })
+  .strict();
+const pluginPageFixedPanelTabSchema = z
+  .object({
+    fixedTabId: z.string().min(1),
+    id: z.string().min(1),
+    kind: z.literal("plugin-page-fixed"),
+    pageId: z.string().min(1),
+    pluginId: z.string().min(1),
   })
   .strict();
 const workspaceFilePreviewFixedPanelTabSchema = z
@@ -131,9 +142,22 @@ const terminalFixedPanelTabSchema = z
     target: terminalCreateTargetSchema.optional(),
   })
   .strict();
+const pluginPanelFixedPanelTabSchema = z
+  .object({
+    actionId: z.string().min(1),
+    fileOpenerOwner: threadTabFileOpenerOwnerSchema.optional(),
+    id: z.string().min(1),
+    kind: z.literal("plugin-panel"),
+    paramsJson: z.string().nullable(),
+    pluginId: z.string().min(1),
+    title: z.string().min(1),
+  })
+  .strict();
 const secondaryFixedPanelTabSchema = z.union([
   threadInfoFixedPanelTabSchema,
   gitDiffFixedPanelTabSchema,
+  pluginPageFixedPanelTabSchema,
+  pluginPanelFixedPanelTabSchema,
   workspaceFilePreviewFixedPanelTabSchema,
   hostFilePreviewFixedPanelTabSchema,
   threadStorageFilePreviewFixedPanelTabSchema,
@@ -141,17 +165,25 @@ const secondaryFixedPanelTabSchema = z.union([
   newTabFixedPanelTabSchema,
   terminalFixedPanelTabSchema,
 ]);
+const unsupportedPersistedPanelKinds = new Set([
+  "side-chat",
+  "browser",
+  "plugin-page-fixed",
+  "plugin-panel",
+]);
 const secondaryFixedPanelTabsSchema = z.preprocess(
   (value) =>
     Array.isArray(value)
-      ? value.filter(
-          (tab) =>
-            !(
-              typeof tab === "object" &&
-              tab !== null &&
-              (tab as { kind?: unknown }).kind === "side-chat"
-            ),
-        )
+      ? value.filter((tab) => {
+          const kind =
+            typeof tab === "object" && tab !== null
+              ? (tab as { kind?: unknown }).kind
+              : undefined;
+          return (
+            typeof kind !== "string" ||
+            !unsupportedPersistedPanelKinds.has(kind)
+          );
+        })
       : value,
   z.array(secondaryFixedPanelTabSchema),
 );
@@ -180,9 +212,28 @@ interface GitDiffFixedPanelTab {
   kind: "git-diff";
 }
 
+export interface PluginPageFixedPanelTab {
+  fixedTabId: string;
+  id: string;
+  kind: "plugin-page-fixed";
+  pageId: string;
+  pluginId: string;
+}
+
 export type FixedPanelViewTab =
   | ThreadInfoFixedPanelTab
-  | GitDiffFixedPanelTab;
+  | GitDiffFixedPanelTab
+  | PluginPageFixedPanelTab;
+
+export interface PluginPanelFixedPanelTab {
+  actionId: string;
+  fileOpenerOwner?: ThreadTabFileOpenerOwner;
+  id: string;
+  kind: "plugin-panel";
+  paramsJson: string | null;
+  pluginId: string;
+  title: string;
+}
 
 export interface WorkspaceFilePreviewFixedPanelTab {
   environmentId: string | null;
@@ -239,6 +290,8 @@ export interface TerminalFixedPanelTab {
 export type SecondaryFixedPanelTab =
   | ThreadInfoFixedPanelTab
   | GitDiffFixedPanelTab
+  | PluginPageFixedPanelTab
+  | PluginPanelFixedPanelTab
   | WorkspaceFilePreviewFixedPanelTab
   | HostFilePreviewFixedPanelTab
   | ThreadStorageFilePreviewFixedPanelTab
@@ -252,7 +305,8 @@ export type SecondaryFileFixedPanelTab =
   | ThreadStorageFilePreviewFixedPanelTab
   | BrowserFixedPanelTab
   | NewTabFixedPanelTab
-  | TerminalFixedPanelTab;
+  | TerminalFixedPanelTab
+  | PluginPanelFixedPanelTab;
 
 export type FixedPanelTab = SecondaryFixedPanelTab;
 
@@ -336,6 +390,19 @@ interface CreateWorkspaceFilePreviewFixedPanelTabArgs {
 interface CreateTerminalFixedPanelTabArgs {
   terminalId: string;
   target?: TerminalCreateTarget;
+}
+
+interface CreatePluginPanelFixedPanelTabArgs {
+  actionId: string;
+  paramsJson: string | null;
+  pluginId: string;
+  title: string;
+}
+
+interface CreatePluginPageFixedPanelTabArgs {
+  fixedTabId: string;
+  pageId: string;
+  pluginId: string;
 }
 
 interface BuildFixedPanelTabIdArgs {
@@ -454,6 +521,44 @@ export function createGitDiffFixedPanelTab(): GitDiffFixedPanelTab {
   return {
     id: GIT_DIFF_TAB_ID,
     kind: "git-diff",
+  };
+}
+
+export function createPluginPageFixedPanelTab({
+  fixedTabId,
+  pageId,
+  pluginId,
+}: CreatePluginPageFixedPanelTabArgs): PluginPageFixedPanelTab {
+  return {
+    fixedTabId,
+    id: buildFixedPanelTabId({
+      environmentId: null,
+      kind: "plugin-page-fixed",
+      path: `${pluginId}:${pageId}:${fixedTabId}`,
+    }),
+    kind: "plugin-page-fixed",
+    pageId,
+    pluginId,
+  };
+}
+
+export function createPluginPanelFixedPanelTab({
+  actionId,
+  paramsJson,
+  pluginId,
+  title,
+}: CreatePluginPanelFixedPanelTabArgs): PluginPanelFixedPanelTab {
+  return {
+    actionId,
+    id: buildFixedPanelTabId({
+      environmentId: null,
+      kind: "plugin-panel",
+      path: `${pluginId}:${actionId}:${paramsJson ?? ""}`,
+    }),
+    kind: "plugin-panel",
+    paramsJson,
+    pluginId,
+    title,
   };
 }
 
@@ -594,6 +699,14 @@ function normalizeFixedPanelTabId(tab: FixedPanelTab): FixedPanelTab {
             ...tab,
             id: GIT_DIFF_TAB_ID,
           };
+    case "plugin-page-fixed": {
+      const id = createPluginPageFixedPanelTab({
+        fixedTabId: tab.fixedTabId,
+        pageId: tab.pageId,
+        pluginId: tab.pluginId,
+      }).id;
+      return tab.id === id ? tab : { ...tab, id };
+    }
     case "workspace-file-preview": {
       const id = buildWorkspaceFilePreviewTabId({
         environmentId: tab.environmentId,
@@ -639,6 +752,15 @@ function normalizeFixedPanelTabId(tab: FixedPanelTab): FixedPanelTab {
             ...tab,
             id: NEW_TAB_TAB_ID,
           };
+    case "plugin-panel": {
+      const id = createPluginPanelFixedPanelTab({
+        actionId: tab.actionId,
+        paramsJson: tab.paramsJson,
+        pluginId: tab.pluginId,
+        title: tab.title,
+      }).id;
+      return tab.id === id ? tab : { ...tab, id };
+    }
     case "terminal": {
       const id = buildFixedPanelTabId({
         environmentId: null,
@@ -708,10 +830,33 @@ function stripTransientFixedPanelTabForStorage(
       };
     case "thread-info":
     case "git-diff":
+    case "plugin-page-fixed":
     case "browser":
     case "new-tab":
     case "terminal":
       return tab;
+    case "plugin-panel":
+      return tab.fileOpenerOwner === undefined
+        ? tab
+        : {
+            ...tab,
+            fileOpenerOwner: stripFileOpenerOwnerForStorage(
+              tab.fileOpenerOwner,
+            ),
+          };
+  }
+}
+
+function stripFileOpenerOwnerForStorage(
+  owner: ThreadTabFileOpenerOwner,
+): ThreadTabFileOpenerOwner {
+  switch (owner.kind) {
+    case "workspace-file-preview":
+      return { ...owner, tab: { ...owner.tab, lineRange: null } };
+    case "host-file-preview":
+      return { ...owner, tab: { ...owner.tab, lineRange: null } };
+    case "thread-storage-file-preview":
+      return { ...owner, tab: { ...owner.tab, lineRange: null } };
   }
 }
 
@@ -894,6 +1039,22 @@ export function areFixedPanelTabsEquivalent(
     case "git-diff":
     case "new-tab":
       return true;
+    case "plugin-page-fixed":
+      return (
+        b.kind === "plugin-page-fixed" &&
+        a.pluginId === b.pluginId &&
+        a.pageId === b.pageId &&
+        a.fixedTabId === b.fixedTabId
+      );
+    case "plugin-panel":
+      return (
+        b.kind === "plugin-panel" &&
+        a.pluginId === b.pluginId &&
+        a.actionId === b.actionId &&
+        a.paramsJson === b.paramsJson &&
+        areFileOpenerOwnersEqual(a.fileOpenerOwner, b.fileOpenerOwner) &&
+        a.title === b.title
+      );
     case "workspace-file-preview":
       return (
         b.kind === "workspace-file-preview" &&
@@ -948,4 +1109,33 @@ export function areFixedPanelTabsEquivalent(
         JSON.stringify(a.target) === JSON.stringify(b.target)
       );
   }
+}
+
+function areFileOpenerOwnersEqual(
+  a: ThreadTabFileOpenerOwner | undefined,
+  b: ThreadTabFileOpenerOwner | undefined,
+): boolean {
+  if (a === undefined || b === undefined) return a === b;
+  if (
+    a.kind !== b.kind ||
+    a.environmentId !== b.environmentId ||
+    a.threadId !== b.threadId ||
+    a.tab.path !== b.tab.path ||
+    !areFilePreviewLineRangesEqual({
+      a: a.tab.lineRange,
+      b: b.tab.lineRange,
+    })
+  ) {
+    return false;
+  }
+  if (a.kind === "host-file-preview") {
+    return b.kind === "host-file-preview" && a.hostId === b.hostId;
+  }
+  if (a.kind !== "workspace-file-preview") return true;
+  return (
+    b.kind === "workspace-file-preview" &&
+    a.projectId === b.projectId &&
+    areEnvironmentFilePreviewSourcesEqual(a.tab.source, b.tab.source) &&
+    a.tab.statusLabel === b.tab.statusLabel
+  );
 }

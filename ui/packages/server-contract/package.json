@@ -16,6 +16,7 @@
   },
   "dependencies": {
     "@bb/domain": "workspace:*",
-    "zod": "^4.3.6"
+    "zod": "^4.6.2",
+    "@bb/host-daemon-contract": "workspace:*"
   }
 }

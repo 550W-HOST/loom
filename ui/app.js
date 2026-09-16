@@ -19688,174 +19688,135 @@ var activeThinkingSchema = external_exports.object({
   updatedAt: external_exports.number()
 });
 
-// packages/domain/src/background-task.ts
-var LOCAL_WORKFLOW_TASK_TYPE = "local_workflow";
-var LOCAL_BASH_TASK_TYPE = "local_bash";
-var LOCAL_AGENT_TASK_TYPE = "local_agent";
-var LOCAL_SUBAGENT_TASK_TYPE = "local_subagent";
-function isBackgroundCommandTaskType(taskType) {
-  return taskType === LOCAL_BASH_TASK_TYPE;
-}
-function isBackgroundAgentTaskType(taskType) {
-  return taskType === LOCAL_AGENT_TASK_TYPE || taskType === LOCAL_SUBAGENT_TASK_TYPE;
-}
-var backgroundTaskStatusValues = [
-  "pending",
-  "running",
-  "paused",
-  "completed",
-  "failed",
-  "killed",
-  "stopped"
+// packages/domain/src/app-keybindings.ts
+var THREAD_JUMP_APP_COMMAND_IDS = [
+  "thread.jump.1",
+  "thread.jump.2",
+  "thread.jump.3",
+  "thread.jump.4",
+  "thread.jump.5",
+  "thread.jump.6",
+  "thread.jump.7",
+  "thread.jump.8",
+  "thread.jump.9"
 ];
-var backgroundTaskStatusSchema = external_exports.enum(backgroundTaskStatusValues);
-var workflowAgentStateValues = [
-  "queued",
-  "running",
-  "done",
-  "failed",
-  "skipped"
+var QUESTION_SELECT_APP_COMMAND_IDS = [
+  "question.select.1",
+  "question.select.2",
+  "question.select.3",
+  "question.select.4",
+  "question.select.5",
+  "question.select.6",
+  "question.select.7",
+  "question.select.8",
+  "question.select.9"
 ];
-var workflowAgentStateSchema = external_exports.enum(workflowAgentStateValues);
-function isSettledWorkflowAgentState(state) {
-  switch (state) {
-    case "done":
-    case "failed":
-    case "skipped":
-      return true;
-    case "queued":
-    case "running":
-      return false;
+var PANE_FOCUS_APP_COMMAND_IDS = [
+  "pane.focus.1",
+  "pane.focus.2",
+  "pane.focus.3",
+  "pane.focus.4",
+  "pane.focus.5",
+  "pane.focus.6",
+  "pane.focus.7",
+  "pane.focus.8"
+];
+var APP_COMMAND_IDS = [
+  "palette.open",
+  "thread.new",
+  "thread.search",
+  "thread.rename",
+  "thread.archive",
+  "thread.previous",
+  "thread.next",
+  ...THREAD_JUMP_APP_COMMAND_IDS,
+  "pane.focus.previous",
+  "pane.focus.next",
+  ...PANE_FOCUS_APP_COMMAND_IDS,
+  "pane.maximize.toggle",
+  "pane.close",
+  "window.new",
+  "app.back",
+  "settings.open",
+  "settings.openServers",
+  "sidebar.toggle",
+  "panel.newTab",
+  "panel.reopenClosedTab",
+  "panel.close",
+  "panel.toggle",
+  "file.quickOpen",
+  "diff.toggle",
+  "terminal.open",
+  "composer.focus",
+  "modelPicker.toggle",
+  "modelPicker.cycleModel",
+  "modelPicker.cycleModelBackward",
+  "modelPicker.cycleProvider",
+  "modelPicker.cycleProviderBackward",
+  "modelPicker.cycleReasoning",
+  "modelPicker.cycleReasoningBackward",
+  "browser.focusLocation",
+  "browser.reload",
+  "browser.find",
+  "workspace.openPreferred",
+  "logs.openServerDaemon",
+  "notifications.open",
+  ...QUESTION_SELECT_APP_COMMAND_IDS
+];
+var appCommandIdSchema = external_exports.enum(APP_COMMAND_IDS);
+var APP_COMMAND_CONTEXT_KEYS = [
+  "mainSurface",
+  "modalOpen",
+  "editableFocus",
+  "terminalFocus",
+  "browserFocus",
+  "modelPickerOpen",
+  "questionOpen",
+  "promptAvailable",
+  "splitActive",
+  "webSurface",
+  "macPlatform"
+];
+var appCommandContextKeySchema = external_exports.enum(APP_COMMAND_CONTEXT_KEYS);
+var appShortcutSchema = external_exports.object({
+  key: external_exports.string().min(1).max(32),
+  mod: external_exports.boolean(),
+  meta: external_exports.boolean(),
+  control: external_exports.boolean(),
+  alt: external_exports.boolean(),
+  shift: external_exports.boolean()
+}).strict();
+var appCommandWhenSchema = external_exports.object({
+  all: external_exports.array(appCommandContextKeySchema),
+  none: external_exports.array(appCommandContextKeySchema)
+}).strict();
+var appKeybindingSchema = external_exports.object({
+  command: appCommandIdSchema,
+  desktopOnly: external_exports.boolean(),
+  shortcut: appShortcutSchema,
+  when: appCommandWhenSchema
+}).strict();
+var appDefaultKeybindingSchema = appKeybindingSchema.extend({
+  shortcut: appShortcutSchema.nullable()
+});
+var appKeybindingsSchema = external_exports.array(appKeybindingSchema).max(256);
+var appDefaultKeybindingsSchema = external_exports.array(appDefaultKeybindingSchema).max(256);
+var appKeybindingOverrideSchema = external_exports.object({
+  command: appCommandIdSchema,
+  shortcut: appShortcutSchema.nullable()
+}).strict();
+var appKeybindingOverridesSchema = external_exports.array(appKeybindingOverrideSchema).max(APP_COMMAND_IDS.length).superRefine((overrides, context) => {
+  const seen = /* @__PURE__ */ new Set();
+  for (const [index, override] of overrides.entries()) {
+    if (seen.has(override.command)) {
+      context.addIssue({
+        code: "custom",
+        message: `Duplicate override for ${override.command}`,
+        path: [index, "command"]
+      });
+    }
+    seen.add(override.command);
   }
-}
-var workflowAgentSnapshotSchema = external_exports.object({
-  index: external_exports.number().int().positive(),
-  label: external_exports.string(),
-  state: workflowAgentStateSchema,
-  model: external_exports.string(),
-  attempt: external_exports.number().int().positive(),
-  cached: external_exports.boolean(),
-  lastProgressAt: external_exports.number(),
-  phaseIndex: external_exports.number().int().positive().optional(),
-  phaseTitle: external_exports.string().optional(),
-  agentType: external_exports.string().optional(),
-  isolation: external_exports.string().optional(),
-  queuedAt: external_exports.number().optional(),
-  startedAt: external_exports.number().optional(),
-  lastToolName: external_exports.string().optional(),
-  lastToolSummary: external_exports.string().optional(),
-  promptPreview: external_exports.string().optional(),
-  resultPreview: external_exports.string().optional(),
-  error: external_exports.string().optional(),
-  tokens: external_exports.number().optional(),
-  toolCalls: external_exports.number().optional(),
-  durationMs: external_exports.number().optional()
-});
-var workflowPhaseSnapshotSchema = external_exports.object({
-  index: external_exports.number().int().positive(),
-  title: external_exports.string(),
-  kind: external_exports.string().optional()
-});
-var workflowProgressSnapshotSchema = external_exports.object({
-  phases: external_exports.array(workflowPhaseSnapshotSchema),
-  agents: external_exports.array(workflowAgentSnapshotSchema)
-});
-var backgroundTaskUsageSchema = external_exports.object({
-  totalTokens: external_exports.number(),
-  toolUses: external_exports.number(),
-  durationMs: external_exports.number()
-});
-
-// packages/domain/src/json-value.ts
-var jsonValueSchema = external_exports.lazy(
-  () => external_exports.union([
-    external_exports.string(),
-    external_exports.number(),
-    external_exports.boolean(),
-    external_exports.null(),
-    external_exports.array(jsonValueSchema),
-    external_exports.record(external_exports.string(), jsonValueSchema)
-  ])
-);
-var jsonObjectSchema = external_exports.record(
-  external_exports.string(),
-  jsonValueSchema
-);
-
-// packages/domain/src/environment.ts
-var environmentMachineSelectionSchema = external_exports.object({
-  type: external_exports.literal("existing"),
-  hostId: external_exports.string().min(1)
-});
-var environmentProviderSelectionSchema = external_exports.object({
-  machine: environmentMachineSelectionSchema,
-  inputs: jsonValueSchema.nullable()
-});
-var environmentStatusValues = [
-  "creating",
-  "provisioning",
-  "ready",
-  "error",
-  "destroyed"
-];
-var environmentStatusSchema = external_exports.enum(environmentStatusValues);
-var WORKSPACE_PROVISION_TYPES = [
-  "unmanaged",
-  "managed-worktree",
-  "personal"
-];
-var workspaceProvisionTypeSchema = external_exports.enum(WORKSPACE_PROVISION_TYPES);
-var environmentWorkspaceDisplayKindValues = [
-  "managed-worktree",
-  "unmanaged-worktree",
-  "other"
-];
-var environmentWorkspaceDisplayKindSchema = external_exports.enum(
-  environmentWorkspaceDisplayKindValues
-);
-var discoveredWorkspacePropertiesSchema = external_exports.object({
-  path: external_exports.string().min(1),
-  isGitRepo: external_exports.boolean(),
-  isWorktree: external_exports.boolean(),
-  branchName: external_exports.string().nullable(),
-  defaultBranch: external_exports.string().nullable()
-});
-var environmentLifecycleSchema = external_exports.object({
-  phase: external_exports.enum(["active", "retiring", "teardown", "destroyed"]),
-  retireAt: external_exports.number().nullable(),
-  teardown: external_exports.object({
-    status: external_exports.enum(["running", "failed", "removed"]),
-    attempt: external_exports.number().int().nonnegative(),
-    message: external_exports.string().optional()
-  }).nullable()
-});
-var environmentSchema = external_exports.object({
-  id: external_exports.string(),
-  name: external_exports.string().nullable(),
-  projectId: external_exports.string(),
-  hostId: external_exports.string(),
-  path: external_exports.string().nullable(),
-  isGitRepo: external_exports.boolean(),
-  isWorktree: external_exports.boolean(),
-  branchName: external_exports.string().nullable(),
-  baseBranch: external_exports.string().nullable(),
-  defaultBranch: external_exports.string().nullable(),
-  mergeBaseBranch: external_exports.string().nullable(),
-  status: environmentStatusSchema,
-  environmentProviderId: external_exports.string().nullable(),
-  lifecycle: environmentLifecycleSchema,
-  environmentProviderSelection: environmentProviderSelectionSchema.nullable(),
-  environmentProviderInstanceKey: external_exports.string().nullable(),
-  managed: external_exports.boolean(),
-  workspaceProvisionType: workspaceProvisionTypeSchema.nullable(),
-  createdAt: external_exports.number(),
-  updatedAt: external_exports.number()
-});
-
-// packages/domain/src/feature-flags.ts
-var featureFlagsSchema = external_exports.object({
-  placeholder: external_exports.boolean(),
-  timelineWindowEventBudget: external_exports.number().int().positive()
 });
 
 // packages/domain/src/git-checkout.ts
@@ -19956,297 +19917,133 @@ var projectSourceCheckoutSchema = gitSourceInspectionSchema.extend(
   gitBranchOptionsSchema.shape
 );
 
-// packages/domain/src/shared-types.ts
-var reasoningLevelValues = [
-  "none",
-  "low",
-  "medium",
-  "high",
-  "xhigh",
-  "ultracode",
-  "max",
-  "ultra"
-];
-var reasoningLevelSchema = external_exports.enum(reasoningLevelValues);
-var serviceTierSchema = external_exports.enum(["fast", "default"]);
-var instructionModeValues = ["append", "replace"];
-var instructionModeSchema = external_exports.enum(instructionModeValues);
-var permissionModeValues = ["accept-edits", "auto", "full"];
-var permissionModeSchema = external_exports.enum(permissionModeValues);
-var permissionModeInputSchema = external_exports.union([permissionModeSchema, external_exports.literal("workspace-write")]).transform(
-  (permissionMode) => permissionMode === "workspace-write" ? "accept-edits" : permissionMode
-);
-var legacyRecordedPermissionModeValues = [
-  "workspace-write",
-  "readonly"
-];
-var recordedPermissionModeSchema = external_exports.enum([
-  ...permissionModeValues,
-  ...legacyRecordedPermissionModeValues
+// packages/domain/src/app-settings.ts
+var MANAGED_BRANCH_PREFIX_MAX_LENGTH = 64;
+var managedBranchPrefixSchema = external_exports.string().max(MANAGED_BRANCH_PREFIX_MAX_LENGTH).refine((prefix) => isValidGitBranchName(`${prefix}slug-thr_id`), {
+  message: "Prefix must start a valid git branch name"
+});
+var appSettingsSchema = external_exports.object({
+  showKeyboardHints: external_exports.boolean(),
+  steerActiveThreadOnEnter: external_exports.boolean(),
+  showDiagnosticEvents: external_exports.boolean(),
+  providerOrder: external_exports.array(external_exports.string().min(1)),
+  defaultProviderId: external_exports.string().min(1).nullable(),
+  streamerMode: external_exports.boolean(),
+  managedBranchPrefix: managedBranchPrefixSchema
+}).strict();
+var appSettingsUpdateSchema = external_exports.union([
+  appSettingsSchema.extend({
+    showUnhandledProviderEvents: external_exports.boolean().optional()
+  }),
+  appSettingsSchema.omit({ showDiagnosticEvents: true }).extend({
+    showUnhandledProviderEvents: external_exports.boolean()
+  })
 ]);
-var permissionEscalationValues = ["ask", "deny"];
-var permissionEscalationSchema = external_exports.enum(permissionEscalationValues);
-var promptInputVisibilityValues = ["agent-only"];
-var promptInputVisibilitySchema = external_exports.enum(promptInputVisibilityValues);
-var promptInputVisibilityFields = {
-  visibility: promptInputVisibilitySchema.optional()
+
+// packages/domain/src/json-value.ts
+var jsonValueSchema = external_exports.lazy(
+  () => external_exports.union([
+    external_exports.string(),
+    external_exports.number(),
+    external_exports.boolean(),
+    external_exports.null(),
+    external_exports.array(jsonValueSchema),
+    external_exports.record(external_exports.string(), jsonValueSchema)
+  ])
+);
+var jsonObjectSchema = external_exports.record(
+  external_exports.string(),
+  jsonValueSchema
+);
+
+// packages/domain/src/code-theme.ts
+var DEFAULT_CODE_THEME_DARK = "pierre-dark";
+var DEFAULT_CODE_THEME_LIGHT = "pierre-light";
+var codeThemeNameSchema = external_exports.string().min(1).max(128).regex(
+  /^[a-zA-Z0-9][a-zA-Z0-9._:-]*$/,
+  "Code theme names may use letters, digits, '.', '_', ':', and '-' and cannot start with '.'"
+);
+var codeThemePairSchema = external_exports.object({
+  dark: codeThemeNameSchema,
+  light: codeThemeNameSchema
+}).strict();
+var vscodeThemeJsonSchema = jsonObjectSchema.refine(
+  (value) => typeof value.name === "string" && value.name.length > 0,
+  { message: "Code theme JSON must include a non-empty name" }
+);
+var resolvedCodeThemeSchema = external_exports.object({
+  dark: codeThemeNameSchema,
+  light: codeThemeNameSchema,
+  files: external_exports.record(external_exports.string(), jsonObjectSchema)
+}).strict();
+var defaultResolvedCodeTheme = {
+  dark: DEFAULT_CODE_THEME_DARK,
+  light: DEFAULT_CODE_THEME_LIGHT,
+  files: {}
 };
-var promptMentionPathSourceValues = ["workspace", "thread-storage"];
-var promptMentionPathSourceSchema = external_exports.enum(promptMentionPathSourceValues);
-var promptMentionPathEntryKindValues = ["file", "directory"];
-var promptMentionPathEntryKindSchema = external_exports.enum(
-  promptMentionPathEntryKindValues
+var uiCodeThemeDeclarationSchema = external_exports.object({
+  dark: external_exports.string().min(1).max(256).optional(),
+  light: external_exports.string().min(1).max(256).optional()
+}).strict();
+
+// packages/domain/src/app-theme.ts
+var builtInThemeIdSchema = external_exports.enum([
+  "default",
+  "nord",
+  "dracula",
+  "solarized",
+  "gruvbox",
+  "catppuccin"
+]);
+var BUILTIN_THEME_IDS = builtInThemeIdSchema.options;
+function isBuiltInThemeId(id) {
+  return BUILTIN_THEME_IDS.includes(id);
+}
+var customThemeNameSchema = external_exports.string().min(1).max(64).regex(
+  /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/,
+  "Custom theme names may use letters, digits, '.', '_', and '-' and cannot start with '.'"
+).refine((name) => name !== "." && name !== "..", "Invalid custom theme name").refine(
+  (name) => !isBuiltInThemeId(name),
+  "Custom theme name collides with a built-in palette id"
 );
-var promptMentionCommandTriggerValues = ["/"];
-var promptMentionCommandTriggerSchema = external_exports.enum(
-  promptMentionCommandTriggerValues
-);
-var promptMentionCommandSourceValues = ["skill", "command"];
-var promptMentionCommandSourceSchema = external_exports.enum(
-  promptMentionCommandSourceValues
-);
-var promptMentionCommandOriginValues = [
-  "builtin",
-  "project",
-  "user"
+var CUSTOM_THEME_CSS_MAX_LENGTH = 256e3;
+var FAVICON_COLORS = [
+  "red",
+  "orange",
+  "yellow",
+  "green",
+  "teal",
+  "blue",
+  "purple",
+  "pink"
 ];
-var promptMentionCommandOriginSchema = external_exports.enum(
-  promptMentionCommandOriginValues
-);
-var canonicalPromptMentionResourceSchema = external_exports.discriminatedUnion("kind", [
-  external_exports.object({
-    kind: external_exports.literal("thread"),
-    threadId: external_exports.string(),
-    projectId: external_exports.string().optional(),
-    label: external_exports.string()
-  }),
-  external_exports.object({
-    kind: external_exports.literal("project"),
-    projectId: external_exports.string(),
-    label: external_exports.string()
-  }),
-  external_exports.object({
-    kind: external_exports.literal("section"),
-    sectionId: external_exports.string(),
-    label: external_exports.string()
-  }),
-  external_exports.object({
-    kind: external_exports.literal("path"),
-    source: promptMentionPathSourceSchema,
-    entryKind: promptMentionPathEntryKindSchema,
-    path: external_exports.string(),
-    label: external_exports.string()
-  }),
-  external_exports.object({
-    kind: external_exports.literal("command"),
-    trigger: promptMentionCommandTriggerSchema,
-    name: external_exports.string(),
-    source: promptMentionCommandSourceSchema,
-    origin: promptMentionCommandOriginSchema,
-    label: external_exports.string(),
-    argumentHint: external_exports.string().nullable()
-  }),
-  external_exports.object({
-    kind: external_exports.literal("plugin"),
-    pluginId: external_exports.string(),
-    icon: external_exports.string().nullable().optional(),
-    itemId: external_exports.string(),
-    label: external_exports.string()
-  })
+var faviconColorPreferenceSchema = external_exports.enum([
+  "default",
+  ...FAVICON_COLORS
 ]);
-function normalizeLegacyPromptMentionResource(value) {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    return value;
-  }
-  const record2 = value;
-  if (record2.kind !== "folder" || typeof record2.folderId !== "string") {
-    return value;
-  }
-  const { folderId, ...rest } = record2;
-  return { ...rest, kind: "section", sectionId: folderId };
-}
-var promptMentionResourceSchema = external_exports.preprocess(
-  normalizeLegacyPromptMentionResource,
-  canonicalPromptMentionResourceSchema
-);
-var promptTextMentionSchema = external_exports.object({
-  start: external_exports.number().int().nonnegative(),
-  end: external_exports.number().int().nonnegative(),
-  resource: promptMentionResourceSchema
+var appThemeSchema = external_exports.object({
+  themeId: external_exports.string().min(1),
+  customCss: external_exports.string().max(CUSTOM_THEME_CSS_MAX_LENGTH).nullable(),
+  faviconColor: faviconColorPreferenceSchema,
+  resolvedCodeTheme: resolvedCodeThemeSchema.default(defaultResolvedCodeTheme)
 });
-var promptInputSchema = external_exports.discriminatedUnion("type", [
-  external_exports.object({
-    type: external_exports.literal("text"),
-    text: external_exports.string(),
-    mentions: external_exports.array(promptTextMentionSchema).default([]),
-    ...promptInputVisibilityFields
-  }),
-  external_exports.object({
-    type: external_exports.literal("image"),
-    url: external_exports.string().url(),
-    ...promptInputVisibilityFields
-  }),
-  external_exports.object({
-    type: external_exports.literal("localImage"),
-    path: external_exports.string(),
-    ...promptInputVisibilityFields
-  }),
-  external_exports.object({
-    type: external_exports.literal("localFile"),
-    path: external_exports.string(),
-    name: external_exports.string().optional(),
-    sizeBytes: external_exports.number().int().nonnegative().optional(),
-    mimeType: external_exports.string().optional(),
-    ...promptInputVisibilityFields
-  })
-]);
-function isSelectedPromptCommandMention(mention, selector) {
-  return mention.resource.kind === "command" && mention.resource.trigger === selector.trigger && mention.resource.name === selector.name;
-}
-function promptInputHasCommandMention(input2, selector) {
-  return input2.some(
-    (item) => item.type === "text" && item.mentions.some(
-      (mention) => isSelectedPromptCommandMention(mention, selector)
-    )
-  );
-}
-function commandRemovalRanges(input2, selector) {
-  return input2.mentions.filter((mention) => isSelectedPromptCommandMention(mention, selector)).map((mention) => ({
-    start: mention.start,
-    end: input2.text[mention.end] === " " && mention.end < input2.text.length ? mention.end + 1 : mention.end
-  })).sort((left, right) => left.start - right.start || left.end - right.end);
-}
-function removedBefore(ranges, position) {
-  let removed = 0;
-  for (const range of ranges) {
-    if (range.end <= position) {
-      removed += range.end - range.start;
-    }
-  }
-  return removed;
-}
-function isInsideRemovalRange(ranges, mention) {
-  return ranges.some(
-    (range) => mention.start < range.end && mention.end > range.start
-  );
-}
-function removeCommandMentionsFromTextInput(input2, selector) {
-  const ranges = commandRemovalRanges(input2, selector);
-  if (ranges.length === 0) {
-    return input2;
-  }
-  let text = "";
-  let cursor = 0;
-  for (const range of ranges) {
-    text += input2.text.slice(cursor, range.start);
-    cursor = range.end;
-  }
-  text += input2.text.slice(cursor);
-  return {
-    ...input2,
-    text,
-    mentions: input2.mentions.filter(
-      (mention) => !isSelectedPromptCommandMention(mention, selector) && !isInsideRemovalRange(ranges, mention)
-    ).map((mention) => {
-      const start = mention.start - removedBefore(ranges, mention.start);
-      const end = mention.end - removedBefore(ranges, mention.end);
-      return { ...mention, start, end };
-    })
-  };
-}
-function removeCommandMentionsFromPromptInput(input2, selector) {
-  return input2.map(
-    (item) => item.type === "text" ? removeCommandMentionsFromTextInput(item, selector) : item
-  );
-}
-var threadExecutionSourceSchema = external_exports.enum([
-  "client/thread/start",
-  "client/turn/requested",
-  "client/turn/start"
-]);
-var callerExecutionInputSourceValues = [
-  "explicit",
-  "client-preference"
-];
-var callerExecutionInputSourceSchema = external_exports.enum(
-  callerExecutionInputSourceValues
-);
-var threadExecutionOptionsSchema = external_exports.object({
-  model: external_exports.string().optional(),
-  serviceTier: serviceTierSchema.optional(),
-  reasoningLevel: reasoningLevelSchema.optional(),
-  permissionMode: permissionModeSchema.optional(),
-  source: threadExecutionSourceSchema.optional(),
-  seq: external_exports.number().int().optional()
+var pluginThemeMetaSchema = external_exports.object({
+  id: external_exports.string().min(1),
+  pluginId: external_exports.string().min(1),
+  name: external_exports.string().min(1),
+  description: external_exports.string().nullable()
 });
-var resolvedThreadExecutionOptionsSchema = threadExecutionOptionsSchema.extend({
-  model: external_exports.string().min(1),
-  serviceTier: serviceTierSchema,
-  reasoningLevel: reasoningLevelSchema,
-  permissionMode: permissionModeSchema,
-  source: threadExecutionSourceSchema
-});
-var recordedThreadExecutionOptionsSchema = resolvedThreadExecutionOptionsSchema.extend({
-  permissionMode: recordedPermissionModeSchema
-});
-var runtimePermissionScopeValues = ["workspace", "full"];
-var runtimePermissionScopeSchema = external_exports.enum(runtimePermissionScopeValues);
-var runtimePermissionPolicySchema = external_exports.discriminatedUnion(
-  "permissionMode",
-  [
-    external_exports.object({
-      permissionMode: external_exports.literal("accept-edits"),
-      permissionScope: external_exports.literal("workspace"),
-      approvalReviewer: external_exports.literal("user"),
-      permissionEscalation: permissionEscalationSchema
-    }),
-    external_exports.object({
-      permissionMode: external_exports.literal("auto"),
-      permissionScope: external_exports.literal("workspace"),
-      approvalReviewer: external_exports.literal("automatic"),
-      permissionEscalation: permissionEscalationSchema
-    }),
-    external_exports.object({
-      permissionMode: external_exports.literal("full"),
-      permissionScope: external_exports.literal("full"),
-      approvalReviewer: external_exports.null(),
-      permissionEscalation: external_exports.null()
-    })
-  ]
-);
-var promptModeSchema = external_exports.literal("plan");
-var runtimeThreadExecutionBaseOptionsSchema = external_exports.object({
-  model: external_exports.string().min(1),
-  serviceTier: serviceTierSchema,
-  reasoningLevel: reasoningLevelSchema,
-  promptMode: promptModeSchema.optional(),
-  providerOptions: jsonObjectSchema
-});
-var runtimeThreadExecutionOptionsSchema = runtimeThreadExecutionBaseOptionsSchema.and(runtimePermissionPolicySchema);
-var projectExecutionDefaultsSchema = external_exports.object({
-  providerId: external_exports.string().min(1),
-  model: external_exports.string().min(1),
-  serviceTier: serviceTierSchema,
-  reasoningLevel: reasoningLevelSchema,
-  permissionMode: permissionModeSchema
+var appThemeSelectionSchema = external_exports.object({
+  themeId: external_exports.string().min(1),
+  faviconColor: faviconColorPreferenceSchema
 });
 
-// packages/domain/src/host.ts
-var hostTypeValues = ["persistent"];
-var hostTypeSchema = external_exports.enum(hostTypeValues);
-var hostStatusValues = ["connected", "disconnected"];
-var hostStatusSchema = external_exports.enum(hostStatusValues);
-var hostSchema = external_exports.object({
-  id: external_exports.string(),
-  name: external_exports.string(),
-  type: hostTypeSchema,
-  status: hostStatusSchema,
-  maxPermissionMode: permissionModeSchema,
-  lastSeenAt: external_exports.number().nullable(),
-  lastRejectedProtocolVersion: external_exports.number().int().positive().nullable(),
-  createdAt: external_exports.number(),
-  updatedAt: external_exports.number()
-});
+// packages/domain/src/plugin-interaction-limits.ts
+var PLUGIN_INTERACTION_MAX_TITLE_LENGTH = 160;
+var PLUGIN_INTERACTION_MAX_PAYLOAD_BYTES = 64 * 1024;
+function jsonByteLength(value) {
+  return new TextEncoder().encode(JSON.stringify(value)).length;
+}
 
 // packages/domain/src/item-presentation.ts
 var THREAD_EVENT_ITEM_PRESENTATION_DETAIL_MAX_LENGTH = 280;
@@ -20277,13 +20074,6 @@ var threadEventItemPresentationSchema = external_exports.object({
   tint: threadEventItemPresentationTintSchema.optional(),
   badge: threadEventItemPresentationBadgeSchema.optional()
 });
-
-// packages/domain/src/plugin-interaction-limits.ts
-var PLUGIN_INTERACTION_MAX_TITLE_LENGTH = 160;
-var PLUGIN_INTERACTION_MAX_PAYLOAD_BYTES = 64 * 1024;
-function jsonByteLength(value) {
-  return new TextEncoder().encode(JSON.stringify(value)).length;
-}
 
 // packages/domain/src/provider-extension-kind.ts
 var EXTENSION_KIND_PATTERN = /^[a-z0-9-]+\/[a-z0-9-]+$/u;
@@ -20697,30 +20487,279 @@ function isUserQuestionInteractionLifecycle(lifecycle) {
   return lifecycle.payload.kind === "user_question";
 }
 
-// packages/domain/src/project.ts
-var projectKindValues = ["standard", "personal"];
-var projectKindSchema = external_exports.enum(projectKindValues);
-var projectSchema = external_exports.object({
-  id: external_exports.string(),
-  kind: projectKindSchema,
-  name: external_exports.string(),
-  gitRemoteUrl: external_exports.string().nullable(),
-  createdAt: external_exports.number(),
-  updatedAt: external_exports.number()
+// packages/domain/src/shared-types.ts
+var reasoningLevelValues = [
+  "none",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "ultracode",
+  "max",
+  "ultra"
+];
+var reasoningLevelSchema = external_exports.enum(reasoningLevelValues);
+var serviceTierSchema = external_exports.enum(["fast", "default"]);
+var instructionModeValues = ["append", "replace"];
+var instructionModeSchema = external_exports.enum(instructionModeValues);
+var permissionModeValues = ["accept-edits", "auto", "full"];
+var permissionModeSchema = external_exports.enum(permissionModeValues);
+var permissionModeInputSchema = external_exports.union([permissionModeSchema, external_exports.literal("workspace-write")]).transform(
+  (permissionMode) => permissionMode === "workspace-write" ? "accept-edits" : permissionMode
+);
+var legacyRecordedPermissionModeValues = [
+  "workspace-write",
+  "readonly"
+];
+var recordedPermissionModeSchema = external_exports.enum([
+  ...permissionModeValues,
+  ...legacyRecordedPermissionModeValues
+]);
+var permissionEscalationValues = ["ask", "deny"];
+var permissionEscalationSchema = external_exports.enum(permissionEscalationValues);
+var promptInputVisibilityValues = ["agent-only"];
+var promptInputVisibilitySchema = external_exports.enum(promptInputVisibilityValues);
+var promptInputVisibilityFields = {
+  visibility: promptInputVisibilitySchema.optional()
+};
+var promptMentionPathSourceValues = ["workspace", "thread-storage"];
+var promptMentionPathSourceSchema = external_exports.enum(promptMentionPathSourceValues);
+var promptMentionPathEntryKindValues = ["file", "directory"];
+var promptMentionPathEntryKindSchema = external_exports.enum(
+  promptMentionPathEntryKindValues
+);
+var promptMentionCommandTriggerValues = ["/"];
+var promptMentionCommandTriggerSchema = external_exports.enum(
+  promptMentionCommandTriggerValues
+);
+var promptMentionCommandSourceValues = ["skill", "command"];
+var promptMentionCommandSourceSchema = external_exports.enum(
+  promptMentionCommandSourceValues
+);
+var promptMentionCommandOriginValues = [
+  "builtin",
+  "project",
+  "user"
+];
+var promptMentionCommandOriginSchema = external_exports.enum(
+  promptMentionCommandOriginValues
+);
+var canonicalPromptMentionResourceSchema = external_exports.discriminatedUnion("kind", [
+  external_exports.object({
+    kind: external_exports.literal("thread"),
+    threadId: external_exports.string(),
+    projectId: external_exports.string().optional(),
+    label: external_exports.string()
+  }),
+  external_exports.object({
+    kind: external_exports.literal("project"),
+    projectId: external_exports.string(),
+    label: external_exports.string()
+  }),
+  external_exports.object({
+    kind: external_exports.literal("section"),
+    sectionId: external_exports.string(),
+    label: external_exports.string()
+  }),
+  external_exports.object({
+    kind: external_exports.literal("path"),
+    source: promptMentionPathSourceSchema,
+    entryKind: promptMentionPathEntryKindSchema,
+    path: external_exports.string(),
+    label: external_exports.string()
+  }),
+  external_exports.object({
+    kind: external_exports.literal("command"),
+    trigger: promptMentionCommandTriggerSchema,
+    name: external_exports.string(),
+    source: promptMentionCommandSourceSchema,
+    origin: promptMentionCommandOriginSchema,
+    label: external_exports.string(),
+    argumentHint: external_exports.string().nullable()
+  }),
+  external_exports.object({
+    kind: external_exports.literal("plugin"),
+    pluginId: external_exports.string(),
+    icon: external_exports.string().nullable().optional(),
+    itemId: external_exports.string(),
+    label: external_exports.string()
+  })
+]);
+function normalizeLegacyPromptMentionResource(value) {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return value;
+  }
+  const record2 = value;
+  if (record2.kind !== "folder" || typeof record2.folderId !== "string") {
+    return value;
+  }
+  const { folderId, ...rest } = record2;
+  return { ...rest, kind: "section", sectionId: folderId };
+}
+var promptMentionResourceSchema = external_exports.preprocess(
+  normalizeLegacyPromptMentionResource,
+  canonicalPromptMentionResourceSchema
+);
+var promptTextMentionSchema = external_exports.object({
+  start: external_exports.number().int().nonnegative(),
+  end: external_exports.number().int().nonnegative(),
+  resource: promptMentionResourceSchema
 });
-var projectSourceTypeValues = ["local_path"];
-var projectSourceTypeSchema = external_exports.enum(projectSourceTypeValues);
-var baseProjectSourceSchema = external_exports.object({
-  id: external_exports.string(),
-  projectId: external_exports.string(),
-  isDefault: external_exports.boolean(),
-  createdAt: external_exports.number(),
-  updatedAt: external_exports.number()
+var promptInputSchema = external_exports.discriminatedUnion("type", [
+  external_exports.object({
+    type: external_exports.literal("text"),
+    text: external_exports.string(),
+    mentions: external_exports.array(promptTextMentionSchema).default([]),
+    ...promptInputVisibilityFields
+  }),
+  external_exports.object({
+    type: external_exports.literal("image"),
+    url: external_exports.string().url(),
+    ...promptInputVisibilityFields
+  }),
+  external_exports.object({
+    type: external_exports.literal("localImage"),
+    path: external_exports.string(),
+    ...promptInputVisibilityFields
+  }),
+  external_exports.object({
+    type: external_exports.literal("localFile"),
+    path: external_exports.string(),
+    name: external_exports.string().optional(),
+    sizeBytes: external_exports.number().int().nonnegative().optional(),
+    mimeType: external_exports.string().optional(),
+    ...promptInputVisibilityFields
+  })
+]);
+function isSelectedPromptCommandMention(mention, selector) {
+  return mention.resource.kind === "command" && mention.resource.trigger === selector.trigger && mention.resource.name === selector.name;
+}
+function promptInputHasCommandMention(input2, selector) {
+  return input2.some(
+    (item) => item.type === "text" && item.mentions.some(
+      (mention) => isSelectedPromptCommandMention(mention, selector)
+    )
+  );
+}
+function commandRemovalRanges(input2, selector) {
+  return input2.mentions.filter((mention) => isSelectedPromptCommandMention(mention, selector)).map((mention) => ({
+    start: mention.start,
+    end: input2.text[mention.end] === " " && mention.end < input2.text.length ? mention.end + 1 : mention.end
+  })).sort((left, right) => left.start - right.start || left.end - right.end);
+}
+function removedBefore(ranges, position) {
+  let removed = 0;
+  for (const range of ranges) {
+    if (range.end <= position) {
+      removed += range.end - range.start;
+    }
+  }
+  return removed;
+}
+function isInsideRemovalRange(ranges, mention) {
+  return ranges.some(
+    (range) => mention.start < range.end && mention.end > range.start
+  );
+}
+function removeCommandMentionsFromTextInput(input2, selector) {
+  const ranges = commandRemovalRanges(input2, selector);
+  if (ranges.length === 0) {
+    return input2;
+  }
+  let text = "";
+  let cursor = 0;
+  for (const range of ranges) {
+    text += input2.text.slice(cursor, range.start);
+    cursor = range.end;
+  }
+  text += input2.text.slice(cursor);
+  return {
+    ...input2,
+    text,
+    mentions: input2.mentions.filter(
+      (mention) => !isSelectedPromptCommandMention(mention, selector) && !isInsideRemovalRange(ranges, mention)
+    ).map((mention) => {
+      const start = mention.start - removedBefore(ranges, mention.start);
+      const end = mention.end - removedBefore(ranges, mention.end);
+      return { ...mention, start, end };
+    })
+  };
+}
+function removeCommandMentionsFromPromptInput(input2, selector) {
+  return input2.map(
+    (item) => item.type === "text" ? removeCommandMentionsFromTextInput(item, selector) : item
+  );
+}
+var threadExecutionSourceSchema = external_exports.enum([
+  "client/thread/start",
+  "client/turn/requested",
+  "client/turn/start"
+]);
+var callerExecutionInputSourceValues = [
+  "explicit",
+  "client-preference"
+];
+var callerExecutionInputSourceSchema = external_exports.enum(
+  callerExecutionInputSourceValues
+);
+var threadExecutionOptionsSchema = external_exports.object({
+  model: external_exports.string().optional(),
+  serviceTier: serviceTierSchema.optional(),
+  reasoningLevel: reasoningLevelSchema.optional(),
+  permissionMode: permissionModeSchema.optional(),
+  source: threadExecutionSourceSchema.optional(),
+  seq: external_exports.number().int().optional()
 });
-var localPathProjectSourceSchema = baseProjectSourceSchema.extend({
-  type: external_exports.literal("local_path"),
-  hostId: external_exports.string(),
-  path: external_exports.string()
+var resolvedThreadExecutionOptionsSchema = threadExecutionOptionsSchema.extend({
+  model: external_exports.string().min(1),
+  serviceTier: serviceTierSchema,
+  reasoningLevel: reasoningLevelSchema,
+  permissionMode: permissionModeSchema,
+  source: threadExecutionSourceSchema
+});
+var recordedThreadExecutionOptionsSchema = resolvedThreadExecutionOptionsSchema.extend({
+  permissionMode: recordedPermissionModeSchema
+});
+var runtimePermissionScopeValues = ["workspace", "full"];
+var runtimePermissionScopeSchema = external_exports.enum(runtimePermissionScopeValues);
+var runtimePermissionPolicySchema = external_exports.discriminatedUnion(
+  "permissionMode",
+  [
+    external_exports.object({
+      permissionMode: external_exports.literal("accept-edits"),
+      permissionScope: external_exports.literal("workspace"),
+      approvalReviewer: external_exports.literal("user"),
+      permissionEscalation: permissionEscalationSchema
+    }),
+    external_exports.object({
+      permissionMode: external_exports.literal("auto"),
+      permissionScope: external_exports.literal("workspace"),
+      approvalReviewer: external_exports.literal("automatic"),
+      permissionEscalation: permissionEscalationSchema
+    }),
+    external_exports.object({
+      permissionMode: external_exports.literal("full"),
+      permissionScope: external_exports.literal("full"),
+      approvalReviewer: external_exports.null(),
+      permissionEscalation: external_exports.null()
+    })
+  ]
+);
+var promptModeSchema = external_exports.literal("plan");
+var runtimeThreadExecutionBaseOptionsSchema = external_exports.object({
+  model: external_exports.string().min(1),
+  serviceTier: serviceTierSchema,
+  reasoningLevel: reasoningLevelSchema,
+  promptMode: promptModeSchema.optional(),
+  providerOptions: jsonObjectSchema
+});
+var runtimeThreadExecutionOptionsSchema = runtimeThreadExecutionBaseOptionsSchema.and(runtimePermissionPolicySchema);
+var projectExecutionDefaultsSchema = external_exports.object({
+  providerId: external_exports.string().min(1),
+  model: external_exports.string().min(1),
+  serviceTier: serviceTierSchema,
+  reasoningLevel: reasoningLevelSchema,
+  permissionMode: permissionModeSchema
 });
 
 // packages/domain/src/protocol-ids.ts
@@ -21176,6 +21215,84 @@ function validateThreadEventScope(args) {
   }
   return { valid: true };
 }
+
+// packages/domain/src/background-task.ts
+var LOCAL_WORKFLOW_TASK_TYPE = "local_workflow";
+var LOCAL_BASH_TASK_TYPE = "local_bash";
+var LOCAL_AGENT_TASK_TYPE = "local_agent";
+var LOCAL_SUBAGENT_TASK_TYPE = "local_subagent";
+function isBackgroundCommandTaskType(taskType) {
+  return taskType === LOCAL_BASH_TASK_TYPE;
+}
+function isBackgroundAgentTaskType(taskType) {
+  return taskType === LOCAL_AGENT_TASK_TYPE || taskType === LOCAL_SUBAGENT_TASK_TYPE;
+}
+var backgroundTaskStatusValues = [
+  "pending",
+  "running",
+  "paused",
+  "completed",
+  "failed",
+  "killed",
+  "stopped"
+];
+var backgroundTaskStatusSchema = external_exports.enum(backgroundTaskStatusValues);
+var workflowAgentStateValues = [
+  "queued",
+  "running",
+  "done",
+  "failed",
+  "skipped"
+];
+var workflowAgentStateSchema = external_exports.enum(workflowAgentStateValues);
+function isSettledWorkflowAgentState(state) {
+  switch (state) {
+    case "done":
+    case "failed":
+    case "skipped":
+      return true;
+    case "queued":
+    case "running":
+      return false;
+  }
+}
+var workflowAgentSnapshotSchema = external_exports.object({
+  index: external_exports.number().int().positive(),
+  label: external_exports.string(),
+  state: workflowAgentStateSchema,
+  model: external_exports.string(),
+  attempt: external_exports.number().int().positive(),
+  cached: external_exports.boolean(),
+  lastProgressAt: external_exports.number(),
+  phaseIndex: external_exports.number().int().positive().optional(),
+  phaseTitle: external_exports.string().optional(),
+  agentType: external_exports.string().optional(),
+  isolation: external_exports.string().optional(),
+  queuedAt: external_exports.number().optional(),
+  startedAt: external_exports.number().optional(),
+  lastToolName: external_exports.string().optional(),
+  lastToolSummary: external_exports.string().optional(),
+  promptPreview: external_exports.string().optional(),
+  resultPreview: external_exports.string().optional(),
+  error: external_exports.string().optional(),
+  tokens: external_exports.number().optional(),
+  toolCalls: external_exports.number().optional(),
+  durationMs: external_exports.number().optional()
+});
+var workflowPhaseSnapshotSchema = external_exports.object({
+  index: external_exports.number().int().positive(),
+  title: external_exports.string(),
+  kind: external_exports.string().optional()
+});
+var workflowProgressSnapshotSchema = external_exports.object({
+  phases: external_exports.array(workflowPhaseSnapshotSchema),
+  agents: external_exports.array(workflowAgentSnapshotSchema)
+});
+var backgroundTaskUsageSchema = external_exports.object({
+  totalTokens: external_exports.number(),
+  toolUses: external_exports.number(),
+  durationMs: external_exports.number()
+});
 
 // packages/domain/src/thread-timeline-goal.ts
 var threadTimelineGoalStatusSchema = external_exports.enum([
@@ -21883,6 +22000,864 @@ var threadEventTypeSchema = external_exports.string().refine(
   "Invalid thread event type"
 );
 
+// packages/domain/src/environment.ts
+var environmentMachineSelectionSchema = external_exports.object({
+  type: external_exports.literal("existing"),
+  hostId: external_exports.string().min(1)
+});
+var environmentProviderSelectionSchema = external_exports.object({
+  machine: environmentMachineSelectionSchema,
+  inputs: jsonValueSchema.nullable()
+});
+var environmentStatusValues = [
+  "creating",
+  "provisioning",
+  "ready",
+  "error",
+  "destroyed"
+];
+var environmentStatusSchema = external_exports.enum(environmentStatusValues);
+var WORKSPACE_PROVISION_TYPES = [
+  "unmanaged",
+  "managed-worktree",
+  "personal"
+];
+var workspaceProvisionTypeSchema = external_exports.enum(WORKSPACE_PROVISION_TYPES);
+var environmentWorkspaceDisplayKindValues = [
+  "managed-worktree",
+  "unmanaged-worktree",
+  "other"
+];
+var environmentWorkspaceDisplayKindSchema = external_exports.enum(
+  environmentWorkspaceDisplayKindValues
+);
+var discoveredWorkspacePropertiesSchema = external_exports.object({
+  path: external_exports.string().min(1),
+  isGitRepo: external_exports.boolean(),
+  isWorktree: external_exports.boolean(),
+  branchName: external_exports.string().nullable(),
+  defaultBranch: external_exports.string().nullable()
+});
+var environmentLifecycleSchema = external_exports.object({
+  phase: external_exports.enum(["active", "retiring", "teardown", "destroyed"]),
+  retireAt: external_exports.number().nullable(),
+  teardown: external_exports.object({
+    status: external_exports.enum(["running", "failed", "removed"]),
+    attempt: external_exports.number().int().nonnegative(),
+    message: external_exports.string().optional()
+  }).nullable()
+});
+var environmentSchema = external_exports.object({
+  id: external_exports.string(),
+  name: external_exports.string().nullable(),
+  projectId: external_exports.string(),
+  hostId: external_exports.string(),
+  path: external_exports.string().nullable(),
+  isGitRepo: external_exports.boolean(),
+  isWorktree: external_exports.boolean(),
+  branchName: external_exports.string().nullable(),
+  baseBranch: external_exports.string().nullable(),
+  defaultBranch: external_exports.string().nullable(),
+  mergeBaseBranch: external_exports.string().nullable(),
+  status: environmentStatusSchema,
+  environmentProviderId: external_exports.string().nullable(),
+  lifecycle: environmentLifecycleSchema,
+  environmentProviderSelection: environmentProviderSelectionSchema.nullable(),
+  environmentProviderInstanceKey: external_exports.string().nullable(),
+  managed: external_exports.boolean(),
+  workspaceProvisionType: workspaceProvisionTypeSchema.nullable(),
+  createdAt: external_exports.number(),
+  updatedAt: external_exports.number()
+});
+
+// packages/domain/src/plugin-id.ts
+var pluginIdSchema = external_exports.string().regex(/^[a-z0-9][a-z0-9-]*$/u);
+
+// packages/domain/src/queued-message.ts
+var queuedMessageWaitingOnKindValues = [
+  "time",
+  "thread-busy",
+  "turn-starting",
+  "provisioning",
+  "host-offline",
+  "interaction",
+  "plugin"
+];
+var queuedMessageWaitingOnKindSchema = external_exports.enum(
+  queuedMessageWaitingOnKindValues
+);
+var queuedMessageWaitHostNameSchema = external_exports.string().min(1).max(200);
+var QUEUED_MESSAGE_WAIT_REASON_MAX_LENGTH = 200;
+var queuedMessageWaitReasonSchema = external_exports.string().min(1).max(QUEUED_MESSAGE_WAIT_REASON_MAX_LENGTH);
+var queuedMessageWaitingOnSchema = external_exports.discriminatedUnion("kind", [
+  external_exports.object({ kind: external_exports.literal("time") }),
+  external_exports.object({ kind: external_exports.literal("thread-busy") }),
+  external_exports.object({ kind: external_exports.literal("turn-starting") }),
+  external_exports.object({ kind: external_exports.literal("provisioning") }),
+  external_exports.object({
+    kind: external_exports.literal("host-offline"),
+    hostName: queuedMessageWaitHostNameSchema
+  }),
+  external_exports.object({ kind: external_exports.literal("interaction") }),
+  external_exports.object({
+    kind: external_exports.literal("plugin"),
+    pluginId: pluginIdSchema,
+    reason: queuedMessageWaitReasonSchema
+  })
+]);
+var QUEUED_MESSAGE_FAILURE_REASON_MAX_LENGTH = 200;
+var queuedMessageFailureReasonSchema = external_exports.string().min(1).max(QUEUED_MESSAGE_FAILURE_REASON_MAX_LENGTH);
+var QUEUED_MESSAGE_PLUGIN_WAIT_HOLDER_PREFIX = "plugin:";
+var queuedMessageWaitHolderSchema = external_exports.templateLiteral([
+  QUEUED_MESSAGE_PLUGIN_WAIT_HOLDER_PREFIX,
+  pluginIdSchema
+]);
+var queuedMessagePayloadKindValues = ["inline", "retry"];
+var queuedMessagePayloadKindSchema = external_exports.enum(
+  queuedMessagePayloadKindValues
+);
+var queuedMessagePayloadSchema = external_exports.discriminatedUnion("kind", [
+  external_exports.object({ kind: external_exports.literal("inline") }),
+  external_exports.object({
+    kind: external_exports.literal("retry"),
+    /**
+     * The ORIGINAL request, not the attempt that just failed. Retrying a retry
+     * re-submits the same original blocks, so this id is carried forward
+     * unchanged across attempts and `attempt` is what distinguishes them.
+     */
+    retryOfTurnRequestId: clientTurnRequestIdSchema,
+    /** Which attempt this row will dispatch: 2 is the first retry. */
+    attempt: external_exports.number().int().min(2),
+    /**
+     * Why this turn is being retried, in the retrier's words ("Rate limited"),
+     * as the row's card and `bb thread queue list` render it.
+     *
+     * It lives on the payload rather than on `waitingOn` because a retry can
+     * wait on the clock, on a limiter, or on nothing at all, and the reason
+     * outlives all three: it is a fact about the retry, not about what is
+     * currently holding it. Filled at the boundary, so every row has one.
+     */
+    reason: queuedMessageWaitReasonSchema
+  })
+]);
+var queuedMessageSystemNoticeSchema = external_exports.object({
+  kind: systemMessageKindSchema,
+  subject: systemMessageSubjectSchema.nullable()
+});
+
+// packages/domain/src/thread-status.ts
+var threadStatusValues = [
+  "pending",
+  "idle",
+  "starting",
+  "active",
+  "stopping",
+  "error"
+];
+var threadStatusSchema = external_exports.enum(threadStatusValues);
+
+// packages/domain/src/thread-origin-kind.ts
+var threadOriginKindValues = ["fork"];
+var threadOriginKindSchema = external_exports.enum(threadOriginKindValues);
+
+// packages/domain/src/thread-visibility.ts
+var threadVisibilityValues = ["visible", "hidden"];
+var threadVisibilitySchema = external_exports.enum(threadVisibilityValues);
+
+// packages/domain/src/thread.ts
+var threadRuntimeDisplayStatusValues = [
+  ...threadStatusValues,
+  "provisioning",
+  "host-reconnecting",
+  "waiting-for-host"
+];
+var threadRuntimeDisplayStatusSchema = external_exports.enum(
+  threadRuntimeDisplayStatusValues
+);
+var threadRuntimeStateSchema = external_exports.object({
+  displayStatus: threadRuntimeDisplayStatusSchema,
+  hostReconnectGraceExpiresAt: external_exports.number().nullable()
+});
+var threadActivityStateSchema = external_exports.object({
+  activeWorkflowCount: external_exports.number().int().nonnegative(),
+  activeBackgroundAgentCount: external_exports.number().int().nonnegative(),
+  activeBackgroundCommandCount: external_exports.number().int().nonnegative(),
+  activePlanModeCount: external_exports.number().int().nonnegative(),
+  activeGoalCount: external_exports.number().int().nonnegative()
+});
+var workspaceStateValues = [
+  "clean",
+  "untracked",
+  "dirty_uncommitted",
+  "committed_unmerged",
+  "dirty_and_committed_unmerged"
+];
+var workspaceStateSchema = external_exports.enum(workspaceStateValues);
+var workspaceFileStatusKindSchema = external_exports.enum([
+  "M",
+  "A",
+  "D",
+  "R",
+  "C",
+  "U",
+  "??",
+  "?"
+]);
+var workspaceFileStatusSchema = external_exports.object({
+  path: external_exports.string(),
+  status: workspaceFileStatusKindSchema,
+  insertions: external_exports.number().nullable(),
+  deletions: external_exports.number().nullable()
+});
+var workspaceCommitSummarySchema = external_exports.object({
+  sha: external_exports.string(),
+  shortSha: external_exports.string(),
+  subject: external_exports.string(),
+  authorName: external_exports.string(),
+  authoredAt: external_exports.number()
+});
+var workspaceChangeStatsSchema = external_exports.object({
+  insertions: external_exports.number(),
+  deletions: external_exports.number(),
+  lineStatsComplete: external_exports.boolean(),
+  files: external_exports.array(workspaceFileStatusSchema)
+});
+var workspaceWorkingTreeSchema = workspaceChangeStatsSchema.extend({
+  hasUncommittedChanges: external_exports.boolean(),
+  state: workspaceStateSchema
+});
+var workspaceBranchSchema = external_exports.object({
+  currentBranch: external_exports.string().nullable(),
+  defaultBranch: external_exports.string()
+});
+var workspaceMergeBaseSchema = workspaceChangeStatsSchema.extend({
+  mergeBaseBranch: external_exports.string(),
+  baseRef: external_exports.string().nullable(),
+  aheadCount: external_exports.number(),
+  behindCount: external_exports.number(),
+  hasCommittedUnmergedChanges: external_exports.boolean(),
+  commits: external_exports.array(workspaceCommitSummarySchema)
+});
+var workspaceStatusSchema = external_exports.object({
+  workingTree: workspaceWorkingTreeSchema,
+  checkout: gitCheckoutRefSchema,
+  branch: workspaceBranchSchema,
+  mergeBase: workspaceMergeBaseSchema.nullable()
+});
+var gitHostPullRequestCheckStatusSchema = external_exports.enum([
+  "queued",
+  "in_progress",
+  "completed",
+  "unknown"
+]);
+var gitHostPullRequestCheckConclusionSchema = external_exports.enum([
+  "success",
+  "failure",
+  "cancelled",
+  "skipped",
+  "neutral",
+  "timed_out",
+  "action_required",
+  "startup_failure",
+  "stale",
+  "unknown"
+]);
+var gitHostPullRequestCheckSchema = external_exports.object({
+  name: external_exports.string().min(1),
+  status: gitHostPullRequestCheckStatusSchema,
+  conclusion: gitHostPullRequestCheckConclusionSchema.nullable(),
+  url: external_exports.string().url().nullable(),
+  startedAt: external_exports.string().datetime().nullable()
+}).strict();
+var gitHostPullRequestReviewDecisionSchema = external_exports.enum([
+  "APPROVED",
+  "CHANGES_REQUESTED",
+  "REVIEW_REQUIRED"
+]);
+var gitHostPullRequestMergeStateStatusSchema = external_exports.enum([
+  "BEHIND",
+  "BLOCKED",
+  "CLEAN",
+  "DIRTY",
+  "DRAFT",
+  "HAS_HOOKS",
+  "UNKNOWN",
+  "UNSTABLE"
+]);
+var gitHostPullRequestMergeableSchema = external_exports.enum([
+  "CONFLICTING",
+  "MERGEABLE",
+  "UNKNOWN"
+]);
+var gitHostPullRequestSchema = external_exports.object({
+  number: external_exports.number().int().positive(),
+  title: external_exports.string(),
+  state: external_exports.enum(["OPEN", "CLOSED", "MERGED"]),
+  url: external_exports.string().url(),
+  isDraft: external_exports.boolean(),
+  baseRefName: external_exports.string(),
+  headRefName: external_exports.string(),
+  updatedAt: external_exports.string().datetime(),
+  checks: external_exports.array(gitHostPullRequestCheckSchema),
+  reviewDecision: gitHostPullRequestReviewDecisionSchema.nullable(),
+  reviewRequestCount: external_exports.number().int().nonnegative(),
+  mergeStateStatus: gitHostPullRequestMergeStateStatusSchema.nullable(),
+  mergeable: gitHostPullRequestMergeableSchema.nullable()
+}).strict();
+var pullRequestStateSchema = external_exports.enum(["draft", "open", "merged", "closed"]);
+var threadPullRequestChecksStateSchema = external_exports.enum([
+  "passing",
+  "failing",
+  "pending",
+  "no_checks",
+  "unknown"
+]);
+var threadPullRequestChecksSchema = external_exports.object({
+  state: threadPullRequestChecksStateSchema,
+  totalCount: external_exports.number().int().nonnegative(),
+  passedCount: external_exports.number().int().nonnegative(),
+  failedCount: external_exports.number().int().nonnegative(),
+  pendingCount: external_exports.number().int().nonnegative()
+}).strict();
+var threadPullRequestReviewStateSchema = external_exports.enum([
+  "approved",
+  "changes_requested",
+  "review_required",
+  "review_requested",
+  "none"
+]);
+var threadPullRequestReviewSchema = external_exports.object({
+  state: threadPullRequestReviewStateSchema,
+  reviewRequestCount: external_exports.number().int().nonnegative()
+}).strict();
+var threadPullRequestMergeabilityStateSchema = external_exports.enum([
+  "mergeable",
+  "conflicts",
+  "blocked",
+  "draft",
+  "unknown"
+]);
+var threadPullRequestMergeabilitySchema = external_exports.object({
+  state: threadPullRequestMergeabilityStateSchema,
+  mergeStateStatus: gitHostPullRequestMergeStateStatusSchema.nullable(),
+  mergeable: gitHostPullRequestMergeableSchema.nullable()
+}).strict();
+var threadPullRequestAttentionStateSchema = external_exports.enum([
+  "checks_failed",
+  "checks_pending",
+  "changes_requested",
+  "review_requested",
+  "conflicts",
+  "blocked",
+  "draft",
+  "ready_to_merge",
+  "merged",
+  "closed",
+  "none"
+]);
+var threadPullRequestSchema = external_exports.object({
+  number: external_exports.number().int().positive(),
+  title: external_exports.string(),
+  state: pullRequestStateSchema,
+  url: external_exports.string().url(),
+  baseRefName: external_exports.string(),
+  headRefName: external_exports.string(),
+  updatedAt: external_exports.string().datetime(),
+  checks: threadPullRequestChecksSchema,
+  review: threadPullRequestReviewSchema,
+  mergeability: threadPullRequestMergeabilitySchema,
+  attention: threadPullRequestAttentionStateSchema
+}).strict();
+var threadQueuedMessageSchema = external_exports.object({
+  id: external_exports.string(),
+  initiator: external_exports.enum(["user", "agent", "system"]),
+  senderThreadId: external_exports.string().nullable(),
+  /**
+   * The thread this row is waiting on. Redundant on the thread-scoped list
+   * route that first served this DTO, and load-bearing everywhere else it is
+   * now served: a `queue.*` plugin event and a cross-thread wait-holder query
+   * both hand out rows with no surrounding thread to read it from.
+   */
+  threadId: external_exports.string(),
+  content: external_exports.array(promptInputSchema).min(1),
+  model: external_exports.string().min(1),
+  reasoningLevel: reasoningLevelSchema,
+  permissionMode: permissionModeSchema,
+  serviceTier: serviceTierSchema,
+  groupWithNext: external_exports.boolean(),
+  /**
+   * Epoch ms this row is scheduled to attempt dispatch, or null when it is
+   * eligible as soon as its other waits clear.
+   */
+  sendAt: external_exports.number().int().nonnegative().nullable(),
+  /**
+   * Why this row is queued, or null for a plain queued row that is simply
+   * next in line behind the running turn. Null rather than a
+   * `{ kind: "thread-busy" }` default because rows written before waits were
+   * typed carry no reason at all, and inventing one for them would be a lie.
+   */
+  waitingOn: queuedMessageWaitingOnSchema.nullable(),
+  /**
+   * Why this row's last DRAIN attempt failed outright, or null when it has not
+   * failed one — which is every row that has never been re-attempted, and
+   * every row whose latest attempt merely queued again. An inline attempt
+   * reports its failure to the sender that is still listening and never lands
+   * here.
+   *
+   * Independent of `waitingOn`, not folded into it: the row is still waiting on
+   * whatever it was waiting on, and writing a wait rewrites it wholesale, so a
+   * failure stored there would not survive the next attempt.
+   */
+  failureReason: queuedMessageFailureReasonSchema.nullable(),
+  payload: queuedMessagePayloadSchema,
+  /**
+   * Whether the sender may still rewrite this row's input. Not derivable from
+   * `payload` alone: a `retry` row is never editable, and an `inline` row
+   * stops being editable once the drain has claimed it — and the claim is
+   * deliberately not part of this response, since it is drain bookkeeping and
+   * not something a client should reason about. The server folds both into
+   * this one answer.
+   */
+  editable: external_exports.boolean(),
+  createdAt: external_exports.number(),
+  updatedAt: external_exports.number()
+});
+var threadSchema = external_exports.object({
+  id: external_exports.string(),
+  projectId: external_exports.string(),
+  environmentId: external_exports.string().nullable(),
+  providerId: external_exports.string(),
+  title: external_exports.string().nullable(),
+  titleFallback: external_exports.string().nullable(),
+  sectionId: external_exports.string().nullable(),
+  status: threadStatusSchema,
+  parentThreadId: external_exports.string().nullable(),
+  sourceThreadId: external_exports.string().nullable(),
+  originKind: threadOriginKindSchema.nullable(),
+  originPluginId: external_exports.string().nullable(),
+  visibility: threadVisibilitySchema,
+  archivedAt: external_exports.number().nullable(),
+  pinnedAt: external_exports.number().nullable(),
+  deletedAt: external_exports.number().nullable(),
+  lastReadAt: external_exports.number().nullable(),
+  latestAttentionAt: external_exports.number(),
+  createdAt: external_exports.number(),
+  updatedAt: external_exports.number()
+});
+var threadWithRuntimeSchema = threadSchema.extend({
+  runtime: threadRuntimeStateSchema
+});
+var threadQueuedWorkValues = ["none", "waiting", "failed"];
+var threadQueuedWorkSchema = external_exports.enum(threadQueuedWorkValues);
+var threadListEntrySchema = threadWithRuntimeSchema.extend({
+  activity: threadActivityStateSchema,
+  queuedWork: threadQueuedWorkSchema,
+  pinSortKey: external_exports.string().nullable(),
+  hasPendingInteraction: external_exports.boolean(),
+  environmentHostId: external_exports.string().nullable(),
+  environmentName: external_exports.string().nullable(),
+  environmentBranchName: external_exports.string().nullable(),
+  environmentPath: external_exports.string().nullable(),
+  environmentProviderId: external_exports.string().nullable(),
+  environmentIsWorktree: external_exports.boolean().nullable(),
+  environmentWorkspaceDisplayKind: environmentWorkspaceDisplayKindSchema
+});
+
+// packages/domain/src/change-kinds.ts
+var THREAD_CHANGE_KINDS = [
+  "thread-created",
+  "thread-deleted",
+  "events-appended",
+  "history-rewritten",
+  "interactions-changed",
+  "status-changed",
+  "title-changed",
+  "queue-changed",
+  "archived-changed",
+  "pin-state-changed",
+  "parent-changed",
+  "environment-changed",
+  "read-state-changed",
+  "order-changed",
+  "tabs-changed",
+  "terminals-changed"
+];
+var PROJECT_CHANGE_KINDS = [
+  "project-created",
+  "project-updated",
+  "project-deleted",
+  "project-sources-changed",
+  "threads-changed",
+  "project-order-changed"
+];
+var ENVIRONMENT_CHANGE_KINDS = [
+  "environment-created",
+  "environment-deleted",
+  "metadata-changed",
+  "status-changed",
+  "work-status-changed",
+  "git-refs-changed",
+  "thread-storage-changed"
+];
+var HOST_CHANGE_KINDS = [
+  "host-connected",
+  "host-disconnected"
+];
+var SYSTEM_CHANGE_KINDS = [
+  "config-changed",
+  "plugins-changed",
+  "provider-registrations-changed",
+  "ui-preferences-changed",
+  "environment-availability-changed"
+];
+var threadChangeKindSchema = external_exports.enum(THREAD_CHANGE_KINDS);
+var projectChangeKindSchema = external_exports.enum(PROJECT_CHANGE_KINDS);
+var environmentChangeKindSchema = external_exports.enum(ENVIRONMENT_CHANGE_KINDS);
+var hostChangeKindSchema = external_exports.enum(HOST_CHANGE_KINDS);
+var systemChangeKindSchema = external_exports.enum(SYSTEM_CHANGE_KINDS);
+var realtimeSubscriptionTargetSchema = external_exports.discriminatedUnion("kind", [
+  external_exports.object({
+    kind: external_exports.literal("thread-detail"),
+    threadId: external_exports.string().min(1)
+  }).strict(),
+  external_exports.object({
+    kind: external_exports.literal("thread-list")
+  }).strict(),
+  external_exports.object({
+    kind: external_exports.literal("project-detail"),
+    projectId: external_exports.string().min(1)
+  }).strict(),
+  external_exports.object({
+    kind: external_exports.literal("project-list")
+  }).strict(),
+  external_exports.object({
+    kind: external_exports.literal("environment-detail"),
+    environmentId: external_exports.string().min(1)
+  }).strict(),
+  external_exports.object({
+    kind: external_exports.literal("environment-list")
+  }).strict(),
+  external_exports.object({
+    kind: external_exports.literal("host-detail"),
+    hostId: external_exports.string().min(1)
+  }).strict(),
+  external_exports.object({
+    kind: external_exports.literal("host-list")
+  }).strict(),
+  external_exports.object({
+    kind: external_exports.literal("system")
+  }).strict()
+]);
+var subscribeMessageSchema = external_exports.object({
+  type: external_exports.literal("subscribe"),
+  target: realtimeSubscriptionTargetSchema
+});
+var unsubscribeMessageSchema = external_exports.object({
+  type: external_exports.literal("unsubscribe"),
+  target: realtimeSubscriptionTargetSchema
+});
+var pingMessageSchema = external_exports.object({
+  type: external_exports.literal("ping")
+});
+var clientMessageSchema = external_exports.discriminatedUnion("type", [
+  subscribeMessageSchema,
+  unsubscribeMessageSchema,
+  pingMessageSchema
+]);
+var pongMessageSchema = external_exports.object({
+  type: external_exports.literal("pong")
+}).strict();
+var pongMessageLenientSchema = external_exports.object({
+  type: external_exports.literal("pong")
+});
+var threadStatusChangeMetadataSchema = external_exports.object({
+  status: threadStatusSchema,
+  runtime: threadRuntimeStateSchema,
+  activity: threadActivityStateSchema,
+  latestAttentionAt: external_exports.number(),
+  updatedAt: external_exports.number()
+}).strict();
+var threadChangeMetadataSchema = external_exports.object({
+  backgroundActivityChanged: external_exports.boolean().optional(),
+  eventTypes: external_exports.array(threadEventTypeSchema).readonly().optional(),
+  hasPendingInteraction: external_exports.boolean().optional(),
+  projectId: external_exports.string().optional(),
+  statusChange: threadStatusChangeMetadataSchema.optional()
+}).strict();
+var threadChangedMessageSchema = external_exports.object({
+  type: external_exports.literal("changed"),
+  entity: external_exports.literal("thread"),
+  id: external_exports.string().optional(),
+  metadata: threadChangeMetadataSchema.optional(),
+  changes: external_exports.array(threadChangeKindSchema).readonly()
+}).strict();
+var projectChangedMessageSchema = external_exports.object({
+  type: external_exports.literal("changed"),
+  entity: external_exports.literal("project"),
+  id: external_exports.string().optional(),
+  changes: external_exports.array(projectChangeKindSchema).readonly()
+}).strict();
+var environmentChangedMessageSchema = external_exports.object({
+  type: external_exports.literal("changed"),
+  entity: external_exports.literal("environment"),
+  id: external_exports.string().optional(),
+  changes: external_exports.array(environmentChangeKindSchema).readonly()
+}).strict();
+var hostChangedMessageSchema = external_exports.object({
+  type: external_exports.literal("changed"),
+  entity: external_exports.literal("host"),
+  id: external_exports.string().optional(),
+  changes: external_exports.array(hostChangeKindSchema).readonly()
+}).strict();
+var systemChangedMessageSchema = external_exports.object({
+  type: external_exports.literal("changed"),
+  entity: external_exports.literal("system"),
+  changes: external_exports.array(systemChangeKindSchema).readonly()
+}).strict();
+var changedMessageSchema = external_exports.discriminatedUnion("entity", [
+  threadChangedMessageSchema,
+  projectChangedMessageSchema,
+  environmentChangedMessageSchema,
+  hostChangedMessageSchema,
+  systemChangedMessageSchema
+]);
+function lenientKinds(kinds) {
+  const known = new Set(kinds);
+  return external_exports.array(external_exports.string()).transform(
+    (values) => values.filter((value) => known.has(value))
+  );
+}
+var knownThreadEventTypes = new Set(
+  threadEventTypeValues
+);
+var threadChangeMetadataLenientSchema = external_exports.object({
+  backgroundActivityChanged: external_exports.boolean().optional(),
+  eventTypes: external_exports.array(external_exports.string()).transform(
+    (values) => values.filter(
+      (value) => knownThreadEventTypes.has(value)
+    )
+  ).optional(),
+  hasPendingInteraction: external_exports.boolean().optional(),
+  projectId: external_exports.string().optional(),
+  statusChange: threadStatusChangeMetadataSchema.optional().catch(void 0)
+});
+var threadChangedMessageLenientSchema = external_exports.object({
+  type: external_exports.literal("changed"),
+  entity: external_exports.literal("thread"),
+  id: external_exports.string().optional(),
+  metadata: threadChangeMetadataLenientSchema.optional(),
+  changes: lenientKinds(THREAD_CHANGE_KINDS)
+});
+var projectChangedMessageLenientSchema = external_exports.object({
+  type: external_exports.literal("changed"),
+  entity: external_exports.literal("project"),
+  id: external_exports.string().optional(),
+  changes: lenientKinds(PROJECT_CHANGE_KINDS)
+});
+var environmentChangedMessageLenientSchema = external_exports.object({
+  type: external_exports.literal("changed"),
+  entity: external_exports.literal("environment"),
+  id: external_exports.string().optional(),
+  changes: lenientKinds(ENVIRONMENT_CHANGE_KINDS)
+});
+var hostChangedMessageLenientSchema = external_exports.object({
+  type: external_exports.literal("changed"),
+  entity: external_exports.literal("host"),
+  id: external_exports.string().optional(),
+  changes: lenientKinds(HOST_CHANGE_KINDS)
+});
+var systemChangedMessageLenientSchema = external_exports.object({
+  type: external_exports.literal("changed"),
+  entity: external_exports.literal("system"),
+  changes: lenientKinds(SYSTEM_CHANGE_KINDS)
+});
+var changedMessageLenientSchema = external_exports.discriminatedUnion("entity", [
+  threadChangedMessageLenientSchema,
+  projectChangedMessageLenientSchema,
+  environmentChangedMessageLenientSchema,
+  hostChangedMessageLenientSchema,
+  systemChangedMessageLenientSchema
+]);
+
+// packages/domain/src/experiments.ts
+var experimentKeys = [
+  "changelogPreview",
+  "mobileApp",
+  "sidebarProgressiveDisclosure",
+  "timelineWindowing"
+];
+var experimentKeySchema = external_exports.enum(experimentKeys);
+var experimentsSchema = external_exports.record(experimentKeySchema, external_exports.boolean());
+
+// packages/domain/src/feature-flags.ts
+var featureFlagsSchema = external_exports.object({
+  placeholder: external_exports.boolean(),
+  timelineWindowEventBudget: external_exports.number().int().positive()
+});
+
+// packages/domain/src/host.ts
+var hostTypeValues = ["persistent"];
+var hostTypeSchema = external_exports.enum(hostTypeValues);
+var hostStatusValues = ["connected", "disconnected"];
+var hostStatusSchema = external_exports.enum(hostStatusValues);
+var hostSchema = external_exports.object({
+  id: external_exports.string(),
+  name: external_exports.string(),
+  type: hostTypeSchema,
+  status: hostStatusSchema,
+  maxPermissionMode: permissionModeSchema,
+  lastSeenAt: external_exports.number().nullable(),
+  lastRejectedProtocolVersion: external_exports.number().int().positive().nullable(),
+  createdAt: external_exports.number(),
+  updatedAt: external_exports.number()
+});
+
+// packages/domain/src/plugin-catalog-category.ts
+var PLUGIN_CATALOG_CATEGORY_ID_PATTERN = /^[a-z0-9][a-z0-9-]*$/u;
+var pluginCatalogCategoryIdSchema = external_exports.string().regex(PLUGIN_CATALOG_CATEGORY_ID_PATTERN);
+var pluginMarketplaceCollectionIdSchema = external_exports.string().regex(PLUGIN_CATALOG_CATEGORY_ID_PATTERN);
+var pluginMarketplaceCollectionPluginIdSchema = external_exports.string().regex(PLUGIN_CATALOG_CATEGORY_ID_PATTERN);
+var pluginMarketplaceCategorySchema = external_exports.object({
+  id: pluginCatalogCategoryIdSchema,
+  displayName: external_exports.string().min(1),
+  description: external_exports.string().min(1)
+});
+var pluginMarketplaceCollectionSchema = external_exports.object({
+  id: pluginMarketplaceCollectionIdSchema,
+  displayName: external_exports.string().min(1),
+  pluginIds: external_exports.array(pluginMarketplaceCollectionPluginIdSchema).superRefine((pluginIds, ctx) => {
+    const seen = /* @__PURE__ */ new Set();
+    pluginIds.forEach((pluginId, index) => {
+      if (seen.has(pluginId)) {
+        ctx.addIssue({
+          code: "custom",
+          path: [index],
+          message: `duplicate plugin id "${pluginId}"`
+        });
+      }
+      seen.add(pluginId);
+    });
+  })
+});
+var PLUGIN_CATALOG_CATEGORIES = [
+  {
+    id: "themes-and-appearance",
+    displayName: "Themes & Appearance",
+    description: "Personalize how bb looks and feels."
+  },
+  {
+    id: "thread-management",
+    displayName: "Thread Management",
+    description: "Find, identify, organize, or archive threads."
+  },
+  {
+    id: "thread-content",
+    displayName: "Thread Content",
+    description: "Change what people see or do inside an open thread."
+  },
+  {
+    id: "memory-and-context",
+    displayName: "Memory & Context",
+    description: "Control durable knowledge or standing context available to agents."
+  },
+  {
+    id: "security",
+    displayName: "Security",
+    description: "Protect credentials or prevent unsafe code."
+  },
+  {
+    id: "agents-and-providers",
+    displayName: "Agents & Providers",
+    description: "Add, choose, configure, route, or coordinate who runs a thread."
+  },
+  {
+    id: "environments",
+    displayName: "Environments",
+    description: "Create and manage the places where threads run."
+  },
+  {
+    id: "token-usage-and-limits",
+    displayName: "Token Usage & Limits",
+    description: "Understand or control token, context-window, and provider-quota use."
+  },
+  {
+    id: "notifications",
+    displayName: "Notifications",
+    description: "Know when work finished, failed, or needs attention."
+  },
+  {
+    id: "code-and-reviews",
+    displayName: "Code & Reviews",
+    description: "Work with repositories, builds, changes, pull requests, issues, and reviews."
+  },
+  {
+    id: "file-viewers-and-editors",
+    displayName: "File Viewers & Editors",
+    description: "Browse, open, preview, or edit files and document vaults."
+  },
+  {
+    id: "cloud-and-remote",
+    displayName: "Cloud & Remote",
+    description: "Run bb work in cloud environments or access bb from elsewhere."
+  },
+  {
+    id: "command-line",
+    displayName: "Command Line",
+    description: "Work with shells and command-line programs inside bb."
+  },
+  {
+    id: "utilities",
+    displayName: "Utilities",
+    description: "Inspect or control the computers bb runs on."
+  },
+  {
+    id: "plugin-development",
+    displayName: "Plugin Development",
+    description: "Understand, inspect, build, or debug bb and its plugin surfaces."
+  },
+  {
+    id: "tasks-and-workflows",
+    displayName: "Tasks & Workflows",
+    description: "Plan, track, route, schedule, or automate work."
+  }
+];
+var pluginCatalogCategoryById = new Map(PLUGIN_CATALOG_CATEGORIES.map((category) => [category.id, category]));
+
+// packages/domain/src/project.ts
+var projectKindValues = ["standard", "personal"];
+var projectKindSchema = external_exports.enum(projectKindValues);
+var projectSchema = external_exports.object({
+  id: external_exports.string(),
+  kind: projectKindSchema,
+  name: external_exports.string(),
+  gitRemoteUrl: external_exports.string().nullable(),
+  createdAt: external_exports.number(),
+  updatedAt: external_exports.number()
+});
+var projectSourceTypeValues = ["local_path"];
+var projectSourceTypeSchema = external_exports.enum(projectSourceTypeValues);
+var baseProjectSourceSchema = external_exports.object({
+  id: external_exports.string(),
+  projectId: external_exports.string(),
+  isDefault: external_exports.boolean(),
+  createdAt: external_exports.number(),
+  updatedAt: external_exports.number()
+});
+var localPathProjectSourceSchema = baseProjectSourceSchema.extend({
+  type: external_exports.literal("local_path"),
+  hostId: external_exports.string(),
+  path: external_exports.string()
+});
+
+// packages/domain/src/prompt-history.ts
+var promptHistoryScopeValues = ["project", "thread"];
+var promptHistoryScopeSchema = external_exports.enum(promptHistoryScopeValues);
+var promptHistoryEntrySchema = external_exports.object({
+  id: external_exports.string().min(1),
+  createdAt: external_exports.number(),
+  input: external_exports.array(promptInputSchema).min(1)
+});
+
 // packages/domain/src/provider-types.ts
 var modelReasoningEffortSchema = external_exports.object({
   reasoningEffort: reasoningLevelSchema,
@@ -22015,20 +22990,90 @@ var RAW_THREAD_ID_PATTERN_SOURCE = `${THREAD_ID_PREFIX}[${GENERATED_ID_ALPHABET}
 var rawThreadIdPattern = new RegExp(`^${RAW_THREAD_ID_PATTERN_SOURCE}$`, "u");
 var rawThreadIdSchema = external_exports.string().regex(rawThreadIdPattern);
 
-// packages/domain/src/thread-origin-kind.ts
-var threadOriginKindValues = ["fork"];
-var threadOriginKindSchema = external_exports.enum(threadOriginKindValues);
-
-// packages/domain/src/thread-status.ts
-var threadStatusValues = [
-  "pending",
-  "idle",
+// packages/domain/src/terminal.ts
+var TERMINAL_COLS_MAX = 500;
+var TERMINAL_ROWS_MAX = 200;
+var TERMINAL_DATA_MAX_BYTES = 64 * 1024;
+var TERMINAL_DATA_MAX_BASE64_LENGTH = Math.ceil(TERMINAL_DATA_MAX_BYTES / 3) * 4;
+var terminalBase64DataPattern = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u;
+var terminalSessionStatusValues = [
   "starting",
-  "active",
-  "stopping",
-  "error"
+  "running",
+  "disconnected",
+  "exited"
 ];
-var threadStatusSchema = external_exports.enum(threadStatusValues);
+var terminalSessionStatusSchema = external_exports.enum(terminalSessionStatusValues);
+var terminalSessionCloseReasonValues = [
+  "user",
+  "process-exit",
+  "daemon-disconnect",
+  "environment-destroyed",
+  "thread-archived",
+  "thread-deleted",
+  "open-timeout"
+];
+var terminalSessionCloseReasonSchema = external_exports.enum(
+  terminalSessionCloseReasonValues
+);
+function getTerminalBase64DecodedByteLength(value) {
+  const padding = value.endsWith("==") ? 2 : value.endsWith("=") ? 1 : 0;
+  return value.length / 4 * 3 - padding;
+}
+var terminalColsSchema = external_exports.number().int().positive().max(TERMINAL_COLS_MAX);
+var terminalRowsSchema = external_exports.number().int().positive().max(TERMINAL_ROWS_MAX);
+var terminalDataBase64Schema = external_exports.string().min(1).max(TERMINAL_DATA_MAX_BASE64_LENGTH).regex(terminalBase64DataPattern).refine(
+  (value) => getTerminalBase64DecodedByteLength(value) <= TERMINAL_DATA_MAX_BYTES,
+  {
+    message: `Terminal data must decode to ${TERMINAL_DATA_MAX_BYTES} bytes or less`
+  }
+);
+
+// packages/domain/src/thread-git-diff.ts
+var workspaceDiffTargetSchema = external_exports.discriminatedUnion("type", [
+  external_exports.object({
+    type: external_exports.literal("uncommitted")
+  }),
+  external_exports.object({
+    type: external_exports.literal("branch_committed"),
+    mergeBaseBranch: external_exports.string().min(1)
+  }),
+  external_exports.object({
+    type: external_exports.literal("all"),
+    mergeBaseBranch: external_exports.string().min(1)
+  }),
+  external_exports.object({
+    type: external_exports.literal("commit"),
+    sha: external_exports.string().regex(/^[0-9a-f]{4,40}$/iu)
+  })
+]);
+var rawDiffFileStatSchema = external_exports.object({
+  path: external_exports.string(),
+  previousPath: external_exports.string().nullable(),
+  statusLetter: external_exports.enum(["A", "M", "D", "R", "C", "T"]),
+  additions: external_exports.number().int().nonnegative(),
+  deletions: external_exports.number().int().nonnegative(),
+  binary: external_exports.boolean(),
+  origin: external_exports.enum(["tracked", "untracked"])
+});
+var threadGitDiffResponseSchema = external_exports.object({
+  diff: external_exports.string(),
+  truncated: external_exports.boolean(),
+  shortstat: external_exports.string(),
+  files: external_exports.string(),
+  mergeBaseRef: external_exports.string().nullable()
+});
+
+// packages/domain/src/thread-search.ts
+var threadSearchSourceKindValues = [
+  "title",
+  "title_fallback",
+  "user_message",
+  "assistant_message",
+  "system_message"
+];
+var threadSearchSourceKindSchema = external_exports.enum(
+  threadSearchSourceKindValues
+);
 
 // packages/domain/src/thread-timeline-active-prompt-mode.ts
 var threadTimelineActivePromptModeSchema = external_exports.object({
@@ -22064,9 +23109,133 @@ var threadTimelinePendingTodosSchema = external_exports.object({
   items: external_exports.array(threadTimelinePendingTodoItemSchema)
 });
 
-// packages/domain/src/thread-visibility.ts
-var threadVisibilityValues = ["visible", "hidden"];
-var threadVisibilitySchema = external_exports.enum(threadVisibilityValues);
+// packages/domain/src/ui-preferences.ts
+var UI_PREFERENCE_STRING_MAX_LENGTH = 1024;
+var UI_PREFERENCE_LIST_MAX_LENGTH = 1e4;
+var sidebarOrganizationModeSchema = external_exports.enum([
+  "project",
+  "chronological",
+  "machine"
+]);
+var sidebarChronologicalSortSchema = external_exports.enum([
+  "updated",
+  "created",
+  "alpha",
+  "none"
+]);
+var collapsibleSidebarSectionIdSchema = external_exports.enum(["pinned", "threads"]);
+var uiPreferenceStringSchema = external_exports.string().min(1).max(UI_PREFERENCE_STRING_MAX_LENGTH);
+var uiPreferenceStringListSchema = external_exports.array(uiPreferenceStringSchema).max(UI_PREFERENCE_LIST_MAX_LENGTH);
+var UI_PREFERENCE_KEYS = [
+  "sidebar.organizationMode",
+  "sidebar.chronologicalSort",
+  "sidebar.sortDirection",
+  "sidebar.sectionOrder",
+  "sidebar.manualSectionOrder",
+  "sidebar.machineSectionOrder",
+  "sidebar.collapsedSections",
+  "sidebar.collapsedProjects",
+  "sidebar.collapsedThreads",
+  "sidebar.collapsedEnvironments",
+  "sidebar.collapsedThreadSections",
+  "sidebar.collapsedMachines",
+  "sidebar.pluginPanelOrder",
+  "sidebar.visiblePluginPanels",
+  "sidebar.navigationProvider",
+  "sidebar.threadListProvider"
+];
+var uiPreferenceKeySchema = external_exports.enum(UI_PREFERENCE_KEYS);
+function defineUiPreference(schema, defaultValue, description) {
+  return { schema, defaultValue, description };
+}
+var uiPreferenceDefinitions = {
+  "sidebar.organizationMode": defineUiPreference(
+    sidebarOrganizationModeSchema,
+    "project",
+    "How the sidebar groups threads: by project, chronologically, or by machine."
+  ),
+  "sidebar.chronologicalSort": defineUiPreference(
+    sidebarChronologicalSortSchema,
+    "updated",
+    "Sort order for the chronological sidebar organization."
+  ),
+  "sidebar.sortDirection": defineUiPreference(
+    external_exports.enum(["default", "ascending", "descending"]),
+    "default",
+    "Sidebar thread sort direction; default preserves the selected field's original direction."
+  ),
+  "sidebar.sectionOrder": defineUiPreference(
+    uiPreferenceStringListSchema,
+    ["pinned", "projects", "threads"],
+    "Top-level section order when the sidebar is organized by project."
+  ),
+  "sidebar.manualSectionOrder": defineUiPreference(
+    uiPreferenceStringListSchema,
+    ["pinned", "sections", "threads"],
+    "Top-level section order when the sidebar is organized chronologically."
+  ),
+  "sidebar.machineSectionOrder": defineUiPreference(
+    uiPreferenceStringListSchema,
+    ["pinned", "machines", "threads"],
+    "Top-level section order when the sidebar is organized by machine."
+  ),
+  "sidebar.collapsedSections": defineUiPreference(
+    external_exports.array(collapsibleSidebarSectionIdSchema).max(UI_PREFERENCE_LIST_MAX_LENGTH),
+    [],
+    "Built-in sidebar sections that are collapsed."
+  ),
+  "sidebar.collapsedProjects": defineUiPreference(
+    uiPreferenceStringListSchema,
+    [],
+    "Project ids whose sidebar rows are collapsed."
+  ),
+  "sidebar.collapsedThreads": defineUiPreference(
+    uiPreferenceStringListSchema,
+    [],
+    "Thread ids whose child threads are collapsed in the sidebar."
+  ),
+  "sidebar.collapsedEnvironments": defineUiPreference(
+    uiPreferenceStringListSchema,
+    [],
+    "Environment ids whose sidebar rows are collapsed."
+  ),
+  "sidebar.collapsedThreadSections": defineUiPreference(
+    uiPreferenceStringListSchema,
+    [],
+    "Thread section ids that are collapsed in the sidebar."
+  ),
+  "sidebar.collapsedMachines": defineUiPreference(
+    uiPreferenceStringListSchema,
+    [],
+    "Machine ids whose sidebar rows are collapsed."
+  ),
+  "sidebar.pluginPanelOrder": defineUiPreference(
+    uiPreferenceStringListSchema,
+    [],
+    "Order of navigation entries in the sidebar navigation strip."
+  ),
+  "sidebar.visiblePluginPanels": defineUiPreference(
+    uiPreferenceStringListSchema.nullable(),
+    null,
+    "Navigation entries shown in the sidebar navigation strip; null shows every entry."
+  ),
+  "sidebar.navigationProvider": defineUiPreference(
+    uiPreferenceStringSchema,
+    "__automatic__",
+    "Plugin that renders the sidebar navigation, or __automatic__ / __builtin__."
+  ),
+  "sidebar.threadListProvider": defineUiPreference(
+    uiPreferenceStringSchema,
+    "__automatic__",
+    "Plugin that renders the sidebar thread list, or __automatic__ / __builtin__."
+  )
+};
+function getUiPreferenceDefault(key) {
+  return uiPreferenceDefinitions[key].defaultValue;
+}
+var defaultUiPreferences = Object.fromEntries(
+  UI_PREFERENCE_KEYS.map((key) => [key, getUiPreferenceDefault(key)])
+);
 
 // packages/domain/src/index.ts
 function toPositiveNumber(value) {

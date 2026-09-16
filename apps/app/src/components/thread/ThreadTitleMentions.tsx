@@ -17,6 +17,7 @@ import {
 import { QueryClientContext } from "@tanstack/react-query";
 import {
   THREAD_MENTION_RESOLVE_MAX_IDS,
+  type ResolveThreadMentionsResponse,
   type ThreadResponse,
 } from "@bb/server-contract";
 import { PromptMentionPill } from "@/components/thread/timeline/ConversationMessageMentions";
@@ -231,7 +232,7 @@ function RawThreadMentionResolverProvider({
     activeControllersRef.current.add(controller);
     void sdk.threads
       .resolveMentions({ threadIds, signal: controller.signal })
-      .then((resolutions) => {
+      .then((resolutions: ResolveThreadMentionsResponse) => {
         if (controller.signal.aborted) return;
         const resolvedIds = new Set(
           resolutions.map((resolution) => resolution.threadId),

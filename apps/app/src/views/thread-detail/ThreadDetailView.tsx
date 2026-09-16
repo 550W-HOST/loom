@@ -26,7 +26,6 @@ import {
   type TimelineTitleActionResolver,
   useThreadTimelineController,
 } from "@/components/thread/timeline";
-import { serializePluginPanelParams } from "@/lib/plugin-json-value";
 import { ThreadProviderContext } from "@/components/thread/thread-provider-context";
 import {
   defaultAppSettings,
@@ -96,7 +95,6 @@ import {
   formatEnvironmentDisplay,
   type EnvironmentDisplayHostContext,
 } from "@bb/core-ui";
-import { assertNever } from "@bb/thread-view";
 import { useCreateThreadInEnvironment } from "@/hooks/useCreateThreadInEnvironment";
 import { useHostDaemon } from "@/hooks/useHostDaemon";
 import { useLocalOpenTargets } from "@/hooks/useLocalOpenTargets";
@@ -188,10 +186,7 @@ import {
   LazyWorkspaceFilePreviewTabContent,
 } from "@/components/secondary-panel/lazySecondaryPanelComponents";
 import type { BrowserAddressFocusRequest } from "@/components/secondary-panel/BrowserTabContent";
-import {
-  SIDE_CHAT_PLUGIN_ID,
-  SIDE_CHAT_PLUGIN_PANEL_ACTION_ID,
-} from "@/lib/side-chat-plugin";
+import { SIDE_CHAT_PLUGIN_ID } from "@/lib/side-chat-plugin";
 import { RightPanelFileTabIcon } from "@/components/secondary-panel/RightPanelFileTabIcon";
 import { COARSE_POINTER_COMPACT_ICON_SIZE_CLASS } from "@bb/shared-ui/coarse-pointer-sizing";
 import { PluginIcon } from "@/components/plugin/PluginIcon";
@@ -1369,6 +1364,7 @@ function ThreadDetailViewInternal(props: ThreadRoutePathArgs) {
           openStorageFile({ lineRange, path: normalized.target.path }, options);
           return true;
       }
+      return false;
     },
     [
       environment?.hostId,
@@ -1383,35 +1379,7 @@ function ThreadDetailViewInternal(props: ThreadRoutePathArgs) {
     [handleOpenLiveFilePreview, openFixedTab],
   );
   const handleOpenTimelinePluginPanel =
-    useCallback<ThreadTimelineOpenPluginPanelHandler>(
-      ({ pluginId, actionId, title, params }) => {
-        const action = pluginThreadPanelActions.find(
-          (candidate) =>
-            candidate.pluginId === pluginId && candidate.id === actionId,
-        );
-        if (action === undefined) return false;
-        let paramsJson: string | null;
-        try {
-          paramsJson = serializePluginPanelParams(params);
-        } catch (error) {
-          console.warn(
-            `[plugin:${pluginId}] messageDirective openThreadPanel params are invalid: ${
-              error instanceof Error ? error.message : String(error)
-            }`,
-          );
-          return false;
-        }
-        openPluginPanel({
-          pluginId,
-          actionId,
-          title: title ?? action.title,
-          paramsJson,
-        });
-        openCompactDrawer();
-        return true;
-      },
-      [openCompactDrawer, openPluginPanel, pluginThreadPanelActions],
-    );
+    useCallback<ThreadTimelineOpenPluginPanelHandler>(() => false, []);
   const openBrowserTabAndReveal = useCallback(
     (url?: string) => {
       openBrowserTab(url);
@@ -2131,25 +2099,10 @@ function ThreadDetailViewInternal(props: ThreadRoutePathArgs) {
     [handleOpenUrlByPreference],
   );
   const handleTimelineTitleAction = useCallback<TimelineTitleActionResolver>(
-    (action) => {
-      switch (action.kind) {
-        case "open-file-diff":
-          return () => {
-            openSecondaryPanelDiffFile(action.path);
-          };
-        case "open-plugin-side-chat":
-          return () => {
-            handleOpenTimelinePluginPanel({
-              pluginId: SIDE_CHAT_PLUGIN_ID,
-              actionId: SIDE_CHAT_PLUGIN_PANEL_ACTION_ID,
-              params: { threadId: action.threadId, sourceThreadId: threadId },
-            });
-          };
-        default:
-          return assertNever(action);
-      }
+    (action) => () => {
+      openSecondaryPanelDiffFile(action.path);
     },
-    [openSecondaryPanelDiffFile, handleOpenTimelinePluginPanel, threadId],
+    [openSecondaryPanelDiffFile],
   );
   const metadataStorage = useMemo(
     () => ({

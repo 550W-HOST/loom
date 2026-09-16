@@ -12,8 +12,6 @@ import {
   type ProviderCliIssue,
 } from "@/components/provider-cli/provider-cli-install";
 import { useDesktopUpdateInfo } from "@/hooks/useDesktopUpdateInfo";
-import { usePluginList } from "@/hooks/queries/plugin-settings-queries";
-import { pluginsNeedingAttention } from "@/hooks/usePluginAttention";
 import { selectPrimaryHost, useHosts } from "@/hooks/queries/host-queries";
 import { hostProviderCliStatusQueryKey } from "@/hooks/queries/query-keys";
 import { SESSION_STATIC_QUERY_POLICY } from "@/hooks/queries/query-policies";
@@ -68,9 +66,7 @@ export function useUpdateInventory(
   const systemConfigQuery = useSystemConfig({ enabled });
   const hostsQuery = useHosts({ enabled });
   const { desktopInfo, isDesktop } = useDesktopUpdateInfo();
-  const pluginAttentionCount = pluginsNeedingAttention(
-    usePluginList({ enabled }).data?.plugins ?? [],
-  ).length;
+  const pluginAttentionCount = 0;
 
   const hosts = useMemo(() => hostsQuery.data ?? [], [hostsQuery.data]);
   const connectedHosts = useMemo(

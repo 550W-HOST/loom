@@ -136,5 +136,15 @@ action registry 中删除，不能留下 dead navigation。
    disposition；source pin 变化必须和 package/contract 变化在同一 PR 说明。
 6. 运行 UI typecheck、test、build 以及 Rust contract/API coverage 检查。
 
+7. **W-604 composition status.** `apps/app` is now a ledger-controlled
+   `source-port`: the composer-first shell, thread workspace, first-party
+   Settings, and direct Automations routes compile and build without the generic
+   plugin SDK/runtime. Plugin marketplace, Skills, and desktop-browser surfaces
+   are removed or fail closed, and stale persisted plugin/browser panes are
+   pruned. The product app is still a candidate build: W-593 owns real loom
+   HTTP/realtime contract mapping, W-599 owns the Automations backend, and the
+   reference client remains the served fallback until final browser/release
+   acceptance.
+
 本仓库是 hard fork，没有 upstream remote，也不维护 bb patch series；同步是
 精确 source snapshot 加本仓库内可审计的适配提交，不是外部 patch series。

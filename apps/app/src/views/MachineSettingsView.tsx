@@ -226,13 +226,15 @@ export function MachineSettingsView() {
   }, [machine?.providerStatus, providerRoster]);
 
   const now = Date.now();
+  const primaryHostPlatform: HostPlatform | null =
+    systemConfig.data?.primaryHostPlatform ?? null;
   const platformLabel =
     host !== null &&
     host.id === localDaemonHostId &&
     localDaemonPlatform !== null
       ? PLATFORM_LABELS[localDaemonPlatform]
-      : isPrimary && systemConfig.data?.primaryHostPlatform
-        ? PLATFORM_LABELS[systemConfig.data.primaryHostPlatform]
+      : isPrimary && primaryHostPlatform !== null
+        ? PLATFORM_LABELS[primaryHostPlatform]
         : null;
 
   if (hosts === undefined) {

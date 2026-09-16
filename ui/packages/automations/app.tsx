@@ -471,8 +471,8 @@ function DetailView({
   const [deleting, setDeleting] = useState(false);
 
   const openThread = useCallback(
-    (threadId: string) => navigate.toThread(threadId),
-    [navigate],
+    (threadId: string) => navigate.toThread(threadId, route.projectId),
+    [navigate, route.projectId],
   );
 
   const editViaThread = useCallback(

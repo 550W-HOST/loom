@@ -273,7 +273,7 @@ function BbSourceCode({
     enabled: onSelectionAddToChat !== undefined,
     onSelectionAddToChat,
   });
-  const baseOptions = useMemo<FileOptions<undefined>>(
+  const baseOptions = useMemo<FileOptions<undefined, undefined>>(
     () => ({
       themeType: preferredTheme,
       theme: codeTheme,

@@ -22,7 +22,6 @@ import type {
   TimelineRow,
   TimelineSystemOperationKind,
 } from "@bb/server-contract";
-import type { ThreadChatMessageReference } from "@get-bb/plugin-sdk";
 import {
   activityIntentTitleGlyph,
   assertNever,
@@ -32,7 +31,6 @@ import {
   createTimelineViewRowsCache,
   findActiveLatestBundleId,
   workRowGlyph,
-  workRowPluginGlyph,
   workRowPresentation,
   type BuildTimelineRowTitleOptions,
   type BuildTimelineViewRowsOptions,
@@ -52,6 +50,7 @@ import {
 import { isRunningThreadRuntimeDisplayStatus } from "@bb/client-core";
 import type {
   ThreadTimelineAddToChatHandler,
+  ThreadChatMessageReference,
   ThreadTimelineEditMessageHandler,
   ThreadTimelineInlineMessageEditor,
   ThreadTimelineForkMessageHandler,
@@ -90,7 +89,6 @@ import { AutoHeightContainer } from "../../ui/height-transition.js";
 import { Icon, type IconName } from "@bb/shared-ui/icon";
 import { isIconName, presentationTintStyle } from "./presentation-display.js";
 import { PluginCompactIconMask } from "../../plugin/PluginIcon.js";
-import { usePluginIconUrl } from "@/lib/plugin-logos";
 import {
   PluginTimelineRendererBody,
   isPluginRenderableWorkRow,
@@ -1483,11 +1481,9 @@ function leadingIconStyleForRow(
 }
 
 function useLeadingIconUrlForRow(
-  row: ThreadTimelineViewRow,
+  _row: ThreadTimelineViewRow,
 ): string | undefined {
-  return usePluginIconUrl(
-    row.kind === "work" ? workRowPluginGlyph(row) : undefined,
-  );
+  return undefined;
 }
 
 function TimelineRowView({

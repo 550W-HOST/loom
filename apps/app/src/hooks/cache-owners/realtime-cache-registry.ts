@@ -69,7 +69,6 @@ import {
   threadTimelineQueryKeyPrefix,
 } from "../queries/query-keys";
 import { systemEnvironmentProvidersQueryKey } from "../queries/environment-provider-queries";
-import { schedulePluginFrontendReconcile } from "../../lib/plugin-frontend-lazy";
 import {
   getProjectListInvalidationQueryKeys,
   getProjectPromptHistoryInvalidationQueryKeys,
@@ -1176,6 +1175,4 @@ function dirtyEnvironmentProviderQueries(): QueryKey[] {
   return [systemEnvironmentProvidersQueryKey()];
 }
 
-function reconcilePluginFrontendBundles(): void {
-  schedulePluginFrontendReconcile();
-}
+function reconcilePluginFrontendBundles(): void {}

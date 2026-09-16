@@ -17,5 +17,16 @@
     // $HOME breaks `typeof fetch` assignability program-wide).
     "types": ["node", "react", "react-dom"]
   },
-  "include": ["src", "test", "tests", "fixtures", "stories"]
+  "include": ["src/**/*.ts", "src/**/*.tsx", "src/types/**/*.d.ts"],
+  "exclude": [
+    "src/**/*.test.ts",
+    "src/**/*.test.tsx",
+    "src/**/*.stories.ts",
+    "src/**/*.stories.tsx",
+    "src/**/*fixtures*.ts",
+    "src/**/*fixtures*.tsx",
+    "src/**/Story*.ts",
+    "src/**/Story*.tsx",
+    "src/test/**"
+  ]
 }

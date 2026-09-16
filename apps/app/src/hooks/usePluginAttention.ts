@@ -1,4 +1,10 @@
-import type { PluginListItem } from "@/hooks/queries/plugin-settings-queries";
+export interface PluginListItem {
+  id: string;
+  name: string | null;
+  enabled: boolean;
+  status: "incompatible" | "error" | "missing" | "ready";
+  statusDetail: string | null;
+}
 
 export function pluginNeedsAttention(
   plugin: Pick<PluginListItem, "enabled" | "status">,

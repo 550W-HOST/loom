@@ -4,9 +4,9 @@
   "type": "module",
   "packageManager": "pnpm@9.15.0",
   "scripts": {
-    "build": "pnpm --filter @loom/ui run build && pnpm --filter './ui/packages/*' run build",
-    "typecheck": "pnpm --filter @loom/ui run typecheck && pnpm --filter './ui/packages/*' run typecheck",
-    "test": "pnpm --filter @loom/ui run test && pnpm --filter './ui/packages/*' run test",
+    "build": "pnpm --filter @loom/ui run build && pnpm --filter './ui/packages/*' run build && pnpm --filter @bb/app run build",
+    "typecheck": "pnpm --filter @loom/ui run typecheck && pnpm --filter './ui/packages/*' run typecheck && pnpm --filter @bb/app run typecheck",
+    "test": "pnpm --filter @loom/ui run test && pnpm --filter './ui/packages/*' run test && pnpm --filter @bb/app run test",
     "provenance:check": "node scripts/check-ui-provenance.mjs",
     "provenance:test": "node --test scripts/check-ui-provenance.test.mjs",
     "port-plan:check": "node scripts/analyze-ui-port.mjs",

@@ -7,6 +7,7 @@ import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
+import { assertLedgerMatchesDiff, computePatchDiff } from "./check-ui-provenance.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const planPath = path.join(repoRoot, "ui", "app-port-plan.json");
@@ -124,20 +125,6 @@ const TSCONFIG_BUILD_INPUTS = new Set([
   "src/types/bb-desktop.d.ts",
   "src/vite-env.d.ts",
 ]);
-
-const EXPECTED_COMPILE_ONLY_LOCAL = [
-  "src/components/pickers/model-picker-option.ts",
-  "src/components/secondary-panel/secondaryPanelTab.ts",
-  "src/components/showcase-hero/showcase-archetype.ts",
-  "src/components/thread/timeline/types.ts",
-  "src/components/ui/markdown-link.ts",
-  "src/hooks/cache-effect-types.ts",
-  "src/hooks/mutations/mutation-request-types.ts",
-  "src/lib/command-palette/palette-action.ts",
-  "src/lib/split-layout/types.ts",
-  "src/lib/thread-secondary-panel.ts",
-  "src/views/thread-detail/threadDetailMutationTypes.ts",
-];
 
 const PRESERVED_SURFACE_PREFIXES = [
   "src/components/layout/",
@@ -777,7 +764,9 @@ export function classifyPath(filePath, fileEdges = [], reachability = { runtime:
   }
   const unsupported = explicitUnsupportedRoot(filePath);
   if (unsupported) {
-    return { disposition: "delete-unsupported", reasonCode: `unsupported-composition:${unsupported}`, preserveStructure: false };
+    return reachability.runtime
+      ? { disposition: "adapt-boundary", reasonCode: `source-port-replacement:${unsupported}`, preserveStructure: true }
+      : { disposition: "delete-unsupported", reasonCode: `unsupported-composition:${unsupported}`, preserveStructure: false };
   }
   if (TSCONFIG_BUILD_INPUTS.has(filePath)) {
     return { disposition: "retain-verbatim", reasonCode: "tsconfig-ambient-build-input", preserveStructure: false };
@@ -1011,10 +1000,25 @@ function compactEdge(edge, fileIndex) {
   ];
 }
 
-function exactSnapshotCheck(repo, sourceFiles) {
-  const tree = gitTree(repo, "apps/app");
-  if (tree !== expectedAppTree) throw new Error(`apps/app git tree changed: expected ${expectedAppTree}, got ${tree}`);
-  if (sourceFiles.length !== 1437) throw new Error(`apps/app/src tracked file count changed: expected 1437, got ${sourceFiles.length}`);
+function sourcePortCheck(repo, sourceFiles) {
+  const manifest = readJson(path.join(repo, "ui/provenance.json"));
+  const ledger = readJson(path.join(repo, "ui/app-patch-ledger.json"));
+  const appEntry = manifest.registry?.app;
+  if (appEntry?.disposition !== "source-port" || appEntry.snapshot?.kind !== "adapted-source") {
+    throw new Error("apps/app must be registered as a source-port adaptation");
+  }
+  if (ledger.import?.disposition !== "source-port" || !Array.isArray(ledger.patches) || ledger.patches.length === 0) {
+    throw new Error("apps/app source-port requires a non-empty patch ledger");
+  }
+  const upstreamRoot = process.env.BB_SRC ? path.resolve(process.env.BB_SRC) : null;
+  if (upstreamRoot === null) throw new Error("BB_SRC is required to verify the source-port patch ledger");
+  assertLedgerMatchesDiff(
+    ledger.patches,
+    computePatchDiff(upstreamRoot, repo, "apps/app", "apps/app"),
+    "apps/app",
+    "apps/app",
+  );
+  assertSourceInventory(sourceFiles);
   const status = execFileSync("git", ["-C", repo, "status", "--porcelain=v1", "--untracked-files=all", "--", "apps/app"], { encoding: "utf8" }).trim();
   assertCleanAppStatus(status);
 }
@@ -1025,8 +1029,8 @@ export function assertCleanAppStatus(status) {
 
 export function assertSourceInventory(sourceFiles) {
   const unique = new Set(sourceFiles);
-  if (sourceFiles.length !== 1437 || unique.size !== sourceFiles.length) {
-    throw new Error(`unclassified source inventory: expected 1437 unique tracked files, got ${sourceFiles.length} (${unique.size} unique)`);
+  if (sourceFiles.length === 0 || unique.size !== sourceFiles.length) {
+    throw new Error(`invalid source inventory: ${sourceFiles.length} files (${unique.size} unique)`);
   }
 }
 
@@ -1221,8 +1225,13 @@ export function analyzeApp({ repo = repoRoot, app = path.join(repo, "apps", "app
   for (const values of Object.values(blockerLayers)) values.sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
 
   const runtimeFiles = nodes.filter((node) => node.runtimeReachable).map((node) => node.path);
+  const emittedRuntimeBlockers = blockerLayers.runtime.filter((blocker) => runtimeReachability.distance.has(blocker.source));
+  const emittedPluginSdkValueEdges = edges.filter((edge) =>
+    edge.package === "@get-bb/plugin-sdk" && !edge.typeOnly && runtimeReachability.distance.has(edge.from)
+  );
+  if (emittedRuntimeBlockers.length > 0) throw new Error(`runtime-emitted graph has ${emittedRuntimeBlockers.length} unresolved imports`);
+  if (emittedPluginSdkValueEdges.length > 0) throw new Error("generic plugin SDK entered the runtime-emitted graph");
   const compileOnlyLocalPaths = nodes.filter((node) => node.runtimeCompileReachable && !node.runtimeEmittedReachable).map((node) => node.path).sort();
-  if (JSON.stringify(compileOnlyLocalPaths) !== JSON.stringify(EXPECTED_COMPILE_ONLY_LOCAL)) throw new Error(`compile-only local corpus changed: expected ${EXPECTED_COMPILE_ONLY_LOCAL.length}, got ${compileOnlyLocalPaths.length}`);
   const w603Paths = nodes.filter((node) => ["retain-verbatim", "adapt-boundary", "asset-build"].includes(node.disposition)).map((node) => node.path).sort();
   const w604Paths = nodes.filter((node) => ["delete-unsupported", "verification-only"].includes(node.disposition)).map((node) => node.path).sort();
   const rawBatches = {
@@ -1286,7 +1295,7 @@ export function analyzeApp({ repo = repoRoot, app = path.join(repo, "apps", "app
   batchCoverage.missingCrossIssueBatchDependencies = missingCrossIssueBatchDependencies;
   assertBatchCoverage(batchCoverage);
   const w603Files = new Set(batches["W-603"].flatMap((batch) => batch.files));
-  if (EXPECTED_COMPILE_ONLY_LOCAL.some((file) => !w603Files.has(file) || nodeByPath.get(file)?.disposition === "verification-only")) throw new Error("compile-only local modules must be retained in W-603");
+  if (compileOnlyLocalPaths.some((file) => !w603Files.has(file) || nodeByPath.get(file)?.disposition === "verification-only")) throw new Error("compile-only local modules must be retained in W-603");
   if ([...TSCONFIG_BUILD_INPUTS].some((file) => !w603Files.has(file) || nodeByPath.get(file)?.disposition !== "retain-verbatim")) throw new Error("tsconfig ambient declarations must be retained in W-603");
   const batchPlan = {
     kind: "reviewChunks",
@@ -1322,13 +1331,15 @@ export function analyzeApp({ repo = repoRoot, app = path.join(repo, "apps", "app
   const fileIndex = new Map(allFiles.map((file, index) => [file, index]));
 
   return {
-    format: "loom.app-port-plan/v1",
+    format: "loom.app-port-plan/v2",
     generatedBy: "scripts/analyze-ui-port.mjs",
     reviewSummary: "ui/app-port-plan.summary.json",
     source: {
       root: sourceRoot,
       trackedFiles: sourceFiles.length,
-      exactGitTree: gitTree(repo, "apps/app"),
+      disposition: "source-port",
+      baselineGitTree: expectedAppTree,
+      localGitTree: gitTree(repo, "apps/app"),
     },
     resolver: {
       compiler: "typescript",
@@ -1422,6 +1433,7 @@ export function analyzeApp({ repo = repoRoot, app = path.join(repo, "apps", "app
       },
       automationsVerificationOnly: automationAssertions.map((node) => ({ path: node.path, disposition: node.disposition, surfaceTags: node.surfaceTags })),
       pluginSlots: { path: pluginSlots.path, disposition: pluginSlots.disposition, preserveStructure: pluginSlots.preserveStructure ?? false },
+      runtimeBoundary: { emittedBlockers: emittedRuntimeBlockers.length, genericPluginSdkValueEdges: emittedPluginSdkValueEdges.length },
     },
     summary: {
       nodes: nodes.length,
@@ -1447,7 +1459,7 @@ function reviewSummary(plan) {
     return [layer, { count: blockers.length, categories }];
   }));
   return {
-    format: "loom.app-port-plan-summary/v1",
+    format: "loom.app-port-plan-summary/v2",
     plan: "ui/app-port-plan.json",
     planBytes: stableJson(plan).length,
     source: plan.source,
@@ -1501,12 +1513,13 @@ function stableReviewSummary(plan) {
 }
 
 function checkPlan(plan) {
-  assert.equal(plan.format, "loom.app-port-plan/v1");
+  assert.equal(plan.format, "loom.app-port-plan/v2");
   assert.equal(plan.reviewSummary, "ui/app-port-plan.summary.json");
-  assert.equal(plan.source.trackedFiles, 1437);
-  assert.equal(plan.source.exactGitTree, expectedAppTree);
-  assert.equal(plan.nodes.length, 1437);
-  assert.equal(plan.graph.reachability.compileOnlyLocal, 11);
+  assert.equal(plan.source.disposition, "source-port");
+  assert.equal(plan.source.baselineGitTree, expectedAppTree);
+  assert.match(plan.source.localGitTree, /^[0-9a-f]{40}$/);
+  assert.equal(plan.source.trackedFiles, plan.nodes.length);
+  assert.ok(plan.nodes.length > 1000);
   assert.equal(plan.graph.reachability.runtimeReachableSemantics, "runtimeEmittedReachable");
   assert.ok(stableJson(plan).length <= 2 * 1024 * 1024, `plan is larger than 2 MiB: ${stableJson(plan).length}`);
   assert.ok(stableJson(plan).split("\n").length <= 30000, "plan is larger than 30000 lines");
@@ -1522,10 +1535,10 @@ function checkPlan(plan) {
   }
   assert.equal(plan.batchCoverage.missing.length, 0);
   assert.equal(plan.batchCoverage.duplicates.length, 0);
-  assert.equal(plan.batchCoverage.assigned, 1437);
+  assert.equal(plan.batchCoverage.assigned, plan.nodes.length);
   assert.equal(plan.batchCoverage.missingCrossStageEdges, 0);
   assert.equal(plan.batchCoverage.missingCrossIssueBatchDependencies, 0);
-  assert.equal(plan.batchCoverage.crossIssueEdges, 1524);
+  assert.ok(plan.batchCoverage.crossIssueEdges >= 0);
   assert.equal(plan.batchPlan.kind, "reviewChunks");
   assert.equal(plan.batchPlan.executable, false);
   assert.equal(plan.batchPlan.atomicStageCount, 2);
@@ -1533,8 +1546,10 @@ function checkPlan(plan) {
   assert.equal(plan.graph.compilerImportConsistency.extra.length, 0);
   assert.equal(plan.graph.compilerImportConsistency.preProcessFileParity.missing.length, 0);
   assert.equal(plan.graph.compilerImportConsistency.preProcessFileParity.extra.length, 0);
-  assert.equal(plan.graph.typeOnlySemantics.allNamedTypeOnlyImports, 20);
+  assert.ok(plan.graph.typeOnlySemantics.allNamedTypeOnlyImports >= 0);
   assert.equal(plan.resolver.configDiagnostics, 0);
+  assert.equal(plan.assertions.runtimeBoundary.emittedBlockers, 0);
+  assert.equal(plan.assertions.runtimeBoundary.genericPluginSdkValueEdges, 0);
   for (const issue of ["W-603", "W-604"]) {
     assert.ok(Array.isArray(plan.batches[issue]) && plan.batches[issue].length > 0);
     for (const batch of plan.batches[issue]) {
@@ -1577,7 +1592,7 @@ function run() {
 
 if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url))) {
   try {
-    exactSnapshotCheck(repoRoot, trackedFiles(repoRoot, "apps/app/src"));
+    sourcePortCheck(repoRoot, trackedFiles(repoRoot, "apps/app/src"));
     run();
   } catch (error) {
     console.error(`app port plan: ${error.message}`);

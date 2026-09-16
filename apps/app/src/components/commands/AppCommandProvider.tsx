@@ -100,8 +100,9 @@ function hasOpenModal(): boolean {
 
 export function AppCommandProvider({ children }: { children: ReactNode }) {
   const systemConfig = useSystemConfig();
-  const keybindings = systemConfig.data?.keybindings ?? EMPTY_KEYBINDINGS;
-  const defaultKeybindings =
+  const keybindings: AppKeybindings =
+    systemConfig.data?.keybindings ?? EMPTY_KEYBINDINGS;
+  const defaultKeybindings: AppDefaultKeybindings =
     systemConfig.data?.defaultKeybindings ?? EMPTY_DEFAULT_KEYBINDINGS;
   const showKeyboardHints =
     systemConfig.data?.generalSettings?.showKeyboardHints ??

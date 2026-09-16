@@ -1,14 +1,13 @@
 import { createContext, useContext, useMemo, type ReactNode } from "react";
-import type {
-  ExperimentalAppPanelSurface,
-  ExperimentalFileOpenOptions,
-  JsonValue,
-} from "@get-bb/plugin-sdk";
+import type { JsonValue } from "@bb/domain";
+import type { ExperimentalFileOpenOptions } from "@/lib/live-file-navigation";
 import type { FileOpenerOverride } from "@/lib/plugin-slot-resolvers";
 
 interface AppUrlOpenIntent {
   url: string;
 }
+
+type ExperimentalAppPanelSurface = { kind: "current" };
 
 export interface AppFilePreviewIntent extends ExperimentalFileOpenOptions {
   viewer?: FileOpenerOverride;

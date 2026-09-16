@@ -18,10 +18,9 @@ import { useOptionalPluginComposerView } from "@/components/plugin/plugin-compos
 import { Icon, type IconName } from "@bb/shared-ui/icon";
 import { COARSE_POINTER_PROMPT_ICON_ACTION_BUTTON_CLASS } from "@bb/shared-ui/coarse-pointer-sizing";
 import { CHROME_SUBTLE_ICON_BUTTON_FOREGROUND_CLASS } from "@bb/shared-ui/chrome-style-tokens";
-import { CREATE_PLUGIN_PROMPT } from "@bb/client-core";
 import type { ProviderPromptActionCommand } from "@bb/client-core";
 
-type PromptBoxActionKind = "skills" | "plan" | "goal" | "automation" | "plugin";
+type PromptBoxActionKind = "skills" | "plan" | "goal" | "automation";
 
 export interface PromptBoxAction {
   kind: PromptBoxActionKind;
@@ -58,17 +57,11 @@ export const AUTOMATION_PROMPT_ACTION: PromptBoxAction = {
   text: "/automation ",
 };
 
-export const CREATE_PLUGIN_PROMPT_ACTION: PromptBoxAction = {
-  kind: "plugin",
-  text: CREATE_PLUGIN_PROMPT,
-};
-
 const PROMPT_ACTION_ORDER: readonly PromptBoxActionKind[] = [
   "skills",
   "plan",
   "goal",
   "automation",
-  "plugin",
 ];
 
 const PROMPT_ACTION_PRESENTATION = {
@@ -88,10 +81,6 @@ const PROMPT_ACTION_PRESENTATION = {
     label: "Automation",
     icon: "Repeat",
   },
-  plugin: {
-    label: "Plugin",
-    icon: "Plug02",
-  },
 } as const satisfies Record<
   PromptBoxActionKind,
   { label: string; icon: IconName }
@@ -100,7 +89,7 @@ const PROMPT_ACTION_PRESENTATION = {
 export function withAppPromptActions(
   actions: readonly PromptBoxAction[],
 ): PromptBoxAction[] {
-  const appActions = [AUTOMATION_PROMPT_ACTION, CREATE_PLUGIN_PROMPT_ACTION];
+  const appActions = [AUTOMATION_PROMPT_ACTION];
   return [
     ...actions,
     ...appActions.filter(

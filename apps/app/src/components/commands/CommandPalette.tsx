@@ -32,23 +32,12 @@ import {
   readPaletteRecents,
   recordPaletteRecent,
 } from "@/lib/command-palette/palette-recents";
-import { buildPluginPaletteActions } from "@/lib/command-palette/palette-plugin-actions";
-import { buildSettingsPaletteActions } from "@/lib/command-palette/palette-settings-actions";
-import { buildPluginPagePaletteActions } from "@/lib/command-palette/palette-plugin-page-actions";
-import { usePluginSlots } from "@/lib/plugin-slots";
-import { getActiveThreadPanelOpener } from "@/components/plugin/plugin-thread-panel-navigation";
-import { getThreadRoutePath } from "@/lib/route-paths";
-import { pluginListQueryOptions } from "@/hooks/queries/plugin-settings-queries";
-import {
-  buildPluginSettingsEntries,
-  type PluginSettingsCandidate,
-} from "@/components/settings/plugin-settings-entries";
-import { useSettingsNavSections } from "@/components/settings/settings-nav";
-import { appQueryClient } from "@/lib/app-query-client";
 import {
   ThreadPaletteResults,
   type ThreadPaletteNavigationItem,
 } from "./ThreadPaletteResults";
+
+import { getThreadRoutePath } from "@/lib/route-paths";
 
 type PaletteMode = "commands" | "threads";
 
@@ -57,7 +46,7 @@ export interface CommandPaletteProps {
   projectId: string | null;
 }
 
-export function CommandPalette({ threadId, projectId }: CommandPaletteProps) {
+export function CommandPalette(_props: CommandPaletteProps) {
   const navigate = useNavigate();
   const runner = useAppCommandRunner();
   const shortcuts = useAppCommandShortcuts(PALETTE_COMMAND_IDS);
@@ -74,48 +63,8 @@ export function CommandPalette({ threadId, projectId }: CommandPaletteProps) {
   const [recents, setRecents] = useState<readonly string[]>(() =>
     readPaletteRecents(),
   );
-  const [installedPlugins, setInstalledPlugins] = useState<
-    readonly PluginSettingsCandidate[]
-  >([]);
-  const pluginSlots = usePluginSlots();
-  const sections = useSettingsNavSections(pluginSlots.fileOpeners);
-  const pluginSettingsEntries = useMemo(
-    () =>
-      buildPluginSettingsEntries({
-        installedPlugins,
-        settingsSections: pluginSlots.settingsSections,
-      }),
-    [installedPlugins, pluginSlots.settingsSections],
-  );
-  const settingsActions = useMemo(
-    () =>
-      buildSettingsPaletteActions({
-        navigate: (path) => {
-          void navigate(path);
-        },
-        pluginEntries: pluginSettingsEntries,
-        sections,
-      }),
-    [navigate, pluginSettingsEntries, sections],
-  );
-  const pluginPageActions = useMemo(
-    () =>
-      buildPluginPagePaletteActions({
-        navigate: (path) => {
-          void navigate(path);
-        },
-        panels: pluginSlots.navPanels,
-      }),
-    [navigate, pluginSlots.navPanels],
-  );
   const openTargetRef = useRef<EventTarget | null>(null);
   const pendingRunRef = useRef<(() => void) | null>(null);
-
-  const loadInstalledPlugins = useCallback(() => {
-    void appQueryClient
-      .fetchQuery(pluginListQueryOptions({ enabled: true }))
-      .then(setInstalledPlugins, () => {});
-  }, []);
 
   const buildActions = useCallback(
     (target: EventTarget | null) => [
@@ -125,21 +74,8 @@ export function CommandPalette({ threadId, projectId }: CommandPaletteProps) {
         dispatch: runner.dispatch,
         shortcuts,
       }),
-      ...buildPluginPaletteActions({
-        slots: pluginSlots.commandPaletteActions,
-        threadId,
-        projectId,
-        openThreadPanel: getActiveThreadPanelOpener(),
-      }),
     ],
-    [
-      projectId,
-      pluginSlots.commandPaletteActions,
-      runner.dispatch,
-      runner.isCommandAvailable,
-      shortcuts,
-      threadId,
-    ],
+    [runner.dispatch, runner.isCommandAvailable, shortcuts],
   );
 
   const openPalette = useCallback(
@@ -150,9 +86,8 @@ export function CommandPalette({ threadId, projectId }: CommandPaletteProps) {
       setQuery(mode === "commands" ? ">" : "");
       setHighlightedIndex(0);
       setOpen(true);
-      loadInstalledPlugins();
     },
-    [buildActions, loadInstalledPlugins],
+    [buildActions],
   );
 
   useAppCommandHandler("palette.open", (invocation) => {
@@ -173,10 +108,7 @@ export function CommandPalette({ threadId, projectId }: CommandPaletteProps) {
 
   const mode: PaletteMode = query.startsWith(">") ? "commands" : "threads";
   const modeQuery = mode === "commands" ? query.slice(1) : query;
-  const commandActions = useMemo<readonly PaletteAction[]>(
-    () => [...actions, ...settingsActions, ...pluginPageActions],
-    [actions, pluginPageActions, settingsActions],
-  );
+  const commandActions = actions;
   const rankedCommands = useMemo(
     () =>
       rankPaletteActions({

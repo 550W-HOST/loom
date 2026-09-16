@@ -79,7 +79,7 @@ export async function openInTarget(
 }
 
 async function readHostDaemonErrorMessage(
-  response: Response,
+  response: { text(): Promise<string> },
   fallbackMessage: string,
 ): Promise<string> {
   const text = await response.text().catch(() => "");

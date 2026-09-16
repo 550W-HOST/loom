@@ -17,9 +17,7 @@ describe("HashNavigationScroll", () => {
     const focus = vi.spyOn(HTMLElement.prototype, "focus");
 
     render(
-      <MemoryRouter
-        initialEntries={["/plugins/workflows#configuration"]}
-      >
+      <MemoryRouter initialEntries={["/automations#configuration"]}>
         <HashNavigationScroll />
         <div id="configuration" />
       </MemoryRouter>,
@@ -34,10 +32,10 @@ describe("HashNavigationScroll", () => {
     });
   });
 
-  it("waits for lazy plugin surfaces to mount", async () => {
+  it("waits for lazy product surfaces to mount", async () => {
     const scrollIntoView = vi.spyOn(Element.prototype, "scrollIntoView");
     const view = render(
-      <MemoryRouter initialEntries={["/#plugin-workflows-active-runs"]}>
+      <MemoryRouter initialEntries={["/#lazy-product-content"]}>
         <HashNavigationScroll />
       </MemoryRouter>,
     );
@@ -45,9 +43,9 @@ describe("HashNavigationScroll", () => {
     expect(scrollIntoView).not.toHaveBeenCalled();
 
     view.rerender(
-      <MemoryRouter initialEntries={["/#plugin-workflows-active-runs"]}>
+      <MemoryRouter initialEntries={["/#lazy-product-content"]}>
         <HashNavigationScroll />
-        <section id="plugin-workflows-active-runs" />
+        <section id="lazy-product-content" />
       </MemoryRouter>,
     );
 

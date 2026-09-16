@@ -2,7 +2,7 @@ import type {
   PromptMentionCommandTrigger,
   PromptTextMention,
 } from "@bb/domain";
-import type { ComposerView } from "@get-bb/plugin-sdk";
+import type { ComposerView } from "@/components/plugin/plugin-composer-host";
 import type { Node as ProseMirrorNode, Slice } from "@tiptap/pm/model";
 import { TextSelection } from "@tiptap/pm/state";
 import { useEditor, type Editor } from "@tiptap/react";
@@ -55,7 +55,6 @@ import {
   TooltipTrigger,
 } from "@bb/shared-ui/tooltip";
 import { ComposerActionsSlot } from "@/components/plugin/PluginComposerActions";
-import { useResolvedComposerEditor } from "@/components/plugin/composer-slot-hooks";
 import {
   composerScopeIdentity,
   PluginComposerViewProvider,
@@ -76,8 +75,8 @@ import {
 } from "@bb/shared-ui/hooks/use-media-query";
 import { blurActiveKeyboardInputWithin } from "@bb/shared-ui/overlay-trigger";
 import {
-  DEFAULT_PLUGIN_MENTION_TRIGGER,
-  type PluginMentionTrigger,
+  DEFAULT_MENTION_TRIGGER as DEFAULT_PLUGIN_MENTION_TRIGGER,
+  type MentionTrigger as PluginMentionTrigger,
 } from "@bb/client-core";
 import { useRichTextEditingPreference } from "@/lib/rich-text-editing-preference";
 import {
@@ -1435,52 +1434,17 @@ export function PromptBoxInternal({
     isSubmitting,
   });
   const composerView = useOptionalPluginComposerView() ?? localComposerView;
-  const composerViewRef = useRef(composerView);
-  composerViewRef.current = composerView;
   const composerScopeKey = composerScopeIdentity(composerView.scope);
-  const resolvedComposerEditor = useResolvedComposerEditor(
-    suppressPluginComposerCustomizations ? null : composerView.scope.kind,
-  );
   useEffect(() => {
     onComposerLayoutChange?.(composerLayout);
   }, [composerLayout, onComposerLayoutChange]);
-  const pluginRichTextContributions = useMemo(() => {
-    const sources: PromptDecorationSource[] = [];
-    const observers: PromptDraftObserver[] = [];
-    for (const contribution of resolvedComposerEditor.effects) {
-      sources.push({
-        id: `${contribution.pluginId}/${contribution.customizationId}`,
-        generation: contribution.generation,
-        pluginId: contribution.pluginId,
-        effects: contribution.effects,
-      });
-    }
-    for (const contribution of resolvedComposerEditor.observers) {
-      observers.push({
-        id: `${contribution.pluginId}/${contribution.customizationId}`,
-        getView: () => composerViewRef.current,
-        onDraftChange: contribution.onDraftChange,
-      });
-    }
-    for (const effectSource of textEffects ?? []) {
-      const className = effectSource.effect.className;
-      if (className.length === 0) continue;
-      sources.push({
-        id: `plugin-imperative:${effectSource.pluginId}:${effectSource.order}`,
-        generation: effectSource.order,
-        pluginId: effectSource.pluginId,
-        effects: [
-          {
-            id: "whole-draft",
-            className,
-            match: (text) =>
-              text.length === 0 ? [] : [{ from: 0, to: text.length }],
-          },
-        ],
-      });
-    }
-    return { sources, observers };
-  }, [resolvedComposerEditor, textEffects]);
+  const pluginRichTextContributions = useMemo(
+    (): {
+      sources: PromptDecorationSource[];
+      observers: PromptDraftObserver[];
+    } => ({ sources: [], observers: [] }),
+    [],
+  );
   const pluginDecorationSourcesRef = useRef(
     pluginRichTextContributions.sources,
   );
@@ -1602,10 +1566,10 @@ export function PromptBoxInternal({
 
       const shouldSuppressTrigger = Boolean(
         dismissedTriggerRef.current &&
-        !dismissedTriggerRef.current.hasLeftRange &&
-        (isRestoringAppliedMention ||
-          (caretPosition >= dismissedTriggerRef.current.start &&
-            caretPosition <= dismissedTriggerRef.current.end)),
+          !dismissedTriggerRef.current.hasLeftRange &&
+          (isRestoringAppliedMention ||
+            (caretPosition >= dismissedTriggerRef.current.start &&
+              caretPosition <= dismissedTriggerRef.current.end)),
       );
 
       const nextTrigger = shouldSuppressTrigger ? null : detectedTrigger;
@@ -2817,9 +2781,9 @@ export function PromptBoxInternal({
           : null;
       const hasSelectedHistoryEntry = Boolean(
         history &&
-        activeHistoryEntry !== null &&
-        activeHistoryEntry !== undefined &&
-        arePromptDraftStatesEqual(history.currentDraft, activeHistoryEntry),
+          activeHistoryEntry !== null &&
+          activeHistoryEntry !== undefined &&
+          arePromptDraftStatesEqual(history.currentDraft, activeHistoryEntry),
       );
       const canNavigateHistory =
         history !== undefined &&

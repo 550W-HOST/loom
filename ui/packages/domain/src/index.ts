@@ -1,37 +1,79 @@
 export * from "./active-thinking.js";
+export * from "./app-keybindings.js";
+export * from "./app-settings.js";
+export * from "./app-theme.js";
+export * from "./change-kinds.js";
+export * from "./code-theme.js";
+export * from "./debounced-callback-scheduler.js";
 export * from "./background-task.js";
 export * from "./environment.js";
+export * from "./experiments.js";
 export * from "./feature-flags.js";
 export * from "./git-checkout.js";
 export * from "./host.js";
+export * from "./host-list-limits.js";
 export * from "./item-presentation.js";
 export * from "./json-value.js";
 export * from "./pending-interactions.js";
+export * from "./plugin-catalog-category.js";
+export * from "./plugin-id.js";
+export * from "./project-path.js";
 export * from "./project.js";
+export * from "./prompt-history.js";
 export * from "./protocol-ids.js";
 export * from "./provider-event.js";
 export * from "./provider-extension-kind.js";
+export * from "./provider-model-catalog.js";
 export * from "./provider-types.js";
 export * from "./raw-thread-id.js";
 export * from "./reasoning-level.js";
+export * from "./queued-message.js";
 export * from "./shared-types.js";
 export * from "./system-message.js";
+export * from "./terminal.js";
+export * from "./thread-git-diff.js";
 export * from "./thread-event-scope.js";
 export * from "./thread-events.js";
 export * from "./thread-origin-kind.js";
 export * from "./thread-status.js";
+export * from "./thread-search.js";
 export * from "./thread-timeline-active-prompt-mode.js";
 export * from "./thread-timeline-goal.js";
 export * from "./thread-timeline-model-fallback.js";
 export * from "./thread-timeline-pending-todos.js";
 export * from "./thread-visibility.js";
+export * from "./ui-preferences.js";
+export {
+  threadListEntrySchema,
+  threadPullRequestSchema,
+  threadQueuedMessageSchema,
+  threadWithRuntimeSchema,
+  workspaceStatusSchema,
+} from "./thread.js";
+export type {
+  PullRequestState,
+  ThreadActivityState,
+  ThreadListEntry,
+  ThreadPullRequest,
+  ThreadPullRequestAttentionState,
+  ThreadPullRequestChecksState,
+  ThreadPullRequestMergeabilityState,
+  ThreadPullRequestReviewState,
+  ThreadQueuedMessage,
+  ThreadQueuedWork,
+  ThreadRuntimeDisplayStatus,
+  ThreadRuntimeState,
+  Thread,
+  ThreadWithRuntime,
+  WorkspaceChangeStats,
+  WorkspaceCommitSummary,
+  WorkspaceFileStatus,
+  WorkspaceStatus,
+} from "./thread.js";
 
 import type { EnvironmentStatus } from "./environment.js";
 import type { Host } from "./host.js";
 import type { JsonValue } from "./json-value.js";
-import type { ThreadOriginKind } from "./thread-origin-kind.js";
-import type { ThreadStatus } from "./thread-status.js";
-import type { ThreadVisibility } from "./thread-visibility.js";
 import type { ThreadEvent, ThreadEventType } from "./provider-event.js";
 import type { ThreadEventScope } from "./thread-event-scope.js";
 
@@ -44,70 +86,6 @@ export interface ThreadEventRow {
   data: Record<string, unknown>;
   createdAt: number;
 }
-
-export interface Thread {
-  id: string;
-  projectId: string;
-  environmentId: string | null;
-  providerId: string;
-  title: string | null;
-  titleFallback: string | null;
-  sectionId: string | null;
-  status: ThreadStatus;
-  parentThreadId: string | null;
-  sourceThreadId: string | null;
-  originKind: ThreadOriginKind | null;
-  visibility: ThreadVisibility;
-  archivedAt: number | null;
-  pinnedAt: number | null;
-  deletedAt: number | null;
-  lastReadAt: number | null;
-  latestAttentionAt: number;
-  createdAt: number;
-  updatedAt: number;
-}
-
-export interface ThreadRuntimeState {
-  displayStatus: ThreadRuntimeDisplayStatus;
-  hostReconnectGraceExpiresAt: number | null;
-}
-
-export interface ThreadWithRuntime extends Thread {
-  runtime: ThreadRuntimeState;
-}
-
-export interface ThreadActivityState {
-  activeWorkflowCount: number;
-  activeBackgroundAgentCount: number;
-  activeBackgroundCommandCount: number;
-  activePlanModeCount: number;
-  activeGoalCount: number;
-}
-
-export type ThreadQueuedWork = "none" | "waiting" | "failed";
-
-export interface ThreadListEntry extends ThreadWithRuntime {
-  activity: ThreadActivityState;
-  queuedWork: ThreadQueuedWork;
-  pinSortKey: string | null;
-  hasPendingInteraction: boolean;
-  environmentHostId: string | null;
-  environmentName: string | null;
-  environmentBranchName: string | null;
-  environmentPath: string | null;
-  environmentProviderId: string | null;
-  environmentIsWorktree: boolean | null;
-  environmentWorkspaceDisplayKind:
-    | "managed-worktree"
-    | "unmanaged-worktree"
-    | "other";
-}
-
-export type ThreadRuntimeDisplayStatus =
-  | ThreadStatus
-  | "provisioning"
-  | "host-reconnecting"
-  | "waiting-for-host";
 
 export type Environment = {
   id: string;

@@ -280,8 +280,6 @@ export function WorkRowBody({
       );
     case "plan-steps":
       return <PlanStepsWorkRowBody row={row} />;
-    case "extension":
-      return <PresentationDetail presentation={row.presentation} />;
     case "image-generation":
     case "image-view":
       return (

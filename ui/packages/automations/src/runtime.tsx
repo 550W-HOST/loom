@@ -48,7 +48,7 @@ export interface AutomationEditorAdapters {
 
 export interface AutomationsNavigation {
   toCompose(args: { focusPrompt: boolean; initialPrompt: string }): void;
-  toThread(threadId: string): void;
+  toThread(threadId: string, projectId: string): void;
   toPanel(subPath: string): void;
 }
 
@@ -133,9 +133,7 @@ export function useAutomationsNavigation(): AutomationsNavigation {
   return useAutomationsRuntime().navigation;
 }
 
-export function ProviderModelPicker(
-  props: AutomationProviderModelPickerProps,
-) {
+export function ProviderModelPicker(props: AutomationProviderModelPickerProps) {
   const Picker = useAutomationsRuntime().editorAdapters.ProviderModelPicker;
   return <Picker {...props} />;
 }

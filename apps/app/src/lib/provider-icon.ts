@@ -1,8 +1,7 @@
 import type { CSSProperties, ComponentType } from "react";
-import { createElement, useSyncExternalStore } from "react";
+import { createElement } from "react";
 import { isPresentationTintColor, type ProviderInfo } from "@bb/domain";
 import { Icon, ICON_NAMES, type IconName } from "@bb/shared-ui/icon";
-import { getPluginSlotSnapshot, subscribePluginSlots } from "./plugin-slots";
 
 interface ProviderIconInfo {
   icon: ComponentType<{ className?: string }>;
@@ -89,65 +88,18 @@ function getConfiguredProviderLogoIcon(
   return ProviderLogoIcon;
 }
 
-function getRegisteredPluginProviderIcon(
-  providerId: string,
-): ComponentType<{ className?: string }> | undefined {
-  return getPluginSlotSnapshot().providerIcons.find(
-    (slot) => slot.providerId === providerId,
-  )?.icon;
-}
-
-const pluginAwareProviderIcons = new Map<
-  string,
-  ComponentType<{ className?: string }>
->();
-
-function getPluginAwareProviderIcon(
-  providerId: string,
-  source: ProviderIconSource,
-  staticIcon: ComponentType<{ className?: string }> | undefined,
-): ComponentType<{ className?: string }> {
-  const cacheKey = `${providerId}\0${source.logoUrl ?? ""}\0${source.icon?.glyph ?? ""}\0${source.family ?? ""}`;
-  const cached = pluginAwareProviderIcons.get(cacheKey);
-  if (cached !== undefined) {
-    return cached;
-  }
-  const ProviderIcon: ComponentType<{ className?: string }> = ({
-    className,
-  }) => {
-    "use no memo";
-    const pluginIcon = useSyncExternalStore(
-      subscribePluginSlots,
-      () => getRegisteredPluginProviderIcon(providerId),
-      () => undefined,
-    );
-    const ResolvedIcon = pluginIcon ?? staticIcon;
-    return ResolvedIcon === undefined
-      ? null
-      : createElement(ResolvedIcon, { className });
-  };
-  pluginAwareProviderIcons.set(cacheKey, ProviderIcon);
-  return ProviderIcon;
-}
-
 export function getProviderIconInfo(
   providerId: string,
   source: ProviderIconSource | null = null,
 ): ProviderIconInfo | undefined {
   const resolvedSource = source ?? { logoUrl: null };
   const staticInfo = resolveStaticProviderIconInfo(providerId, resolvedSource);
-  const pluginIcon = getRegisteredPluginProviderIcon(providerId);
-  if (staticInfo === undefined && pluginIcon === undefined) {
+  if (staticInfo === undefined) {
     return undefined;
   }
   return {
-    icon: getPluginAwareProviderIcon(
-      providerId,
-      resolvedSource,
-      staticInfo?.icon,
-    ),
-    ariaLabel:
-      resolvedSource.displayName ?? staticInfo?.ariaLabel ?? providerId,
+    ...staticInfo,
+    ariaLabel: resolvedSource.displayName ?? staticInfo.ariaLabel,
   };
 }
 

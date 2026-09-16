@@ -6,13 +6,12 @@ import {
 } from "react";
 import type { Nodes, Parent, RootContent } from "mdast";
 import type {} from "mdast-util-to-hast";
-import type {
-  BbNavigate,
-  PluginMessageDirectiveProps,
-} from "@get-bb/plugin-sdk";
 import { visit } from "unist-util-visit";
 import { PluginSlotMount } from "@/components/plugin/PluginSlotMount.js";
-import { PluginThreadPanelNavigationProvider } from "@/components/plugin/plugin-thread-panel-navigation.js";
+import {
+  PluginThreadPanelNavigationProvider,
+  type PluginThreadPanelOpenHandler,
+} from "@/components/plugin/plugin-thread-panel-navigation.js";
 import {
   resolveMessageDirectiveRegistry,
   type ResolvedMessageDirective,
@@ -38,18 +37,22 @@ export interface MountedMessageDirective {
   source: string;
 }
 
+export interface MarkdownDirectiveMessage {
+  id: string;
+  threadId: string;
+  turnId: string | null;
+  projectId: string | null;
+}
+
 export interface MarkdownMessageDirectives {
   registry: MessageDirectiveRegistry;
-  message: PluginMessageDirectiveProps["message"];
-  openWorkspaceFile: PluginMessageDirectiveProps["openWorkspaceFile"];
+  message: MarkdownDirectiveMessage;
+  openWorkspaceFile: ((path: string) => boolean) | null;
   openThreadPanel: MarkdownMessageDirectiveOpenThreadPanel | null;
 }
 
-export type MarkdownMessageDirectiveOpenThreadPanel = (
-  options: Parameters<BbNavigate["openThreadPanel"]>[0] & {
-    pluginId: string;
-  },
-) => boolean;
+export type MarkdownMessageDirectiveOpenThreadPanel =
+  PluginThreadPanelOpenHandler;
 
 type DirectiveNodeType = "textDirective" | "leafDirective";
 
@@ -272,8 +275,8 @@ export function remarkMessageDirectives(args: {
 
 interface BuildMessageDirectiveComponentArgs {
   mounts: readonly MountedMessageDirective[];
-  message: PluginMessageDirectiveProps["message"];
-  openWorkspaceFile: PluginMessageDirectiveProps["openWorkspaceFile"];
+  message: MarkdownDirectiveMessage;
+  openWorkspaceFile: ((path: string) => boolean) | null;
   openThreadPanel: MarkdownMessageDirectiveOpenThreadPanel | null;
 }
 

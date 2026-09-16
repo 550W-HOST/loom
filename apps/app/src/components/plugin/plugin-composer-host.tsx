@@ -10,9 +10,30 @@ import {
   useSyncExternalStore,
   type ReactNode,
 } from "react";
-import type { ComposerView, PluginComposerScope } from "@get-bb/plugin-sdk";
-import { isComposerDraftEmpty } from "@get-bb/plugin-sdk/internal/composer-view";
 import type { PromptDraftState } from "@bb/client-core";
+
+export type PluginComposerScope =
+  | { kind: "thread"; threadId: string }
+  | { kind: "queued-message"; threadId: string; queuedMessageId: string }
+  | {
+      kind: "side-chat";
+      projectId: string;
+      parentThreadId: string;
+      tabId: string;
+      childThreadId?: string;
+    }
+  | { kind: "new-thread"; projectId: string | null };
+
+export interface ComposerView {
+  scope: PluginComposerScope;
+  layout: "expanded" | "compact";
+  draft: { text: string; isEmpty: boolean; attachmentCount: number };
+  run: { isRunning: boolean; isSubmitting: boolean };
+}
+
+function isComposerDraftEmpty(text: string, attachmentCount: number): boolean {
+  return text.trim().length === 0 && attachmentCount === 0;
+}
 
 export interface PluginComposerHost {
   scope: PluginComposerScope;

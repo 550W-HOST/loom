@@ -11,7 +11,12 @@ import {
 } from "react";
 import { useSetAtom } from "jotai";
 import type { ThreadListEntry } from "@bb/domain";
-import type { PluginComposerThreadRowStatus } from "@get-bb/plugin-sdk";
+
+interface PluginComposerThreadRowStatus {
+  tone: "running" | "success" | "error" | "muted";
+  icon: string;
+  label: string;
+}
 import { getThreadConversationCollapsedAtom } from "@/components/secondary-panel/threadSecondaryPanelAtoms";
 import { Icon } from "@bb/shared-ui/icon";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@bb/shared-ui/tooltip";
@@ -82,7 +87,6 @@ import {
   useThreadTitleDisplayText,
 } from "@/components/thread/ThreadTitleMentions";
 import { pluginIconName } from "@/components/plugin/PluginIcon";
-import { usePluginThreadRowStatus } from "@/lib/plugin-thread-row-status";
 
 const SIDEBAR_TITLE_DOUBLE_CLICK_MS = 400;
 
@@ -528,7 +532,7 @@ function ThreadRowComponent({
     getThreadConversationCollapsedAtom(thread.id),
   );
   const shortcut = useSidebarThreadShortcut(thread.id);
-  const pluginThreadRowStatus = usePluginThreadRowStatus(thread.id);
+  const pluginThreadRowStatus: PluginComposerThreadRowStatus | null = null;
   const showActive = isActive;
   const hasPendingInteraction = thread.hasPendingInteraction;
   const threadRuntimeBusy = isRuntimeBusyThread(thread);
@@ -633,12 +637,11 @@ function ThreadRowComponent({
   };
   const trailingIndicatorResolution = resolveThreadTrailingIndicatorStatus(
     trailingIndicatorState,
-    pluginThreadRowStatus,
+    null,
   );
   const trailingIndicatorKind = trailingIndicatorResolution.indicatorKind;
   const splitIndicatorIsWorking = hasThreadListWorkingActivity(
     trailingIndicatorState,
-    pluginThreadRowStatus?.tone === "running",
   );
   const splitIndicatorLabel = trailingIndicatorResolution.accessibleLabel
     ? `${labelTitle} — open in split; ${trailingIndicatorResolution.accessibleLabel}`

@@ -267,7 +267,8 @@ export function MachinesSettingsSection() {
   }, [projects]);
 
   const now = Date.now();
-  const primaryHostPlatform = systemConfig.data?.primaryHostPlatform ?? null;
+  const primaryHostPlatform: HostPlatform | null =
+    systemConfig.data?.primaryHostPlatform ?? null;
   const showMachineIdentityBadges = (hosts?.length ?? 0) > 1;
   const hasMachineRows = hosts !== undefined && hosts.length > 0;
 
