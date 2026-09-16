@@ -8619,12 +8619,12 @@
       "upstreamPath": "apps/app",
       "localPath": "apps/app",
       "disposition": "source-port",
-      "gitTree": "9024e7fe053becef03f5eca940237bd58c14d0d2",
+      "gitTree": "d29b6100d64de47bc353dcbbb297891352591e3f",
       "snapshot": {
         "path": "apps/app",
         "tree": {
           "files": 1458,
-          "sha256": "378aac8f26d20291970ee3e5f780367d1e72fe2fdaa9949ac913e66e1b1d2281"
+          "sha256": "b9f5e98ceb27ebbe0f9c70cb1abcf38e4257ed5ec9333abac1e759bbcf58120b"
         },
         "files": [
           {
@@ -15329,8 +15329,8 @@
           },
           {
             "path": "src/loom/LoomShellBoundary.tsx",
-            "bytes": 7106,
-            "sha256": "03df74afabd2c2dbd15a1b9b905000d569d516c661922fdb4ba758c79a19d727"
+            "bytes": 7892,
+            "sha256": "5376289e2d526e2930cd08668dac9a327b72761609310c7fe408deac4cdfe866"
           },
           {
             "path": "src/loom/add-machine-workflow.test.tsx",
