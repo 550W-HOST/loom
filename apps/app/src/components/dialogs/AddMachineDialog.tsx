@@ -55,7 +55,11 @@ type ConnectMachineCodeResult =
 
 async function isConnectPluginDisabled(): Promise<boolean> {
   try {
-    const { plugins } = await sdk.plugins.list();
+    const {
+      plugins,
+    }: {
+      plugins: Array<{ id: string; enabled: boolean }>;
+    } = await sdk.plugins.list();
     const connect = plugins.find((plugin) => plugin.id === "connect");
     return connect !== undefined && !connect.enabled;
   } catch {

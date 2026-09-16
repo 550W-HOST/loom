@@ -1,4 +1,3 @@
-import type { ThreadChatMessageReference } from "@get-bb/plugin-sdk";
 import type { PromptInput } from "@bb/domain";
 import type {
   MarkdownPreviewLocalFileLink,
@@ -7,6 +6,14 @@ import type {
 import type { MarkdownPreviewLinkHandler } from "../../ui/markdown-link.js";
 import type { PromptDraftAttachment } from "@bb/client-core";
 import type { MarkdownMessageDirectiveOpenThreadPanel } from "@/components/ui/markdown-message-directives";
+
+export interface ThreadChatMessageReference {
+  id: string;
+  threadId: string;
+  role: "user" | "assistant";
+  text: string;
+  sourceSeqEnd: number;
+}
 
 export type ThreadTimelineLocalFileLink = MarkdownPreviewLocalFileLink;
 

@@ -45,7 +45,17 @@ export type PromptMentionSuggestion =
       sectionId: string;
       name: string;
     }
-  ;
+  | {
+      kind: "plugin";
+      pluginId: string;
+      providerId: string;
+      itemId: string;
+      providerLabel: string;
+      title: string;
+      subtitle: string | null;
+      icon: string | null;
+      replacement: string;
+    };
 
 export interface ProviderCommandSuggestion {
   kind: "command";
@@ -54,6 +64,7 @@ export interface ProviderCommandSuggestion {
   origin: ProviderCommandOrigin;
   description: string | null;
   argumentHint: string | null;
+  pluginId?: string;
 }
 
 export function toProviderCommandSuggestion(
@@ -66,6 +77,7 @@ export function toProviderCommandSuggestion(
     origin: command.origin,
     description: command.description,
     argumentHint: command.argumentHint,
+    ...(command.pluginId !== undefined ? { pluginId: command.pluginId } : {}),
   };
 }
 

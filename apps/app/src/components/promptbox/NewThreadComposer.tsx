@@ -19,15 +19,15 @@ import {
   type ServiceTier,
 } from "@bb/domain";
 import type {
-  NewThreadRequest,
-  PluginEnvironmentProviderInputsChange,
-} from "@get-bb/plugin-sdk";
-import type {
   CreateExecutionInputSources,
   SidebarBootstrapResponse,
   SystemEnvironmentProvider,
   SystemExecutionOptionsModelLoadError,
 } from "@bb/server-contract";
+
+type PluginEnvironmentProviderInputsChange =
+  | { status: "blocked"; reason: string }
+  | { status: "ready"; value: JsonValue | null };
 import type { ProjectSelectorCreateProjectConfig } from "@/components/pickers/ProjectSelector";
 import {
   encodeReuseValue,
@@ -41,7 +41,10 @@ import {
   type NewThreadPromptBoxProps,
 } from "@/components/promptbox/NewThreadPromptBox";
 import { withAppPromptActions } from "@/components/promptbox/PromptBoxActionsMenu";
-import { buildProviderPromptActionProps } from "@bb/client-core";
+import {
+  buildProviderPromptActionProps,
+  type AppCreateThreadRequest as NewThreadRequest,
+} from "@bb/client-core";
 import type { PromptMentionLinkResolver } from "@/components/promptbox/editor/prompt-mention-link";
 import type { PromptBoxHandle } from "@/components/promptbox/PromptBoxInternal";
 import { type PluginComposerHost } from "@/components/plugin/plugin-composer-host";
@@ -168,6 +171,10 @@ export interface NewThreadComposerState {
 }
 
 export interface NewThreadComposerSubmission extends NewThreadRequest {
+  providerId: string;
+  model: string;
+  reasoningLevel: ReasoningLevel;
+  permissionMode: PermissionMode;
   sendAt?: number;
 }
 

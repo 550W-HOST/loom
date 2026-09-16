@@ -1,5 +1,4 @@
 import { useCallback, useMemo, type ReactNode } from "react";
-import type { ComposerView } from "@get-bb/plugin-sdk";
 import {
   useAppCommandContext,
   useAppCommandHandler,
@@ -7,6 +6,7 @@ import {
 import {
   PluginComposerHostProvider,
   PluginComposerViewProvider,
+  type ComposerView,
   type PluginComposerHost,
 } from "./plugin-composer-host";
 

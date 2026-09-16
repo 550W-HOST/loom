@@ -1,6 +1,5 @@
 import { lazy, Suspense, useEffect } from "react";
 import {
-  matchPath,
   Navigate,
   Route,
   Routes,
@@ -8,88 +7,58 @@ import {
   useParams,
 } from "react-router-dom";
 import { AppLayout } from "./components/layout/AppLayout";
-import { AuthCallbackView } from "./views/AuthCallbackView";
 import { QuickCreateProjectProvider } from "./hooks/useQuickCreateProject";
 import { RouteNavigationProvider } from "./components/ui/app-route-anchor";
 import { RouteNavigationIndicator } from "./components/ui/route-navigation-indicator";
-import { AppNavigationUrlHost } from "./lib/url-open-routing";
-import { NativeShellReporter } from "./lib/native-shell";
 import { UiPreferencesSync } from "@/lib/ui-preferences/UiPreferencesSync";
-import { AppFileExternalNavigationHost } from "./components/plugin/AppFileExternalNavigationHost";
 import { useAppTheme } from "./hooks/useAppTheme";
 import { useFaviconColorSync } from "./lib/favicon-color-preference";
-import { useDesktopThemeSync } from "./hooks/useDesktopThemeSync";
-import { usePluginFrontendBoot } from "./hooks/usePluginFrontendBoot";
 import { markRouteContentPainted } from "./lib/route-content-paint";
-import { useRememberPluginNavPanelChrome } from "@/lib/plugin-nav-panel-chrome";
-import { useWebSocket } from "./hooks/useWebSocket";
 import {
-  AUTH_CALLBACK_ROUTE_PATH,
+  AUTOMATION_DETAIL_ROUTE_PATH,
+  AUTOMATION_EDIT_ROUTE_PATH,
+  AUTOMATIONS_BROWSE_ROUTE_PATH,
+  AUTOMATIONS_ROUTE_PATH,
   LEGACY_AUTOMATION_DETAIL_ROUTE_PATH,
   LEGACY_AUTOMATIONS_ROUTE_PATH,
+  LEGACY_PROJECT_SETTINGS_ROUTE_PATH,
   LEGACY_TOOLS_AUTOMATION_BROWSE_ROUTE_PATH,
   LEGACY_TOOLS_AUTOMATION_DETAIL_ROUTE_PATH,
   LEGACY_TOOLS_AUTOMATION_EDIT_ROUTE_PATH,
   LEGACY_TOOLS_AUTOMATIONS_ROUTE_PATH,
-  LEGACY_TOOLS_PREFIX_ROUTE_PATH,
-  LEGACY_TOOLS_SKILL_DETAIL_ROUTE_PATH,
-  LEGACY_TOOLS_SPLAT_ROUTE_PATH,
   PROJECT_ARCHIVED_ROUTE_PATH,
   PROJECTLESS_ARCHIVED_ROUTE_PATH,
-  LEGACY_PROJECT_SETTINGS_ROUTE_PATH,
-  PLUGIN_DETAIL_ROUTE_PATH,
-  PLUGINS_ROUTE_PATH,
-  REGISTRY_SKILL_DETAIL_ROUTE_PATH,
-  REGISTRY_SKILLS_ROUTE_PATH,
-  SETTINGS_PLUGIN_ROUTE_PATH,
-  SETTINGS_PLUGINS_ROUTE_PATH,
   SETTINGS_MACHINE_ROUTE_PATH,
   SETTINGS_PROJECT_ROUTE_PATH,
   SETTINGS_ROUTE_PATH,
   SETTINGS_SECTION_ROUTE_PATH,
-  SKILL_DETAIL_ROUTE_PATH,
-  SKILLS_ROUTE_PATH,
-  TOOLS_PLUGIN_BROWSE_ROUTE_PATH,
-  TOOLS_PLUGIN_DETAIL_ROUTE_PATH,
-  TOOLS_PLUGINS_ROUTE_PATH,
-  TOOLS_REGISTRY_SKILL_DETAIL_ROUTE_PATH,
-  TOOLS_REGISTRY_SKILLS_ROUTE_PATH,
-  TOOLS_ROUTE_PATH,
-  TOOLS_SKILL_DETAIL_ROUTE_PATH,
-  TOOLS_SKILLS_ROUTE_PATH,
   getAutomationDetailRoutePath,
   getAutomationEditRoutePath,
   getAutomationsRoutePath,
-  getSettingsRoutePath,
   getSettingsProjectRoutePath,
+  getSettingsRoutePath,
 } from "./lib/route-paths";
 import { AppCommandProvider } from "./components/commands/AppCommandProvider";
-import { ProviderCliInstallLogDialogHost } from "./components/provider-cli/provider-cli-install";
 import { RouteLoadingSkeleton } from "./components/ui/route-loading-skeleton";
 
 const SettingsView = lazy(() =>
-  import("./views/SettingsView").then((m) => ({
-    default: m.SettingsView,
-  })),
-);
-const PluginsView = lazy(() =>
-  import("./views/ToolsView").then((m) => ({
-    default: m.PluginsView,
-  })),
-);
-const SkillsView = lazy(() =>
-  import("./views/ToolsView").then((m) => ({
-    default: m.SkillsView,
+  import("./views/SettingsView").then((module) => ({
+    default: module.SettingsView,
   })),
 );
 const ProjectDetailSettingsView = lazy(() =>
-  import("./views/ProjectDetailSettingsView").then((m) => ({
-    default: m.ProjectDetailSettingsView,
+  import("./views/ProjectDetailSettingsView").then((module) => ({
+    default: module.ProjectDetailSettingsView,
   })),
 );
 const MachineSettingsView = lazy(() =>
-  import("./views/MachineSettingsView").then((m) => ({
-    default: m.MachineSettingsView,
+  import("./views/MachineSettingsView").then((module) => ({
+    default: module.MachineSettingsView,
+  })),
+);
+const AutomationsView = lazy(() =>
+  import("./views/AutomationsView").then((module) => ({
+    default: module.AutomationsView,
   })),
 );
 const splitWorkspaceRouteModule = import("./views/SplitWorkspaceRoute");
@@ -113,13 +82,12 @@ function LegacyProjectSettingsRedirect() {
   );
 }
 
-export function LegacyAutomationDetailRedirect() {
+function LegacyAutomationDetailRedirect() {
   const location = useLocation();
   const { projectId, automationId } = useParams<{
     projectId?: string;
     automationId?: string;
   }>();
-
   if (!projectId || !automationId) {
     return <Navigate to={getAutomationsRoutePath()} replace />;
   }
@@ -135,104 +103,14 @@ export function LegacyAutomationDetailRedirect() {
   );
 }
 
-export function LegacyAutomationCollectionRedirect() {
+function LegacyAutomationCollectionRedirect() {
   const location = useLocation();
   const browse =
     location.pathname.endsWith("/browse") ||
     new URLSearchParams(location.search).get("view") === "browse";
   return (
     <Navigate
-      to={
-        browse
-          ? `${getAutomationsRoutePath()}/browse`
-          : getAutomationsRoutePath()
-      }
-      replace
-    />
-  );
-}
-
-export function PluginsLandingRedirect() {
-  const location = useLocation();
-  return (
-    <Navigate
-      to={{
-        pathname: PLUGINS_ROUTE_PATH,
-        search: location.search,
-        hash: location.hash,
-      }}
-      replace
-    />
-  );
-}
-
-function normalizeLegacyPluginSuffix(suffix: string): string {
-  return matchPath("/browse", suffix) !== null ? "" : suffix;
-}
-
-export function LegacyPluginsPathRedirect() {
-  const location = useLocation();
-  const suffix = normalizeLegacyPluginSuffix(
-    location.pathname.slice(TOOLS_PLUGINS_ROUTE_PATH.length),
-  );
-  return (
-    <Navigate
-      to={{
-        pathname: `${PLUGINS_ROUTE_PATH}${suffix}`,
-        search: location.search,
-        hash: location.hash,
-      }}
-      replace
-    />
-  );
-}
-
-function normalizeLegacySkillSuffix(suffix: string): string {
-  if (suffix === "/installed") return "/library";
-  if (suffix.startsWith("/installed/")) {
-    return `/library/${suffix.slice("/installed/".length)}`;
-  }
-  return suffix;
-}
-
-export function LegacySkillsPathRedirect() {
-  const location = useLocation();
-  const suffix = normalizeLegacySkillSuffix(
-    location.pathname.slice(TOOLS_SKILLS_ROUTE_PATH.length),
-  );
-  return (
-    <Navigate
-      to={{
-        pathname: `${SKILLS_ROUTE_PATH}${suffix}`,
-        search: location.search,
-        hash: location.hash,
-      }}
-      replace
-    />
-  );
-}
-
-export function LegacyToolsPathRedirect() {
-  const location = useLocation();
-  const suffix = location.pathname.slice(LEGACY_TOOLS_PREFIX_ROUTE_PATH.length);
-  const pathname = suffix.startsWith("/plugins")
-    ? `${PLUGINS_ROUTE_PATH}${normalizeLegacyPluginSuffix(
-        suffix.slice("/plugins".length),
-      )}`
-    : suffix.startsWith("/skills")
-      ? `${SKILLS_ROUTE_PATH}${normalizeLegacySkillSuffix(
-          suffix.slice("/skills".length),
-        )}`
-      : suffix === "" || suffix === "/"
-        ? PLUGINS_ROUTE_PATH
-        : `${TOOLS_ROUTE_PATH}${suffix}`;
-  return (
-    <Navigate
-      to={{
-        pathname,
-        search: location.search,
-        hash: location.hash,
-      }}
+      to={browse ? AUTOMATIONS_BROWSE_ROUTE_PATH : AUTOMATIONS_ROUTE_PATH}
       replace
     />
   );
@@ -251,7 +129,6 @@ const HASH_NAVIGATION_WAIT_MS = 2_000;
 
 export function HashNavigationScroll() {
   const location = useLocation();
-
   useEffect(() => {
     const targetId = hashTargetId(location.hash);
     if (targetId === null) return;
@@ -286,11 +163,10 @@ export function HashNavigationScroll() {
     timeoutId = window.setTimeout(stopWaiting, HASH_NAVIGATION_WAIT_MS);
     return stopWaiting;
   }, [location.hash, location.key]);
-
   return null;
 }
 
-export function AppRoutes() {
+function AppRoutes() {
   return (
     <AppLayout>
       <Suspense fallback={null}>
@@ -300,11 +176,6 @@ export function AppRoutes() {
             path={SETTINGS_SECTION_ROUTE_PATH}
             element={<SettingsView />}
           />
-          <Route
-            path={SETTINGS_PLUGINS_ROUTE_PATH}
-            element={<SettingsView />}
-          />
-          <Route path={SETTINGS_PLUGIN_ROUTE_PATH} element={<SettingsView />} />
           <Route
             path={SETTINGS_MACHINE_ROUTE_PATH}
             element={<MachineSettingsView />}
@@ -343,62 +214,29 @@ export function AppRoutes() {
           />
           <Route
             path={LEGACY_AUTOMATIONS_ROUTE_PATH}
-            element={<LegacyAutomationCollectionRedirect />}
+            element={<AutomationsView />}
           />
           <Route
             path={LEGACY_AUTOMATION_DETAIL_ROUTE_PATH}
-            element={<LegacyAutomationDetailRedirect />}
+            element={<AutomationsView />}
           />
-          <Route path={TOOLS_ROUTE_PATH} element={<PluginsLandingRedirect />} />
+          <Route path={AUTOMATIONS_ROUTE_PATH} element={<AutomationsView />} />
           <Route
-            path={TOOLS_PLUGINS_ROUTE_PATH}
-            element={<LegacyPluginsPathRedirect />}
-          />
-          <Route
-            path={TOOLS_PLUGIN_BROWSE_ROUTE_PATH}
-            element={<LegacyPluginsPathRedirect />}
+            path={AUTOMATIONS_BROWSE_ROUTE_PATH}
+            element={<AutomationsView />}
           />
           <Route
-            path={TOOLS_PLUGIN_DETAIL_ROUTE_PATH}
-            element={<LegacyPluginsPathRedirect />}
+            path={AUTOMATION_DETAIL_ROUTE_PATH}
+            element={<AutomationsView />}
           />
           <Route
-            path={TOOLS_SKILLS_ROUTE_PATH}
-            element={<LegacySkillsPathRedirect />}
+            path={AUTOMATION_EDIT_ROUTE_PATH}
+            element={<AutomationsView />}
           />
-          <Route
-            path={TOOLS_SKILL_DETAIL_ROUTE_PATH}
-            element={<LegacySkillsPathRedirect />}
-          />
-          <Route
-            path={LEGACY_TOOLS_SKILL_DETAIL_ROUTE_PATH}
-            element={<LegacySkillsPathRedirect />}
-          />
-          <Route
-            path={TOOLS_REGISTRY_SKILLS_ROUTE_PATH}
-            element={<LegacySkillsPathRedirect />}
-          />
-          <Route
-            path={TOOLS_REGISTRY_SKILL_DETAIL_ROUTE_PATH}
-            element={<LegacySkillsPathRedirect />}
-          />
-          <Route
-            path={LEGACY_TOOLS_PREFIX_ROUTE_PATH}
-            element={<LegacyToolsPathRedirect />}
-          />
-          <Route
-            path={LEGACY_TOOLS_SPLAT_ROUTE_PATH}
-            element={<LegacyToolsPathRedirect />}
-          />
-          <Route path={SKILLS_ROUTE_PATH} element={<SkillsView />} />
-          <Route path={SKILL_DETAIL_ROUTE_PATH} element={<SkillsView />} />
-          <Route path={REGISTRY_SKILLS_ROUTE_PATH} element={<SkillsView />} />
-          <Route
-            path={REGISTRY_SKILL_DETAIL_ROUTE_PATH}
-            element={<SkillsView />}
-          />
-          <Route path={PLUGINS_ROUTE_PATH} element={<PluginsRoute />} />
-          <Route path={PLUGIN_DETAIL_ROUTE_PATH} element={<PluginsRoute />} />
+          <Route path="/plugins/*" element={<Navigate to="/" replace />} />
+          <Route path="/skills/*" element={<Navigate to="/" replace />} />
+          <Route path="/extensions/*" element={<Navigate to="/" replace />} />
+          <Route path="/tools/*" element={<Navigate to="/" replace />} />
           <Route
             path="*"
             element={
@@ -423,40 +261,17 @@ function RouteContentPaintSignal() {
   return null;
 }
 
-function PluginsRoute() {
-  const { pluginId } = useParams<{ pluginId?: string }>();
-  return <PluginsView pluginId={pluginId} />;
-}
-
 export function App() {
-  useWebSocket();
-  useDesktopThemeSync();
   useAppTheme();
   useFaviconColorSync();
-  usePluginFrontendBoot();
-  useRememberPluginNavPanelChrome();
-
   return (
     <QuickCreateProjectProvider>
       <AppCommandProvider>
         <RouteNavigationProvider>
           <RouteNavigationIndicator />
-          <AppNavigationUrlHost>
-            <AppFileExternalNavigationHost>
-              <HashNavigationScroll />
-              <NativeShellReporter />
-              <UiPreferencesSync />
-              <Routes>
-                <Route
-                  path={AUTH_CALLBACK_ROUTE_PATH}
-                  element={<AuthCallbackView />}
-                />
-                <Route path="*" element={<AppRoutes />} />
-              </Routes>
-              {}
-              <ProviderCliInstallLogDialogHost />
-            </AppFileExternalNavigationHost>
-          </AppNavigationUrlHost>
+          <HashNavigationScroll />
+          <UiPreferencesSync />
+          <AppRoutes />
         </RouteNavigationProvider>
       </AppCommandProvider>
     </QuickCreateProjectProvider>

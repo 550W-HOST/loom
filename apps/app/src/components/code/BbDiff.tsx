@@ -87,7 +87,7 @@ export function BbDiff({
     enabled: onSelectionAddToChat !== undefined,
     onSelectionAddToChat,
   });
-  const baseOptions = useMemo<FileDiffOptions<undefined>>(
+  const baseOptions = useMemo<FileDiffOptions<undefined, undefined>>(
     () => ({
       diffStyle: view,
       overflow,

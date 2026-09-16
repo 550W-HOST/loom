@@ -18,7 +18,10 @@ import type {
   ThreadRuntimeDisplayStatus,
   ThreadTimelineActivePromptMode,
 } from "@bb/domain";
-import type { ComposerView, PluginComposerScope } from "@get-bb/plugin-sdk";
+import type {
+  ComposerView,
+  PluginComposerScope,
+} from "@/components/plugin/plugin-composer-host";
 import type { ComposerTextEffectSource } from "@/lib/composer-text-effects";
 import { modifierSubmitShortcutLabel } from "./modifier-submit-shortcut";
 import { isKeyboardFocusTarget } from "@/components/layout/useMobileVisualViewportHeight";

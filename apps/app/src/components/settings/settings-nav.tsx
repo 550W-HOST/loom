@@ -1,11 +1,8 @@
 import { useMemo } from "react";
 import { matchPath, useLocation } from "react-router-dom";
 import { useHostDaemon, useLocalHostDaemonAccess } from "@/hooks/useHostDaemon";
-import { usePluginSlots, type PluginFileOpenerSlot } from "@/lib/plugin-slots";
-import { usePluginList } from "@/hooks/queries/plugin-settings-queries";
 import {
   SETTINGS_MACHINE_ROUTE_PATH,
-  SETTINGS_PLUGIN_ROUTE_PATH,
   SETTINGS_PROJECT_ROUTE_PATH,
   SETTINGS_SECTION_ROUTE_PATH,
 } from "@/lib/route-paths";
@@ -15,21 +12,23 @@ import {
   type SettingsNavSection,
   type SettingsSectionId,
 } from "./settings-sections";
-import {
-  buildPluginSettingsEntries,
-  type PluginSettingsEntry,
-} from "./plugin-settings-entries";
+
+const UNSUPPORTED_SETTINGS_SECTIONS = new Set<SettingsSectionId>([
+  "browser",
+  "plugins",
+  "marketplaces",
+]);
 
 export interface SettingsNavState {
   activeSection: SettingsSectionId | null;
   hasUnknownSection: boolean;
-  activePluginId: string | null;
-  pluginEntries: readonly PluginSettingsEntry[];
+  activePluginId: null;
+  pluginEntries: readonly never[];
   sections: readonly SettingsNavSection[];
 }
 
 export function useSettingsNavSections(
-  fileOpeners: readonly PluginFileOpenerSlot[],
+  _fileOpeners: readonly unknown[] = [],
 ): readonly SettingsNavSection[] {
   const { hasDaemon } = useHostDaemon();
   const { accessState } = useLocalHostDaemonAccess();
@@ -38,68 +37,50 @@ export function useSettingsNavSections(
     () =>
       SETTINGS_NAV_SECTIONS.filter(
         (section) =>
-          section.id !== "files" ||
-          hasDaemon ||
-          accessState !== "unavailable" ||
-          fileOpeners.length > 0,
+          !UNSUPPORTED_SETTINGS_SECTIONS.has(section.id) &&
+          (section.id !== "files" ||
+            hasDaemon ||
+            accessState !== "unavailable"),
       ),
-    [accessState, fileOpeners.length, hasDaemon],
+    [accessState, hasDaemon],
   );
 }
 
 export function useSettingsNavState(): SettingsNavState {
   const location = useLocation();
-  const { fileOpeners, settingsSections } = usePluginSlots();
-  const sections = useSettingsNavSections(fileOpeners);
-  const pluginListQuery = usePluginList({ enabled: true });
-
+  const sections = useSettingsNavSections();
   const sectionMatch = matchPath(
     SETTINGS_SECTION_ROUTE_PATH,
     location.pathname,
   );
-  const pluginMatch = matchPath(SETTINGS_PLUGIN_ROUTE_PATH, location.pathname);
-  const isInstalledDetail =
-    new URLSearchParams(location.search).get("view") === "installed";
-  const activePluginId = isInstalledDetail
-    ? null
-    : (pluginMatch?.params.pluginId ?? null);
   const machineMatch = matchPath(
     SETTINGS_MACHINE_ROUTE_PATH,
     location.pathname,
   );
-  const activeMachineId = machineMatch?.params.hostId ?? null;
   const projectMatch = matchPath(
     SETTINGS_PROJECT_ROUTE_PATH,
     location.pathname,
   );
-  const activeProjectId = projectMatch?.params.projectId ?? null;
   const sectionParam = sectionMatch?.params.section;
-  const hasUnknownSection =
-    sectionParam !== undefined && !isSettingsSectionId(sectionParam);
+  const sectionSupported =
+    sectionParam !== undefined &&
+    isSettingsSectionId(sectionParam) &&
+    !UNSUPPORTED_SETTINGS_SECTIONS.has(sectionParam);
+  const hasUnknownSection = sectionParam !== undefined && !sectionSupported;
   const activeSection: SettingsSectionId | null =
-    isInstalledDetail && pluginMatch !== null
-      ? "plugins"
-      : activeMachineId !== null
-        ? "machines"
-        : activeProjectId !== null
-          ? "projects"
-          : activePluginId !== null
-            ? null
-            : sectionParam !== undefined && isSettingsSectionId(sectionParam)
-              ? sectionParam
-              : "general";
-
-  const installedPlugins = pluginListQuery.data?.plugins ?? [];
-  const pluginEntries = buildPluginSettingsEntries({
-    installedPlugins,
-    settingsSections,
-  });
+    machineMatch !== null
+      ? "machines"
+      : projectMatch !== null
+        ? "projects"
+        : sectionSupported
+          ? sectionParam
+          : "general";
 
   return {
-    activePluginId,
+    activePluginId: null,
     activeSection,
     hasUnknownSection,
-    pluginEntries,
+    pluginEntries: [],
     sections,
   };
 }

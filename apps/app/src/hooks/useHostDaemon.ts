@@ -9,6 +9,7 @@ import {
   requestLocalHostDaemonAccessAtom,
 } from "@/lib/system-config-atoms";
 import { useAsyncAtomValue } from "@/lib/use-async-atom-value";
+import type { HostDaemonStatusSnapshot } from "@/lib/api-host-daemon";
 
 export function useHostDaemon() {
   const localHostDaemonReachable = useAsyncAtomValue(
@@ -16,7 +17,10 @@ export function useHostDaemon() {
     false,
   );
   const localDaemonHostId = useAsyncAtomValue(localHostDaemonHostIdAtom, null);
-  const localHostStatus = useAsyncAtomValue(localHostStatusAtom, null);
+  const localHostStatus: HostDaemonStatusSnapshot | null = useAsyncAtomValue(
+    localHostStatusAtom,
+    null,
+  );
   const localHostId = useAsyncAtomValue(localHostIdAtom, null);
 
   const hasDaemon = localHostDaemonReachable;

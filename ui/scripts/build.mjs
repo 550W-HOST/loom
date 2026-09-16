@@ -1,5 +1,5 @@
 import { build } from "esbuild";
-import { cp, mkdir } from "node:fs/promises";
+import { cp, mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -23,6 +23,10 @@ await build({
   },
 });
 
+const appBundlePath = resolve(distDir, "app.js");
+const appBundle = await readFile(appBundlePath, "utf8");
+await writeFile(appBundlePath, appBundle.replace(/[ \t]+$/gmu, ""));
+
 await cp(resolve(uiDir, "index.html"), resolve(distDir, "index.html"));
 await cp(resolve(uiDir, "style.css"), resolve(distDir, "style.css"));
-await cp(resolve(distDir, "app.js"), resolve(uiDir, "app.js"));
+await cp(appBundlePath, resolve(uiDir, "app.js"));

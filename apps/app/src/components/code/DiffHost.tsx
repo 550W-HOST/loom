@@ -1,5 +1,4 @@
 import { Suspense, lazy, useMemo, type ReactNode } from "react";
-import type { ExperimentalDiffFullFileContents } from "@get-bb/plugin-sdk";
 import { PluginReplacementSlot } from "@/components/plugin/PluginReplacementSlot";
 import { deprecatedOriginalAlias } from "@/lib/plugin-sdk-deprecated-aliases";
 import type { ParsedGitDiffFile } from "@/components/git-diff/git-diff-parsing";
@@ -9,6 +8,7 @@ import {
   DEFAULT_CODE_OVERFLOW,
   DEFAULT_DIFF_VIEW,
   type DiffPresentation,
+  type ExperimentalDiffFullFileContents,
 } from "./code-rendering";
 
 const DIFF_RENDERER_SLOT_KIND = "diffRenderer";

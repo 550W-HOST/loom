@@ -11,7 +11,7 @@ import {
 } from "react";
 import type { Host, ProjectSource, PromptTextMention } from "@bb/domain";
 import type { SystemEnvironmentProvider } from "@bb/server-contract";
-import type { ComposerView } from "@get-bb/plugin-sdk";
+import type { ComposerView } from "@/components/plugin/plugin-composer-host";
 import type { ComposerTextEffectSource } from "@/lib/composer-text-effects";
 import { ComposerBannersSlot } from "@/components/plugin/PluginComposerBanners";
 import { PROMPT_STACK_TRACK_CLASS } from "@/components/promptbox/banner/PromptStackCard";
@@ -252,10 +252,11 @@ export const NewThreadPromptBoxUI = memo(function NewThreadPromptBoxUI({
   );
 });
 
-interface DefaultNewThreadComposerProps extends Omit<
-  NewThreadPromptBoxUIProps,
-  "promptBoxRef" | "pluginComposerHost"
-> {
+interface DefaultNewThreadComposerProps
+  extends Omit<
+    NewThreadPromptBoxUIProps,
+    "promptBoxRef" | "pluginComposerHost"
+  > {
   promptBoxRef: RefObject<PromptBoxHandle | null>;
   voice: ReturnType<typeof usePromptVoice>;
   onComposerLayoutChange: (layout: ComposerView["layout"]) => void;
@@ -541,10 +542,8 @@ interface NewThreadConnectedModeConfig {
   header?: ReactNode;
 }
 
-export interface NewThreadPromptBoxProps extends Omit<
-  NewThreadPromptBoxUIProps,
-  "modeConfig"
-> {
+export interface NewThreadPromptBoxProps
+  extends Omit<NewThreadPromptBoxUIProps, "modeConfig"> {
   modeConfig: NewThreadConnectedModeConfig;
 }
 

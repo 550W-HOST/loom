@@ -1,4 +1,3 @@
-import type { PluginFileOpenerProps } from "@get-bb/plugin-sdk";
 import type { ThreadTabFileOpenerOwner } from "@bb/server-contract";
 import {
   createPluginPanelFixedPanelTab,
@@ -15,7 +14,18 @@ import type { OpenSecondaryPanelTabRequest } from "@/components/secondary-panel/
 
 const FILE_OPENER_ACTION_ID_PREFIX = "file-opener:";
 
-type PluginFileOpenerFile = Pick<PluginFileOpenerProps, "path" | "source">;
+export interface PluginFileOpenerSource {
+  kind: "workspace" | "host" | "thread-storage";
+  threadId: string | null;
+  environmentId: string | null;
+  projectId: string | null;
+  experimental_hostId?: string;
+}
+
+interface PluginFileOpenerFile {
+  path: string;
+  source: PluginFileOpenerSource;
+}
 
 export type FileOpenerOriginalTab = Extract<
   SecondaryFileFixedPanelTab,

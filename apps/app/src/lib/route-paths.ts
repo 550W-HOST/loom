@@ -1,8 +1,5 @@
 import { matchPath } from "react-router-dom";
 import {
-  PLUGIN_DETAIL_ROUTE_PATH,
-  PLUGINS_ROUTE_PATH,
-  PLUGIN_PANEL_ROUTE_PATH,
   REGISTRY_SKILL_DETAIL_ROUTE_PATH,
   REGISTRY_SKILLS_ROUTE_PATH,
   ROUTE_PATTERNS,
@@ -17,12 +14,8 @@ export {
   AUTH_CALLBACK_ROUTE_PATH,
   SETTINGS_ROUTE_PATH,
   SETTINGS_SECTION_ROUTE_PATH,
-  SETTINGS_PLUGINS_ROUTE_PATH,
-  SETTINGS_PLUGIN_ROUTE_PATH,
   SETTINGS_MACHINE_ROUTE_PATH,
   SETTINGS_PROJECT_ROUTE_PATH,
-  PLUGINS_ROUTE_PATH,
-  PLUGIN_DETAIL_ROUTE_PATH,
   SKILLS_ROUTE_PATH,
   SKILL_DETAIL_ROUTE_PATH,
   REGISTRY_SKILLS_ROUTE_PATH,
@@ -33,9 +26,6 @@ export {
   LEGACY_TOOLS_SKILL_DETAIL_ROUTE_PATH,
   TOOLS_REGISTRY_SKILLS_ROUTE_PATH,
   TOOLS_REGISTRY_SKILL_DETAIL_ROUTE_PATH,
-  TOOLS_PLUGINS_ROUTE_PATH,
-  TOOLS_PLUGIN_BROWSE_ROUTE_PATH,
-  TOOLS_PLUGIN_DETAIL_ROUTE_PATH,
   LEGACY_TOOLS_PREFIX_ROUTE_PATH,
   LEGACY_TOOLS_SPLAT_ROUTE_PATH,
   LEGACY_TOOLS_AUTOMATIONS_ROUTE_PATH,
@@ -45,8 +35,6 @@ export {
   LEGACY_SKILLS_ROUTE_PATH,
   LEGACY_AUTOMATIONS_ROUTE_PATH,
   LEGACY_AUTOMATION_DETAIL_ROUTE_PATH,
-  AUTOMATIONS_PLUGIN_ID,
-  AUTOMATIONS_PLUGIN_PANEL_PATH,
   AUTOMATIONS_ROUTE_PATH,
   AUTOMATIONS_BROWSE_ROUTE_PATH,
   AUTOMATION_DETAIL_ROUTE_PATH,
@@ -55,7 +43,6 @@ export {
   PROJECTLESS_ARCHIVED_ROUTE_PATH,
   LEGACY_PROJECT_SETTINGS_ROUTE_PATH,
   PROJECT_ARCHIVED_ROUTE_PATH,
-  PLUGIN_PANEL_ROUTE_PATH,
   isProjectlessProjectId,
   getRootComposeRoutePath,
   getLegacyProjectComposeRoutePath,
@@ -67,19 +54,74 @@ export {
   getRegistrySkillsRoutePath,
   getSkillDetailRoutePath,
   getRegistrySkillDetailRoutePath,
-  getPluginsRoutePath,
-  getPluginDetailRoutePath,
-  getPluginConfigurationRoutePath,
   getAutomationsRoutePath,
   getAutomationDetailRoutePath,
   getAutomationEditRoutePath,
-  getPluginPanelRoutePath,
   getThreadRoutePath,
 } from "@bb/client-core";
 export type { ThreadRoutePathArgs } from "@bb/client-core";
 
+// Compatibility-only paths for persisted legacy navigation. The product router
+// does not register these generic plugin surfaces.
+export const SETTINGS_PLUGINS_ROUTE_PATH = "/settings/plugins";
+export const SETTINGS_PLUGIN_ROUTE_PATH = "/settings/plugins/:pluginId";
+export const PLUGINS_ROUTE_PATH = "/plugins";
+export const PLUGIN_DETAIL_ROUTE_PATH = "/plugins/:pluginId";
+export const TOOLS_PLUGINS_ROUTE_PATH = "/extensions/plugins";
+export const TOOLS_PLUGIN_BROWSE_ROUTE_PATH = "/extensions/plugins/browse";
+export const TOOLS_PLUGIN_DETAIL_ROUTE_PATH = "/extensions/plugins/:pluginId";
+export const PLUGIN_PANEL_ROUTE_PATH = "/plugins/:pluginId/:panelPath/*";
+export const AUTOMATIONS_PLUGIN_ID = "automations";
+export const AUTOMATIONS_PLUGIN_PANEL_PATH = "automations";
+
 export function getPluginPanelRoutePluginId(pathname: string): string | null {
   return matchPath(PLUGIN_PANEL_ROUTE_PATH, pathname)?.params.pluginId ?? null;
+}
+
+export function getPluginsRoutePath(): string {
+  return PLUGINS_ROUTE_PATH;
+}
+
+interface PluginDetailRoutePathArgs {
+  pluginId: string;
+  view?: "installed";
+}
+
+export function getPluginDetailRoutePath({
+  pluginId,
+  view,
+}: PluginDetailRoutePathArgs): string {
+  const encoded = encodeURIComponent(pluginId);
+  return view === "installed"
+    ? `${SETTINGS_PLUGINS_ROUTE_PATH}/${encoded}?view=installed`
+    : `${PLUGINS_ROUTE_PATH}/${encoded}`;
+}
+
+export function getPluginConfigurationRoutePath({
+  pluginId,
+}: PluginDetailRoutePathArgs): string {
+  return `${SETTINGS_PLUGINS_ROUTE_PATH}/${encodeURIComponent(pluginId)}`;
+}
+
+interface PluginPanelRoutePathArgs {
+  pluginId: string;
+  path: string;
+  subPath?: string;
+}
+
+export function getPluginPanelRoutePath({
+  pluginId,
+  path,
+  subPath,
+}: PluginPanelRoutePathArgs): string {
+  const root = `/plugins/${encodeURIComponent(pluginId)}/${encodeURIComponent(path)}`;
+  if (!subPath) return root;
+  const encoded = subPath
+    .split("/")
+    .filter(Boolean)
+    .map((segment) => encodeURIComponent(segment))
+    .join("/");
+  return encoded ? `${root}/${encoded}` : root;
 }
 
 interface IsRoutePathArgs {
@@ -97,18 +139,14 @@ interface RouteHrefResolution {
 
 export function isToolsRoutePath(pathname: string): boolean {
   return (
-    isPluginsRoutePath(pathname) ||
     isSkillsRoutePath(pathname) ||
     pathname === TOOLS_ROUTE_PATH ||
     matchPath(`${TOOLS_ROUTE_PATH}/*`, pathname) !== null
   );
 }
 
-export function isPluginsRoutePath(pathname: string): boolean {
-  return (
-    matchPath(PLUGINS_ROUTE_PATH, pathname) !== null ||
-    matchPath(PLUGIN_DETAIL_ROUTE_PATH, pathname) !== null
-  );
+export function isPluginsRoutePath(_pathname: string): boolean {
+  return false;
 }
 
 export function isSkillsRoutePath(pathname: string): boolean {
@@ -152,7 +190,5 @@ export function resolveRouteHref({
     return null;
   }
 
-  return {
-    path: `${url.pathname}${url.search}${url.hash}`,
-  };
+  return { path: `${url.pathname}${url.search}${url.hash}` };
 }

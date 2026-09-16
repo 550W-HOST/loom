@@ -6,9 +6,9 @@
       "name": "@bb/app",
       "upstreamPath": "apps/app",
       "localPath": "apps/app",
-      "disposition": "exact-snapshot",
+      "disposition": "source-port",
       "snapshot": {
-        "kind": "exact-snapshot"
+        "kind": "adapted-source"
       }
     },
     "packages": [

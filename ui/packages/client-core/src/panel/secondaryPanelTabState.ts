@@ -97,9 +97,11 @@ export function isSecondaryFileTab(
     case "browser":
     case "terminal":
     case "new-tab":
+    case "plugin-panel":
       return true;
     case "thread-info":
     case "git-diff":
+    case "plugin-page-fixed":
       return false;
   }
 }
@@ -269,10 +271,12 @@ export function openSecondaryPanelTabInState({
   state,
   tab,
 }: OpenSecondaryPanelTabInStateArgs): FixedPanelTabsState {
+  const refreshTarget =
+    tab.kind === "plugin-panel" && tab.fileOpenerOwner?.tab.lineRange != null;
   const tabs = upsertSecondaryPanelTab(
     state.secondary.tabs,
     tab,
-    false,
+    refreshTarget,
   );
   if (
     tabs === state.secondary.tabs &&
@@ -538,10 +542,12 @@ export function buildOrderedSecondaryPanelFileTabs({
       case "terminal":
       case "new-tab":
       case "thread-storage-file-preview":
+      case "plugin-panel":
         displayable.push(tab);
         break;
       case "thread-info":
       case "git-diff":
+      case "plugin-page-fixed":
         break;
     }
   }

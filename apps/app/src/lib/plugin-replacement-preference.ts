@@ -36,10 +36,10 @@ export function resolvePreferredReplacement<
   preference: string = AUTOMATIC_REPLACEMENT_PROVIDER,
 ): ResolvedReplacement<Slot> {
   if (preference === BUILT_IN_REPLACEMENT_PROVIDER) return { kind: "owner" };
-  return resolveReplacement(
+  return resolveReplacement<Slot>(
     slots,
     preference === AUTOMATIC_REPLACEMENT_PROVIDER
       ? undefined
-      : (candidate) => replacementProviderKey(candidate) === preference,
+      : (candidate: Slot) => replacementProviderKey(candidate) === preference,
   );
 }

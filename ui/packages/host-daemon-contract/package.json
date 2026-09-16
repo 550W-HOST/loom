@@ -32,7 +32,7 @@
     "test": "vitest run --config vitest.config.ts"
   },
   "dependencies": {
-    "zod": "^4.3.6"
+    "zod": "^4.6.2"
   },
   "devDependencies": {
     "@bb/tsconfig": "workspace:*",

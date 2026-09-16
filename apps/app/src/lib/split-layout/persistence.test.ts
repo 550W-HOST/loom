@@ -65,7 +65,7 @@ describe("split layout persistence", () => {
     expect(deserializeSplitLayout(serialized)).toEqual(layout);
   });
 
-  it("round-trips mixed new-thread and plugin panel content", () => {
+  it("drops layouts containing removed generic plugin panes", () => {
     const mixed: SplitLayout = {
       root: {
         type: "split",
@@ -92,7 +92,7 @@ describe("split layout persistence", () => {
       focusedPaneId: "pane-2",
     };
 
-    expect(deserializeSplitLayout(serializeSplitLayout(mixed))).toEqual(mixed);
+    expect(deserializeSplitLayout(serializeSplitLayout(mixed))).toBeNull();
   });
 
   it("round-trips and restores all eight panes with focus and sizes intact", () => {

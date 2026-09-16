@@ -251,17 +251,9 @@ export function generatedConversationTitle({
   systemMessageKind,
   systemMessageSubject,
 }: GeneratedConversationTitleArgs): TimelineTitle {
-  const agentLeadIn = sourceIsPluginSideChat
-    ? "Replying to"
-    : originKind === "fork"
-      ? "Forked from"
-      : "Message from";
-  const sideChatAction =
-    sourceIsPluginSideChat && sourceThreadId !== null
-      ? ({ kind: "open-plugin-side-chat", threadId: sourceThreadId } as const)
-      : null;
+  const agentLeadIn = originKind === "fork" ? "Forked from" : "Message from";
   const sourceLink =
-    sourceThreadId === null || sideChatAction !== null
+    sourceThreadId === null
       ? null
       : ({ kind: "thread", threadId: sourceThreadId } as const);
   const segments: TimelineTitleSegment[] =
@@ -285,7 +277,7 @@ export function generatedConversationTitle({
       : systemMessageTitleSegments(systemMessageKind, systemMessageSubject);
 
   return {
-    action: sideChatAction,
+    action: null,
     decorations: [],
     plain: segments
       .map((segment) => segment.plainText ?? segment.text)

@@ -16,24 +16,10 @@ import {
   useSidebar,
 } from "@/components/ui/sidebar.js";
 import { ProjectList } from "./ProjectList";
-import { PluginThreadList } from "./PluginThreadList";
-import { useThreadListReplacement } from "./threadListProvider";
-import {
-  PluginSidebarFooterDisclosure,
-  PluginSidebarFooterItems,
-  usePluginSidebarFooterDisclosure,
-} from "@/components/plugin/PluginSidebarFooterItems";
-import { SidebarPluginAttentionGlyph } from "./SidebarPluginAttentionGlyph";
 import { SidebarUpdatesBadge } from "./SidebarUpdatesBadge";
 import { SidebarHistoryNavigationControls } from "./SidebarHistoryNavigationControls";
 import { useQuickCreateProjectController } from "@/hooks/useQuickCreateProject";
-import {
-  CHROME_ROW_CLASS,
-  getBbDesktopInfo,
-  MACOS_CHROME_CONTROL_NO_DRAG_CLASS,
-  MACOS_WINDOW_DRAG_CLASS,
-  shouldUseMacosDesktopChrome,
-} from "@/lib/bb-desktop";
+import { CHROME_ROW_CLASS } from "@/lib/bb-desktop";
 import { getRootComposeRoutePath, getThreadRoutePath } from "@/lib/route-paths";
 import { usePaneContentSplitDrag } from "./usePaneContentSplitDrag";
 import { openUrlInExternalBrowser } from "@/lib/url-open-routing";
@@ -68,7 +54,6 @@ interface AppSidebarProps {
   isResizing: boolean;
   showTopReserve: boolean;
   settingsRoutePath: string;
-  toolsRoutePath?: string;
   mobileHosted?: { hidden: boolean };
 }
 
@@ -77,11 +62,9 @@ export function AppSidebar({
   isResizing,
   showTopReserve,
   settingsRoutePath,
-  toolsRoutePath,
   mobileHosted,
 }: AppSidebarProps) {
   const quickCreateProject = useQuickCreateProjectController();
-  const threadListReplacement = useThreadListReplacement();
   const { threadId: activeThreadId } = useRouteState();
   const navigate = useNavigate();
   const newThreadSplit = usePaneContentSplitDrag({
@@ -92,7 +75,6 @@ export function AppSidebar({
   const closeOnMobile = useCloseMobileSidebar();
   const { isCompactViewport, openMobile } = useSidebar();
   const [compactCustomizeMode, setCompactCustomizeMode] = useState(false);
-  const [desktopInfo] = useState(getBbDesktopInfo);
   const [threadShortcutKeysById, setThreadShortcutKeysById] = useState<
     ReadonlyMap<string, SidebarThreadShortcutPresentation>
   >(EMPTY_SIDEBAR_THREAD_SHORTCUT_KEYS);
@@ -100,13 +82,11 @@ export function AppSidebar({
   const threadShortcutTargetsRef = useRef<
     readonly SidebarThreadShortcutTarget[]
   >([]);
-  const usesDesktopChrome = shouldUseMacosDesktopChrome(desktopInfo);
   const threadJumpShortcuts = useAppCommandShortcuts(
     THREAD_JUMP_APP_COMMAND_IDS,
   );
   const isAppCommandModifierHeld = useIsAppCommandModifierHeld();
   const settingsShortcut = useAppCommandShortcut("settings.open");
-  const pluginSidebarFooter = usePluginSidebarFooterDisclosure();
 
   const handleNewChat = useCallback(() => {
     closeOnMobile();
@@ -227,18 +207,11 @@ export function AppSidebar({
       {showTopReserve ? (
         <div
           data-testid="app-sidebar-top-reserve-row"
-          className={cn(
-            CHROME_ROW_CLASS,
-            "shrink-0 justify-end px-2",
-            usesDesktopChrome && MACOS_WINDOW_DRAG_CLASS,
-          )}
+          className={cn(CHROME_ROW_CLASS, "shrink-0 justify-end px-2")}
         >
           <SidebarHistoryNavigationControls
             onNavigate={closeOnMobile}
-            className={cn(
-              "group-data-[collapsible=icon]:hidden",
-              usesDesktopChrome && MACOS_CHROME_CONTROL_NO_DRAG_CLASS,
-            )}
+            className="group-data-[collapsible=icon]:hidden"
           />
         </div>
       ) : null}
@@ -247,7 +220,6 @@ export function AppSidebar({
         onCompactCustomizeModeChange={setCompactCustomizeMode}
         onNavigate={closeOnMobile}
         splitEnabled
-        toolsRoutePath={toolsRoutePath}
         newThreadSplit={newThreadSplit}
         onNewChat={handleNewChat}
         onSearchThreads={closeOnMobile}
@@ -265,19 +237,10 @@ export function AppSidebar({
         aria-hidden={isCompactCustomizeModeActive ? true : undefined}
         inert={isCompactCustomizeModeActive ? true : undefined}
       >
-        <PluginThreadList
-          replacement={threadListReplacement}
-          original={originalThreadList}
-          searchQuery=""
-          onNavigate={closeOnMobile}
-        />
+        {originalThreadList}
       </SidebarContent>
       <SidebarFooter className="relative">
         <OverflowFade placement="above" tone="sidebar" size="sm" />
-        <PluginSidebarFooterDisclosure
-          item={pluginSidebarFooter.activeItem}
-          onDismiss={pluginSidebarFooter.dismiss}
-        />
         <SidebarMenu className="flex-row flex-wrap-reverse items-center gap-1">
           <SidebarMenuItem className="min-w-0">
             <SidebarMenuButton
@@ -303,11 +266,6 @@ export function AppSidebar({
               </Link>
             </SidebarMenuButton>
           </SidebarMenuItem>
-          <PluginSidebarFooterItems
-            activeDisclosureKey={pluginSidebarFooter.activeKey}
-            onDisclosureCommand={pluginSidebarFooter.handleCommand}
-            onNavigate={closeOnMobile}
-          />
           <SidebarMenuItem className="min-w-0">
             <SidebarMenuButton
               className={SIDEBAR_FOOTER_ACTION_CLASS}
@@ -327,10 +285,6 @@ export function AppSidebar({
             </SidebarMenuButton>
           </SidebarMenuItem>
           <li aria-hidden="true" className="min-w-0 flex-1" />
-          <SidebarPluginAttentionGlyph
-            className={SIDEBAR_FOOTER_ACTION_CLASS}
-            onNavigate={closeOnMobile}
-          />
           <SidebarUpdatesBadge onNavigate={closeOnMobile} />
         </SidebarMenu>
       </SidebarFooter>

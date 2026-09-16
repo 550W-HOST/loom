@@ -1,5 +1,8 @@
 import { useCallback, useSyncExternalStore } from "react";
-import type { PluginComposerTextEffect } from "@get-bb/plugin-sdk";
+
+interface PluginComposerTextEffect {
+  className: string;
+}
 
 type ComposerTextEffectListener = () => void;
 type ComposerTextEffectOwner = string | symbol;
@@ -64,7 +67,8 @@ export function setComposerTextEffect(
       effectsByStorageKey.set(storageKey, effects);
     }
     if (
-      previousEntry?.effect === effect &&
+      previousEntry !== undefined &&
+      previousEntry.effect === effect &&
       previousEntry.pluginId === pluginId
     ) {
       return;

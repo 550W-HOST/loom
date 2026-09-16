@@ -1,5 +1,5 @@
 import { createContext, useContext, type ReactNode } from "react";
-import type { JsonValue } from "@get-bb/plugin-sdk";
+import type { JsonValue } from "@bb/domain";
 import type {
   AppFixedTabOpenIntent,
   AppFixedTabReference,

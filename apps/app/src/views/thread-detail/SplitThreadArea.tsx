@@ -3,8 +3,6 @@ import { PANE_FOCUS_APP_COMMAND_IDS } from "@bb/domain";
 import { useAtom, useAtomValue, useStore } from "jotai";
 import {
   Fragment,
-  lazy,
-  Suspense,
   useCallback,
   useContext,
   useEffect,
@@ -13,7 +11,6 @@ import {
   useRef,
   useState,
   type PointerEvent as ReactPointerEvent,
-  type ReactNode,
   type SetStateAction,
 } from "react";
 import { useNavigate } from "react-router-dom";
@@ -72,23 +69,14 @@ import {
 } from "./PaneContext";
 import { ThreadDetailView } from "./ThreadDetailView";
 import { RootComposeView } from "@/views/RootComposeView";
-import { PluginPanelView } from "@/views/PluginPanelView";
 import {
   AppPageHeader,
   HEADER_ICON_BUTTON_CLASS,
   HEADER_PANE_ACTION_ICON_BUTTON_CLASS,
 } from "@/components/layout/AppPageHeader";
-import { AppBreadcrumbs } from "@/components/layout/AppBreadcrumbs";
-import { resourceRouteLabelAtom } from "@/components/layout/resourceRouteLabelAtom";
-import { resolveAutomationBreadcrumbs } from "@/components/tools/tools-navigation";
 import { Button } from "@bb/shared-ui/button";
 import { Icon } from "@bb/shared-ui/icon";
 import { CHROME_SUBTLE_ICON_BUTTON_FOREGROUND_CLASS } from "@bb/shared-ui/chrome-style-tokens";
-import { usePluginNavPanelChrome } from "@/lib/plugin-nav-panel-chrome";
-import {
-  PluginPanelHeaderActions,
-  PluginPanelHeaderCenter,
-} from "@/components/plugin/PluginPanelHeader";
 import { getAdjacentPaneId } from "./splitPaneCommands";
 import {
   applyThreadPaneActionToLayout,
@@ -112,56 +100,6 @@ import {
 } from "@/components/ui/context-selection";
 import { PaneMaximizeButton } from "./PaneMaximizeButton";
 import { wsManager } from "@/lib/ws";
-
-const LazyPluginPanelRightPanelHost = lazy(() =>
-  import("@/components/plugin/PluginPanelRightPanelHost").then(
-    ({ PluginPanelRightPanelHost }) => ({ default: PluginPanelRightPanelHost }),
-  ),
-);
-
-const PLUGIN_GUIDE_PLUGIN_ID = "plugin-api-docs";
-const PLUGIN_GUIDE_PANEL_PATH = "plugin-api";
-
-const LazyPluginDetailPaneView = lazy(() =>
-  import("@/views/ToolsView").then(({ PluginDetailPaneView }) => ({
-    default: PluginDetailPaneView,
-  })),
-);
-
-function PluginDetailPaneView({ pluginId }: { pluginId: string }) {
-  return (
-    <Suspense fallback={null}>
-      <LazyPluginDetailPaneView pluginId={pluginId} />
-    </Suspense>
-  );
-}
-
-function PluginPagePanelHost({
-  children,
-  ...props
-}: {
-  children: ReactNode;
-  flushPageInsets?: boolean;
-  paneId?: string;
-  panelPath: string;
-  pluginId: string;
-  subPath: string;
-}) {
-  return (
-    <Suspense fallback={null}>
-      <LazyPluginPanelRightPanelHost
-        key={`${props.pluginId}/${props.panelPath}`}
-        {...props}
-        pluginDetailTabsEnabled={
-          props.pluginId === PLUGIN_GUIDE_PLUGIN_ID &&
-          props.panelPath === PLUGIN_GUIDE_PANEL_PATH
-        }
-      >
-        {children}
-      </LazyPluginPanelRightPanelHost>
-    </Suspense>
-  );
-}
 
 const PANE_DRAG_ENGAGE_DISTANCE_PX = 7;
 
@@ -582,10 +520,7 @@ function SplitThreadAreaContent({ routeContent }: SplitThreadAreaProps) {
 
   if (!splitWorkspaceActive || layout === null || currentContent === null) {
     return currentContent ? (
-      <StandalonePaneContent
-        content={currentContent}
-        paneId={layout?.focusedPaneId}
-      />
+      <StandalonePaneContent content={currentContent} />
     ) : null;
   }
 
@@ -962,66 +897,11 @@ function WorkspacePaneContent({
   );
 }
 
-function StandalonePaneContent({
-  content,
-  paneId,
-}: {
-  content: PaneContent;
-  paneId?: string;
-}) {
-  const navPanelChrome = usePluginNavPanelChrome();
+function StandalonePaneContent({ content }: { content: PaneContent }) {
   if (content.kind === "thread") {
     return <ThreadDetailView surface="page" />;
   }
-  if (content.kind === "new-thread") {
-    return <RootComposeView />;
-  }
-  if (content.kind === "plugin-detail") {
-    return <PluginDetailPaneView pluginId={content.pluginId} />;
-  }
-  const panelEntry = navPanelChrome.find(
-    (candidate) =>
-      candidate.chrome.pluginId === content.pluginId &&
-      candidate.chrome.path === content.panelPath,
-  );
-  const panel = panelEntry?.panel ?? undefined;
-  const panelChrome = panelEntry?.chrome;
-  const body = (
-    <PluginPanelView
-      pluginId={content.pluginId}
-      panelPath={content.panelPath}
-      subPath={content.subPath}
-    />
-  );
-  return (
-    <PluginPagePanelHost
-      flushPageInsets
-      pluginId={content.pluginId}
-      panelPath={content.panelPath}
-      paneId={paneId}
-      subPath={content.subPath}
-    >
-      {panelChrome ? (
-        <div className="flex h-full min-h-0 flex-col">
-          <AppPageHeader
-            center={<PluginPanelHeaderCenter chrome={panelChrome} />}
-            actions={
-              panel ? (
-                <PluginPanelHeaderActions
-                  panel={panel}
-                  paneId={paneId}
-                  subPath={content.subPath}
-                />
-              ) : undefined
-            }
-          />
-          <div className="flex min-h-0 flex-1 flex-col p-4 md:p-5">{body}</div>
-        </div>
-      ) : (
-        body
-      )}
-    </PluginPagePanelHost>
-  );
+  return <RootComposeView />;
 }
 
 function NonThreadPaneContent({
@@ -1039,8 +919,6 @@ function NonThreadPaneContent({
   isTopRow: boolean;
   ownsWindowTopLeft: boolean;
 }) {
-  const navPanelChrome = usePluginNavPanelChrome();
-  const resourceRouteLabel = useAtomValue(resourceRouteLabelAtom);
   const dimsInactiveSplits = useAtomValue(dimInactiveSplitsAtom);
   const { reservesWindowPanelToggle, isFocused } = useOptionalPaneContext() ?? {
     reservesWindowPanelToggle: false,
@@ -1050,26 +928,7 @@ function NonThreadPaneContent({
   const showsWindowPanelToggle = hostLayout?.pinsCornerToggle === true;
   const [desktopInfo] = useState(getBbDesktopInfo);
   const usesDesktopChrome = shouldUseMacosDesktopChrome(desktopInfo);
-  const panelEntry =
-    content.kind === "plugin-panel"
-      ? navPanelChrome.find(
-          (candidate) =>
-            candidate.chrome.pluginId === content.pluginId &&
-            candidate.chrome.path === content.panelPath,
-        )
-      : undefined;
-  const panel = panelEntry?.panel ?? undefined;
-  const panelChrome = panelEntry?.chrome;
-  const automationBreadcrumbs =
-    content.kind === "plugin-panel"
-      ? resolveAutomationBreadcrumbs(
-          paneContentRoute(content),
-          isFocused ? resourceRouteLabel : null,
-        )
-      : null;
-  const label =
-    panelChrome?.title ??
-    (content.kind === "plugin-detail" ? "Extension" : "New thread");
+  const label = "New thread";
   const handlePointerDown = (event: ReactPointerEvent) => {
     if (
       event.target instanceof Element &&
@@ -1081,12 +940,6 @@ function NonThreadPaneContent({
   };
   const actions = (
     <>
-      {panel ? (
-        <PluginPanelHeaderActions
-          panel={panel}
-          subPath={content.kind === "plugin-panel" ? content.subPath : ""}
-        />
-      ) : null}
       <PaneMaximizeButton />
       {onRequestClose ? (
         <Button
@@ -1100,13 +953,7 @@ function NonThreadPaneContent({
           aria-label="Close pane"
           onClick={onRequestClose}
         >
-          <Icon
-            name={
-              content.kind === "new-thread"
-                ? "CloseThreadPane"
-                : "ClosePluginPane"
-            }
-          />
+          <Icon name="CloseThreadPane" />
         </Button>
       ) : null}
       {reservesWindowPanelToggle && showsWindowPanelToggle ? (
@@ -1122,7 +969,7 @@ function NonThreadPaneContent({
         !isBoundedPane && content.kind === "new-thread" && "-m-4 md:-m-5",
       )}
     >
-      {isBoundedPane || panel ? (
+      {isBoundedPane ? (
         <AppPageHeader
           isWindowDragRegion={isTopRow}
           ownsWindowTopLeft={ownsWindowTopLeft}
@@ -1144,66 +991,29 @@ function NonThreadPaneContent({
               )}
               onPointerDown={beginPaneDrag ? handlePointerDown : undefined}
             >
-              {automationBreadcrumbs ? (
-                <AppBreadcrumbs
-                  breadcrumbs={automationBreadcrumbs}
-                  usesDesktopChrome={usesDesktopChrome}
-                />
-              ) : panelChrome ? (
-                <PluginPanelHeaderCenter chrome={panelChrome} />
-              ) : (
-                <p
-                  className={cn(
-                    "relative truncate text-sm font-normal transition-colors",
-                    isBoundedPane &&
-                      !isFocused &&
-                      dimsInactiveSplits &&
-                      CONTEXT_INACTIVE_TEXT_CLASS,
-                  )}
-                >
-                  {content.kind === "plugin-detail"
-                    ? "Extension"
-                    : "New thread"}
-                </p>
-              )}
+              <p
+                className={cn(
+                  "relative truncate text-sm font-normal transition-colors",
+                  isBoundedPane &&
+                    !isFocused &&
+                    dimsInactiveSplits &&
+                    CONTEXT_INACTIVE_TEXT_CLASS,
+                )}
+              >
+                New thread
+              </p>
             </div>
           }
           actions={actions}
         />
       ) : null}
-      <div
-        className={cn(
-          "flex min-h-0 min-w-0 flex-1 flex-col p-4 md:p-5",
-          isBoundedPane && content.kind === "plugin-panel" && "isolate",
-        )}
-      >
-        {content.kind === "new-thread" ? (
-          <RootComposeView />
-        ) : content.kind === "plugin-detail" ? (
-          <PluginDetailPaneView pluginId={content.pluginId} />
-        ) : (
-          <PluginPanelView
-            pluginId={content.pluginId}
-            panelPath={content.panelPath}
-            subPath={content.subPath}
-          />
-        )}
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col p-4 md:p-5">
+        <RootComposeView />
       </div>
     </div>
   );
 
-  return content.kind === "plugin-panel" ? (
-    <PluginPagePanelHost
-      flushPageInsets={!isBoundedPane}
-      pluginId={content.pluginId}
-      panelPath={content.panelPath}
-      subPath={content.subPath}
-    >
-      {contentMarkup}
-    </PluginPagePanelHost>
-  ) : (
-    contentMarkup
-  );
+  return contentMarkup;
 }
 
 interface SplitDividerProps {

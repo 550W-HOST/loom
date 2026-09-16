@@ -1193,6 +1193,7 @@ function RootComposeSurface({
           openStorageFile({ lineRange, path: normalized.target.path }, options);
           return true;
       }
+      return false;
     },
     [
       openHostFile,

@@ -1,13 +1,33 @@
-import { createApiClient } from "@bb/server-contract";
-import { fetchWithAppSurface } from "./app-surface";
+export class LoomApiUnavailableError extends Error {
+  readonly code = "loom_api_unavailable";
 
-const BASE_URL =
-  typeof window === "undefined" ? "http://localhost" : window.location.origin;
+  constructor(readonly operation: string) {
+    super(`Loom product API is not connected yet: ${operation}`);
+    this.name = "LoomApiUnavailableError";
+  }
+}
 
-const client = createApiClient(BASE_URL, { fetch: fetchWithAppSurface });
+function unavailableApiPath(path: readonly string[]): any {
+  const operation = path.join(".");
+  const callable = () => Promise.reject(new LoomApiUnavailableError(operation));
+  return new Proxy(callable, {
+    apply() {
+      return Promise.reject(new LoomApiUnavailableError(operation));
+    },
+    get(_target, property) {
+      if (property === "then") return undefined;
+      if (property === "$url") {
+        return () => {
+          throw new LoomApiUnavailableError(`${operation}.$url`);
+        };
+      }
+      return unavailableApiPath([...path, String(property)]);
+    },
+  });
+}
 
-export const apiClient = client.api.v1;
+export const apiClient: any = unavailableApiPath(["api", "v1"]);
 
 export function toRelativeUrl(url: URL): string {
-  return `${url.pathname}${url.search}`;
+  return `${url.pathname}${url.search}${url.hash}`;
 }

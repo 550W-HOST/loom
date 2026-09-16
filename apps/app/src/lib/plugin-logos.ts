@@ -1,5 +1,15 @@
 import { useCallback, useSyncExternalStore } from "react";
-import { parseNamespacedGlyph } from "@bb/domain";
+
+function parseNamespacedGlyph(
+  glyph: string,
+): { pluginId: string; name: string } | null {
+  const separator = glyph.indexOf("/");
+  if (separator <= 0 || separator === glyph.length - 1) return null;
+  return {
+    pluginId: glyph.slice(0, separator),
+    name: glyph.slice(separator + 1),
+  };
+}
 
 export interface PluginLogoUrls {
   displayName: string | null;

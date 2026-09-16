@@ -1,8 +1,21 @@
-import type {
-  ComposerRichTextSpec,
-  ComposerStructuredDraft,
-  ComposerView,
-} from "@get-bb/plugin-sdk";
+import type { ComposerView } from "@/components/plugin/plugin-composer-host";
+
+interface ComposerStructuredDraft {
+  text: string;
+  mentions: Array<{
+    from: number;
+    to: number;
+    provider: string;
+    id: string;
+    label: string;
+  }>;
+}
+
+interface PromptDecorationRule {
+  id: string;
+  className: string;
+  match(text: string): unknown;
+}
 import { Extension, type Editor } from "@tiptap/core";
 import type { Node as ProseMirrorNode } from "@tiptap/pm/model";
 import {
@@ -24,10 +37,6 @@ interface PromptDecorationRange {
   from: number;
   to: number;
 }
-
-type PromptDecorationRule = NonNullable<
-  ComposerRichTextSpec["effects"]
->[number];
 
 export interface PromptDecorationSource {
   id: string;

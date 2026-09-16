@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import type { ExperimentalLiveFileTarget } from "@get-bb/plugin-sdk";
+import type { ExperimentalLiveFileTarget } from "@/lib/live-file-navigation";
 import type { OpenInTargetContext } from "@bb/host-daemon-contract";
 import { useEnvironment } from "@/hooks/queries/environment-queries";
 import { useThreadStorageLocation } from "@/hooks/queries/thread-queries";
