@@ -2138,7 +2138,8 @@ async fn send_thread(
         );
     };
 
-    let busy = !matches!(thread.status, ThreadStatus::Idle);
+    let busy =
+        !matches!(thread.status, ThreadStatus::Idle) || state.runs.for_thread(&thread_id).is_some();
     let scheduled = request.send_at.is_some_and(|at| at > loom_relay::now_ms());
     let steers = matches!(request.mode, SendMode::Steer | SendMode::SteerIfActive);
     let queues_when_busy = matches!(request.mode, SendMode::Auto | SendMode::QueueIfActive);
@@ -3082,7 +3083,8 @@ async fn retry_thread(
     };
 
     let now = loom_relay::now_ms();
-    let busy = matches!(thread.status, ThreadStatus::Working | ThreadStatus::Waiting);
+    let busy = matches!(thread.status, ThreadStatus::Working | ThreadStatus::Waiting)
+        || state.runs.for_thread(&thread_id).is_some();
     let scheduled = request.send_at.is_some_and(|send_at| send_at > now);
     if busy || scheduled {
         let reason = request.reason.clone().unwrap_or_else(|| "Retry".to_owned());
@@ -3174,6 +3176,11 @@ async fn retry_thread(
             "host_unavailable",
             format!("no connected host owns thread {thread_id}'s workspace"),
         ),
+        crate::runs::DispatchOutcome::AlreadyInFlight { run_id } => error_response_with_code(
+            StatusCode::CONFLICT,
+            "run_in_flight",
+            format!("thread {thread_id} already has run {run_id} in flight"),
+        ),
         crate::runs::DispatchOutcome::PublishFailed { error, .. } => {
             error_response(StatusCode::INTERNAL_SERVER_ERROR, error)
         }
@@ -3198,8 +3205,14 @@ async fn stop_thread_route(
     if let Err(response) = public_thread_or_response(&state, &thread_id) {
         return response;
     }
-    state.stop_thread(&thread_id);
-    Json(json!({ "ok": true })).into_response()
+    match state.stop_thread(&thread_id) {
+        crate::runs::StopOutcome::Stopped | crate::runs::StopOutcome::NoRun => {
+            Json(json!({ "ok": true })).into_response()
+        }
+        crate::runs::StopOutcome::PublishFailed { error } => {
+            error_response(StatusCode::INTERNAL_SERVER_ERROR, error)
+        }
+    }
 }
 
 fn timeline_row_base(
@@ -3338,6 +3351,23 @@ fn timeline_row_for_event(
                         ("attachments".into(), Value::Null),
                         ("role".into(), json!("assistant")),
                         ("turnRequest".into(), Value::Null),
+                    ]);
+                }
+                Some("provider/error") => {
+                    let title = event_value
+                        .get("message")
+                        .and_then(Value::as_str)
+                        .unwrap_or("Provider error");
+                    let detail = event_value
+                        .get("detail")
+                        .and_then(Value::as_str)
+                        .map_or(Value::Null, |detail| json!(detail));
+                    object.extend([
+                        ("kind".into(), json!("system")),
+                        ("title".into(), json!(title)),
+                        ("detail".into(), detail),
+                        ("status".into(), json!("error")),
+                        ("systemKind".into(), json!("error")),
                     ]);
                 }
                 _ => return None,
@@ -6063,6 +6093,56 @@ mod tests {
                 serde_json::from_str(frame["payload"].as_str().unwrap()).unwrap()
             })
             .collect()
+    }
+
+    #[tokio::test]
+    async fn timeline_exposes_a_preflight_failure_as_a_readable_error_row() {
+        let state = test_state();
+        let app = router(state.clone());
+        let (thread, _) = state
+            .registry
+            .create_thread(
+                Some(state.registry.personal_project_id()),
+                Some("preflight failure".into()),
+                None,
+                loom_relay::now_ms(),
+            )
+            .unwrap();
+        state
+            .registry
+            .post_message(
+                &thread.id,
+                MessageRole::User,
+                "hi".into(),
+                loom_relay::now_ms(),
+            )
+            .unwrap();
+        let thread = state.registry.thread(&thread.id).unwrap();
+        assert!(matches!(
+            state.dispatch_thread(&thread, "hi"),
+            crate::runs::DispatchOutcome::NoEnvironment { .. }
+        ));
+
+        let response = get(&app, &format!("/api/v1/threads/{}/timeline", thread.id)).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = body_json(response).await;
+        let contract = loom_contract::Contract::load();
+        assert_b1_response(&contract, "threads.timeline", "GET", &body);
+        let rows = body["rows"].as_array().unwrap();
+        assert!(rows
+            .iter()
+            .all(|row| row["title"] != "Timeline projection failed"));
+        let error = rows
+            .iter()
+            .find(|row| row["systemKind"] == "error")
+            .expect("the timeline contains the preflight diagnostic");
+        assert_eq!(error["kind"], "system");
+        assert_eq!(
+            error["title"],
+            "thread has no environment bound; bind one before dispatching"
+        );
+        assert_eq!(error["status"], "error");
+        state.shutdown();
     }
 
     #[tokio::test]
