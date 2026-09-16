@@ -647,6 +647,39 @@ struct ProviderQuery {
     provider_id: Option<String>,
 }
 
+const PERSONAL_WORKSPACE_PROVIDER_ID: &str = "personal-workspace";
+const PROJECT_CHECKOUT_PROVIDER_ID: &str = "project-checkout";
+
+fn environment_provider_machine_availability(host: &Host, source_available: bool) -> Value {
+    if host.status != HostStatus::Connected {
+        return json!({
+            "status": "unavailable",
+            "message": "Machine is disconnected"
+        });
+    }
+    if !source_available {
+        return json!({
+            "status": "unavailable",
+            "message": "Project has no workspace source on this machine"
+        });
+    }
+    json!({ "status": "available" })
+}
+
+fn aggregate_provider_availability(machine_availability: &serde_json::Map<String, Value>) -> Value {
+    if machine_availability
+        .values()
+        .any(|value| value.get("status").and_then(Value::as_str) == Some("available"))
+    {
+        json!({ "status": "available" })
+    } else {
+        json!({
+            "status": "setup-required",
+            "message": "Connect an eligible machine first"
+        })
+    }
+}
+
 #[derive(Clone, Debug, Default, Deserialize)]
 #[allow(dead_code)]
 struct SystemVersionQuery {
@@ -796,14 +829,90 @@ async fn system_config(State(state): State<AppState>) -> Json<Value> {
     }))
 }
 
-/// Environment providers are intentionally empty until the environment
-/// provider domain is introduced. An empty catalog is a valid bb response and
-/// avoids claiming that the execution provider can provision workspaces.
+/// Loom-native workspace providers exposed to the product composer.
+///
+/// These are capability descriptors, not plugin registrations. Personal
+/// workspaces use the daemon's existing managed-environment provisioner;
+/// project checkout uses an explicit local-path source on the selected host.
+/// Per-machine availability is authoritative, so a remembered disconnected
+/// host cannot silently fall back to another machine at submission time.
 async fn environment_providers(
-    State(_state): State<AppState>,
-    Query(_query): Query<ProviderQuery>,
+    State(state): State<AppState>,
+    Query(query): Query<ProviderQuery>,
 ) -> Json<Value> {
-    Json(json!({ "providers": [] }))
+    let project = query
+        .project_id
+        .as_deref()
+        .and_then(|raw| raw.parse::<ProjectId>().ok())
+        .and_then(|project_id| state.registry.project(&project_id));
+    let hosts = state.registry.hosts();
+
+    let mut personal_machines = serde_json::Map::new();
+    let mut checkout_machines = serde_json::Map::new();
+    for host in &hosts {
+        if query
+            .host_id
+            .as_deref()
+            .is_some_and(|requested| requested != host.id.to_string())
+        {
+            continue;
+        }
+        personal_machines.insert(
+            host.id.to_string(),
+            environment_provider_machine_availability(host, true),
+        );
+        let has_source = project.as_ref().is_some_and(|project| {
+            project
+                .sources
+                .iter()
+                .any(|source| source.host_id == host.id && !source.path.is_empty())
+        });
+        checkout_machines.insert(
+            host.id.to_string(),
+            environment_provider_machine_availability(host, has_source),
+        );
+    }
+
+    let personal_availability = aggregate_provider_availability(&personal_machines);
+    let checkout_availability = aggregate_provider_availability(&checkout_machines);
+    Json(json!({
+        "providers": [
+            {
+                "id": PERSONAL_WORKSPACE_PROVIDER_ID,
+                "displayName": "Personal workspace",
+                "icon": "Folder",
+                "logoUrl": null,
+                "pluginId": "environment-personal-workspace",
+                "requires": {
+                    "projectCheckout": false,
+                    "gitCheckout": false,
+                    "gitRemote": false,
+                    "projectless": true
+                },
+                "inputs": null,
+                "acceptsEmptyInputs": true,
+                "availability": personal_availability,
+                "machineAvailability": personal_machines
+            },
+            {
+                "id": PROJECT_CHECKOUT_PROVIDER_ID,
+                "displayName": "Project checkout",
+                "icon": "Laptop",
+                "logoUrl": null,
+                "pluginId": "environment-project-checkout",
+                "requires": {
+                    "projectCheckout": true,
+                    "gitCheckout": false,
+                    "gitRemote": false,
+                    "projectless": false
+                },
+                "inputs": null,
+                "acceptsEmptyInputs": true,
+                "availability": checkout_availability,
+                "machineAvailability": checkout_machines
+            }
+        ]
+    }))
 }
 
 async fn execution_options(
@@ -4866,34 +4975,52 @@ fn thread_has_active_plan(state: &AppState, thread_id: &ThreadId) -> bool {
     active
 }
 
+fn create_thread_input_text(input: &[Value]) -> Result<Option<String>, String> {
+    if input.is_empty() {
+        return Ok(None);
+    }
+    text_from_queued_input(&Value::Array(input.to_vec())).map(Some)
+}
+
 /// Creates a thread and returns it in bb's `threadSchema` shape (`$defs/d7`)
 /// with the contract's `201`.
 ///
-/// `projectId` is required. The event goes to the project scope, not the
-/// (brand new, unsubscribable) thread scope: it is the project's thread list
-/// that has to learn about it. The event id is not repeated in the body — the
-/// contract does not type it, and a subscriber learns about the event on the
-/// project scope — so the response is exactly the created thread.
+/// `projectId` is required. The creation event goes to the project scope so
+/// the project list can learn about the new thread. A non-empty initial input
+/// then uses the same message -> status -> ACP dispatch path as `threads.send`;
+/// this keeps first-turn and follow-up behavior identical.
 async fn create_thread(
     State(state): State<AppState>,
     Json(request): Json<CreateThreadRequest>,
 ) -> Response {
-    match state.registry.create_thread(
+    let initial_content = match create_thread_input_text(&request.input) {
+        Ok(content) => content,
+        Err(message) => return error_response(StatusCode::BAD_REQUEST, message),
+    };
+    let (thread, event) = match state.registry.create_thread(
         Some(request.project_id.clone()),
         request.title.clone(),
         request.environment_id(),
         loom_relay::now_ms(),
     ) {
-        Ok((thread, event)) => match state.publish_domain_event(&event) {
-            Ok(_) => (
-                StatusCode::CREATED,
-                Json(thread_summary_value(&state, &thread)),
-            )
-                .into_response(),
-            Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
-        },
-        Err(error) => command_error_response(error),
+        Ok(result) => result,
+        Err(error) => return command_error_response(error),
+    };
+    if let Err(error) = state.publish_domain_event(&event) {
+        return error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string());
     }
+    if let Some(content) = initial_content {
+        if let Err(response) = append_thread_message(&state, &thread.id, MessageRole::User, content)
+        {
+            return response;
+        }
+    }
+    let current = state.registry.public_thread(&thread.id).unwrap_or(thread);
+    (
+        StatusCode::CREATED,
+        Json(thread_summary_value(&state, &current)),
+    )
+        .into_response()
 }
 
 /// Body of a post-message request.
@@ -6206,13 +6333,15 @@ mod tests {
         .await;
         assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
 
-        // A valid send still works after the rejections.
+        // A valid send still works after the rejections. The create request's
+        // initial input already started a turn, so `auto` honestly queues this
+        // follow-up while that turn is active.
         let response = post(
             &app,
             &send_path,
             serde_json::json!({
                 "input": [{ "type": "text", "text": "hello" }],
-                "mode": "start"
+                "mode": "auto"
             }),
         )
         .await;
@@ -6684,6 +6813,141 @@ mod tests {
                 .project_id,
             project_id
         );
+        state.shutdown();
+    }
+
+    #[tokio::test]
+    async fn environment_provider_catalog_is_host_and_source_aware() {
+        let state = test_state();
+        let (connected, _) = state
+            .registry
+            .enroll_host(None, "connected".into(), loom_relay::now_ms())
+            .unwrap();
+        let (disconnected, _) = state
+            .registry
+            .enroll_host(None, "disconnected".into(), loom_relay::now_ms())
+            .unwrap();
+        state
+            .registry
+            .mark_host_disconnected(&disconnected.id, loom_relay::now_ms())
+            .unwrap();
+        let app = router(state.clone());
+
+        let response = get(
+            &app,
+            &format!(
+                "/api/v1/system/environment-providers?projectId={}",
+                state.registry.personal_project_id()
+            ),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = body_json(response).await;
+        let providers = body["providers"].as_array().unwrap();
+        let personal = providers
+            .iter()
+            .find(|provider| provider["id"] == PERSONAL_WORKSPACE_PROVIDER_ID)
+            .unwrap();
+        assert_eq!(
+            personal["machineAvailability"][connected.id.to_string()]["status"],
+            "available"
+        );
+        assert_eq!(
+            personal["machineAvailability"][disconnected.id.to_string()]["status"],
+            "unavailable"
+        );
+        let checkout = providers
+            .iter()
+            .find(|provider| provider["id"] == PROJECT_CHECKOUT_PROVIDER_ID)
+            .unwrap();
+        assert_eq!(
+            checkout["machineAvailability"][connected.id.to_string()]["status"],
+            "unavailable"
+        );
+
+        let project = body_json(
+            post(
+                &app,
+                "/api/v1/projects",
+                serde_json::json!({
+                    "name": "work",
+                    "source": {
+                        "type": "local_path",
+                        "hostId": connected.id.to_string(),
+                        "path": "/srv/work"
+                    }
+                }),
+            )
+            .await,
+        )
+        .await;
+        let response = get(
+            &app,
+            &format!(
+                "/api/v1/system/environment-providers?projectId={}",
+                project["id"].as_str().unwrap()
+            ),
+        )
+        .await;
+        let body = body_json(response).await;
+        let checkout = body["providers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|provider| provider["id"] == PROJECT_CHECKOUT_PROVIDER_ID)
+            .unwrap();
+        assert_eq!(
+            checkout["machineAvailability"][connected.id.to_string()]["status"],
+            "available"
+        );
+
+        state.shutdown();
+    }
+
+    #[tokio::test]
+    async fn creating_a_thread_with_input_dispatches_the_first_turn() {
+        let state = test_state();
+        let (host, _) = state
+            .registry
+            .enroll_host(None, "laptop".into(), loom_relay::now_ms())
+            .unwrap();
+        let (environment, _) = state
+            .registry
+            .create_environment(
+                Some(state.registry.personal_project_id()),
+                host.id,
+                EnvironmentKind::Unmanaged,
+                Some("/srv/loom".into()),
+                loom_relay::now_ms(),
+            )
+            .unwrap();
+        let app = router(state.clone());
+
+        let response = post(
+            &app,
+            "/api/v1/threads",
+            serde_json::json!({
+                "projectId": state.registry.personal_project_id().to_string(),
+                "origin": "app",
+                "input": [{ "type": "text", "text": "first turn", "mentions": [] }],
+                "environment": {
+                    "type": "reuse",
+                    "environmentId": environment.id.to_string()
+                }
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let body = body_json(response).await;
+        assert_eq!(body["status"], "active");
+        let thread_id = body["id"].as_str().unwrap();
+        let stored = stored_events(&state, &Scope::Thread(thread_id.to_owned()));
+        assert_eq!(stored.len(), 2);
+        assert_eq!(stored[0]["type"], "thread_message_added");
+        assert_eq!(stored[0]["message"]["content"], "first turn");
+        assert_eq!(stored[1]["type"], "thread_status_changed");
+        assert!(state.runs.for_thread(&thread_id.parse().unwrap()).is_some());
+
         state.shutdown();
     }
 

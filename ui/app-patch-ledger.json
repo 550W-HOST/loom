@@ -26,12 +26,12 @@
       },
       "local": {
         "path": "apps/app/src/lib/api-server.type-tests.ts",
-        "sha256": "75f9d0d8f35cb45eda8ca87fda18b317462a75d6a18171cb48e49bebe3a08802",
+        "sha256": "db3224f9d4f3e2d2f266a05735baae20758e00fa18ce31f43770e1f44a179b40",
         "mode": "100644"
       },
-      "issue": "W-593",
+      "issue": "W-593+W-583",
       "owner": "PuQing",
-      "reason": "Add the loom-native same-origin HTTP client, typed request spec, query/cache/router boundary, or shell verification that W-593 owns."
+      "reason": "W-593 introduced the typed same-origin HTTP boundary; W-583 extends it only with the contract routes needed for runnable host-bound New Thread flows."
     },
     {
       "kind": "add",
@@ -74,12 +74,12 @@
       },
       "local": {
         "path": "apps/app/src/lib/loom-api-request-spec.ts",
-        "sha256": "7be161750dac159cc4a4dd893d2584d28e1d79f57ad00e0b1c8694d451721d1b",
+        "sha256": "d0203acbc877c33bf608c02e0396bf4a34f61572e7f2ec5e52c8d76b2e6e30e9",
         "mode": "100644"
       },
-      "issue": "W-593",
+      "issue": "W-593+W-583",
       "owner": "PuQing",
-      "reason": "Add the loom-native same-origin HTTP client, typed request spec, query/cache/router boundary, or shell verification that W-593 owns."
+      "reason": "W-593 introduced the typed same-origin HTTP boundary; W-583 extends it only with the contract routes needed for runnable host-bound New Thread flows."
     },
     {
       "kind": "add",
@@ -90,12 +90,12 @@
       },
       "local": {
         "path": "apps/app/src/lib/loom-api-routes.ts",
-        "sha256": "3a47fed85ae7f00c9910a6125a66b39f5d65297b486b73d4a44cb337ae9a59d7",
+        "sha256": "7e5a0331cb9e556c2c633a166edaa5c1535501b88436a54a49e5c4670c7feec8",
         "mode": "100644"
       },
-      "issue": "W-593",
+      "issue": "W-593+W-583",
       "owner": "PuQing",
-      "reason": "Add the loom-native same-origin HTTP client, typed request spec, query/cache/router boundary, or shell verification that W-593 owns."
+      "reason": "W-593 introduced the typed same-origin HTTP boundary; W-583 extends it only with the contract routes needed for runnable host-bound New Thread flows."
     },
     {
       "kind": "add",
@@ -176,6 +176,22 @@
       "issue": "W-593",
       "owner": "PuQing",
       "reason": "Add the loom-native same-origin HTTP client, typed request spec, query/cache/router boundary, or shell verification that W-593 owns."
+    },
+    {
+      "kind": "add",
+      "upstream": {
+        "path": null,
+        "sha256": null,
+        "mode": null
+      },
+      "local": {
+        "path": "apps/app/src/lib/loom-thread-runtime.ts",
+        "sha256": "a5356fe3b91fb60d47d3e8d0edc37ad960204fb422cbfacaa73a0c97276b0191",
+        "mode": "100644"
+      },
+      "issue": "W-583",
+      "owner": "PuQing",
+      "reason": "Wire the bb New Thread product flow to loom-native host-bound environments and typed thread create/send/read operations."
     },
     {
       "kind": "add",
@@ -272,6 +288,22 @@
       "issue": "W-593",
       "owner": "PuQing",
       "reason": "Add the loom-native same-origin HTTP client, typed request spec, query/cache/router boundary, or shell verification that W-593 owns."
+    },
+    {
+      "kind": "add",
+      "upstream": {
+        "path": null,
+        "sha256": null,
+        "mode": null
+      },
+      "local": {
+        "path": "apps/app/src/loom/loom-thread-runtime.test.ts",
+        "sha256": "8605f637e757f9e3d0cde73f230be373c51d4b8761941332b20d0ad363ae13f7",
+        "mode": "100644"
+      },
+      "issue": "W-583",
+      "owner": "PuQing",
+      "reason": "Wire the bb New Thread product flow to loom-native host-bound environments and typed thread create/send/read operations."
     },
     {
       "kind": "add",
@@ -3232,6 +3264,22 @@
       "issue": "W-604",
       "owner": "PuQing",
       "reason": "Adapt pinned bb source to loom's browser-safe composition while preserving the composer-first shell, thread workspace, and Automations."
+    },
+    {
+      "kind": "modify",
+      "upstream": {
+        "path": "apps/app/src/lib/sdk.ts",
+        "sha256": "715cfc81922b41b0fae74bd488abc5c7f205735d484b74a1cde4a61011aa4eee",
+        "mode": "100644"
+      },
+      "local": {
+        "path": "apps/app/src/lib/sdk.ts",
+        "sha256": "00b98567b7161c39915b12763c0ffc5be9348735dfe8dd880b47c75692584bec",
+        "mode": "100644"
+      },
+      "issue": "W-583",
+      "owner": "PuQing",
+      "reason": "Wire the bb New Thread product flow to loom-native host-bound environments and typed thread create/send/read operations."
     },
     {
       "kind": "modify",

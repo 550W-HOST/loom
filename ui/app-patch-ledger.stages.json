@@ -192,6 +192,16 @@
         "apps/app/tsconfig.json",
         "apps/app/vitest.loom.config.ts"
       ]
+    },
+    {
+      "issue": "W-583",
+      "owner": "PuQing",
+      "reason": "Add the loom-native browser runtime and regression coverage for host-bound New Thread execution.",
+      "baselineCommit": "5f4ac9f",
+      "paths": [
+        "apps/app/src/lib/loom-thread-runtime.ts",
+        "apps/app/src/loom/loom-thread-runtime.test.ts"
+      ]
     }
   ]
 }

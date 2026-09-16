@@ -15,6 +15,10 @@
  * `@ts-expect-error` in a test file would never be evaluated.
  */
 
+import type {
+  CreateThreadRequest,
+  SendMessageRequest,
+} from "@bb/server-contract";
 import { apiClient } from "./api-server";
 import { loomApiFetch, loomApiJson, resolveLoomApiMethod } from "./loom-http";
 import { LOOM_API_ROUTES } from "./loom-api-routes";
@@ -186,6 +190,40 @@ void loomApiFetch("threads.worktreeFile", { param: { id: "t1" } });
 void resolveLoomApiMethod("hosts.createJoinCode", "GET");
 // @ts-expect-error an unknown route id is not accepted
 void resolveLoomApiMethod("threads.notReal", "GET");
+
+// --- W-583 thread runtime routes stay contract-bound ----------------------
+
+declare const createThreadRequest: CreateThreadRequest;
+declare const sendMessageRequest: SendMessageRequest;
+
+void loomApiFetch("threads.create", { json: createThreadRequest });
+void loomApiFetch("threads.send", {
+  param: { id: "t1" },
+  json: sendMessageRequest,
+});
+void loomApiJson("threads.get", {
+  param: { id: "t1" },
+  query: { include: "environment,host" },
+});
+void loomApiJson("threads.timeline", {
+  param: { id: "t1" },
+  query: { afterSequence: "0", segmentLimit: "100" },
+});
+void loomApiJson("system.environmentProviders", {
+  query: { projectId: "p1", hostId: "h1" },
+});
+
+// @ts-expect-error thread creation requires its contract JSON body
+void loomApiFetch("threads.create");
+
+// @ts-expect-error a thread send requires its path id
+void loomApiFetch("threads.send", { json: sendMessageRequest });
+
+void loomApiJson("threads.get", {
+  param: { id: "t1" },
+  // @ts-expect-error a thread read cannot carry a JSON body
+  json: {},
+});
 
 // --- The route table is non-empty and unique -------------------------------
 
