@@ -8619,12 +8619,12 @@
       "upstreamPath": "apps/app",
       "localPath": "apps/app",
       "disposition": "source-port",
-      "gitTree": "d29b6100d64de47bc353dcbbb297891352591e3f",
+      "gitTree": "fc8964ee9c5da2d1b4448ca8da7ad683d3d8005e",
       "snapshot": {
         "path": "apps/app",
         "tree": {
-          "files": 1463,
-          "sha256": "3de8fab08b15f5f7df004759f1994c73d5456a68450ce70cb76019576adb029b"
+          "files": 1462,
+          "sha256": "aebc7f41fb3bda9be3d83a8728cafece00f8e7988eadaa32a99acb23210814ec"
         },
         "files": [
           {
@@ -15899,13 +15899,8 @@
           },
           {
             "path": "tsconfig.type-tests.json",
-            "bytes": 173,
-            "sha256": "e51e383d8b606e05110fc5a76be57a1f8d2e4185bfef8a7784a6e6aacd7bf4ca"
-          },
-          {
-            "path": "tsconfig.type-tests.tsbuildinfo",
-            "bytes": 103685,
-            "sha256": "dd20f475318007f4d788965254cc4cd5fceaa43f0f1fa56ba5b63de8360d6aeb"
+            "bytes": 235,
+            "sha256": "c098af04a02651647ddcf9c7ea975f42c72bfe4fe4500abf523927a30f27c88a"
           },
           {
             "path": "vite-bundle-stats.ts",
