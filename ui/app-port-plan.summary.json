@@ -1,13 +1,13 @@
 {
   "format": "loom.app-port-plan-summary/v2",
   "plan": "ui/app-port-plan.json",
-  "planBytes": 1950492,
+  "planBytes": 1950634,
   "source": {
     "root": "apps/app/src",
     "trackedFiles": 1364,
     "disposition": "source-port",
     "baselineGitTree": "8ba6eb6f3d2f67f8ba2703f1fd0c123f788c6d52",
-    "localGitTree": "a87961fb63564b77b28f2dab07551abae0e55b6f"
+    "localGitTree": "a87f9542437f62ff016fa049ef83cbe744135d13"
   },
   "summary": {
     "nodes": 1364,
@@ -21,7 +21,7 @@
       "verification-only": 671,
       "asset-build": 28
     },
-    "edges": 8189,
+    "edges": 8190,
     "blockers": {
       "runtime": 3,
       "test": 224,
@@ -3692,13 +3692,13 @@
     }
   },
   "compilerConsistency": {
-    "compilerSpecifiers": 8246,
-    "graphSpecifiers": 8246,
+    "compilerSpecifiers": 8247,
+    "graphSpecifiers": 8247,
     "missing": [],
     "extra": [],
     "preProcessFileParity": {
-      "compilerLiteralSpecifiers": 8245,
-      "preProcessFileSpecifiers": 8245,
+      "compilerLiteralSpecifiers": 8246,
+      "preProcessFileSpecifiers": 8246,
       "missing": [],
       "extra": []
     }
@@ -3706,8 +3706,8 @@
   "parsers": {
     "typescript": {
       "files": 1357,
-      "specifiers": 8246,
-      "preProcessFileSpecifiers": 8245
+      "specifiers": 8247,
+      "preProcessFileSpecifiers": 8246
     },
     "css": {
       "files": 4,
@@ -4415,10 +4415,10 @@
     {
       "name": "@bb/server-contract",
       "declaredAs": "dependencies",
-      "actualImports": 236,
-      "runtimeImports": 123,
+      "actualImports": 237,
+      "runtimeImports": 124,
       "runtimeValueImports": 9,
-      "runtimeTypeImports": 114,
+      "runtimeTypeImports": 115,
       "verificationValueImports": 3,
       "verificationTypeImports": 107,
       "decision": "reuse",

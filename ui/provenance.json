@@ -8619,12 +8619,12 @@
       "upstreamPath": "apps/app",
       "localPath": "apps/app",
       "disposition": "source-port",
-      "gitTree": "a87961fb63564b77b28f2dab07551abae0e55b6f",
+      "gitTree": "a87f9542437f62ff016fa049ef83cbe744135d13",
       "snapshot": {
         "path": "apps/app",
         "tree": {
           "files": 1454,
-          "sha256": "64e91de72246dbd1719769f05204faae9325344f0a437c351b50621d48c1f039"
+          "sha256": "821444bbd12d34d6201e15668720da491c52144ff719d1dfc233a51fd1c4ec72"
         },
         "files": [
           {
@@ -14839,8 +14839,8 @@
           },
           {
             "path": "src/lib/project-branch-options.ts",
-            "bytes": 542,
-            "sha256": "8ec7826ad1e5a362d8c0cfbb4242b9b3aaacab58fe1a7baed9b745060c2ea592"
+            "bytes": 940,
+            "sha256": "8a604942e413a2e44167ec18bd2a78b94535b1a2e81757a6d3a0076008137ec6"
           },
           {
             "path": "src/lib/project-scoped-storage.ts",
