@@ -1,25 +1,28 @@
 import fs from "node:fs";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   LOOM_API_MOUNT_PATH,
   LOOM_API_ROUTES,
   findLoomApiRoute,
+  isCatchAllParameter,
   isPathParameter,
   pathParameterName,
   routePathSegments,
 } from "@/lib/loom-api-routes";
 import {
   buildLoomApiUrl,
+  LoomApiMethodError,
+  LoomApiPathParamError,
   LoomApiRouteError,
+  LoomHttpError,
+  loomApiFetch,
   loomApiJson,
+  loomNativeJson,
+  resolveLoomApiMethod,
   throwLoomHttpError,
 } from "@/lib/loom-http";
-import {
-  LoomApiUnknownRouteError,
-  apiClient,
-  toRelativeUrl,
-} from "@/lib/api-server";
+import { apiClient, toRelativeUrl } from "@/lib/api-server";
 
 interface ContractRoute {
   readonly id: string;
@@ -35,17 +38,37 @@ function readContractRoutes(): ContractRoute[] {
   );
   const contract = JSON.parse(fs.readFileSync(contractPath, "utf8")) as {
     mountPath: string;
-    routes: readonly {
-      id: string;
-      method: string;
-      fullPath: string;
-    }[];
+    routes: readonly { id: string; method: string; fullPath: string }[];
   };
   return contract.routes.map((route) => ({
     ...route,
     mountPath: contract.mountPath,
   }));
 }
+
+function paramsFor(routeId: string): Record<string, string> {
+  const route = findLoomApiRoute(routeId);
+  if (!route) throw new Error(`no route ${routeId}`);
+  const params: Record<string, string> = {};
+  for (const segment of routePathSegments(route)) {
+    if (isPathParameter(segment)) {
+      params[pathParameterName(segment)] = `sample-${pathParameterName(segment)}`;
+    }
+  }
+  return params;
+}
+
+function jsonResponse(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "content-type": "application/json" },
+  });
+}
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.restoreAllMocks();
+});
 
 describe("loom same-origin API route table", () => {
   const contractRoutes = readContractRoutes();
@@ -59,6 +82,8 @@ describe("loom same-origin API route table", () => {
         contractRoute,
         `${route.id} is not in contracts/bb/server-api.json`,
       ).toBeDefined();
+      // The method must match the contract exactly: item 1 of the review was a
+      // POST route being issued as GET.
       expect(route.method).toBe(contractRoute!.method);
       expect(
         `${LOOM_API_MOUNT_PATH}${route.path}`,
@@ -71,15 +96,15 @@ describe("loom same-origin API route table", () => {
     expect(LOOM_API_MOUNT_PATH).toBe(contractRoutes[0]?.mountPath);
   });
 
+  it("has no duplicate route ids", () => {
+    expect(new Set(LOOM_API_ROUTES.map((route) => route.id)).size).toBe(
+      LOOM_API_ROUTES.length,
+    );
+  });
+
   it("derives every URL from the same origin with no hardcoded host", () => {
     for (const route of LOOM_API_ROUTES) {
-      const params: Record<string, string> = {};
-      for (const segment of routePathSegments(route)) {
-        if (isPathParameter(segment)) {
-          params[pathParameterName(segment)] = "sample-value";
-        }
-      }
-      const url = buildLoomApiUrl(route.id, { param: params });
+      const url = buildLoomApiUrl(route.id, { param: paramsFor(route.id) });
       expect(url.origin).toBe(window.location.origin);
       expect(url.pathname.startsWith(`${LOOM_API_MOUNT_PATH}/`)).toBe(true);
     }
@@ -103,15 +128,6 @@ describe("loom same-origin API route table", () => {
     expect(url.searchParams.get("path")).toBe("src/main.ts");
   });
 
-  it("refuses an unknown route id and a missing path parameter", () => {
-    expect(() =>
-      buildLoomApiUrl("threads.notARealRoute" as never),
-    ).toThrow(LoomApiRouteError);
-    expect(() => buildLoomApiUrl("threads.worktreeFile")).toThrow(
-      LoomApiRouteError,
-    );
-  });
-
   it("omits undefined query values rather than sending 'undefined'", () => {
     const url = buildLoomApiUrl("projects.fileContent", {
       param: { id: "p1" },
@@ -121,45 +137,166 @@ describe("loom same-origin API route table", () => {
     expect(url.searchParams.get("path")).toBe("README.md");
   });
 
-  it("resolves the call-chain seam to the same routes", () => {
-    expect(
-      toRelativeUrl(
-        apiClient.threads[":id"]["thread-storage"].content.$url({
-          param: { id: "t1" },
-          query: { path: "a/b.txt" },
-        }),
-      ),
-    ).toBe("/api/v1/threads/t1/thread-storage/content?path=a%2Fb.txt");
-    expect(
-      toRelativeUrl(
-        apiClient.environments[":id"].diff.file.$url({
-          param: { id: "e1" },
-          query: { path: "x" },
-        }),
-      ),
-    ).toBe("/api/v1/environments/e1/diff/file?path=x");
-    expect(
-      toRelativeUrl(
-        apiClient.hosts[":id"]["permission-ceiling"].$url({
-          param: { id: "h1" },
-        }),
-      ),
-    ).toBe("/api/v1/hosts/h1/permission-ceiling");
-  });
-
-  it("fails loudly on a call chain that is not a contract route", () => {
-    expect(() => apiClient.hosts[":id"].delete.$url({ param: { id: "h1" } })).toThrow(
-      LoomApiUnknownRouteError,
+  it("refuses an unknown route id", () => {
+    expect(() => buildLoomApiUrl("threads.notARealRoute" as never)).toThrow(
+      LoomApiRouteError,
     );
   });
 
-  it("keeps the route table free of entries the app never calls", () => {
-    for (const route of LOOM_API_ROUTES) {
-      expect(findLoomApiRoute(route.id)).toBe(route);
+  it("refuses a missing path parameter", () => {
+    expect(() => buildLoomApiUrl("threads.worktreeFile")).toThrow(
+      LoomApiPathParamError,
+    );
+  });
+});
+
+describe("loom transport encodes a path parameter exactly once", () => {
+  it("encodes a space, Unicode, and a literal percent once", () => {
+    const cases: Array<[string, string]> = [
+      // raw input → what must appear in the URL path
+      ["my file.ts", "my%20file.ts"],
+      ["проект.ts", "%D0%BF%D1%80%D0%BE%D0%B5%D0%BA%D1%82.ts"],
+      ["100%.ts", "100%25.ts"],
+      ["a+b & c.ts", "a%2Bb%20%26%20c.ts"],
+      ["file(1).ts", "file(1).ts"],
+    ];
+    for (const [raw, expected] of cases) {
+      const url = buildLoomApiUrl("threads.worktreeFile", {
+        param: { id: "t1", filePath: raw },
+      });
+      expect(url.pathname).toBe(
+        `/api/v1/threads/t1/worktree/files/${expected}`,
+      );
     }
-    expect(new Set(LOOM_API_ROUTES.map((route) => route.id)).size).toBe(
-      LOOM_API_ROUTES.length,
+  });
+
+  it("does not double-encode a pre-encoded-looking value", () => {
+    // A file literally named "a%20b.ts" must become a%2520b.ts, and a file
+    // named "a b.ts" must become a%20b.ts. The two must not collide.
+    const literalPercent = buildLoomApiUrl("threads.worktreeFile", {
+      param: { id: "t1", filePath: "a%20b.ts" },
+    });
+    const realSpace = buildLoomApiUrl("threads.worktreeFile", {
+      param: { id: "t1", filePath: "a b.ts" },
+    });
+    expect(literalPercent.pathname).toBe(
+      "/api/v1/threads/t1/worktree/files/a%2520b.ts",
     );
+    expect(realSpace.pathname).toBe(
+      "/api/v1/threads/t1/worktree/files/a%20b.ts",
+    );
+    expect(literalPercent.pathname).not.toBe(realSpace.pathname);
+  });
+
+  it("keeps a nested catch-all path inside the declared route", () => {
+    const url = buildLoomApiUrl("threads.worktreeFile", {
+      param: { id: "t1", filePath: "src/deep/nested/文件.ts" },
+    });
+    expect(url.pathname).toBe(
+      "/api/v1/threads/t1/worktree/files/src/deep/nested/%E6%96%87%E4%BB%B6.ts",
+    );
+  });
+
+  it("refuses dot-segment traversal instead of letting URL normalise it away", () => {
+    const traversals = [
+      "..",
+      ".",
+      "../../../../etc/passwd",
+      "a/../../b",
+      "a/./b",
+    ];
+    for (const filePath of traversals) {
+      expect(
+        () =>
+          buildLoomApiUrl("threads.worktreeFile", {
+            param: { id: "t1", filePath },
+          }),
+        `expected ${filePath} to be refused`,
+      ).toThrow(LoomApiPathParamError);
+    }
+  });
+
+  it("treats an encoded-slash spelling as one literal segment, not a traversal", () => {
+    // `..%2F..` is a single segment: `%2F` is not a separator, so this is a
+    // (weird) file name rather than a path escape. It must be encoded once and
+    // stay inside the declared route.
+    const url = buildLoomApiUrl("threads.worktreeFile", {
+      param: { id: "t1", filePath: "..%2F..%2Fetc" },
+    });
+    expect(url.pathname).toBe(
+      "/api/v1/threads/t1/worktree/files/..%252F..%252Fetc",
+    );
+  });
+
+  it("refuses an empty segment and control characters", () => {
+    for (const filePath of ["", "a//b", "a\u0000b", "a\\b", "a\nb"]) {
+      expect(() =>
+        buildLoomApiUrl("threads.worktreeFile", {
+          param: { id: "t1", filePath },
+        }),
+      ).toThrow(LoomApiPathParamError);
+    }
+    expect(() =>
+      buildLoomApiUrl("threads.worktreeFile", { param: { id: "", filePath: "a" } }),
+    ).toThrow(LoomApiPathParamError);
+  });
+
+  it("never resolves a traversal to a different route", () => {
+    // The failure this guards against: `url.pathname = "/a/../b"` silently
+    // becomes `/b`, so the request would leave the declared route.
+    expect(() =>
+      buildLoomApiUrl("threads.worktreeFile", {
+        param: { id: "t1", filePath: "../storageContent" },
+      }),
+    ).toThrow(LoomApiPathParamError);
+  });
+});
+
+describe("loom transport executes the contract method", () => {
+  it("issues POST for hosts.createJoinCode even though a JSON body is sent", async () => {
+    const fetchMock = vi.fn(async () => jsonResponse({ joinCode: "c", hostId: "h", expiresAt: 1 }, 201));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await loomApiJson("hosts.createJoinCode", { json: {} });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [
+      URL,
+      RequestInit,
+    ];
+    expect(String(url)).toBe(`${window.location.origin}/api/v1/hosts/join-codes`);
+    expect(init.method).toBe("POST");
+    expect(init.body).toBe("{}");
+  });
+
+  it("issues GET and never attaches a body for a read route", async () => {
+    const fetchMock = vi.fn(async () => jsonResponse({ status: "ok" }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await loomApiJson("system.config");
+
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [
+      URL,
+      RequestInit,
+    ];
+    expect(String(url)).toBe(`${window.location.origin}/api/v1/system/config`);
+    expect(init.method).toBe("GET");
+    expect(init.body).toBeUndefined();
+  });
+
+  it("refuses a requested method that disagrees with the contract", () => {
+    expect(() =>
+      // `loomApiFetch` resolves the method from the table; a mismatch must be
+      // refused rather than silently overriding the contract.
+      resolveLoomApiMethod("hosts.createJoinCode", "GET"),
+    ).toThrow(LoomApiMethodError);
+  });
+
+  it("resolves the method from the route table", () => {
+    expect(resolveLoomApiMethod("hosts.createJoinCode")).toBe("POST");
+    expect(resolveLoomApiMethod("system.config")).toBe("GET");
+    expect(resolveLoomApiMethod("hosts.updatePermissionCeiling")).toBe("PATCH");
+    expect(resolveLoomApiMethod("system.voiceTranscription")).toBe("POST");
   });
 });
 
@@ -174,7 +311,11 @@ describe("loom HTTP error fidelity", () => {
   it("keeps 404 and 422 distinguishable with their codes", async () => {
     await expect(
       throwLoomHttpError(
-        responseWith(404, JSON.stringify({ code: "not_found", message: "gone" }), "application/json"),
+        responseWith(
+          404,
+          JSON.stringify({ code: "not_found", message: "gone" }),
+          "application/json",
+        ),
       ),
     ).rejects.toMatchObject({
       status: 404,
@@ -202,24 +343,127 @@ describe("loom HTTP error fidelity", () => {
     ).rejects.toMatchObject({ status: 500, body: undefined });
   });
 
-  it("preserves an abort instead of rewriting it as an HTTP failure", async () => {
-    const controller = new AbortController();
-    const aborting = new Promise<never>((_resolve, reject) => {
-      controller.signal.addEventListener("abort", () =>
-        reject(controller.signal.reason),
-      );
-    });
-    controller.abort(new DOMException("aborted", "AbortError"));
-    await expect(aborting).rejects.toMatchObject({ name: "AbortError" });
+  it("re-throws an abort raised while reading the error body", async () => {
+    // `response.text()` is itself abortable. Swallowing that abort turned a
+    // cancelled request into a bogus HTTP failure.
+    const abort = new DOMException("aborted", "AbortError");
+    const response = {
+      status: 500,
+      statusText: "Server Error",
+      headers: new Headers(),
+      text: () => Promise.reject(abort),
+    } as unknown as Response;
+
+    await expect(throwLoomHttpError(response)).rejects.toBe(abort);
   });
 
   it("returns undefined for an empty JSON body", async () => {
-    const originalFetch = globalThis.fetch;
-    globalThis.fetch = (async () => new Response("", { status: 200 })) as never;
-    try {
-      await expect(loomApiJson("system.config")).resolves.toBeUndefined();
-    } finally {
-      globalThis.fetch = originalFetch;
+    vi.stubGlobal("fetch", (async () => new Response("", { status: 200 })) as never);
+    await expect(loomApiJson("system.config")).resolves.toBeUndefined();
+  });
+
+  it("raises LoomHttpError with status for a failed request", async () => {
+    vi.stubGlobal(
+      "fetch",
+      (async () =>
+        jsonResponse({ code: "boom", message: "nope" }, 503)) as never,
+    );
+    await expect(loomApiJson("system.config")).rejects.toBeInstanceOf(
+      LoomHttpError,
+    );
+  });
+
+  it("reads a loom-native path through the same error mapping", async () => {
+    vi.stubGlobal(
+      "fetch",
+      (async () => new Response("nope", { status: 503 })) as never,
+    );
+    await expect(loomNativeJson("/health")).rejects.toMatchObject({
+      status: 503,
+    });
+  });
+});
+
+describe("loom typed apiClient seam", () => {
+  it("resolves the call chains the app actually uses", () => {
+    expect(
+      toRelativeUrl(
+        apiClient.threads[":id"]["thread-storage"].content.$url({
+          param: { id: "t1" },
+          query: { path: "a/b.txt" },
+        }),
+      ),
+    ).toBe("/api/v1/threads/t1/thread-storage/content?path=a%2Fb.txt");
+    expect(
+      toRelativeUrl(
+        apiClient.environments[":id"].diff.file.$url({
+          param: { id: "e1" },
+          query: { path: "x" },
+        }),
+      ),
+    ).toBe("/api/v1/environments/e1/diff/file?path=x");
+    expect(
+      toRelativeUrl(
+        apiClient.hosts[":id"]["permission-ceiling"].$url({
+          param: { id: "h1" },
+        }),
+      ),
+    ).toBe("/api/v1/hosts/h1/permission-ceiling");
+    expect(toRelativeUrl(apiClient.hosts["join-codes"].$url({}))).toBe(
+      "/api/v1/hosts/join-codes",
+    );
+  });
+
+  it("hides the wrong verb from the type surface", () => {
+    // At runtime every verb exists so a conflict can be *refused* with a clear
+    // error; the type surface is what prevents the call from being written. The
+    // runtime refusal is covered in the transport describe block.
+    const joinCodeRoute = apiClient.hosts["join-codes"] as Record<
+      string,
+      unknown
+    >;
+    expect(typeof joinCodeRoute.$post).toBe("function");
+  });
+
+  it("refuses the wrong verb at runtime instead of issuing it", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const joinCodeRoute = apiClient.hosts["join-codes"] as unknown as {
+      $get(args: unknown): Promise<unknown>;
+    };
+
+    await expect(joinCodeRoute.$get({ json: {} })).rejects.toBeInstanceOf(
+      LoomApiMethodError,
+    );
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("issues the POST with its body through the seam", async () => {
+    const fetchMock = vi.fn(async () => jsonResponse({ joinCode: "c", hostId: "h", expiresAt: 1 }, 201));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await apiClient.hosts["join-codes"].$post({ json: {} });
+
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [URL, RequestInit];
+    expect(String(url)).toBe(`${window.location.origin}/api/v1/hosts/join-codes`);
+    expect(init.method).toBe("POST");
+  });
+});
+
+describe("loom route table catch-all detection", () => {
+  it("flags only the {.+} segments as catch-all", () => {
+    for (const route of LOOM_API_ROUTES) {
+      for (const segment of routePathSegments(route)) {
+        if (!isPathParameter(segment)) continue;
+        const isCatchAll = isCatchAllParameter(segment);
+        expect(isCatchAll).toBe(segment.includes("{.+}"));
+      }
     }
+    const filePreviews = findLoomApiRoute("filePreviews.content");
+    expect(
+      routePathSegments(filePreviews!).some((segment) =>
+        isCatchAllParameter(segment),
+      ),
+    ).toBe(true);
   });
 });

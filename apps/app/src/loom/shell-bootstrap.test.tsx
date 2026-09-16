@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   shellHealthQueryOptions,
@@ -165,10 +165,7 @@ describe("loom shell bootstrap", () => {
     ]);
   });
 
-  it("writes the bounded sidebar cache after a successful read", async () => {
-    const { SIDEBAR_BOOTSTRAP_CACHE_KEY } = await import(
-      "@/lib/sidebar-bootstrap-cache"
-    );
+  it("keeps the response in memory for replay as soon as the read succeeds", async () => {
     window.localStorage.clear();
     vi.stubGlobal(
       "fetch",
@@ -195,13 +192,66 @@ describe("loom shell bootstrap", () => {
     renderQuery(useShellSidebarBootstrap);
     await waitFor(() => expect(screen.getByText(/proj_1/u)).toBeDefined());
 
-    // The write is deferred off the critical path, so flush the timer/idle
-    // callback before asserting the cache actually holds the response.
-    await waitFor(() => {
+    // The in-memory replay value is set synchronously with the read; only the
+    // localStorage write is deferred. Asserting this separately keeps the
+    // assertion independent of the deferral timer.
+    const { readCachedSidebarBootstrap } = await import(
+      "@/lib/sidebar-bootstrap-cache"
+    );
+    expect(readCachedSidebarBootstrap()?.projects[0]?.id).toBe("proj_1");
+  });
+
+  it("persists the bounded sidebar cache off the critical path", async () => {
+    // The write is deferred (requestIdleCallback, falling back to a 1s timer),
+    // so it is driven explicitly here. A `waitFor` on localStorage would race
+    // that 1s deferral against waitFor's own 1s default deadline, which is
+    // exactly how this test was intermittently red in CI.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const { SIDEBAR_BOOTSTRAP_CACHE_KEY } = await import(
+        "@/lib/sidebar-bootstrap-cache"
+      );
+      window.localStorage.clear();
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async () =>
+          ok({
+            ...SIDEBAR_BODY,
+            projects: [
+              {
+                id: "proj_1",
+                kind: "standard",
+                name: "One",
+                gitRemoteUrl: null,
+                createdAt: 0,
+                updatedAt: 0,
+                sources: [],
+                threads: [],
+                defaultExecutionOptions: null,
+              },
+            ],
+          }),
+        ),
+      );
+
+      renderQuery(useShellSidebarBootstrap);
+      await waitFor(() => expect(screen.getByText(/proj_1/u)).toBeDefined());
+
+      // Nothing is written before the deferral fires.
+      expect(
+        window.localStorage.getItem(SIDEBAR_BOOTSTRAP_CACHE_KEY),
+      ).toBeNull();
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5_000);
+      });
+
       const stored = window.localStorage.getItem(SIDEBAR_BOOTSTRAP_CACHE_KEY);
       expect(stored).not.toBeNull();
       expect(stored).toContain("proj_1");
-    });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("does not invent sidebar data when the request fails", async () => {

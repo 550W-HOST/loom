@@ -1,10 +1,15 @@
 import {
   findLoomApiRoute,
+  isCatchAllParameter,
   isPathParameter,
   LOOM_API_MOUNT_PATH,
   pathParameterName,
   routePathSegments,
+  type LoomApiMethod,
+  type LoomApiPathParams,
+  type LoomApiPathOf,
   type LoomApiRouteId,
+  type LoomApiHasParams,
 } from "./loom-api-routes";
 import { appSurfaceRequestInit } from "./app-surface";
 
@@ -12,9 +17,19 @@ import { appSurfaceRequestInit } from "./app-surface";
  * The same-origin typed HTTP client for the loom server.
  *
  * The app has no server-address setting: the origin is the server, and every
- * request is derived from it. `apiClient` in `./api-server` used to be an
- * all-throwing Proxy; this module is the real transport behind the subset of
- * contract routes the product app calls.
+ * request is derived from it. This module is the real transport behind the
+ * subset of contract routes the product app calls.
+ *
+ * Two rules are load-bearing and are enforced here rather than trusted to the
+ * call site:
+ *
+ * 1. The route table decides the method. A request cannot send a body with
+ *    `GET`, and a caller that asks for a method the contract does not declare
+ *    is refused instead of silently issuing the wrong verb.
+ * 2. Path parameters are taken raw and encoded exactly once. Pre-encoded input
+ *    would be encoded a second time (`%20` → `%2520`), and `.`/`..` segments
+ *    would be normalised by the `URL` constructor into a path outside the
+ *    declared route, so both are rejected before the URL is built.
  */
 
 export class LoomApiRouteError extends Error {
@@ -23,6 +38,36 @@ export class LoomApiRouteError extends Error {
   constructor(readonly routeId: string) {
     super(`Unknown loom contract route: ${routeId}`);
     this.name = "LoomApiRouteError";
+  }
+}
+
+/** A path parameter was missing, empty, or unsafe to place in a path. */
+export class LoomApiPathParamError extends Error {
+  readonly code = "loom_api_invalid_path_param";
+
+  constructor(
+    readonly routeId: string,
+    readonly paramName: string,
+    readonly reason: string,
+  ) {
+    super(`Invalid path parameter :${paramName} for ${routeId}: ${reason}`);
+    this.name = "LoomApiPathParamError";
+  }
+}
+
+/** The caller asked for a method the route's contract does not declare. */
+export class LoomApiMethodError extends Error {
+  readonly code = "loom_api_method_mismatch";
+
+  constructor(
+    readonly routeId: string,
+    readonly declared: LoomApiMethod,
+    readonly requested: LoomApiMethod,
+  ) {
+    super(
+      `Route ${routeId} is ${declared} in the contract, but the call asked for ${requested}`,
+    );
+    this.name = "LoomApiMethodError";
   }
 }
 
@@ -55,7 +100,6 @@ export interface LoomRequestArgs {
   /** Multipart body, used by the voice-transcription route. */
   formData?: FormData;
   signal?: AbortSignal;
-  method?: string;
 }
 
 function resolveOrigin(): string {
@@ -63,8 +107,7 @@ function resolveOrigin(): string {
     return window.location.origin;
   }
   // Server-side rendering and unit tests have no origin. A relative URL is not
-  // enough for `new URL`, so this placeholder is immediately replaced by the
-  // route path; it is never sent anywhere.
+  // enough for `new URL`, so this placeholder stands in for it.
   return "http://localhost";
 }
 
@@ -73,8 +116,60 @@ export function loomApiOrigin(): string {
   return resolveOrigin();
 }
 
-function encodePathParam(value: string): string {
-  return encodeURIComponent(value);
+const FORBIDDEN_SEGMENT_CHARS = /[\u0000-\u001f\u007f\\]/u;
+
+/**
+ * Validate one raw path segment.
+ *
+ * `.` and `..` are refused rather than encoded: the `URL` constructor
+ * normalises them (including the `%2E%2E` spelling) into a path outside the
+ * declared route, so encoding them would not make the request safe.
+ */
+function validatePathSegment(
+  routeId: string,
+  paramName: string,
+  segment: string,
+): void {
+  if (segment.length === 0) {
+    throw new LoomApiPathParamError(routeId, paramName, "empty segment");
+  }
+  if (segment === "." || segment === "..") {
+    throw new LoomApiPathParamError(
+      routeId,
+      paramName,
+      `"." and ".." are not addressable path segments`,
+    );
+  }
+  if (FORBIDDEN_SEGMENT_CHARS.test(segment)) {
+    throw new LoomApiPathParamError(
+      routeId,
+      paramName,
+      "control characters and backslashes are not allowed",
+    );
+  }
+}
+
+/** Encode a raw path parameter exactly once. */
+function encodePathParam(
+  routeId: string,
+  paramName: string,
+  value: string,
+  catchAll: boolean,
+): string {
+  if (value.length === 0) {
+    throw new LoomApiPathParamError(routeId, paramName, "empty value");
+  }
+  if (!catchAll) {
+    validatePathSegment(routeId, paramName, value);
+    return encodeURIComponent(value);
+  }
+  return value
+    .split("/")
+    .map((segment) => {
+      validatePathSegment(routeId, paramName, segment);
+      return encodeURIComponent(segment);
+    })
+    .join("/");
 }
 
 /**
@@ -93,7 +188,6 @@ export function buildLoomApiUrl(
     throw new LoomApiRouteError(routeId);
   }
 
-  const url = new URL(`${LOOM_API_MOUNT_PATH}${route.path}`, resolveOrigin());
   const segments: string[] = [];
   for (const segment of routePathSegments(route)) {
     if (!isPathParameter(segment)) {
@@ -103,15 +197,24 @@ export function buildLoomApiUrl(
     const name = pathParameterName(segment);
     const value = args.param?.[name];
     if (value === undefined) {
-      throw new LoomApiRouteError(`${routeId} (missing :${name})`);
+      throw new LoomApiPathParamError(routeId, name, "missing value");
     }
     segments.push(
-      segment.includes("{.+}")
-        ? value.split("/").map(encodePathParam).join("/")
-        : encodePathParam(value),
+      encodePathParam(routeId, name, value, isCatchAllParameter(segment)),
     );
   }
-  url.pathname = `${LOOM_API_MOUNT_PATH}/${segments.join("/")}`;
+
+  const pathname = `${LOOM_API_MOUNT_PATH}/${segments.join("/")}`;
+  const url = new URL(pathname, resolveOrigin());
+  // Defence in depth: if anything still normalised the path, refuse rather than
+  // request a route the contract never declared.
+  if (url.pathname !== pathname) {
+    throw new LoomApiPathParamError(
+      routeId,
+      "path",
+      "resolved path left the declared route",
+    );
+  }
 
   for (const [key, value] of Object.entries(args.query ?? {})) {
     if (value === undefined) continue;
@@ -169,10 +272,7 @@ function errorMessageFromBody(
   return normalized;
 }
 
-function parseErrorBody(
-  rawBody: string,
-  contentType: string | null,
-): unknown {
+function parseErrorBody(rawBody: string, contentType: string | null): unknown {
   const normalized = normalizeErrorText(rawBody);
   if (normalized.length === 0) return undefined;
   const looksJson =
@@ -195,15 +295,30 @@ function errorCodeFromBody(body: unknown): string | undefined {
   return typeof code === "string" && code.trim().length > 0 ? code : undefined;
 }
 
+function isAbortLike(error: unknown): boolean {
+  return (
+    error instanceof DOMException && error.name === "AbortError"
+  ) || (error instanceof Error && error.name === "AbortError");
+}
+
 /**
  * Turn a non-2xx response into a `LoomHttpError`.
  *
  * The body is read, not discarded: a 404 and a 422 must stay distinguishable
- * and a JSON `{ code }` must survive. Aborts are re-thrown untouched so an
- * `AbortController` still cancels the query it belongs to.
+ * and a JSON `{ code }` must survive.
+ *
+ * Reading that body is itself abortable, so an abort raised while draining it
+ * is re-thrown as an abort. Swallowing it would turn a cancelled request into a
+ * bogus HTTP failure — and a cancelled request must stay cancelled.
  */
 export async function throwLoomHttpError(response: Response): Promise<never> {
-  const rawBody = await response.text().catch(() => "");
+  let rawBody = "";
+  try {
+    rawBody = await response.text();
+  } catch (error) {
+    if (isAbortLike(error)) throw error;
+    rawBody = "";
+  }
   const contentType = response.headers.get("content-type");
   const body = parseErrorBody(rawBody, contentType);
   throw new LoomHttpError({
@@ -219,11 +334,33 @@ export async function throwLoomHttpError(response: Response): Promise<never> {
   });
 }
 
+/**
+ * Resolve the method a request will use.
+ *
+ * The route table wins. `requested` exists only so a call site that names a
+ * method explicitly is checked against the contract rather than silently
+ * overriding it: a mismatch is a programming error, not a fallback.
+ */
+export function resolveLoomApiMethod(
+  routeId: LoomApiRouteId,
+  requested?: LoomApiMethod,
+): LoomApiMethod {
+  const route = findLoomApiRoute(routeId);
+  if (!route) {
+    throw new LoomApiRouteError(routeId);
+  }
+  if (requested !== undefined && requested !== route.method) {
+    throw new LoomApiMethodError(routeId, route.method, requested);
+  }
+  return route.method;
+}
+
 /** Perform a contract request and return the raw `Response`. */
 export async function loomApiFetch(
   routeId: LoomApiRouteId,
   args: LoomRequestArgs = {},
 ): Promise<Response> {
+  const method = resolveLoomApiMethod(routeId);
   const url = buildLoomApiUrl(routeId, args);
   const headers = new Headers();
   let body: BodyInit | undefined;
@@ -238,7 +375,7 @@ export async function loomApiFetch(
   const response = await fetch(
     url,
     appSurfaceRequestInit({
-      method: args.method ?? "GET",
+      method,
       headers,
       body,
       signal: args.signal,
@@ -288,3 +425,21 @@ export async function loomApiJson<TResponse>(
   }
   return JSON.parse(text) as TResponse;
 }
+
+/**
+ * The parameters a route requires, derived from its contract path.
+ *
+ * A route with no `:param` takes no `param` bag at all, so a caller cannot pass
+ * a parameter the path does not declare (which would silently do nothing).
+ */
+export type LoomApiRouteArgs<Id extends LoomApiRouteId> = Omit<
+  LoomRequestArgs,
+  "param"
+> &
+  (LoomApiHasParams<Id> extends true
+    ? {
+        param: {
+          [K in LoomApiPathParams<LoomApiPathOf<Id>>]: string;
+        };
+      }
+    : { param?: undefined });

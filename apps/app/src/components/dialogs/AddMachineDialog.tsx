@@ -14,12 +14,12 @@ import { Icon } from "@bb/shared-ui/icon";
 import { MachineStatusDot } from "@/components/machines/MachineStatusDot";
 import { useHosts } from "@/hooks/queries/host-queries";
 import { useClipboardCopy } from "@/lib/clipboard";
-import { isLocalOnlyUrl } from "@/lib/loopback-hostname";
 import { getMutationErrorMessage } from "@/lib/mutation-errors";
 import {
+  buildLoomPairingCommand,
   createLoomJoinCode,
-  createLoomMachineCode,
-  type LoomMachineCode,
+  type LoomJoinCode,
+  type LoomPairingCommand,
 } from "@/lib/loom-machine-pairing";
 
 interface AddMachineDialogProps {
@@ -55,26 +55,27 @@ function formatCountdown(remainingMs: number): string {
 }
 
 function pairingCommand(
-  joinCode: string,
-  hostId: string,
-  machineCode: LoomMachineCode | null,
-  directServerUrl: string | null,
-): string | null {
-  const serverUrl = machineCode?.serverUrl ?? directServerUrl;
-  if (serverUrl === null) return null;
-  const machineFlag =
-    machineCode === null ? "" : ` --machine-code ${machineCode.code}`;
-  return `curl -fL --progress-meter --connect-timeout 10 --max-time 60 --retry 2 ${serverUrl}/install.sh | sh -s -- --join-code ${joinCode} --host-id ${hostId} --server ${serverUrl}${machineFlag}`;
+  joinCode: LoomJoinCode,
+  configuredServerUrl: string | null,
+): LoomPairingCommand {
+  return buildPairingCommandPreview({ joinCode, configuredServerUrl });
+}
+
+function buildPairingCommandPreview(args: {
+  joinCode: LoomJoinCode;
+  configuredServerUrl: string | null;
+}): LoomPairingCommand {
+  return buildLoomPairingCommand({
+    joinCode: args.joinCode.joinCode,
+    hostId: args.joinCode.hostId,
+    configuredServerUrl: args.configuredServerUrl,
+  });
 }
 
 const REMOTE_ACCESS_NOT_CONFIGURED_MESSAGE =
-  "Remote access is not configured on this loom server, so the pairing command only works from a machine that can reach the address below.";
+  "This server's address only resolves on this machine, so a command run elsewhere cannot reach it. Open the app from an address other machines can reach (or configure remote access), then come back here.";
 
-function UnreachableServerNotice({
-  serverUrl,
-}: {
-  serverUrl: string;
-}) {
+function UnreachableServerNotice({ serverUrl }: { serverUrl: string }) {
   return (
     <div
       role="status"
@@ -104,13 +105,7 @@ function AddMachineDialogContent({
   const hostsQuery = useHosts();
   const mintJoinCode = useMutation({
     meta: { showErrorToast: false },
-    mutationFn: async () => {
-      const [join, machine] = await Promise.all([
-        createLoomJoinCode(),
-        createLoomMachineCode(),
-      ]);
-      return { join, machine };
-    },
+    mutationFn: () => createLoomJoinCode(),
   });
   const mint = mintJoinCode.mutate;
   useEffect(() => {
@@ -130,27 +125,26 @@ function AddMachineDialogContent({
         )
       : undefined) ?? null;
 
-  const joinCode = mintJoinCode.data?.join ?? null;
-  const machineCodeResult = mintJoinCode.data?.machine ?? null;
-  const machineCode =
-    machineCodeResult?.kind === "issued" ? machineCodeResult.code : null;
-  const expiresAt =
+  const joinCode = mintJoinCode.data ?? null;
+  const expiresAt = joinCode === null ? null : joinCode.expiresAt;
+  // The command is derived from a reachable address, never from an empty
+  // `system.config.serverUrl`: `resolvePairingServerUrl` prefers the configured
+  // URL only when it is a real absolute URL and otherwise falls back to the
+  // origin the app is served from.
+  const pairing =
     joinCode === null
       ? null
-      : Math.min(joinCode.expiresAt, machineCode?.expiresAt ?? Infinity);
-  const localOnlyServerUrl =
-    serverUrl !== null && isLocalOnlyUrl(serverUrl) ? serverUrl : null;
-  // loom has no `connect` plugin, so a machine code is never issued. A
-  // local-only server URL therefore cannot be paired from another machine, and
-  // the dialog says so instead of presenting a command that cannot work.
+      : pairingCommand(joinCode, serverUrl);
   const unreachable =
-    machineCodeResult?.kind === "unavailable" && localOnlyServerUrl !== null
-      ? { serverUrl: localOnlyServerUrl }
-      : null;
-  const showCommand = joinCode !== null && unreachable === null;
+    pairing?.kind === "unreachable" ? { serverUrl: pairing.serverUrl } : null;
+  const command = pairing?.kind === "ready" ? pairing.command : null;
+  // `no-server-address` means neither the configured URL nor the origin is a
+  // usable absolute address. Nothing is printed in that case, and the dialog
+  // says so rather than rendering an empty command box.
+  const hasNoServerAddress = pairing?.kind === "no-server-address";
 
   const [now, setNow] = useState(() => Date.now());
-  const hasCountdown = showCommand && expiresAt !== null;
+  const hasCountdown = command !== null && expiresAt !== null;
   useEffect(() => {
     if (!hasCountdown) return;
     const interval = window.setInterval(() => setNow(Date.now()), 1000);
@@ -159,15 +153,6 @@ function AddMachineDialogContent({
   const remainingMs =
     hasCountdown && expiresAt !== null ? expiresAt - now : null;
   const expired = remainingMs !== null && remainingMs <= 0;
-  const command =
-    showCommand && joinCode !== null
-      ? pairingCommand(
-          joinCode.joinCode,
-          joinCode.hostId,
-          machineCode,
-          serverUrl,
-        )
-      : null;
   const { copied, copy } = useClipboardCopy({ text: command ?? "" });
 
   return (
@@ -177,7 +162,7 @@ function AddMachineDialogContent({
         <DialogDescription>
           {unreachable !== null
             ? "Pair a machine to run projects and threads on it."
-            : "Run this command on the machine you want to add. It installs bb and keeps the machine connected to this server."}
+            : "Run this command on the machine you want to add. It installs loom and keeps the machine connected to this server."}
         </DialogDescription>
       </DialogHeader>
       <div className="space-y-3">
@@ -200,6 +185,11 @@ function AddMachineDialogContent({
           </div>
         ) : unreachable !== null ? (
           <UnreachableServerNotice serverUrl={unreachable.serverUrl} />
+        ) : hasNoServerAddress ? (
+          <p role="status" className="text-sm text-muted-foreground">
+            This app does not know a server address that another machine could
+            use, so there is no pairing command to show.
+          </p>
         ) : command !== null ? (
           <div
             data-add-machine-command
@@ -279,6 +269,13 @@ function AddMachineDialogContent({
             )}
           </div>
         )}
+        {hostsQuery.isError && unreachable === null ? (
+          <p role="alert" className="text-xs text-destructive">
+            {
+              "Couldn't check whether the machine connected. The pairing command above is unaffected."
+            }
+          </p>
+        ) : null}
       </div>
       <DialogFooter>
         <Button

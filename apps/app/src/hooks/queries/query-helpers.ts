@@ -1,6 +1,9 @@
 import { toRecord } from "@bb/core-ui";
-import { HttpError } from "@/lib/api";
-import { BbHttpError } from "@/lib/sdk";
+import {
+  isAbortError,
+  isRetryableHttpStatus,
+  readHttpStatus,
+} from "@/lib/http-retry-classification";
 
 export const PROMPT_HISTORY_STALE_TIME_MS = 10_000;
 const TRANSIENT_READ_RETRY_COUNT = 2;
@@ -49,11 +52,15 @@ function normalizeErrorMessage(message: string): string {
 }
 
 export function isTransientReadError(error: unknown): boolean {
-  if (toRecord(error)?.name === "AbortError") {
+  if (isAbortError(error)) {
     return true;
   }
-  if (error instanceof HttpError || error instanceof BbHttpError) {
-    return false;
+  // Any client's HTTP error is definitive for its status: a 4xx must not be
+  // retried, and a 5xx must be. Classifying structurally means a new client
+  // (this issue's `LoomHttpError`) cannot silently fall into "retry everything".
+  const status = readHttpStatus(error);
+  if (status !== null) {
+    return isRetryableHttpStatus(status);
   }
 
   const record = toRecord(error);

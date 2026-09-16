@@ -1,18 +1,32 @@
-import type { LoomApiRouteId } from "./loom-api-routes";
-import { buildLoomApiRelativeUrl, loomApiFetch } from "./loom-http";
+import {
+  buildLoomApiRelativeUrl,
+  loomApiFetch,
+  resolveLoomApiMethod,
+  type LoomApiRouteArgs,
+} from "./loom-http";
+import type {
+  LoomApiHasParams,
+  LoomApiMethod,
+  LoomApiMethodOf,
+  LoomApiRouteId,
+} from "./loom-api-routes";
 
 /**
  * The `apiClient.<area>.<method>.$get(...)` seam the ported bb call sites use.
  *
  * bb's real client is Hono's `hc<PublicApiRoutes>` (`createApiClient`), which
- * needs the Hono runtime this fork does not ship. The product app instead calls
- * a small typed surface built from the contract route table: the method chain
- * resolves to a known contract route id, and the request goes out same-origin
- * through `./loom-http`.
+ * needs the Hono runtime this fork does not ship. This is the loom-native
+ * replacement, restricted to the routes in `./loom-api-routes`, and it is
+ * *typed* rather than `any`:
  *
- * A chain that does not resolve to a route in the table throws
- * `LoomApiUnknownRouteError` instead of silently issuing a request — an
- * unimplemented or mistyped path must fail loudly, not return fabricated data.
+ * - each chain is bound to one contract route id, once;
+ * - the `$url`/`$get`/`$post`/… arguments are derived from that route's path, so
+ *   a missing `:id` or a stray parameter is a compile error;
+ * - a route exposes only the method its contract declares, so a body cannot be
+ *   attached to a `GET` (which the browser rejects outright) and a `POST` route
+ *   cannot be read with `$get`.
+ *
+ * A chain that is not in the table is a type error, not a runtime surprise.
  */
 
 export class LoomApiUnavailableError extends Error {
@@ -33,165 +47,153 @@ export class LoomApiUnknownRouteError extends Error {
   }
 }
 
-export interface LoomApiCallArgs {
+export { LoomHttpError, LoomApiMethodError, LoomApiPathParamError } from "./loom-http";
+
+/** The options bag the ported call sites pass as the second argument. */
+export interface LoomApiCallOptions {
+  init?: { signal?: AbortSignal };
+}
+
+interface LoomApiCallMethods<Id extends LoomApiRouteId> {
+  $url(...args: LoomApiArgsTuple<Id>): URL;
+}
+
+/**
+ * A route with no `:param` takes an optional arguments bag; a route with one
+ * requires it, so the parameter cannot be forgotten.
+ */
+type LoomApiArgsTuple<Id extends LoomApiRouteId> = LoomApiHasParams<Id> extends true
+  ? [args: LoomApiRouteArgs<Id>, options?: LoomApiCallOptions]
+  : [args?: LoomApiRouteArgs<Id>, options?: LoomApiCallOptions];
+
+/**
+ * Only the method the contract declares is present, so `$get` does not exist on
+ * a `POST` route and `$post` does not exist on a `GET` route.
+ */
+type LoomApiRequestMethod<Id extends LoomApiRouteId> =
+  LoomApiMethodOf<Id> extends "GET"
+    ? { $get(...args: LoomApiArgsTuple<Id>): Promise<Response> }
+    : LoomApiMethodOf<Id> extends "POST"
+      ? { $post(...args: LoomApiArgsTuple<Id>): Promise<Response> }
+      : LoomApiMethodOf<Id> extends "PUT"
+        ? { $put(...args: LoomApiArgsTuple<Id>): Promise<Response> }
+        : LoomApiMethodOf<Id> extends "PATCH"
+          ? { $patch(...args: LoomApiArgsTuple<Id>): Promise<Response> }
+          : { $delete(...args: LoomApiArgsTuple<Id>): Promise<Response> };
+
+export type LoomApiCall<Id extends LoomApiRouteId> = LoomApiCallMethods<Id> &
+  LoomApiRequestMethod<Id>;
+
+interface LoomApiCallParams {
   param?: Record<string, string>;
   query?: Record<string, string | number | boolean | undefined>;
   json?: unknown;
   formData?: FormData;
-  init?: { signal?: AbortSignal };
 }
 
-/**
- * Map the bb call-chain to a contract route id.
- *
- * The segments are the bb client's own path pieces (e.g.
- * `threads[":id"]["thread-storage"].content`), normalised into a dotted id that
- * matches the exported contract ids with the route table's own vocabulary.
- */
-const CHAIN_TO_ROUTE_ID: Record<string, LoomApiRouteId> = {
-  "sidebar-bootstrap": "projects.sidebarBootstrap",
-  "system.config": "system.config",
-  "system.voice-transcription": "system.voiceTranscription",
-  "hosts.:id.permission-ceiling": "hosts.updatePermissionCeiling",
-  "hosts.join-codes": "hosts.createJoinCode",
-  "projects.:id.branch-options": "projects.branchOptions",
-  "projects.:id.attachments.content": "projects.attachmentContent",
-  "projects.:id.files.content": "projects.fileContent",
-  "environments.:id.diff.file": "environments.diffFile",
-  "threads.:id.thread-storage.content": "threads.storageContent",
-  "threads.:id.thread-storage.files.:filePath": "threads.storageFile",
-  "threads.:id.host-files.content": "threads.hostFileContent",
-  "threads.:id.files.raw": "threads.rawFile",
-  "threads.:id.worktree.files.:filePath": "threads.worktreeFile",
-};
-
-export { LoomHttpError } from "./loom-http";
-
-type CallMethod = "$get" | "$post" | "$put" | "$patch" | "$delete" | "$url";
-
-class LoomApiCall {
-  constructor(
-    private readonly chain: readonly string[],
-    private readonly method: CallMethod,
-  ) {}
-
-  /** Bind the `$get`/`$post`/…/`$url` property the call chain asked for. */
-  dispatch(): (...args: unknown[]) => unknown {
-    switch (this.method) {
-      case "$url":
-        return (args) => this.$url((args ?? {}) as LoomApiCallArgs);
-      case "$get":
-        return (args, options) =>
-          this.$get(args as LoomApiCallArgs | undefined, options);
-      case "$post":
-        return (args, options) =>
-          this.$post(args as LoomApiCallArgs | undefined, options);
-      case "$put":
-        return (args, options) =>
-          this.$put(args as LoomApiCallArgs | undefined, options);
-      case "$patch":
-        return (args, options) =>
-          this.$patch(args as LoomApiCallArgs | undefined, options);
-      case "$delete":
-        return (args, options) =>
-          this.$delete(args as LoomApiCallArgs | undefined, options);
-    }
-  }
-
-  private routeId(): LoomApiRouteId {
-    const key = this.chain.join(".");
-    const routeId = CHAIN_TO_ROUTE_ID[key];
-    if (routeId === undefined) {
-      throw new LoomApiUnknownRouteError(`${key}.${this.method}`);
-    }
-    return routeId;
-  }
-
-  $url(args: LoomApiCallArgs = {}): URL {
-    return new URL(
-      buildLoomApiRelativeUrl(this.routeId(), {
-        param: args.param,
-        query: args.query,
-      }),
-      typeof window === "undefined" ? "http://localhost" : window.location.origin,
-    );
-  }
-
-  $get(args?: LoomApiCallArgs, _options?: unknown): Promise<Response> {
-    return this.send("GET", args, _options);
-  }
-
-  $post(args?: LoomApiCallArgs, _options?: unknown): Promise<Response> {
-    return this.send("POST", args, _options);
-  }
-
-  $put(args?: LoomApiCallArgs, _options?: unknown): Promise<Response> {
-    return this.send("PUT", args, _options);
-  }
-
-  $patch(args?: LoomApiCallArgs, _options?: unknown): Promise<Response> {
-    return this.send("PATCH", args, _options);
-  }
-
-  $delete(args?: LoomApiCallArgs, _options?: unknown): Promise<Response> {
-    return this.send("DELETE", args, _options);
-  }
-
-  private send(
-    method: string,
-    args: LoomApiCallArgs | undefined,
-    options: unknown,
+function createLoomApiCall<Id extends LoomApiRouteId>(
+  routeId: Id,
+): LoomApiCall<Id> {
+  function send(
+    verb: LoomApiMethod,
+    args: LoomApiCallParams | undefined,
+    options: LoomApiCallOptions | undefined,
   ): Promise<Response> {
-    const routeId = this.routeId();
-    const signal =
-      args?.init?.signal ??
-      (options as { init?: { signal?: AbortSignal } } | undefined)?.init
-        ?.signal;
+    // The declared method wins, and a mismatch is refused. The type surface
+    // already hides the wrong verb, so reaching here with one means untyped
+    // code (or a cast) tried to send a body with a GET.
+    //
+    // The refusal is wrapped in a rejected promise because this method is
+    // declared to return one: throwing synchronously would escape a caller's
+    // `.catch()` and surface as an unhandled error instead of a failed request.
+    try {
+      resolveLoomApiMethod(routeId, verb);
+    } catch (error) {
+      return Promise.reject(error);
+    }
     return loomApiFetch(routeId, {
-      method,
       param: args?.param,
       query: args?.query,
       json: args?.json,
       formData: args?.formData,
-      signal,
+      signal: options?.init?.signal,
     });
   }
+
+  function toUrl(args: LoomApiCallParams | undefined): URL {
+    const relative = buildLoomApiRelativeUrl(routeId, {
+      param: args?.param,
+      query: args?.query,
+    });
+    return new URL(relative, loomApiOriginValue());
+  }
+
+  return {
+    $url: (args?: LoomApiCallParams) => toUrl(args),
+    $get: (args?: LoomApiCallParams, options?: LoomApiCallOptions) =>
+      send("GET", args, options),
+    $post: (args?: LoomApiCallParams, options?: LoomApiCallOptions) =>
+      send("POST", args, options),
+    $put: (args?: LoomApiCallParams, options?: LoomApiCallOptions) =>
+      send("PUT", args, options),
+    $patch: (args?: LoomApiCallParams, options?: LoomApiCallOptions) =>
+      send("PATCH", args, options),
+    $delete: (args?: LoomApiCallParams, options?: LoomApiCallOptions) =>
+      send("DELETE", args, options),
+  } as unknown as LoomApiCall<Id>;
+}
+
+function loomApiOriginValue(): string {
+  return typeof window === "undefined" || !window.location?.origin
+    ? "http://localhost"
+    : window.location.origin;
+}
+
+function route<Id extends LoomApiRouteId>(id: Id): LoomApiCall<Id> {
+  return createLoomApiCall(id);
 }
 
 /**
- * The bb client writes a path parameter as an index expression
- * (`threads[":id"]`), so a property may arrive wrapped in quotes and brackets.
- * Normalising it keeps the route table readable.
+ * The routes the product app calls, each bound to its contract id.
+ *
+ * Every entry here is also in `LOOM_API_ROUTES`; `src/loom/api-client.test.ts`
+ * asserts the two stay in step, so a route cannot be reachable without being
+ * declared (or declared without being reachable).
  */
-function normalizeChainSegment(property: string): string {
-  return property.replace(/^\["?|"?\]$/gu, "").replace(/\{.*\}$/u, "");
-}
-
-function buildChain(segments: readonly string[]): unknown {
-  return new Proxy(
-    {},
-    {
-      get(_target, property) {
-        if (typeof property !== "string") {
-          return undefined;
-        }
-        if (
-          property === "$get" ||
-          property === "$post" ||
-          property === "$put" ||
-          property === "$patch" ||
-          property === "$delete" ||
-          property === "$url"
-        ) {
-          return new LoomApiCall(segments, property as CallMethod).dispatch();
-        }
-        return buildChain([...segments, normalizeChainSegment(property)]);
-      },
+export const apiClient = {
+  environments: {
+    ":id": {
+      diff: { file: route("environments.diffFile") },
     },
-  );
-}
-
-export const apiClient: any = buildChain([]);
+  },
+  hosts: {
+    ":id": {
+      "permission-ceiling": route("hosts.updatePermissionCeiling"),
+    },
+    "join-codes": route("hosts.createJoinCode"),
+  },
+  projects: {
+    ":id": {
+      "branch-options": route("projects.branchOptions"),
+      attachments: { content: route("projects.attachmentContent") },
+      files: { content: route("projects.fileContent") },
+    },
+  },
+  system: {
+    "voice-transcription": route("system.voiceTranscription"),
+  },
+  threads: {
+    ":id": {
+      "host-files": { content: route("threads.hostFileContent") },
+      "thread-storage": {
+        content: route("threads.storageContent"),
+        files: { ":filePath{.+}": route("threads.storageFile") },
+      },
+      files: { raw: route("threads.rawFile") },
+      worktree: { files: { ":filePath{.+}": route("threads.worktreeFile") } },
+    },
+  },
+} as const;
 
 export function toRelativeUrl(url: URL): string {
   return `${url.pathname}${url.search}${url.hash}`;

@@ -1,18 +1,26 @@
-import type { ProjectBranchesResponse } from "@bb/server-contract";
-import type { ProjectBranchesArgs } from "@bb/sdk/browser";
-import { request, requestOptions } from "./api";
+import type {
+  ProjectBranchesQuery,
+  ProjectBranchesResponse,
+} from "@bb/server-contract";
+import { request } from "./api";
 import { apiClient } from "./api-server";
 
 /**
  * Read a project's branch options.
  *
- * `@bb/sdk/browser` still declares this method's result as the compile-only
- * `any` (its `CompileOnlyResult` alias), so the app states the contract-derived
- * response type itself. The transport is the same-origin `apiClient` route
- * table, which refuses any path the exported contract does not declare.
+ * The argument is the contract's own `ProjectBranchesQuery` (query/limit) plus
+ * the project id and signal, rather than `@bb/sdk/browser`'s
+ * `[key: string]: unknown` bag: with the typed `apiClient` seam, an unknown
+ * query key is a compile error instead of a parameter that silently never
+ * reaches the server.
  */
+export interface ProjectBranchOptionsArgs extends ProjectBranchesQuery {
+  projectId: string;
+  signal?: AbortSignal;
+}
+
 export function readProjectBranchOptions(
-  input: ProjectBranchesArgs,
+  input: ProjectBranchOptionsArgs,
 ): Promise<ProjectBranchesResponse> {
   const { projectId, signal, ...query } = input;
   return request<ProjectBranchesResponse>(
@@ -21,7 +29,7 @@ export function readProjectBranchOptions(
         param: { id: projectId },
         query,
       },
-      requestOptions(signal),
+      signal === undefined ? undefined : { init: { signal } },
     ),
   );
 }

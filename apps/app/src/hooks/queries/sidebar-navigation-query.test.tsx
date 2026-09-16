@@ -12,7 +12,7 @@ import {
   SIDEBAR_BOOTSTRAP_CACHE_KEY,
   resetSidebarBootstrapCacheForTest,
 } from "@/lib/sidebar-bootstrap-cache";
-import { makeThreadListEntry } from "@bb/test-helpers/domain-fixtures";
+import { makeThreadListEntry } from "@/test/fixtures/thread-list-entry";
 import { createQueryClientTestHarness } from "@/test/queryClientTestHarness";
 import { useSidebarNavigation } from "./sidebar-navigation-query";
 import {

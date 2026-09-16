@@ -12,7 +12,6 @@ import type {
 } from "@bb/domain";
 import { SYSTEM_EXECUTION_OPTIONS_QUERY_KEY } from "@/hooks/queries/query-keys";
 import { permissionModeValues } from "@bb/domain";
-import { toRecord } from "@bb/core-ui";
 import type {
   SystemCliSkillsStatusResponse,
   SystemConfigResponse,
@@ -26,7 +25,7 @@ import type {
   ProviderUsage,
   ProviderUsageResponse,
 } from "@bb/host-daemon-contract";
-import { BbHttpError, sdk } from "@/lib/sdk";
+import { sdk } from "@/lib/sdk";
 import { loomApiJson } from "@/lib/loom-http";
 import {
   readSystemExecutionOptions,
@@ -169,9 +168,11 @@ export function findCachedProviderInfo(
   return null;
 }
 
-function isAbortLikeError(error: unknown): boolean {
-  return toRecord(error)?.name === "AbortError";
-}
+import {
+  isAbortError,
+  isRetryableHttpStatus,
+  readHttpStatus,
+} from "@/lib/http-retry-classification";
 
 function shouldRetrySystemExecutionOptions(
   failureCount: number,
@@ -181,12 +182,16 @@ function shouldRetrySystemExecutionOptions(
     return false;
   }
 
-  if (isAbortLikeError(error)) {
+  if (isAbortError(error)) {
     return false;
   }
 
-  if (error instanceof BbHttpError) {
-    return error.status === 408 || error.status === 429 || error.status >= 500;
+  // Structural, so this issue's `LoomHttpError` is classified like the SDK's
+  // `BbHttpError` instead of falling through to "retry everything" — which
+  // would have retried a 404 or a 422.
+  const status = readHttpStatus(error);
+  if (status !== null) {
+    return isRetryableHttpStatus(status);
   }
 
   return true;
