@@ -59,7 +59,7 @@ export const LOOM_MACHINE_INSTALL_UNAVAILABLE_REASON =
 export async function createLoomJoinCode(
   signal?: AbortSignal,
 ): Promise<LoomJoinCode> {
-  const raw = await loomApiJson<unknown>("hosts.createJoinCode", {
+  const raw = await loomApiJson("hosts.createJoinCode", {
     json: {},
     signal,
   });

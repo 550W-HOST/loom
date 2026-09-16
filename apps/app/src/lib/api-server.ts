@@ -3,39 +3,34 @@ import {
   loomApiFetch,
   resolveLoomApiMethod,
 } from "./loom-http";
-import type {
-  LoomApiHasParams,
-  LoomApiMethod,
-  LoomApiMethodOf,
-  LoomApiPathOf,
-  LoomApiPathParams,
-  LoomApiRouteId,
-} from "./loom-api-routes";
+import type { LoomApiMethod, LoomApiMethodOf, LoomApiRouteId } from "./loom-api-routes";
 import {
-  LOOM_API_REQUEST_SPECS,
-  type LoomApiParamBag,
-  type LoomApiRequestSource,
-} from "./loom-api-request-spec";
+  type LoomApiArgsOptional,
+  type LoomApiRequestArgs,
+  type LoomApiUrlArgs,
+  type LoomApiUrlArgsOptional,
+} from "./loom-api-args";
+import { LOOM_API_REQUEST_SPECS } from "./loom-api-request-spec";
 
 /**
  * The `apiClient.<area>.<method>.$get(...)` seam the ported bb call sites use.
  *
  * bb's real client is Hono's `hc<PublicApiRoutes>` (`createApiClient`), which
  * needs the Hono runtime this fork does not ship. This is the loom-native
- * replacement, restricted to the routes in `./loom-api-routes`, and it is typed
- * per route rather than `any`:
+ * replacement, restricted to the routes in `./loom-api-routes`.
  *
- * - a chain is bound to one contract route id, once;
- * - the path parameters come from that route's path, so a missing `:id` is a
- *   compile error;
- * - only the method the contract declares is exposed; and
- * - the request body kind follows the contract's `request.source`, so a `query`
- *   route takes a typed query and *no* body, a `json` route takes a typed body
- *   and no query, and a `form` route takes multipart. Supplying the wrong one —
- *   or both — does not compile.
+ * The request shape comes from `./loom-api-args`, the same module the lowest
+ * transport uses, so the two cannot disagree about what a route accepts.
  *
- * Those last two are the difference between "the browser rejects GET with a
- * body" and "the call cannot be written".
+ * Two distinct argument shapes, because a URL and a request are not the same
+ * thing:
+ *
+ * - `$url(...)` takes only the path parameters and query — never a body.
+ * - The request methods (`$get`/`$post`/…) take those plus the body their
+ *   contract declares, **required** for a `json`/`form` route. `$post()` with no
+ *   body on a JSON route is a compile error, not a silently empty request.
+ *
+ * A chain that is not in the table is a type error, not a runtime surprise.
  */
 
 export class LoomApiUnavailableError extends Error {
@@ -56,98 +51,28 @@ export class LoomApiUnknownRouteError extends Error {
   }
 }
 
-/**
- * A body was supplied to a route whose contract does not declare one.
- *
- * This is the runtime backstop for the type-level rule: reaching it means an
- * untyped caller (or a cast) tried to send a body with a `GET`, which the
- * browser refuses before the request leaves.
- */
-export class LoomApiBodyNotAllowedError extends Error {
-  readonly code = "loom_api_body_not_allowed";
-
-  constructor(
-    readonly routeId: string,
-    readonly method: LoomApiMethod,
-    readonly bodyKind: string,
-  ) {
-    super(
-      `Route ${routeId} is ${method} and declares no ${bodyKind} body in the contract`,
-    );
-    this.name = "LoomApiBodyNotAllowedError";
-  }
-}
-
 export { LoomHttpError, LoomApiMethodError, LoomApiPathParamError } from "./loom-http";
+export { LoomApiBodyNotAllowedError } from "./loom-http";
 
 /** The options bag the ported call sites pass as the second argument. */
 export interface LoomApiCallOptions {
   init?: { signal?: AbortSignal };
 }
 
-type LoomApiSpecOf<Id extends LoomApiRouteId> =
-  (typeof LOOM_API_REQUEST_SPECS)[Id];
-
-type LoomApiQueryOf<Id extends LoomApiRouteId> =
-  LoomApiSpecOf<Id> extends { source: "query"; query: infer TQuery }
-    ? TQuery
-    : never;
-
-type LoomApiJsonOf<Id extends LoomApiRouteId> =
-  LoomApiSpecOf<Id> extends { source: "json"; json: infer TJson }
-    ? TJson
-    : never;
-
-type LoomApiFormOf<Id extends LoomApiRouteId> =
-  LoomApiSpecOf<Id> extends { source: "form"; form: infer TForm }
-    ? TForm
-    : never;
+/** `$url` takes only what a URL can carry, and never a body. */
+type LoomApiUrlTuple<Id extends LoomApiRouteId> =
+  LoomApiUrlArgsOptional<Id> extends true
+    ? [args?: LoomApiUrlArgs<Id>]
+    : [args: LoomApiUrlArgs<Id>];
 
 /**
- * The request arguments a route accepts, chosen by its contract body kind.
- *
- * A `query` route has no `json`/`formData` property at all; a `json` route has
- * no `query`; a route with `source: "none"` has neither. `param` is required
- * exactly when the path declares a `:param`.
+ * A request method takes the URL arguments plus the body, and may only omit
+ * them entirely when the route needs neither.
  */
-type LoomApiBodyArgs<Id extends LoomApiRouteId> =
-  LoomApiSpecOf<Id> extends { source: "json" }
-    ? { json: LoomApiJsonOf<Id> }
-    : LoomApiSpecOf<Id> extends { source: "form" }
-      ? { formData: LoomApiFormOf<Id> }
-      : LoomApiSpecOf<Id> extends { source: "query" }
-        ? { query?: LoomApiQueryOf<Id> }
-        : { query?: never; json?: never; formData?: never };
-
-type LoomApiArgsFor<Id extends LoomApiRouteId> = LoomApiBodyArgs<Id> & {
-  param?: LoomApiHasParams<Id> extends true
-    ? LoomApiParamBagFor<Id>
-    : never;
-};
-
-/**
- * The parameter bag for a route: exactly its declared parameters, no others.
- *
- * A generic `Record<string, string>` would accept `{ wrongName: "a.ts" }` and
- * then fail at runtime with a missing `:id`; this makes the correct names the
- * only representable ones.
- */
-type LoomApiParamBagFor<Id extends LoomApiRouteId> = {
-  [K in LoomApiPathParams<LoomApiPathOf<Id>>]: string;
-};
-
-/** A route with a `:param` requires the argument bag; one without may omit it. */
-export type LoomApiArgs<Id extends LoomApiRouteId> = LoomApiHasParams<Id> extends true
-  ? LoomApiArgsFor<Id> & { param: LoomApiParamBagFor<Id> }
-  : LoomApiArgsFor<Id>;
-
-type LoomApiArgsTuple<Id extends LoomApiRouteId> = LoomApiHasParams<Id> extends true
-  ? [args: LoomApiArgs<Id>, options?: LoomApiCallOptions]
-  : [args?: LoomApiArgs<Id>, options?: LoomApiCallOptions];
-
-interface LoomApiCallMethods<Id extends LoomApiRouteId> {
-  $url(...args: LoomApiArgsTuple<Id>): URL;
-}
+type LoomApiRequestTuple<Id extends LoomApiRouteId> =
+  LoomApiArgsOptional<Id> extends true
+    ? [args?: LoomApiRequestArgs<Id>, options?: LoomApiCallOptions]
+    : [args: LoomApiRequestArgs<Id>, options?: LoomApiCallOptions];
 
 /**
  * Only the method the contract declares is present, so `$get` does not exist on
@@ -155,63 +80,31 @@ interface LoomApiCallMethods<Id extends LoomApiRouteId> {
  */
 type LoomApiRequestMethod<Id extends LoomApiRouteId> =
   LoomApiMethodOf<Id> extends "GET"
-    ? {
-        $get(...args: LoomApiArgsTuple<Id>): Promise<Response>;
-      }
+    ? { $get(...args: LoomApiRequestTuple<Id>): Promise<Response> }
     : LoomApiMethodOf<Id> extends "POST"
-      ? {
-          $post(...args: LoomApiArgsTuple<Id>): Promise<Response>;
-        }
+      ? { $post(...args: LoomApiRequestTuple<Id>): Promise<Response> }
       : LoomApiMethodOf<Id> extends "PUT"
-        ? {
-            $put(...args: LoomApiArgsTuple<Id>): Promise<Response>;
-          }
+        ? { $put(...args: LoomApiRequestTuple<Id>): Promise<Response> }
         : LoomApiMethodOf<Id> extends "PATCH"
-          ? {
-              $patch(...args: LoomApiArgsTuple<Id>): Promise<Response>;
-            }
-          : {
-              $delete(...args: LoomApiArgsTuple<Id>): Promise<Response>;
-            };
+          ? { $patch(...args: LoomApiRequestTuple<Id>): Promise<Response> }
+          : { $delete(...args: LoomApiRequestTuple<Id>): Promise<Response> };
 
-export type LoomApiCall<Id extends LoomApiRouteId> = LoomApiCallMethods<Id> &
-  LoomApiRequestMethod<Id>;
+export type LoomApiCall<Id extends LoomApiRouteId> = {
+  $url(...args: LoomApiUrlTuple<Id>): URL;
+} & LoomApiRequestMethod<Id>;
 
-/** The whole argument bag at runtime, before the spec gates it. */
+/** The argument bag at runtime, before the transport gates it. */
 interface LoomApiRuntimeArgs {
-  param?: LoomApiParamBag;
+  param?: Readonly<Record<string, string>>;
   query?: Record<string, unknown>;
   json?: unknown;
   formData?: FormData;
+  signal?: AbortSignal;
 }
 
-export function requestSourceOf(routeId: LoomApiRouteId): LoomApiRequestSource {
+/** Exposed for tests: the request source the transport will enforce. */
+export function requestSourceOf(routeId: LoomApiRouteId) {
   return LOOM_API_REQUEST_SPECS[routeId].source;
-}
-
-/**
- * Reject a body the contract does not declare for this route.
- *
- * Method is checked first: a `GET` with a body is the browser-level failure this
- * guards, and reporting it as a method/body conflict is clearer than reporting
- * it as a missing-query problem.
- */
-function assertBodyAllowed(
-  routeId: LoomApiRouteId,
-  method: LoomApiMethod,
-  args: LoomApiRuntimeArgs | undefined,
-): void {
-  const hasJson = args?.json !== undefined;
-  const hasForm = args?.formData !== undefined;
-  if (!hasJson && !hasForm) return;
-
-  const source = requestSourceOf(routeId);
-  if (hasJson && source !== "json") {
-    throw new LoomApiBodyNotAllowedError(routeId, method, "json");
-  }
-  if (hasForm && source !== "form") {
-    throw new LoomApiBodyNotAllowedError(routeId, method, "form");
-  }
 }
 
 function createLoomApiCall<Id extends LoomApiRouteId>(
@@ -220,34 +113,34 @@ function createLoomApiCall<Id extends LoomApiRouteId>(
   function send(
     verb: LoomApiMethod,
     args: LoomApiRuntimeArgs | undefined,
-    options: LoomApiCallOptions | undefined,
   ): Promise<Response> {
-    // The declared method wins and a mismatch is refused. The type surface
-    // already hides the wrong verb; this catches untyped callers.
-    //
-    // Both refusals are wrapped in a rejected promise because this method is
-    // declared to return one: throwing synchronously would escape a caller's
-    // `.catch()` and surface as an unhandled error instead of a failed request.
+    // The type surface already exposed only this route's declared verb, so a
+    // mismatch means untyped code (or a cast) reached here. Refuse it as a
+    // rejected promise rather than a synchronous throw: this function is
+    // declared to return one, and a sync throw would escape a caller's
+    // `.catch()`.
     try {
       resolveLoomApiMethod(routeId, verb);
-      assertBodyAllowed(routeId, verb, args);
     } catch (error) {
       return Promise.reject(error);
     }
-    return loomApiFetch(routeId, {
-      param: args?.param,
-      query: args?.query as
-        | Record<string, string | number | boolean | undefined>
-        | undefined,
-      json: args?.json,
-      formData: args?.formData,
-      signal: options?.init?.signal,
-    });
+    // The transport independently enforces the body rules, so passing a body
+    // here changes nothing about whether it is allowed.
+    return loomApiFetch(
+      routeId,
+      {
+        ...args,
+        param: args?.param as never,
+        query: args?.query as never,
+        json: args?.json,
+        formData: args?.formData,
+      } as never,
+    );
   }
 
   function toUrl(args: LoomApiRuntimeArgs | undefined): URL {
     const relative = buildLoomApiRelativeUrl(routeId, {
-      param: args?.param,
+      param: args?.param as Record<string, string> | undefined,
       query: args?.query as
         | Record<string, string | number | boolean | undefined>
         | undefined,
@@ -257,16 +150,11 @@ function createLoomApiCall<Id extends LoomApiRouteId>(
 
   return {
     $url: (args?: LoomApiRuntimeArgs) => toUrl(args),
-    $get: (args?: LoomApiRuntimeArgs, options?: LoomApiCallOptions) =>
-      send("GET", args, options),
-    $post: (args?: LoomApiRuntimeArgs, options?: LoomApiCallOptions) =>
-      send("POST", args, options),
-    $put: (args?: LoomApiRuntimeArgs, options?: LoomApiCallOptions) =>
-      send("PUT", args, options),
-    $patch: (args?: LoomApiRuntimeArgs, options?: LoomApiCallOptions) =>
-      send("PATCH", args, options),
-    $delete: (args?: LoomApiRuntimeArgs, options?: LoomApiCallOptions) =>
-      send("DELETE", args, options),
+    $get: (args?: LoomApiRuntimeArgs) => send("GET", args),
+    $post: (args?: LoomApiRuntimeArgs) => send("POST", args),
+    $put: (args?: LoomApiRuntimeArgs) => send("PUT", args),
+    $patch: (args?: LoomApiRuntimeArgs) => send("PATCH", args),
+    $delete: (args?: LoomApiRuntimeArgs) => send("DELETE", args),
   } as unknown as LoomApiCall<Id>;
 }
 

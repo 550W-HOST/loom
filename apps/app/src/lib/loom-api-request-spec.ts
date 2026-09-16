@@ -1,15 +1,23 @@
 import type {
+  CreateHostJoinCodeResponse,
   EnvironmentDiffFileQuery,
   ProjectAttachmentContentQuery,
   ProjectBranchesQuery,
   ProjectFileContentQuery,
+  SidebarBootstrapResponse,
+  SystemConfigResponse,
   SystemExecutionOptionsQuery,
+  SystemExecutionOptionsResponse,
+  SystemProviderStatesResponse,
   SystemProvidersQuery,
+  SystemProviderInfo,
   SystemVersionQuery,
+  SystemVersionResponse,
   ThreadFilesRawQuery,
   ThreadHostFileContentQuery,
   ThreadStorageContentQuery,
 } from "@bb/server-contract";
+import type { Host } from "@bb/domain";
 
 /**
  * The request shape of every allowlisted route, derived from the exported
@@ -105,3 +113,34 @@ export const LOOM_API_REQUEST_SPECS = {
 } as const satisfies Record<string, LoomApiRequestSpec>;
 
 export type SystemProviderStatesQueryShape = SystemProvidersQuery;
+
+/**
+ * The response type of each allowlisted route, derived from the contract.
+ *
+ * Kept beside the request specs so a route's request and response are declared
+ * together: a caller that reads `loomApiJson(routeId, …)` gets the contract's
+ * own response type without naming it, which is also what lets the transport
+ * take a single inferred type argument.
+ */
+export interface LoomApiResponseSpecs {
+  "filePreviews.content": unknown;
+  "environments.diffFile": { path: string; content: string; contentEncoding: "base64" | "utf8" };
+  "hosts.createJoinCode": CreateHostJoinCodeResponse;
+  "hosts.list": Host[];
+  "hosts.updatePermissionCeiling": unknown;
+  "projects.attachmentContent": unknown;
+  "projects.branchOptions": unknown;
+  "projects.fileContent": unknown;
+  "projects.sidebarBootstrap": SidebarBootstrapResponse;
+  "system.executionOptions": SystemExecutionOptionsResponse;
+  "system.providers": SystemProviderInfo[];
+  "system.providerStates": SystemProviderStatesResponse;
+  "system.version": SystemVersionResponse;
+  "system.config": SystemConfigResponse;
+  "system.voiceTranscription": { text: string };
+  "threads.hostFileContent": unknown;
+  "threads.rawFile": unknown;
+  "threads.storageContent": unknown;
+  "threads.storageFile": unknown;
+  "threads.worktreeFile": unknown;
+}

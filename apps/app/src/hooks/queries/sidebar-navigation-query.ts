@@ -23,7 +23,7 @@ function fetchSidebarNavigation(
 ): Promise<SidebarBootstrapResponse> {
   // The shell boundary reads the same query key through the same transport, so
   // the sidebar cannot load through one client and refetch through another.
-  return loomApiJson<SidebarBootstrapResponse>("projects.sidebarBootstrap", {
+  return loomApiJson("projects.sidebarBootstrap", {
     signal,
   });
 }

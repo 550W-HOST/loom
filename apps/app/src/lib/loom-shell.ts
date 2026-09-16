@@ -12,6 +12,7 @@ import {
 import {
   sidebarNavigationQueryKey,
   systemConfigQueryKey,
+  type SidebarNavigationQueryKey,
 } from "@/hooks/queries/query-keys";
 
 /**
@@ -74,13 +75,21 @@ export function shellHealthQueryOptions() {
 
 /** Read the sidebar bootstrap and keep the offline replay cache warm. */
 export function shellSidebarQueryOptions() {
-  return queryOptions({
+  // The generics are explicit because `placeholderData` is itself a function:
+  // without pinning them, TanStack's overload resolution considers it a
+  // candidate for `TQueryFnData` and fails to match. The response type is still
+  // the contract's, derived from the route id rather than asserted here.
+  return queryOptions<
+    SidebarBootstrapResponse,
+    Error,
+    SidebarBootstrapResponse,
+    SidebarNavigationQueryKey
+  >({
     queryKey: sidebarNavigationQueryKey(),
-    queryFn: async ({ signal }): Promise<SidebarBootstrapResponse> => {
-      const response = await loomApiJson<SidebarBootstrapResponse>(
-        "projects.sidebarBootstrap",
-        { signal },
-      );
+    queryFn: async ({ signal }) => {
+      const response = await loomApiJson("projects.sidebarBootstrap", {
+        signal,
+      });
       writeCachedSidebarBootstrap(response);
       return response;
     },
@@ -95,7 +104,7 @@ export function shellSystemConfigQueryOptions() {
   return queryOptions({
     queryKey: systemConfigQueryKey(),
     queryFn: ({ signal }): Promise<SystemConfigResponse> =>
-      loomApiJson<SystemConfigResponse>("system.config", { signal }),
+      loomApiJson("system.config", { signal }),
     staleTime: 60_000,
     refetchOnWindowFocus: false,
   });

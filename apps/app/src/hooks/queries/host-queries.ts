@@ -23,7 +23,7 @@ export function useHosts(options?: QueryOptions) {
     // anything watching for a newly connected machine (the Add Machine dialog)
     // waited forever. The contract route answers a bare array of hosts.
     queryFn: ({ signal }) =>
-      loomApiJson<Host[]>("hosts.list", { signal }),
+      loomApiJson("hosts.list", { signal }),
     enabled,
     staleTime: 60_000,
   });

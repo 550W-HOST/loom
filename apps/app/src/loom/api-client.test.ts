@@ -12,6 +12,7 @@ import {
 } from "@/lib/loom-api-routes";
 import {
   buildLoomApiUrl,
+  LoomApiBodyNotAllowedError,
   LoomApiMethodError,
   LoomApiPathParamError,
   LoomApiRouteError,
@@ -465,5 +466,130 @@ describe("loom route table catch-all detection", () => {
         isCatchAllParameter(segment),
       ),
     ).toBe(true);
+  });
+});
+
+describe("the lowest transport enforces the contract request before fetch", () => {
+  // The higher-level seam had a guard, but `loomApiFetch`/`loomApiJson` are
+  // exported and took a generic bag, so an untyped caller could still put a
+  // body on a route-table GET and let the browser throw. These call the
+  // transport directly and assert fetch is never reached.
+
+  function stubFetch() {
+    const fetchMock = vi.fn(async () => jsonResponse({}));
+    vi.stubGlobal("fetch", fetchMock);
+    return fetchMock;
+  }
+
+  it("refuses a JSON body on a GET route without calling fetch", async () => {
+    const fetchMock = stubFetch();
+
+    await expect(
+      loomApiFetch("threads.worktreeFile", {
+        param: { id: "t1", filePath: "a.ts" },
+        // Cast past the types, as a JS caller or `as any` would.
+        json: { x: 1 },
+      } as never),
+    ).rejects.toBeInstanceOf(LoomApiBodyNotAllowedError);
+
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("refuses a multipart body on a GET route without calling fetch", async () => {
+    const fetchMock = stubFetch();
+
+    await expect(
+      loomApiFetch("threads.worktreeFile", {
+        param: { id: "t1", filePath: "a.ts" },
+        formData: new FormData(),
+      } as never),
+    ).rejects.toBeInstanceOf(LoomApiBodyNotAllowedError);
+
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("refuses a body on loomApiJson for a bodyless route", async () => {
+    const fetchMock = stubFetch();
+
+    await expect(
+      loomApiJson("system.config", { json: {} } as never),
+    ).rejects.toBeInstanceOf(LoomApiBodyNotAllowedError);
+
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("refuses json and formData together, whichever the route", async () => {
+    const fetchMock = stubFetch();
+
+    await expect(
+      loomApiFetch("hosts.createJoinCode", {
+        json: {},
+        formData: new FormData(),
+      } as never),
+    ).rejects.toBeInstanceOf(LoomApiBodyNotAllowedError);
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    await expect(
+      loomApiFetch("threads.worktreeFile", {
+        param: { id: "t1", filePath: "a.ts" },
+        json: {},
+        formData: new FormData(),
+      } as never),
+    ).rejects.toBeInstanceOf(LoomApiBodyNotAllowedError);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("refuses a query on a route whose contract declares none", async () => {
+    const fetchMock = stubFetch();
+
+    await expect(
+      loomApiJson("system.config", { query: { nope: "x" } } as never),
+    ).rejects.toBeInstanceOf(LoomApiBodyNotAllowedError);
+
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("still sends the body a json route declares", async () => {
+    const fetchMock = stubFetch();
+
+    await loomApiJson("hosts.createJoinCode", { json: {} });
+
+    const [, init] = fetchMock.mock.calls[0] as unknown as [URL, RequestInit];
+    expect(init.method).toBe("POST");
+    expect(init.body).toBe("{}");
+  });
+
+  it("still sends the multipart body a form route declares", async () => {
+    const fetchMock = stubFetch();
+    const formData = new FormData();
+    formData.set("file", new Blob(["x"]), "x.txt");
+
+    await loomApiFetch("system.voiceTranscription", { formData });
+
+    const [, init] = fetchMock.mock.calls[0] as unknown as [URL, RequestInit];
+    expect(init.method).toBe("POST");
+    expect(init.body).toBe(formData);
+  });
+
+  it("carries the typed error code so a caller can branch on it", async () => {
+    stubFetch();
+    await expect(
+      loomApiFetch("system.config", { json: {} } as never),
+    ).rejects.toMatchObject({ code: "loom_api_body_not_allowed" });
+  });
+});
+
+describe("the seam cannot send a body through the wrong verb", () => {
+  it("refuses $get with a body on a POST route", async () => {
+    const fetchMock = vi.fn(async () => jsonResponse({}));
+    vi.stubGlobal("fetch", fetchMock);
+    const joinCodeRoute = apiClient.hosts["join-codes"] as unknown as {
+      $get(args: unknown): Promise<unknown>;
+    };
+
+    await expect(joinCodeRoute.$get({ json: {} })).rejects.toBeInstanceOf(
+      LoomApiMethodError,
+    );
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });

@@ -16,7 +16,7 @@
  */
 
 import { apiClient } from "./api-server";
-import { loomApiFetch, resolveLoomApiMethod } from "./loom-http";
+import { loomApiFetch, loomApiJson, resolveLoomApiMethod } from "./loom-http";
 import { LOOM_API_ROUTES } from "./loom-api-routes";
 
 // --- A GET route cannot be given a body ------------------------------------
@@ -107,14 +107,54 @@ void apiClient.hosts.delete.$url({ param: { id: "h1" } });
 // @ts-expect-error an unknown top-level area is not a route
 void apiClient.nothing.$get({});
 
-// --- The runtime backstop also refuses an untyped body ---------------------
+// --- The lowest transport is typed too ------------------------------------
 
-// These go through the untyped fetch signature deliberately: they prove the
-// runtime check exists for a caller that casts past the type surface.
+// These are the same rules the seam applies, now enforced on the exported
+// transport itself: previously `loomApiFetch` took a generic bag, so an untyped
+// caller could put a body on a route-table GET and reach the browser.
 void loomApiFetch("threads.worktreeFile", {
   param: { id: "t1", filePath: "a.ts" },
+  // @ts-expect-error a GET route declares no JSON body in the contract
   json: { x: 1 },
 });
+
+void loomApiFetch("threads.worktreeFile", {
+  param: { id: "t1", filePath: "a.ts" },
+  // @ts-expect-error a GET route cannot take multipart either
+  formData: new FormData(),
+});
+
+void loomApiJson("system.config", {
+  // @ts-expect-error `system.config` declares no query in the contract
+  query: { anything: true },
+});
+
+void loomApiFetch("system.config", {
+  // @ts-expect-error `system.config` declares no JSON body
+  json: {},
+});
+
+// @ts-expect-error a JSON route requires its body
+void loomApiFetch("hosts.createJoinCode", {});
+
+// @ts-expect-error a JSON route cannot be sent multipart instead
+void loomApiFetch("hosts.createJoinCode", { formData: new FormData() });
+
+void loomApiFetch("hosts.createJoinCode", {
+  // @ts-expect-error the join-code route declares no query
+  query: { unused: "x" },
+  json: {},
+});
+
+void loomApiFetch("threads.storageContent", {
+  param: { id: "t1" },
+  // @ts-expect-error `path` is required by the contract query
+  query: {},
+});
+
+// @ts-expect-error `filePath` is required by the catch-all path
+void loomApiFetch("threads.worktreeFile", { param: { id: "t1" } });
+
 // A method mismatch is a runtime refusal, not a compile one: the argument is a
 // valid `LoomApiMethod`, and the route's own method is what rejects it. Covered
 // by the runtime tests in `api-client.test.ts`.
@@ -126,3 +166,30 @@ void resolveLoomApiMethod("threads.notReal", "GET");
 
 const routeIds = LOOM_API_ROUTES.map((route) => route.id);
 void routeIds;
+
+// --- `$url` and a request method are not the same shape --------------------
+
+// A URL carries no body, so `$url()` on a body route needs no arguments...
+void apiClient.system["voice-transcription"].$url();
+void apiClient.system["voice-transcription"].$url({});
+void apiClient.hosts["join-codes"].$url();
+
+// ...while the request method must be given the body the contract declares.
+// @ts-expect-error a JSON route cannot be called with no body
+void apiClient.hosts["join-codes"].$post();
+
+// @ts-expect-error a form route cannot be called with no body
+void apiClient.system["voice-transcription"].$post();
+
+void apiClient.hosts["join-codes"].$post({
+  // @ts-expect-error multipart where the contract declares JSON
+  formData: new FormData(),
+});
+
+// A query-only route still takes its URL arguments on both.
+void apiClient.threads[":id"]["thread-storage"].content.$url({
+  param: { id: "t1" },
+  query: { path: "a.ts" },
+});
+// @ts-expect-error `$url` never takes a body
+void apiClient.hosts["join-codes"].$url({ json: {} });

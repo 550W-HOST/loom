@@ -14,7 +14,6 @@ import { SYSTEM_EXECUTION_OPTIONS_QUERY_KEY } from "@/hooks/queries/query-keys";
 import { permissionModeValues } from "@bb/domain";
 import type {
   SystemCliSkillsStatusResponse,
-  SystemConfigResponse,
   SystemExecutionOptionsResponse,
   SystemProvidersQuery,
   SystemProviderStatesResponse,
@@ -344,7 +343,7 @@ export function systemConfigQueryOptions() {
     // same-origin reader: a background refetch through a separate client
     // would overwrite the shell's data (or fail where the shell succeeded).
     queryFn: ({ signal }) =>
-      loomApiJson<SystemConfigResponse>("system.config", { signal }),
+      loomApiJson("system.config", { signal }),
     staleTime: 60_000,
   });
 }

@@ -29,7 +29,7 @@ export function readSystemExecutionOptions(
   args: LoomExecutionOptionsArgs,
 ): Promise<SystemExecutionOptionsResponse> {
   const { signal, ...query } = args;
-  return loomApiJson<SystemExecutionOptionsResponse>(
+  return loomApiJson(
     "system.executionOptions",
     { query, signal },
   );
@@ -47,7 +47,7 @@ export function readSystemProviders(
   args: LoomSystemProvidersArgs = {},
 ): Promise<ReadonlyArray<ProviderInfo>> {
   const { signal, ...query } = args;
-  return loomApiJson<ReadonlyArray<ProviderInfo>>("system.providers", {
+  return loomApiJson("system.providers", {
     query,
     signal,
   });
@@ -57,7 +57,7 @@ export function readSystemProviderStates(
   args: LoomSystemProvidersArgs,
 ): Promise<SystemProviderStatesResponse> {
   const { signal, ...query } = args;
-  return loomApiJson<SystemProviderStatesResponse>(
+  return loomApiJson(
     "system.providerStates",
     { query, signal },
   );
@@ -71,8 +71,10 @@ export interface LoomSystemVersionArgs {
 export function readSystemVersion(
   args: LoomSystemVersionArgs = {},
 ): Promise<SystemVersionResponse> {
-  return loomApiJson<SystemVersionResponse>("system.version", {
-    query: args.force === undefined ? {} : { force: String(args.force) },
+  // The contract's query is the string literal `"true" | "false"`, not a
+  // boolean; omitting it entirely is how "no force" is expressed.
+  return loomApiJson("system.version", {
+    query: args.force === undefined ? {} : { force: String(args.force) as "true" | "false" },
     signal: args.signal,
   });
 }

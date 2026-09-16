@@ -6,11 +6,13 @@ import {
   pathParameterName,
   routePathSegments,
   type LoomApiMethod,
-  type LoomApiPathParams,
-  type LoomApiPathOf,
   type LoomApiRouteId,
-  type LoomApiHasParams,
 } from "./loom-api-routes";
+import {
+  LOOM_API_REQUEST_SPECS,
+  type LoomApiResponseSpecs,
+} from "./loom-api-request-spec";
+import type { LoomApiRequestArgs } from "./loom-api-args";
 import { appSurfaceRequestInit } from "./app-surface";
 
 /**
@@ -101,6 +103,15 @@ export interface LoomRequestArgs {
   formData?: FormData;
   signal?: AbortSignal;
 }
+
+export { LoomApiRequestArgs };
+export type {
+  LoomApiUrlArgs,
+  LoomApiParamBagFor,
+  LoomApiQueryOf,
+  LoomApiJsonOf,
+  LoomApiFormOf,
+} from "./loom-api-args";
 
 function resolveOrigin(): string {
   if (typeof window !== "undefined" && window.location?.origin) {
@@ -355,18 +366,95 @@ export function resolveLoomApiMethod(
   return route.method;
 }
 
-/** Perform a contract request and return the raw `Response`. */
-export async function loomApiFetch(
+/**
+ * A body was supplied to a route whose contract does not declare one.
+ *
+ * This is the runtime backstop for the type-level rule, enforced at the lowest
+ * exported transport boundary. Reaching it means an untyped caller (or a cast)
+ * tried to send a body with a `GET`, which the browser refuses before the
+ * request leaves, or sent both a JSON and a multipart body, which the contract
+ * never allows.
+ */
+export class LoomApiBodyNotAllowedError extends Error {
+  readonly code = "loom_api_body_not_allowed";
+
+  constructor(
+    readonly routeId: string,
+    readonly method: string,
+    readonly detail: string,
+  ) {
+    super(`Route ${routeId} (${method}) cannot accept ${detail}`);
+    this.name = "LoomApiBodyNotAllowedError";
+  }
+}
+
+/**
+ * Reject anything the route's contract does not allow, **before** `fetch`.
+ *
+ * Applied to the runtime argument bag rather than trusting the caller's types:
+ * the types are erased at runtime, so a JS caller or a cast would otherwise put
+ * a body on a `GET` and let the browser throw a less clear error.
+ */
+export function assertLoomRequestAllowed(
   routeId: LoomApiRouteId,
-  args: LoomRequestArgs = {},
+  args: {
+    json?: unknown;
+    formData?: unknown;
+    query?: unknown;
+  },
+): void {
+  const spec = LOOM_API_REQUEST_SPECS[routeId];
+  const method = spec ? resolveLoomApiMethod(routeId) : "GET";
+  const source = spec?.source ?? "none";
+  const hasJson = args.json !== undefined;
+  const hasForm = args.formData !== undefined;
+  const hasQuery = args.query !== undefined;
+
+  // JSON and multipart are mutually exclusive for every route in the contract.
+  if (hasJson && hasForm) {
+    throw new LoomApiBodyNotAllowedError(
+      routeId,
+      method,
+      "both a JSON and a multipart body",
+    );
+  }
+  if (hasJson && source !== "json") {
+    throw new LoomApiBodyNotAllowedError(
+      routeId,
+      method,
+      `a JSON body (its contract declares request source \`${source}\`)`,
+    );
+  }
+  if (hasForm && source !== "form") {
+    throw new LoomApiBodyNotAllowedError(
+      routeId,
+      method,
+      `a multipart body (its contract declares request source \`${source}\`)`,
+    );
+  }
+  if (hasQuery && source !== "query") {
+    throw new LoomApiBodyNotAllowedError(
+      routeId,
+      method,
+      `a query (its contract declares request source \`${source}\`)`,
+    );
+  }
+}
+
+/** Perform a contract request and return the raw `Response`. */
+export async function loomApiFetch<Id extends LoomApiRouteId>(
+  routeId: Id,
+  args: LoomApiRequestArgs<Id> = {} as LoomApiRequestArgs<Id>,
 ): Promise<Response> {
   const method = resolveLoomApiMethod(routeId);
-  const url = buildLoomApiUrl(routeId, args);
+  // Fail before building the request, let alone sending it.
+  assertLoomRequestAllowed(routeId, args);
+  const url = buildLoomApiUrl(routeId, args as LoomRequestArgs);
   const headers = new Headers();
   let body: BodyInit | undefined;
 
   if (args.formData !== undefined) {
-    body = args.formData;
+    body = args.formData as FormData;
   } else if (args.json !== undefined) {
     headers.set("content-type", "application/json");
     body = JSON.stringify(args.json);
@@ -413,33 +501,21 @@ export async function loomNativeJson<TResponse>(
   return JSON.parse(text) as TResponse;
 }
 
-/** Perform a contract request and parse its JSON body. */
-export async function loomApiJson<TResponse>(
-  routeId: LoomApiRouteId,
-  args: LoomRequestArgs = {},
-): Promise<TResponse> {
+/**
+ * Perform a contract request and parse its JSON body.
+ *
+ * The response type comes from the route id, so a caller names neither: passing
+ * the contract's own type here would let a call site assert a shape the route
+ * does not return.
+ */
+export async function loomApiJson<Id extends LoomApiRouteId>(
+  routeId: Id,
+  args: LoomApiRequestArgs<Id> = {} as LoomApiRequestArgs<Id>,
+): Promise<LoomApiResponseSpecs[Id]> {
   const response = await loomApiFetch(routeId, args);
   const text = await response.text();
   if (text.length === 0) {
-    return undefined as TResponse;
+    return undefined as LoomApiResponseSpecs[Id];
   }
-  return JSON.parse(text) as TResponse;
+  return JSON.parse(text) as LoomApiResponseSpecs[Id];
 }
-
-/**
- * The parameters a route requires, derived from its contract path.
- *
- * A route with no `:param` takes no `param` bag at all, so a caller cannot pass
- * a parameter the path does not declare (which would silently do nothing).
- */
-export type LoomApiRouteArgs<Id extends LoomApiRouteId> = Omit<
-  LoomRequestArgs,
-  "param"
-> &
-  (LoomApiHasParams<Id> extends true
-    ? {
-        param: {
-          [K in LoomApiPathParams<LoomApiPathOf<Id>>]: string;
-        };
-      }
-    : { param?: undefined });
