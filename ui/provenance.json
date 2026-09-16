@@ -8619,12 +8619,12 @@
       "upstreamPath": "apps/app",
       "localPath": "apps/app",
       "disposition": "source-port",
-      "gitTree": "a87f9542437f62ff016fa049ef83cbe744135d13",
+      "gitTree": "320c99fb3009d9a972744726ee6d4b74a18c6ed3",
       "snapshot": {
         "path": "apps/app",
         "tree": {
           "files": 1454,
-          "sha256": "821444bbd12d34d6201e15668720da491c52144ff719d1dfc233a51fd1c4ec72"
+          "sha256": "b3ff1a7d8b757df309a53befff5e8dc165abfeb9965f6559952f552fb1dcab97"
         },
         "files": [
           {
@@ -13659,13 +13659,13 @@
           },
           {
             "path": "src/hooks/queries/sidebar-navigation-query.test.tsx",
-            "bytes": 6471,
-            "sha256": "55d307d2067278ab3973145ee8029a7aadef09ac9b01dc0cea42d4578519b159"
+            "bytes": 6415,
+            "sha256": "a7053c221d1dd2ec8bb3f6777ffbe9d5ccf3c01d68034d74efe0ea1ad6541f22"
           },
           {
             "path": "src/hooks/queries/sidebar-navigation-query.ts",
-            "bytes": 3220,
-            "sha256": "5a73013f04bf80f45cc6bf1ef16b6763f5a1ae852a039648b6c2fcc9aacbbbe1"
+            "bytes": 3296,
+            "sha256": "452720d74b54be4614051420f8411a2bd363a95f929489bc720062d60aaf0d47"
           },
           {
             "path": "src/hooks/queries/system-queries.test.tsx",
@@ -13674,8 +13674,8 @@
           },
           {
             "path": "src/hooks/queries/system-queries.ts",
-            "bytes": 14329,
-            "sha256": "a05adbda71800e661b1297b83d9164671139da3d320715bc764afc565259bf9a"
+            "bytes": 14661,
+            "sha256": "181b767720c3ca09aac4a76eec7657c3e95deffb08b9082b4b5d608e2fc046fb"
           },
           {
             "path": "src/hooks/queries/thread-default-execution-options-query.test.tsx",
@@ -15349,8 +15349,8 @@
           },
           {
             "path": "src/loom/shell-bootstrap.test.tsx",
-            "bytes": 5194,
-            "sha256": "0e1fcdf59c20eef081d39e9e44ed74f8c5a638a4d7fe7532f07cf4a465ce9d99"
+            "bytes": 7041,
+            "sha256": "c1eb17a71f697a6d09803545081df4d204e972170fa92eb1beccda4eeda66dcf"
           },
           {
             "path": "src/main.tsx",

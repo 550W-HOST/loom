@@ -3066,7 +3066,7 @@
       },
       "local": {
         "path": "apps/app/src/loom/shell-bootstrap.test.tsx",
-        "sha256": "0e1fcdf59c20eef081d39e9e44ed74f8c5a638a4d7fe7532f07cf4a465ce9d99",
+        "sha256": "c1eb17a71f697a6d09803545081df4d204e972170fa92eb1beccda4eeda66dcf",
         "mode": "100644"
       },
       "issue": "W-593",

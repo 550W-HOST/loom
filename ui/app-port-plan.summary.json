@@ -1,13 +1,13 @@
 {
   "format": "loom.app-port-plan-summary/v2",
   "plan": "ui/app-port-plan.json",
-  "planBytes": 1950634,
+  "planBytes": 1950775,
   "source": {
     "root": "apps/app/src",
     "trackedFiles": 1364,
     "disposition": "source-port",
     "baselineGitTree": "8ba6eb6f3d2f67f8ba2703f1fd0c123f788c6d52",
-    "localGitTree": "a87f9542437f62ff016fa049ef83cbe744135d13"
+    "localGitTree": "320c99fb3009d9a972744726ee6d4b74a18c6ed3"
   },
   "summary": {
     "nodes": 1364,
@@ -21,7 +21,7 @@
       "verification-only": 671,
       "asset-build": 28
     },
-    "edges": 8190,
+    "edges": 8191,
     "blockers": {
       "runtime": 3,
       "test": 224,
@@ -3692,13 +3692,13 @@
     }
   },
   "compilerConsistency": {
-    "compilerSpecifiers": 8247,
-    "graphSpecifiers": 8247,
+    "compilerSpecifiers": 8249,
+    "graphSpecifiers": 8249,
     "missing": [],
     "extra": [],
     "preProcessFileParity": {
-      "compilerLiteralSpecifiers": 8246,
-      "preProcessFileSpecifiers": 8246,
+      "compilerLiteralSpecifiers": 8248,
+      "preProcessFileSpecifiers": 8248,
       "missing": [],
       "extra": []
     }
@@ -3706,8 +3706,8 @@
   "parsers": {
     "typescript": {
       "files": 1357,
-      "specifiers": 8247,
-      "preProcessFileSpecifiers": 8246
+      "specifiers": 8249,
+      "preProcessFileSpecifiers": 8248
     },
     "css": {
       "files": 4,
@@ -3723,14 +3723,14 @@
     "assigned": 1364,
     "missing": [],
     "duplicates": [],
-    "crossStageEdges": 2943,
+    "crossStageEdges": 2944,
     "missingCrossStageEdges": 0,
-    "crossChunkEdges": 2943,
-    "crossChunkOccurrences": 2954,
-    "crossIssueEdges": 1336,
-    "crossIssueOccurrences": 1341,
-    "crossIssueLogicalEdges": 1327,
-    "crossIssueLogicalOccurrences": 1332,
+    "crossChunkEdges": 2944,
+    "crossChunkOccurrences": 2956,
+    "crossIssueEdges": 1337,
+    "crossIssueOccurrences": 1343,
+    "crossIssueLogicalEdges": 1328,
+    "crossIssueLogicalOccurrences": 1334,
     "missingCrossIssueBatchDependencies": 0
   },
   "batchPlan": {
@@ -3765,10 +3765,10 @@
         "cyclic": true
       }
     ],
-    "crossIssueEdges": 1336,
-    "crossIssueLogicalEdges": 1327,
-    "crossIssueOccurrences": 1341,
-    "crossIssueLogicalOccurrences": 1332,
+    "crossIssueEdges": 1337,
+    "crossIssueLogicalEdges": 1328,
+    "crossIssueOccurrences": 1343,
+    "crossIssueLogicalOccurrences": 1334,
     "crossIssueCycles": 0,
     "crossStageConflict": true
   },
@@ -4027,7 +4027,7 @@
           "asset-build",
           "retain-verbatim"
         ],
-        "dependencyCount": 138,
+        "dependencyCount": 139,
         "dependsOnBatchIds": [
           "W-603-01",
           "W-603-02",
@@ -4216,7 +4216,7 @@
         "dispositions": [
           "verification-only"
         ],
-        "dependencyCount": 205,
+        "dependencyCount": 206,
         "dependsOnBatchIds": [
           "W-603-01",
           "W-603-02",
