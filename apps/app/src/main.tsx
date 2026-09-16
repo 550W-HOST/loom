@@ -5,6 +5,7 @@ import { BrowserRouter } from "react-router-dom";
 import { App } from "./App";
 import { AppErrorBoundary } from "./components/AppErrorBoundary";
 import { AppToaster } from "./components/AppToaster";
+import { LoomShellBoundary } from "./loom/LoomShellBoundary";
 import { registerProviderCliInstallQueryClient } from "./components/provider-cli/provider-cli-install-store";
 import { initializePreferredTheme } from "./hooks/useTheme";
 import { initializeFavicon } from "./lib/favicon-color-preference";
@@ -39,8 +40,10 @@ createRoot(document.getElementById("root")!, {
     <AppErrorBoundary>
       <QueryClientProvider client={appQueryClient}>
         <BrowserRouter>
-          <App />
-          <AppToaster position="bottom-right" />
+          <LoomShellBoundary>
+            <App />
+            <AppToaster position="bottom-right" />
+          </LoomShellBoundary>
         </BrowserRouter>
       </QueryClientProvider>
     </AppErrorBoundary>

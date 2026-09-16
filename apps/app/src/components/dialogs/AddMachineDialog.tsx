@@ -1,8 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { Link } from "react-router-dom";
 import { useMutation } from "@tanstack/react-query";
 import type { Host } from "@bb/domain";
-import { z } from "zod";
 import { Button } from "@bb/shared-ui/button";
 import {
   Dialog,
@@ -17,84 +15,17 @@ import { MachineStatusDot } from "@/components/machines/MachineStatusDot";
 import { useHosts } from "@/hooks/queries/host-queries";
 import { useClipboardCopy } from "@/lib/clipboard";
 import { isLocalOnlyUrl } from "@/lib/loopback-hostname";
-import {
-  getPluginConfigurationRoutePath,
-  getPluginDetailRoutePath,
-} from "@/lib/route-paths";
-import { BbHttpError, sdk } from "@/lib/sdk";
 import { getMutationErrorMessage } from "@/lib/mutation-errors";
+import {
+  createLoomJoinCode,
+  createLoomMachineCode,
+  type LoomMachineCode,
+} from "@/lib/loom-machine-pairing";
 
 interface AddMachineDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   serverUrl: string | null;
-}
-
-const connectMachineCodeSchema = z.object({
-  code: z.string(),
-  expiresAt: z.number(),
-  serverUrl: z.string(),
-});
-
-const pluginRpcErrorEnvelopeSchema = z.object({
-  error: z.object({ message: z.string() }),
-});
-
-type ConnectMachineCode = z.infer<typeof connectMachineCodeSchema>;
-
-function isNotPairedRpcError(error: BbHttpError): boolean {
-  const envelope = pluginRpcErrorEnvelopeSchema.safeParse(error.body);
-  return envelope.success && envelope.data.error.message === "not_paired";
-}
-
-type ConnectMachineCodeResult =
-  | { kind: "issued"; code: ConnectMachineCode }
-  | { kind: "unpaired" }
-  | { kind: "disabled" }
-  | { kind: "unavailable" };
-
-async function isConnectPluginDisabled(): Promise<boolean> {
-  try {
-    const {
-      plugins,
-    }: {
-      plugins: Array<{ id: string; enabled: boolean }>;
-    } = await sdk.plugins.list();
-    const connect = plugins.find((plugin) => plugin.id === "connect");
-    return connect !== undefined && !connect.enabled;
-  } catch {
-    return false;
-  }
-}
-
-async function createConnectMachineCode(): Promise<ConnectMachineCodeResult> {
-  try {
-    const code = await sdk.plugins.callRpc({
-      pluginId: "connect",
-      method: "createMachineCode",
-      input: null,
-      outputSchema: connectMachineCodeSchema,
-    });
-    return { kind: "issued", code };
-  } catch (error) {
-    if (!(error instanceof BbHttpError)) throw error;
-    if (
-      error.code === "not_paired" ||
-      isNotPairedRpcError(error) ||
-      error.status === 404
-    ) {
-      return { kind: "unpaired" };
-    }
-    if (error.status === 503) {
-      return (await isConnectPluginDisabled())
-        ? { kind: "disabled" }
-        : { kind: "unavailable" };
-    }
-    if (error.status === 422) {
-      return { kind: "unavailable" };
-    }
-    throw error;
-  }
 }
 
 export function AddMachineDialog({
@@ -126,7 +57,7 @@ function formatCountdown(remainingMs: number): string {
 function pairingCommand(
   joinCode: string,
   hostId: string,
-  machineCode: ConnectMachineCode | null,
+  machineCode: LoomMachineCode | null,
   directServerUrl: string | null,
 ): string | null {
   const serverUrl = machineCode?.serverUrl ?? directServerUrl;
@@ -136,20 +67,13 @@ function pairingCommand(
   return `curl -fL --progress-meter --connect-timeout 10 --max-time 60 --retry 2 ${serverUrl}/install.sh | sh -s -- --join-code ${joinCode} --host-id ${hostId} --server ${serverUrl}${machineFlag}`;
 }
 
-const REMOTE_ACCESS_ROUTE = getPluginConfigurationRoutePath({
-  pluginId: "connect",
-});
-const CONNECT_PLUGIN_ROUTE = getPluginDetailRoutePath({
-  pluginId: "connect",
-  view: "installed",
-});
+const REMOTE_ACCESS_NOT_CONFIGURED_MESSAGE =
+  "Remote access is not configured on this loom server, so the pairing command only works from a machine that can reach the address below.";
 
 function UnreachableServerNotice({
   serverUrl,
-  reason,
 }: {
   serverUrl: string;
-  reason: "unpaired" | "disabled";
 }) {
   return (
     <div
@@ -163,33 +87,9 @@ function UnreachableServerNotice({
       <p className="text-xs text-subtle-foreground">
         The pairing command would target{" "}
         <span className="font-mono">{serverUrl}</span>, which points to the
-        machine that runs it, not to this bb.{" "}
-        {reason === "disabled"
-          ? "The Connect plugin is disabled, so remote access is off. Enable it, then come back here to get a pairing command that works from anywhere."
-          : "Set up remote access first, then come back here to get a pairing command that works from anywhere."}
+        machine that runs it, not to this server.{" "}
+        {REMOTE_ACCESS_NOT_CONFIGURED_MESSAGE}
       </p>
-      <div className="flex items-center gap-2">
-        <Button
-          asChild
-          size="sm"
-          variant="outline"
-          className="h-7 px-2.5 text-xs"
-        >
-          {reason === "disabled" ? (
-            <Link to={CONNECT_PLUGIN_ROUTE}>Enable the Connect plugin</Link>
-          ) : (
-            <Link to={REMOTE_ACCESS_ROUTE}>Set up remote access</Link>
-          )}
-        </Button>
-        <a
-          href="https://github.com/get-bb/bb/blob/main/docs/multiple-devices.md"
-          target="_blank"
-          rel="noreferrer"
-          className="text-xs text-subtle-foreground underline underline-offset-2"
-        >
-          Other options
-        </a>
-      </div>
     </div>
   );
 }
@@ -206,8 +106,8 @@ function AddMachineDialogContent({
     meta: { showErrorToast: false },
     mutationFn: async () => {
       const [join, machine] = await Promise.all([
-        sdk.hosts.createJoinCode(),
-        createConnectMachineCode(),
+        createLoomJoinCode(),
+        createLoomMachineCode(),
       ]);
       return { join, machine };
     },
@@ -240,16 +140,14 @@ function AddMachineDialogContent({
       : Math.min(joinCode.expiresAt, machineCode?.expiresAt ?? Infinity);
   const localOnlyServerUrl =
     serverUrl !== null && isLocalOnlyUrl(serverUrl) ? serverUrl : null;
+  // loom has no `connect` plugin, so a machine code is never issued. A
+  // local-only server URL therefore cannot be paired from another machine, and
+  // the dialog says so instead of presenting a command that cannot work.
   const unreachable =
-    (machineCodeResult?.kind === "unpaired" ||
-      machineCodeResult?.kind === "disabled") &&
-    localOnlyServerUrl !== null
-      ? { serverUrl: localOnlyServerUrl, reason: machineCodeResult.kind }
+    machineCodeResult?.kind === "unavailable" && localOnlyServerUrl !== null
+      ? { serverUrl: localOnlyServerUrl }
       : null;
-  const connectUnavailable =
-    machineCodeResult?.kind === "unavailable" && localOnlyServerUrl !== null;
-  const showCommand =
-    joinCode !== null && unreachable === null && !connectUnavailable;
+  const showCommand = joinCode !== null && unreachable === null;
 
   const [now, setNow] = useState(() => Date.now());
   const hasCountdown = showCommand && expiresAt !== null;
@@ -283,15 +181,13 @@ function AddMachineDialogContent({
         </DialogDescription>
       </DialogHeader>
       <div className="space-y-3">
-        {mintJoinCode.isError || connectUnavailable ? (
+        {mintJoinCode.isError ? (
           <div className="space-y-2">
             <p className="text-sm text-destructive">
-              {connectUnavailable
-                ? "Remote access isn't ready yet."
-                : getMutationErrorMessage({
-                    error: mintJoinCode.error,
-                    fallbackMessage: "Couldn't create a join code.",
-                  })}
+              {getMutationErrorMessage({
+                error: mintJoinCode.error,
+                fallbackMessage: "Couldn't create a join code.",
+              })}
             </p>
             <Button
               type="button"
@@ -303,10 +199,7 @@ function AddMachineDialogContent({
             </Button>
           </div>
         ) : unreachable !== null ? (
-          <UnreachableServerNotice
-            serverUrl={unreachable.serverUrl}
-            reason={unreachable.reason}
-          />
+          <UnreachableServerNotice serverUrl={unreachable.serverUrl} />
         ) : command !== null ? (
           <div
             data-add-machine-command

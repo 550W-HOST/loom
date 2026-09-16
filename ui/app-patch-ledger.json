@@ -1636,22 +1636,6 @@
     {
       "kind": "modify",
       "upstream": {
-        "path": "apps/app/src/components/dialogs/AddMachineDialog.tsx",
-        "sha256": "76bebc71582068741e9b6890ecaa72e80a9988ac37ee2e731f68ea065d06bf76",
-        "mode": "100644"
-      },
-      "local": {
-        "path": "apps/app/src/components/dialogs/AddMachineDialog.tsx",
-        "sha256": "1847e0461ca8c6731bc96bc15b5143872e665a225aab5f50f949446b36452e3f",
-        "mode": "100644"
-      },
-      "issue": "W-604",
-      "owner": "PuQing",
-      "reason": "Adapt pinned bb source to loom's browser-safe composition while preserving the composer-first shell, thread workspace, and Automations."
-    },
-    {
-      "kind": "modify",
-      "upstream": {
         "path": "apps/app/src/components/git-diff/GitDiffCardBody.tsx",
         "sha256": "041af61d04b43c38fff691bac7cab7d52a5e5c8a511585c6fe2af1a367e1a8d9",
         "mode": "100644"
@@ -2436,22 +2420,6 @@
     {
       "kind": "modify",
       "upstream": {
-        "path": "apps/app/src/lib/api-server.ts",
-        "sha256": "490bcc2a479184f750d5f7984190cfacceb47a074848862fcbcbf8c6e0bcdf5d",
-        "mode": "100644"
-      },
-      "local": {
-        "path": "apps/app/src/lib/api-server.ts",
-        "sha256": "8ac8e2637a340df9ddef18f7712ce9e5f7ffdc7c178f8205029bc774eef8d831",
-        "mode": "100644"
-      },
-      "issue": "W-604",
-      "owner": "PuQing",
-      "reason": "Adapt pinned bb source to loom's browser-safe composition while preserving the composer-first shell, thread workspace, and Automations."
-    },
-    {
-      "kind": "modify",
-      "upstream": {
         "path": "apps/app/src/lib/app-fixed-tab-navigation.tsx",
         "sha256": "96aa5bddac88b5192e6b01a1cf4d33a0409139f0d9b05e3133868bd87c53cd87",
         "mode": "100644"
@@ -2944,6 +2912,214 @@
       "issue": "W-604",
       "owner": "PuQing",
       "reason": "Adapt pinned bb source to loom's browser-safe composition while preserving the composer-first shell, thread workspace, and Automations."
+    },
+    {
+      "kind": "add",
+      "upstream": {
+        "path": null,
+        "sha256": null,
+        "mode": null
+      },
+      "local": {
+        "path": "apps/app/src/lib/loom-api-routes.ts",
+        "sha256": "c3c7b66e19644c247b6c86c13545dd8c8adbad50200db0a81f7e0f35323e8db2",
+        "mode": "100644"
+      },
+      "issue": "W-593",
+      "owner": "PuQing",
+      "reason": "Add the loom-native same-origin HTTP client, query/cache/router boundary, or shell bootstrap verification that W-593 owns."
+    },
+    {
+      "kind": "add",
+      "upstream": {
+        "path": null,
+        "sha256": null,
+        "mode": null
+      },
+      "local": {
+        "path": "apps/app/src/lib/loom-http.ts",
+        "sha256": "850a58911dc08a7a6f5d09907ffdd24d66393bb9e47816cc05b698d7eb9ab191",
+        "mode": "100644"
+      },
+      "issue": "W-593",
+      "owner": "PuQing",
+      "reason": "Add the loom-native same-origin HTTP client, query/cache/router boundary, or shell bootstrap verification that W-593 owns."
+    },
+    {
+      "kind": "add",
+      "upstream": {
+        "path": null,
+        "sha256": null,
+        "mode": null
+      },
+      "local": {
+        "path": "apps/app/src/lib/loom-machine-pairing.ts",
+        "sha256": "5178fecf851e7b4dfa16def8d25b919b29a4b9f5c7369fc67c5ade1d59799436",
+        "mode": "100644"
+      },
+      "issue": "W-593",
+      "owner": "PuQing",
+      "reason": "Add the loom-native same-origin HTTP client, query/cache/router boundary, or shell bootstrap verification that W-593 owns."
+    },
+    {
+      "kind": "add",
+      "upstream": {
+        "path": null,
+        "sha256": null,
+        "mode": null
+      },
+      "local": {
+        "path": "apps/app/src/lib/loom-native-routes.ts",
+        "sha256": "20cb523b10c0005bed15f4e63a5c845afbb427d984816fd7e9f8f2c529de52ef",
+        "mode": "100644"
+      },
+      "issue": "W-593",
+      "owner": "PuQing",
+      "reason": "Add the loom-native same-origin HTTP client, query/cache/router boundary, or shell bootstrap verification that W-593 owns."
+    },
+    {
+      "kind": "add",
+      "upstream": {
+        "path": null,
+        "sha256": null,
+        "mode": null
+      },
+      "local": {
+        "path": "apps/app/src/lib/loom-shell.ts",
+        "sha256": "877c8927f31e62f55c12f16ae82c6b4b927703ebc8e38cb76c40e19d051e28d2",
+        "mode": "100644"
+      },
+      "issue": "W-593",
+      "owner": "PuQing",
+      "reason": "Add the loom-native same-origin HTTP client, query/cache/router boundary, or shell bootstrap verification that W-593 owns."
+    },
+    {
+      "kind": "add",
+      "upstream": {
+        "path": null,
+        "sha256": null,
+        "mode": null
+      },
+      "local": {
+        "path": "apps/app/src/loom/LoomShellBoundary.test.tsx",
+        "sha256": "ce98b177f63896184941300b05cfe680b4f564c092137729ce8ae5d9c0f974d2",
+        "mode": "100644"
+      },
+      "issue": "W-593",
+      "owner": "PuQing",
+      "reason": "Add the loom-native same-origin HTTP client, query/cache/router boundary, or shell bootstrap verification that W-593 owns."
+    },
+    {
+      "kind": "add",
+      "upstream": {
+        "path": null,
+        "sha256": null,
+        "mode": null
+      },
+      "local": {
+        "path": "apps/app/src/loom/LoomShellBoundary.tsx",
+        "sha256": "6656a738b722a11197b42dd90f5fa8a196ea9c90ed6b6e32039caeac649cefa3",
+        "mode": "100644"
+      },
+      "issue": "W-593",
+      "owner": "PuQing",
+      "reason": "Add the loom-native same-origin HTTP client, query/cache/router boundary, or shell bootstrap verification that W-593 owns."
+    },
+    {
+      "kind": "add",
+      "upstream": {
+        "path": null,
+        "sha256": null,
+        "mode": null
+      },
+      "local": {
+        "path": "apps/app/src/loom/api-client.test.ts",
+        "sha256": "2d31f4566efa4ab1951f0208cc466b81efb3017ca069c89f91766613eb245d84",
+        "mode": "100644"
+      },
+      "issue": "W-593",
+      "owner": "PuQing",
+      "reason": "Add the loom-native same-origin HTTP client, query/cache/router boundary, or shell bootstrap verification that W-593 owns."
+    },
+    {
+      "kind": "add",
+      "upstream": {
+        "path": null,
+        "sha256": null,
+        "mode": null
+      },
+      "local": {
+        "path": "apps/app/src/loom/loom-native-boundaries.test.ts",
+        "sha256": "5c4695a96e857e5dfbb9dcf848baa2571d044bde5cc110d8fbf35dde424236c8",
+        "mode": "100644"
+      },
+      "issue": "W-593",
+      "owner": "PuQing",
+      "reason": "Add the loom-native same-origin HTTP client, query/cache/router boundary, or shell bootstrap verification that W-593 owns."
+    },
+    {
+      "kind": "add",
+      "upstream": {
+        "path": null,
+        "sha256": null,
+        "mode": null
+      },
+      "local": {
+        "path": "apps/app/src/loom/shell-bootstrap.test.tsx",
+        "sha256": "0e1fcdf59c20eef081d39e9e44ed74f8c5a638a4d7fe7532f07cf4a465ce9d99",
+        "mode": "100644"
+      },
+      "issue": "W-593",
+      "owner": "PuQing",
+      "reason": "Add the loom-native same-origin HTTP client, query/cache/router boundary, or shell bootstrap verification that W-593 owns."
+    },
+    {
+      "kind": "modify",
+      "upstream": {
+        "path": "apps/app/src/components/dialogs/AddMachineDialog.tsx",
+        "sha256": "76bebc71582068741e9b6890ecaa72e80a9988ac37ee2e731f68ea065d06bf76",
+        "mode": "100644"
+      },
+      "local": {
+        "path": "apps/app/src/components/dialogs/AddMachineDialog.tsx",
+        "sha256": "07549b595a3047a390bf7136cae617fac90d7fd8904735bc18d8d141ffd6392a",
+        "mode": "100644"
+      },
+      "issue": "W-593",
+      "owner": "PuQing",
+      "reason": "Adapt pinned bb source to the loom same-origin typed HTTP boundary, replacing the all-throwing apiClient and the generic plugin pairing path."
+    },
+    {
+      "kind": "modify",
+      "upstream": {
+        "path": "apps/app/src/lib/api-server.ts",
+        "sha256": "490bcc2a479184f750d5f7984190cfacceb47a074848862fcbcbf8c6e0bcdf5d",
+        "mode": "100644"
+      },
+      "local": {
+        "path": "apps/app/src/lib/api-server.ts",
+        "sha256": "b3f62ffcad137c3c2ff6a2e1671c1be1efe97e5f6b23e8516a1a7e1d5baff341",
+        "mode": "100644"
+      },
+      "issue": "W-593",
+      "owner": "PuQing",
+      "reason": "Adapt pinned bb source to the loom same-origin typed HTTP boundary, replacing the all-throwing apiClient and the generic plugin pairing path."
+    },
+    {
+      "kind": "modify",
+      "upstream": {
+        "path": "apps/app/src/main.tsx",
+        "sha256": "f0d24345c49680dae06baea5c96ed91710ba2d0235e47e6b3a717e3f4c0afb8d",
+        "mode": "100644"
+      },
+      "local": {
+        "path": "apps/app/src/main.tsx",
+        "sha256": "59689827082a73853db50daa123894365fb42ab1f39cebeddaf9798e22a30cf7",
+        "mode": "100644"
+      },
+      "issue": "W-593",
+      "owner": "PuQing",
+      "reason": "Adapt pinned bb source to the loom same-origin typed HTTP boundary, replacing the all-throwing apiClient and the generic plugin pairing path."
     }
   ]
 }

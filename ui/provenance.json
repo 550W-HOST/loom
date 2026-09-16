@@ -8623,8 +8623,8 @@
       "snapshot": {
         "path": "apps/app",
         "tree": {
-          "files": 1444,
-          "sha256": "97a11a43380f26502f272e20858bdbdeefc1d9fd0344c6382309e5451a480433"
+          "files": 1454,
+          "sha256": "64e91de72246dbd1719769f05204faae9325344f0a437c351b50621d48c1f039"
         },
         "files": [
           {
@@ -9329,8 +9329,8 @@
           },
           {
             "path": "src/components/dialogs/AddMachineDialog.tsx",
-            "bytes": 12937,
-            "sha256": "1847e0461ca8c6731bc96bc15b5143872e665a225aab5f50f949446b36452e3f"
+            "bytes": 9857,
+            "sha256": "07549b595a3047a390bf7136cae617fac90d7fd8904735bc18d8d141ffd6392a"
           },
           {
             "path": "src/components/dialogs/ConfirmDeleteDialog.tsx",
@@ -14134,8 +14134,8 @@
           },
           {
             "path": "src/lib/api-server.ts",
-            "bytes": 1021,
-            "sha256": "8ac8e2637a340df9ddef18f7712ce9e5f7ffdc7c178f8205029bc774eef8d831"
+            "bytes": 6524,
+            "sha256": "b3f62ffcad137c3c2ff6a2e1671c1be1efe97e5f6b23e8516a1a7e1d5baff341"
           },
           {
             "path": "src/lib/api.ts",
@@ -14506,6 +14506,31 @@
             "path": "src/lib/localhost-link-rewrite-preference.ts",
             "bytes": 532,
             "sha256": "61a6f12ec3760a1f777a570bd567568dbca4c285e69576981909b607128aa017"
+          },
+          {
+            "path": "src/lib/loom-api-routes.ts",
+            "bytes": 3495,
+            "sha256": "c3c7b66e19644c247b6c86c13545dd8c8adbad50200db0a81f7e0f35323e8db2"
+          },
+          {
+            "path": "src/lib/loom-http.ts",
+            "bytes": 8395,
+            "sha256": "850a58911dc08a7a6f5d09907ffdd24d66393bb9e47816cc05b698d7eb9ab191"
+          },
+          {
+            "path": "src/lib/loom-machine-pairing.ts",
+            "bytes": 1873,
+            "sha256": "5178fecf851e7b4dfa16def8d25b919b29a4b9f5c7369fc67c5ade1d59799436"
+          },
+          {
+            "path": "src/lib/loom-native-routes.ts",
+            "bytes": 1268,
+            "sha256": "20cb523b10c0005bed15f4e63a5c845afbb427d984816fd7e9f8f2c529de52ef"
+          },
+          {
+            "path": "src/lib/loom-shell.ts",
+            "bytes": 3610,
+            "sha256": "877c8927f31e62f55c12f16ae82c6b4b927703ebc8e38cb76c40e19d051e28d2"
           },
           {
             "path": "src/lib/loopback-hostname.test.ts",
@@ -15293,9 +15318,29 @@
             "sha256": "d54d90917a98648f693f842202dfae2c7492f47da06a55f70f42ee3f402dfd6a"
           },
           {
+            "path": "src/loom/LoomShellBoundary.test.tsx",
+            "bytes": 3096,
+            "sha256": "ce98b177f63896184941300b05cfe680b4f564c092137729ce8ae5d9c0f974d2"
+          },
+          {
+            "path": "src/loom/LoomShellBoundary.tsx",
+            "bytes": 3366,
+            "sha256": "6656a738b722a11197b42dd90f5fa8a196ea9c90ed6b6e32039caeac649cefa3"
+          },
+          {
+            "path": "src/loom/api-client.test.ts",
+            "bytes": 7005,
+            "sha256": "2d31f4566efa4ab1951f0208cc466b81efb3017ca069c89f91766613eb245d84"
+          },
+          {
             "path": "src/loom/browser-boundaries.test.ts",
             "bytes": 3094,
             "sha256": "0e668ddaaa82d69123a77bdfcfd985bc1e602293de2273df5d17720e80eb5e68"
+          },
+          {
+            "path": "src/loom/loom-native-boundaries.test.ts",
+            "bytes": 3544,
+            "sha256": "5c4695a96e857e5dfbb9dcf848baa2571d044bde5cc110d8fbf35dde424236c8"
           },
           {
             "path": "src/loom/product-composition.test.ts",
@@ -15303,9 +15348,14 @@
             "sha256": "73cdbc4c7ffe5fd94ce81434237c978aa34c43f1dcac99cb9e5a462e44b8a68a"
           },
           {
+            "path": "src/loom/shell-bootstrap.test.tsx",
+            "bytes": 5194,
+            "sha256": "0e1fcdf59c20eef081d39e9e44ed74f8c5a638a4d7fe7532f07cf4a465ce9d99"
+          },
+          {
             "path": "src/main.tsx",
-            "bytes": 1649,
-            "sha256": "f0d24345c49680dae06baea5c96ed91710ba2d0235e47e6b3a717e3f4c0afb8d"
+            "bytes": 1776,
+            "sha256": "59689827082a73853db50daa123894365fb42ab1f39cebeddaf9798e22a30cf7"
           },
           {
             "path": "src/precompress-app-dist.test.ts",
