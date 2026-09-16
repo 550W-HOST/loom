@@ -2,7 +2,10 @@ import fs from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { LOOM_NATIVE_ROUTES } from "@/lib/loom-native-routes";
-import { createLoomMachineCode } from "@/lib/loom-machine-pairing";
+import {
+  LOOM_MACHINE_INSTALL_AVAILABLE,
+  resolveLoomPairingState,
+} from "@/lib/loom-machine-pairing";
 
 const appRoot = path.resolve(import.meta.dirname, "../..");
 
@@ -43,13 +46,18 @@ describe("loom-native boundaries", () => {
     }
   });
 
-  it("reports machine pairing as unavailable instead of faking a code", async () => {
-    // loom has no `connect` plugin. Reporting `unavailable` keeps the dialog
-    // honest: it shows the join code and says remote access is not configured,
-    // rather than linking to a plugin page that no longer exists.
-    await expect(createLoomMachineCode()).resolves.toEqual({
-      kind: "unavailable",
+  it("reports the install step as unavailable instead of faking a command", () => {
+    // loom serves no `/install.sh` (only `/install/version` and
+    // `/install/loom-daemon`) and `deploy/install.sh` takes a `<server-key>`,
+    // not `--join-code`. Saying so is the only honest answer this phase allows.
+    expect(LOOM_MACHINE_INSTALL_AVAILABLE).toBe(false);
+    const state = resolveLoomPairingState({
+      joinCode: "jc",
+      hostId: "h",
+      expiresAt: 1,
     });
+    expect(state.kind).toBe("unavailable");
+    expect(JSON.stringify(state)).not.toContain("/install.sh");
   });
 
   it("does not reach the generic plugin registry from product source", () => {
@@ -76,6 +84,15 @@ describe("loom-native boundaries", () => {
 
     const pairing = read("src/lib/loom-machine-pairing.ts");
     expect(pairing).toContain('"hosts.createJoinCode"');
+    // The installer is mentioned only in the comment that explains why no
+    // command is produced. Any *code* that builds one would need these.
+    const pairingCode = pairing
+      .split("\n")
+      .filter((line) => !line.trimStart().startsWith("*") && !line.trimStart().startsWith("//"))
+      .join("\n");
+    expect(pairingCode).not.toContain("install.sh");
+    expect(pairingCode).not.toContain("sh -s --");
+    expect(pairingCode).not.toContain("curl ");
   });
 
   it("never invents realtime to stand in for HTTP", () => {

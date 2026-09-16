@@ -2,23 +2,21 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-  buildLoomPairingCommand,
   createLoomJoinCode,
-  createLoomMachineCode,
-  isPairingServerUrlUnreachable,
-  resolvePairingServerUrl,
+  LOOM_MACHINE_INSTALL_AVAILABLE,
+  LOOM_MACHINE_INSTALL_UNAVAILABLE_REASON,
+  resolveLoomPairingState,
 } from "@/lib/loom-machine-pairing";
 import { useHosts } from "@/hooks/queries/host-queries";
 
 /**
- * The pairing and host-list workflows this issue changed, exercised against the
- * same-origin transport.
+ * The pairing and host-list workflows this issue changed.
  *
- * The ported `AddMachineDialog.test.tsx` cannot run here: it mocks the removed
- * `@/lib/sdk` plugin surface and imports `@bb/test-helpers`, which this
- * workspace does not have. These tests are in the collected set, so a
- * regression in the paths this issue touched fails CI rather than sitting in an
- * uncollected file.
+ * loom serves no `/install.sh` (only `/install/version` and
+ * `/install/loom-daemon`) and `deploy/install.sh` requires root and a
+ * `<server-key>`, so this phase cannot produce a working install command. The
+ * tests therefore assert the *absence* of one: an unusable command must not be
+ * representable, not merely discouraged.
  */
 
 function jsonResponse(body: unknown, status = 200): Response {
@@ -34,77 +32,34 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe("loom machine pairing", () => {
-  it("reports the machine code as unavailable rather than faking one", async () => {
-    await expect(createLoomMachineCode()).resolves.toEqual({
-      kind: "unavailable",
+describe("loom machine pairing fails closed", () => {
+  it("reports the install step as unavailable", () => {
+    expect(LOOM_MACHINE_INSTALL_AVAILABLE).toBe(false);
+    const state = resolveLoomPairingState({
+      joinCode: "jc_1",
+      hostId: "h1",
+      expiresAt: 1,
     });
+    expect(state.kind).toBe("unavailable");
+    expect(state.reason).toBe(LOOM_MACHINE_INSTALL_UNAVAILABLE_REASON);
+    // The reason names the real situation rather than a generic failure.
+    expect(state.reason).toMatch(/installer|install/u);
   });
 
-  it("derives the address from the app origin when the server sends an empty one", () => {
-    // loom's `system.config` answers `serverUrl: ""`. Taking that at face value
-    // produced `... --server ` — a command that looks runnable and cannot work.
-    expect(resolvePairingServerUrl("", "https://loom.example.com")).toBe(
-      "https://loom.example.com",
-    );
-    expect(resolvePairingServerUrl(null, "https://loom.example.com")).toBe(
-      "https://loom.example.com",
-    );
-    // A real configured URL still wins.
-    expect(
-      resolvePairingServerUrl("https://public.example.com", "http://localhost"),
-    ).toBe("https://public.example.com");
-    // A trailing slash is trimmed so the path does not double up.
-    expect(
-      resolvePairingServerUrl("https://public.example.com/", "http://localhost"),
-    ).toBe("https://public.example.com");
-  });
-
-  it("returns no address when neither source is a usable URL", () => {
-    expect(resolvePairingServerUrl("", null)).toBeNull();
-    expect(resolvePairingServerUrl("not-a-url", "")).toBeNull();
-  });
-
-  it("builds a runnable command for a reachable address", () => {
-    const result = buildLoomPairingCommand({
-      joinCode: "join-123",
-      hostId: "host-1",
-      configuredServerUrl: "",
-      origin: "https://loom.example.com",
+  it("has no state that can carry a command", () => {
+    // If a `ready`/`command` variant ever comes back, this stops compiling and
+    // forces a deliberate decision about the installer.
+    const state = resolveLoomPairingState({
+      joinCode: "jc_1",
+      hostId: "h1",
+      expiresAt: 1,
     });
-    expect(result.kind).toBe("ready");
-    if (result.kind !== "ready") throw new Error("expected ready");
-    expect(result.serverUrl).toBe("https://loom.example.com");
-    expect(result.command).toContain("--join-code join-123");
-    expect(result.command).toContain("--host-id host-1");
-    expect(result.command).toContain("--server https://loom.example.com");
-    // The exact bug: no empty `--server` value anywhere in the command.
-    expect(result.command).not.toMatch(/--server\s+($|\|)/u);
-    expect(result.command).toContain(
-      "https://loom.example.com/install.sh",
-    );
+    expect("command" in state).toBe(false);
+    expect(JSON.stringify(state)).not.toContain("/install.sh");
+    expect(JSON.stringify(state)).not.toContain("curl");
   });
 
-  it("reports a local-only address as unreachable instead of printing a command", () => {
-    for (const local of [
-      "http://localhost:38886",
-      "http://127.0.0.1:38886",
-      "http://[::1]:38886",
-      "http://0.0.0.0:38886",
-    ]) {
-      expect(isPairingServerUrlUnreachable(local)).toBe(true);
-      const result = buildLoomPairingCommand({
-        joinCode: "join-123",
-        hostId: "host-1",
-        configuredServerUrl: local,
-        origin: local,
-      });
-      expect(result.kind).toBe("unreachable");
-      expect("command" in result).toBe(false);
-    }
-  });
-
-  it("mints a join code through the POST contract route", async () => {
+  it("still mints a join code through the POST contract route", async () => {
     const fetchMock = vi.fn(async () =>
       jsonResponse({ joinCode: "abc", hostId: "h1", expiresAt: 999 }, 201),
     );
@@ -117,14 +72,18 @@ describe("loom machine pairing", () => {
     });
 
     const [url, init] = fetchMock.mock.calls[0] as unknown as [URL, RequestInit];
-    expect(String(url)).toBe(`${window.location.origin}/api/v1/hosts/join-codes`);
+    expect(String(url)).toBe(
+      `${window.location.origin}/api/v1/hosts/join-codes`,
+    );
     expect(init.method).toBe("POST");
   });
 
   it("rejects a malformed join-code response instead of trusting it", async () => {
     vi.stubGlobal(
       "fetch",
-      vi.fn(async () => jsonResponse({ joinCode: "", hostId: "h1", expiresAt: 1 }, 201)),
+      vi.fn(async () =>
+        jsonResponse({ joinCode: "", hostId: "h1", expiresAt: 1 }, 201),
+      ),
     );
     await expect(createLoomJoinCode()).rejects.toThrow();
   });
@@ -171,11 +130,11 @@ describe("loom host list", () => {
   });
 
   it("surfaces a host-list error instead of waiting forever", async () => {
-    // The previous implementation went through a fail-closed SDK stub, so the
-    // Add Machine dialog's connection check never resolved either way.
     vi.stubGlobal(
       "fetch",
-      vi.fn(async () => jsonResponse({ code: "boom", message: "hosts down" }, 503)),
+      vi.fn(async () =>
+        jsonResponse({ code: "boom", message: "hosts down" }, 503),
+      ),
     );
 
     renderHosts();
