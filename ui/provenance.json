@@ -8619,12 +8619,12 @@
       "upstreamPath": "apps/app",
       "localPath": "apps/app",
       "disposition": "source-port",
-      "gitTree": "9de9f86bf2b8df187317327e225903a3c7e03da2",
+      "gitTree": "d7c163d165a99768f68eda2d770f229270ba68bf",
       "snapshot": {
         "path": "apps/app",
         "tree": {
           "files": 1464,
-          "sha256": "bb4cf85a99c8cc934c48063648249ac92a1ccfdd1da1c146f6a63088ef99357c"
+          "sha256": "e73d36f723c2aa452be26891fa4392de665c33b5a1a4546a64107cbbbf69d37b"
         },
         "files": [
           {
@@ -14129,13 +14129,13 @@
           },
           {
             "path": "src/lib/api-server.ts",
-            "bytes": 7471,
-            "sha256": "04fac96fb52b930375be66ea1c629d35337a0d4686c29e2bb050fa664b9c86d8"
+            "bytes": 7502,
+            "sha256": "a4b7eb4a6bcea20859b0b37c2541f5cc3fb3ba51a42edd20e8aead7707e48571"
           },
           {
             "path": "src/lib/api-server.type-tests.ts",
-            "bytes": 6936,
-            "sha256": "7c6f1ece7f0f193aa1877cc7fcca690e7c3a2033ea108bb6997871cfab8e7cc6"
+            "bytes": 7798,
+            "sha256": "75f9d0d8f35cb45eda8ca87fda18b317462a75d6a18171cb48e49bebe3a08802"
           },
           {
             "path": "src/lib/api.ts",
@@ -14514,13 +14514,13 @@
           },
           {
             "path": "src/lib/loom-api-args.ts",
-            "bytes": 4596,
-            "sha256": "7d270bbe54fe2684446ebcef42bd7b5086f0848b2a4241938c8ebcae371205b4"
+            "bytes": 5206,
+            "sha256": "3a5a650b22bb419d44fc70065080688db292344cb0f3bd661f3ee8ab3f613338"
           },
           {
             "path": "src/lib/loom-api-request-spec.ts",
-            "bytes": 5302,
-            "sha256": "faf30079d68aaf1cc9de633a28bb592e6e5fc0b5b946939323a4233950262f78"
+            "bytes": 5377,
+            "sha256": "7be161750dac159cc4a4dd893d2584d28e1d79f57ad00e0b1c8694d451721d1b"
           },
           {
             "path": "src/lib/loom-api-routes.ts",
@@ -14529,8 +14529,8 @@
           },
           {
             "path": "src/lib/loom-http.ts",
-            "bytes": 15567,
-            "sha256": "725da1ed1ce82ef3e4af2633a7042528d490c827d56cfcf85c61bc9e034661b3"
+            "bytes": 16245,
+            "sha256": "9b38c58b12b3e368ad3316ff22138c6fa6786277f4dd4d80bdc85d906452de3e"
           },
           {
             "path": "src/lib/loom-machine-pairing.ts",
@@ -15354,8 +15354,8 @@
           },
           {
             "path": "src/loom/api-client.test.ts",
-            "bytes": 19793,
-            "sha256": "f0f512c08bb7ee2e2081953a8b0fa79c9dbe48a3b72ffded503709c8e6072db4"
+            "bytes": 20933,
+            "sha256": "b1fb3dfbcb1ae72331145960884cab1d8c73dad9e3ea01657e8d6b4a84ca9ce9"
           },
           {
             "path": "src/loom/browser-boundaries.test.ts",

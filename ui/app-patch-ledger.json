@@ -26,7 +26,7 @@
       },
       "local": {
         "path": "apps/app/src/lib/api-server.type-tests.ts",
-        "sha256": "7c6f1ece7f0f193aa1877cc7fcca690e7c3a2033ea108bb6997871cfab8e7cc6",
+        "sha256": "75f9d0d8f35cb45eda8ca87fda18b317462a75d6a18171cb48e49bebe3a08802",
         "mode": "100644"
       },
       "issue": "W-593",
@@ -58,7 +58,7 @@
       },
       "local": {
         "path": "apps/app/src/lib/loom-api-args.ts",
-        "sha256": "7d270bbe54fe2684446ebcef42bd7b5086f0848b2a4241938c8ebcae371205b4",
+        "sha256": "3a5a650b22bb419d44fc70065080688db292344cb0f3bd661f3ee8ab3f613338",
         "mode": "100644"
       },
       "issue": "W-593",
@@ -74,7 +74,7 @@
       },
       "local": {
         "path": "apps/app/src/lib/loom-api-request-spec.ts",
-        "sha256": "faf30079d68aaf1cc9de633a28bb592e6e5fc0b5b946939323a4233950262f78",
+        "sha256": "7be161750dac159cc4a4dd893d2584d28e1d79f57ad00e0b1c8694d451721d1b",
         "mode": "100644"
       },
       "issue": "W-593",
@@ -106,7 +106,7 @@
       },
       "local": {
         "path": "apps/app/src/lib/loom-http.ts",
-        "sha256": "725da1ed1ce82ef3e4af2633a7042528d490c827d56cfcf85c61bc9e034661b3",
+        "sha256": "9b38c58b12b3e368ad3316ff22138c6fa6786277f4dd4d80bdc85d906452de3e",
         "mode": "100644"
       },
       "issue": "W-593",
@@ -218,7 +218,7 @@
       },
       "local": {
         "path": "apps/app/src/loom/api-client.test.ts",
-        "sha256": "f0f512c08bb7ee2e2081953a8b0fa79c9dbe48a3b72ffded503709c8e6072db4",
+        "sha256": "b1fb3dfbcb1ae72331145960884cab1d8c73dad9e3ea01657e8d6b4a84ca9ce9",
         "mode": "100644"
       },
       "issue": "W-593",
@@ -2906,7 +2906,7 @@
       },
       "local": {
         "path": "apps/app/src/lib/api-server.ts",
-        "sha256": "04fac96fb52b930375be66ea1c629d35337a0d4686c29e2bb050fa664b9c86d8",
+        "sha256": "a4b7eb4a6bcea20859b0b37c2541f5cc3fb3ba51a42edd20e8aead7707e48571",
         "mode": "100644"
       },
       "issue": "W-604+W-593",
