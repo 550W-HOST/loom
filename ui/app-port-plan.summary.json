@@ -1,16 +1,16 @@
 {
   "format": "loom.app-port-plan-summary/v2",
   "plan": "ui/app-port-plan.json",
-  "planBytes": 1955147,
+  "planBytes": 1956097,
   "source": {
     "root": "apps/app/src",
-    "trackedFiles": 1371,
+    "trackedFiles": 1372,
     "disposition": "source-port",
     "baselineGitTree": "8ba6eb6f3d2f67f8ba2703f1fd0c123f788c6d52",
-    "localGitTree": "fc8964ee9c5da2d1b4448ca8da7ad683d3d8005e"
+    "localGitTree": "1e6d18d60901e35a540b6dc812153288d18f5af6"
   },
   "summary": {
-    "nodes": 1371,
+    "nodes": 1372,
     "runtimeReachable": 681,
     "runtimeCompileReachable": 692,
     "runtimeEmittedReachable": 681,
@@ -18,10 +18,10 @@
       "retain-verbatim": 641,
       "adapt-boundary": 27,
       "delete-unsupported": 0,
-      "verification-only": 675,
+      "verification-only": 676,
       "asset-build": 28
     },
-    "edges": 8203,
+    "edges": 8207,
     "blockers": {
       "runtime": 3,
       "test": 222,
@@ -34,7 +34,7 @@
     "retain-verbatim": 641,
     "adapt-boundary": 27,
     "delete-unsupported": 0,
-    "verification-only": 675,
+    "verification-only": 676,
     "asset-build": 28
   },
   "exceptions": {
@@ -3298,6 +3298,11 @@
         "reasonCode": "test-or-story-root"
       },
       {
+        "path": "src/loom/retry-classification.test.ts",
+        "disposition": "verification-only",
+        "reasonCode": "test-or-story-root"
+      },
+      {
         "path": "src/loom/shell-bootstrap.test.tsx",
         "disposition": "verification-only",
         "reasonCode": "test-or-story-root"
@@ -3712,22 +3717,22 @@
     }
   },
   "compilerConsistency": {
-    "compilerSpecifiers": 8262,
-    "graphSpecifiers": 8262,
+    "compilerSpecifiers": 8266,
+    "graphSpecifiers": 8266,
     "missing": [],
     "extra": [],
     "preProcessFileParity": {
-      "compilerLiteralSpecifiers": 8261,
-      "preProcessFileSpecifiers": 8261,
+      "compilerLiteralSpecifiers": 8265,
+      "preProcessFileSpecifiers": 8265,
       "missing": [],
       "extra": []
     }
   },
   "parsers": {
     "typescript": {
-      "files": 1364,
-      "specifiers": 8262,
-      "preProcessFileSpecifiers": 8261
+      "files": 1365,
+      "specifiers": 8266,
+      "preProcessFileSpecifiers": 8265
     },
     "css": {
       "files": 4,
@@ -3739,18 +3744,18 @@
     }
   },
   "batchCoverage": {
-    "expected": 1371,
-    "assigned": 1371,
+    "expected": 1372,
+    "assigned": 1372,
     "missing": [],
     "duplicates": [],
-    "crossStageEdges": 2948,
+    "crossStageEdges": 2951,
     "missingCrossStageEdges": 0,
-    "crossChunkEdges": 2948,
-    "crossChunkOccurrences": 2961,
-    "crossIssueEdges": 1341,
-    "crossIssueOccurrences": 1348,
-    "crossIssueLogicalEdges": 1332,
-    "crossIssueLogicalOccurrences": 1339,
+    "crossChunkEdges": 2951,
+    "crossChunkOccurrences": 2964,
+    "crossIssueEdges": 1344,
+    "crossIssueOccurrences": 1351,
+    "crossIssueLogicalEdges": 1335,
+    "crossIssueLogicalOccurrences": 1342,
     "missingCrossIssueBatchDependencies": 0
   },
   "batchPlan": {
@@ -3785,10 +3790,10 @@
         "cyclic": true
       }
     ],
-    "crossIssueEdges": 1341,
-    "crossIssueLogicalEdges": 1332,
-    "crossIssueOccurrences": 1348,
-    "crossIssueLogicalOccurrences": 1339,
+    "crossIssueEdges": 1344,
+    "crossIssueLogicalEdges": 1335,
+    "crossIssueOccurrences": 1351,
+    "crossIssueLogicalOccurrences": 1342,
     "crossIssueCycles": 0,
     "crossStageConflict": true
   },
@@ -4289,11 +4294,11 @@
         "id": "W-604-06",
         "kind": "reviewChunk",
         "executable": false,
-        "fileCount": 75,
+        "fileCount": 76,
         "dispositions": [
           "verification-only"
         ],
-        "dependencyCount": 149,
+        "dependencyCount": 151,
         "dependsOnBatchIds": [
           "W-603-01",
           "W-603-02",
@@ -5904,11 +5909,11 @@
     {
       "name": "vitest",
       "declaredAs": null,
-      "actualImports": 518,
+      "actualImports": 519,
       "runtimeImports": 0,
       "runtimeValueImports": 0,
       "runtimeTypeImports": 0,
-      "verificationValueImports": 517,
+      "verificationValueImports": 518,
       "verificationTypeImports": 0,
       "decision": "reuse",
       "reasonCode": "declared-external-package",

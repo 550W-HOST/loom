@@ -8619,12 +8619,12 @@
       "upstreamPath": "apps/app",
       "localPath": "apps/app",
       "disposition": "source-port",
-      "gitTree": "fc8964ee9c5da2d1b4448ca8da7ad683d3d8005e",
+      "gitTree": "1e6d18d60901e35a540b6dc812153288d18f5af6",
       "snapshot": {
         "path": "apps/app",
         "tree": {
-          "files": 1462,
-          "sha256": "aebc7f41fb3bda9be3d83a8728cafece00f8e7988eadaa32a99acb23210814ec"
+          "files": 1463,
+          "sha256": "db2940932bdd3a311798293b375d61698559a39f4b4bcfe71afc7962314b6ace"
         },
         "files": [
           {
@@ -9324,8 +9324,8 @@
           },
           {
             "path": "src/components/dialogs/AddMachineDialog.tsx",
-            "bytes": 8545,
-            "sha256": "789a3e58c1f4f89f0da770b5c5fb64fb212ce576b704897155e1503e9ec277d9"
+            "bytes": 8555,
+            "sha256": "4d5cc2b53fc20d8e2275c3a02aa06be6cbcb22204cb326c14780cd85575bf3be"
           },
           {
             "path": "src/components/dialogs/ConfirmDeleteDialog.tsx",
@@ -13164,8 +13164,8 @@
           },
           {
             "path": "src/components/ui/theme.css",
-            "bytes": 43425,
-            "sha256": "a29a66b6c0acd0e1556fbe6b57e76a18b062a8855fc42356c8a6f2caee39f0da"
+            "bytes": 43428,
+            "sha256": "de11312e467c7b3356553b09dd3f769cc1be4d02ff8dcddecda7509878b3e2e7"
           },
           {
             "path": "src/components/ui/theme.stories.tsx",
@@ -13629,8 +13629,8 @@
           },
           {
             "path": "src/hooks/queries/query-helpers.test.ts",
-            "bytes": 17723,
-            "sha256": "a405962237dee32f9aca3c75214c52005fc07d8cb39ace98d2b1af4c5d5b9e9b"
+            "bytes": 17854,
+            "sha256": "290f53d19c0f14fe036f76528e4ae77691a8c8a01d11af634605f1546f5903f1"
           },
           {
             "path": "src/hooks/queries/query-helpers.ts",
@@ -15344,8 +15344,8 @@
           },
           {
             "path": "src/loom/add-machine-workflow.test.tsx",
-            "bytes": 5827,
-            "sha256": "d13d161ba28593f12af2bf4e511fb60a467195d87c4ad496f7fe8276f728fca8"
+            "bytes": 5633,
+            "sha256": "93e41729cb69efa8694c7de27e33d558f78cc22f222d319102ba00d956efbfa3"
           },
           {
             "path": "src/loom/api-client.test.ts",
@@ -15364,18 +15364,23 @@
           },
           {
             "path": "src/loom/loom-native-boundaries.test.ts",
-            "bytes": 3544,
-            "sha256": "5c4695a96e857e5dfbb9dcf848baa2571d044bde5cc110d8fbf35dde424236c8"
+            "bytes": 4229,
+            "sha256": "eab83b1fb94f41d3bcc9fbd18e5c426e099a033fa11d3df90c8c8ad44810c6f4"
           },
           {
             "path": "src/loom/machine-pairing.test.tsx",
-            "bytes": 6361,
-            "sha256": "4dc0e8279fb9eb291d3e355558f440706299d6059bd1822e30722028518bb07a"
+            "bytes": 4493,
+            "sha256": "b854688f3451d20ee45c79de863e284f104a8851f55bdeace087d054837421b1"
           },
           {
             "path": "src/loom/product-composition.test.ts",
             "bytes": 3237,
             "sha256": "73cdbc4c7ffe5fd94ce81434237c978aa34c43f1dcac99cb9e5a462e44b8a68a"
+          },
+          {
+            "path": "src/loom/retry-classification.test.ts",
+            "bytes": 3306,
+            "sha256": "607df67ebb3ff64d980e261fd4ec41dfe182aa0437f14856c290528a06867922"
           },
           {
             "path": "src/loom/shell-bootstrap.test.tsx",

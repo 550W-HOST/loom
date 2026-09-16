@@ -186,7 +186,7 @@
       },
       "local": {
         "path": "apps/app/src/loom/add-machine-workflow.test.tsx",
-        "sha256": "d13d161ba28593f12af2bf4e511fb60a467195d87c4ad496f7fe8276f728fca8",
+        "sha256": "93e41729cb69efa8694c7de27e33d558f78cc22f222d319102ba00d956efbfa3",
         "mode": "100644"
       },
       "issue": "W-593",
@@ -250,7 +250,7 @@
       },
       "local": {
         "path": "apps/app/src/loom/loom-native-boundaries.test.ts",
-        "sha256": "5c4695a96e857e5dfbb9dcf848baa2571d044bde5cc110d8fbf35dde424236c8",
+        "sha256": "eab83b1fb94f41d3bcc9fbd18e5c426e099a033fa11d3df90c8c8ad44810c6f4",
         "mode": "100644"
       },
       "issue": "W-593",
@@ -298,7 +298,7 @@
       },
       "local": {
         "path": "apps/app/src/loom/machine-pairing.test.tsx",
-        "sha256": "4dc0e8279fb9eb291d3e355558f440706299d6059bd1822e30722028518bb07a",
+        "sha256": "b854688f3451d20ee45c79de863e284f104a8851f55bdeace087d054837421b1",
         "mode": "100644"
       },
       "issue": "W-593",
@@ -320,6 +320,22 @@
       "issue": "W-604",
       "owner": "PuQing",
       "reason": "Add a loom-owned browser boundary, Automations route, or focused product-composition verification."
+    },
+    {
+      "kind": "add",
+      "upstream": {
+        "path": null,
+        "sha256": null,
+        "mode": null
+      },
+      "local": {
+        "path": "apps/app/src/loom/retry-classification.test.ts",
+        "sha256": "607df67ebb3ff64d980e261fd4ec41dfe182aa0437f14856c290528a06867922",
+        "mode": "100644"
+      },
+      "issue": "W-593",
+      "owner": "PuQing",
+      "reason": "Add or adapt the loom-native same-origin HTTP client, typed request spec, query/cache/router boundary, or product-composition fix that W-593 owns."
     },
     {
       "kind": "add",
@@ -1962,7 +1978,7 @@
       },
       "local": {
         "path": "apps/app/src/components/dialogs/AddMachineDialog.tsx",
-        "sha256": "789a3e58c1f4f89f0da770b5c5fb64fb212ce576b704897155e1503e9ec277d9",
+        "sha256": "4d5cc2b53fc20d8e2275c3a02aa06be6cbcb22204cb326c14780cd85575bf3be",
         "mode": "100644"
       },
       "issue": "W-604+W-593",
@@ -2628,6 +2644,22 @@
     {
       "kind": "modify",
       "upstream": {
+        "path": "apps/app/src/components/ui/theme.css",
+        "sha256": "a29a66b6c0acd0e1556fbe6b57e76a18b062a8855fc42356c8a6f2caee39f0da",
+        "mode": "100644"
+      },
+      "local": {
+        "path": "apps/app/src/components/ui/theme.css",
+        "sha256": "de11312e467c7b3356553b09dd3f769cc1be4d02ff8dcddecda7509878b3e2e7",
+        "mode": "100644"
+      },
+      "issue": "W-593",
+      "owner": "PuQing",
+      "reason": "Add or adapt the loom-native same-origin HTTP client, typed request spec, query/cache/router boundary, or product-composition fix that W-593 owns."
+    },
+    {
+      "kind": "modify",
+      "upstream": {
         "path": "apps/app/src/hooks/cache-owners/realtime-cache-registry.ts",
         "sha256": "f8474009e5a4e9b72f3c31cb7fabeb629d540401306fef8e8cc18dd52cab347f",
         "mode": "100644"
@@ -2656,6 +2688,22 @@
       "issue": "W-593",
       "owner": "PuQing",
       "reason": "Add the loom-native same-origin HTTP client, typed request spec, query/cache/router boundary, or shell verification that W-593 owns."
+    },
+    {
+      "kind": "modify",
+      "upstream": {
+        "path": "apps/app/src/hooks/queries/query-helpers.test.ts",
+        "sha256": "a405962237dee32f9aca3c75214c52005fc07d8cb39ace98d2b1af4c5d5b9e9b",
+        "mode": "100644"
+      },
+      "local": {
+        "path": "apps/app/src/hooks/queries/query-helpers.test.ts",
+        "sha256": "290f53d19c0f14fe036f76528e4ae77691a8c8a01d11af634605f1546f5903f1",
+        "mode": "100644"
+      },
+      "issue": "W-593",
+      "owner": "PuQing",
+      "reason": "Add or adapt the loom-native same-origin HTTP client, typed request spec, query/cache/router boundary, or product-composition fix that W-593 owns."
     },
     {
       "kind": "modify",
