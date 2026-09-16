@@ -1,38 +1,40 @@
 {
-  "format": "loom.app-port-plan-summary/v1",
+  "format": "loom.app-port-plan-summary/v2",
   "plan": "ui/app-port-plan.json",
-  "planBytes": 1946019,
+  "planBytes": 1942585,
   "source": {
     "root": "apps/app/src",
-    "trackedFiles": 1437,
-    "exactGitTree": "8ba6eb6f3d2f67f8ba2703f1fd0c123f788c6d52"
+    "trackedFiles": 1354,
+    "disposition": "source-port",
+    "baselineGitTree": "8ba6eb6f3d2f67f8ba2703f1fd0c123f788c6d52",
+    "localGitTree": "8fc172b52213f3a34539cb8e39d6a9b6a1096bff"
   },
   "summary": {
-    "nodes": 1437,
-    "runtimeReachable": 796,
-    "runtimeCompileReachable": 807,
-    "runtimeEmittedReachable": 796,
+    "nodes": 1354,
+    "runtimeReachable": 672,
+    "runtimeCompileReachable": 683,
+    "runtimeEmittedReachable": 672,
     "dispositions": {
-      "retain-verbatim": 687,
-      "adapt-boundary": 40,
-      "delete-unsupported": 56,
-      "verification-only": 626,
+      "retain-verbatim": 632,
+      "adapt-boundary": 27,
+      "delete-unsupported": 0,
+      "verification-only": 667,
       "asset-build": 28
     },
-    "edges": 9125,
+    "edges": 8153,
     "blockers": {
-      "runtime": 71,
-      "test": 118,
-      "story": 10,
+      "runtime": 3,
+      "test": 224,
+      "story": 28,
       "build": 6
     },
     "workspacePackages": 124
   },
   "dispositions": {
-    "retain-verbatim": 687,
-    "adapt-boundary": 40,
-    "delete-unsupported": 56,
-    "verification-only": 626,
+    "retain-verbatim": 632,
+    "adapt-boundary": 27,
+    "delete-unsupported": 0,
+    "verification-only": 667,
     "asset-build": 28
   },
   "exceptions": {
@@ -53,17 +55,7 @@
         "preserveStructure": true
       },
       {
-        "path": "src/components/plugin/AppFileExternalNavigationHost.tsx",
-        "reasonCode": "loom-boundary-preserves-composition",
-        "preserveStructure": true
-      },
-      {
         "path": "src/components/plugin/ComposerExtensionHost.tsx",
-        "reasonCode": "loom-boundary-preserves-composition",
-        "preserveStructure": true
-      },
-      {
-        "path": "src/components/plugin/PluginAppOverlays.tsx",
         "reasonCode": "loom-boundary-preserves-composition",
         "preserveStructure": true
       },
@@ -83,27 +75,7 @@
         "preserveStructure": true
       },
       {
-        "path": "src/components/plugin/PluginNavSidebarItems.tsx",
-        "reasonCode": "loom-boundary-preserves-composition",
-        "preserveStructure": true
-      },
-      {
-        "path": "src/components/plugin/PluginNewThreadComposer.tsx",
-        "reasonCode": "loom-boundary-preserves-composition",
-        "preserveStructure": true
-      },
-      {
         "path": "src/components/plugin/PluginPendingInteractionComposer.tsx",
-        "reasonCode": "loom-boundary-preserves-composition",
-        "preserveStructure": true
-      },
-      {
-        "path": "src/components/plugin/PluginProviderModelPicker.tsx",
-        "reasonCode": "loom-boundary-preserves-composition",
-        "preserveStructure": true
-      },
-      {
-        "path": "src/components/plugin/PluginSidebarFooterItems.tsx",
         "reasonCode": "loom-boundary-preserves-composition",
         "preserveStructure": true
       },
@@ -114,21 +86,11 @@
       },
       {
         "path": "src/components/plugin/plugin-composer-host.tsx",
-        "reasonCode": "generic-plugin-sdk-boundary",
+        "reasonCode": "loom-boundary-preserves-composition",
         "preserveStructure": true
       },
       {
         "path": "src/components/plugin/plugin-context.ts",
-        "reasonCode": "loom-boundary-preserves-composition",
-        "preserveStructure": true
-      },
-      {
-        "path": "src/components/plugin/plugin-execution-routing.ts",
-        "reasonCode": "loom-boundary-preserves-composition",
-        "preserveStructure": true
-      },
-      {
-        "path": "src/components/plugin/plugin-page-panel-state.ts",
         "reasonCode": "loom-boundary-preserves-composition",
         "preserveStructure": true
       },
@@ -148,13 +110,18 @@
         "preserveStructure": true
       },
       {
-        "path": "src/components/sidebar/PluginThreadList.tsx",
-        "reasonCode": "loom-boundary-preserves-composition",
+        "path": "src/components/secondary-panel/BrowserTabContent.tsx",
+        "reasonCode": "source-port-replacement:src/components/secondary-panel/BrowserTabContent.tsx",
         "preserveStructure": true
       },
       {
-        "path": "src/components/sidebar/SidebarPluginAttentionGlyph.tsx",
-        "reasonCode": "loom-boundary-preserves-composition",
+        "path": "src/components/secondary-panel/BrowserTabDeck.tsx",
+        "reasonCode": "source-port-replacement:src/components/secondary-panel/BrowserTabDeck.tsx",
+        "preserveStructure": true
+      },
+      {
+        "path": "src/components/secondary-panel/browserViewVisibilityCoordinator.ts",
+        "reasonCode": "source-port-replacement:src/components/secondary-panel/browserViewVisibilityCoordinator.ts",
         "preserveStructure": true
       },
       {
@@ -163,63 +130,28 @@
         "preserveStructure": true
       },
       {
-        "path": "src/components/tools/PluginCapabilities.tsx",
-        "reasonCode": "compiler-unresolved-boundary",
+        "path": "src/hooks/useBrowserDimmingModal.ts",
+        "reasonCode": "source-port-replacement:src/hooks/useBrowserDimmingModal.ts",
         "preserveStructure": true
       },
       {
-        "path": "src/components/tools/PluginDetail.tsx",
-        "reasonCode": "loom-boundary-preserves-composition",
+        "path": "src/lib/browser-storage.ts",
+        "reasonCode": "source-port-replacement:src/lib/browser-storage.ts",
         "preserveStructure": true
       },
       {
-        "path": "src/components/tools/plugin-detail-banner.tsx",
-        "reasonCode": "loom-boundary-preserves-composition",
+        "path": "src/lib/browser-url.ts",
+        "reasonCode": "source-port-replacement:src/lib/browser-url.ts",
         "preserveStructure": true
       },
       {
-        "path": "src/components/tools/plugin-detail-table.tsx",
-        "reasonCode": "loom-boundary-preserves-composition",
+        "path": "src/lib/browser-view-bounds-sync.ts",
+        "reasonCode": "source-port-replacement:src/lib/browser-view-bounds-sync.ts",
         "preserveStructure": true
       },
       {
-        "path": "src/hooks/usePluginFrontendBoot.ts",
-        "reasonCode": "loom-boundary-preserves-composition",
-        "preserveStructure": true
-      },
-      {
-        "path": "src/lib/live-file-navigation.ts",
-        "reasonCode": "generic-plugin-sdk-boundary",
-        "preserveStructure": true
-      },
-      {
-        "path": "src/lib/plugin-app-definition.ts",
-        "reasonCode": "generic-plugin-sdk-boundary",
-        "preserveStructure": true
-      },
-      {
-        "path": "src/lib/plugin-frontend-boot-schedule.ts",
-        "reasonCode": "loom-boundary-preserves-composition",
-        "preserveStructure": true
-      },
-      {
-        "path": "src/lib/plugin-frontend-boot-state.ts",
-        "reasonCode": "loom-boundary-preserves-composition",
-        "preserveStructure": true
-      },
-      {
-        "path": "src/lib/plugin-frontend-lazy.ts",
-        "reasonCode": "loom-boundary-preserves-composition",
-        "preserveStructure": true
-      },
-      {
-        "path": "src/lib/plugin-frontend.ts",
-        "reasonCode": "generic-plugin-sdk-boundary",
-        "preserveStructure": true
-      },
-      {
-        "path": "src/lib/plugin-sdk-app-impl.tsx",
-        "reasonCode": "loom-boundary-preserves-composition",
+        "path": "src/lib/in-app-browser-link-preference.ts",
+        "reasonCode": "source-port-replacement:src/lib/in-app-browser-link-preference.ts",
         "preserveStructure": true
       },
       {
@@ -234,236 +166,16 @@
       },
       {
         "path": "src/lib/plugin-slots.ts",
-        "reasonCode": "generic-plugin-sdk-boundary",
+        "reasonCode": "plugin-slot-composition-consumer",
         "preserveStructure": true
-      }
-    ],
-    "unsupported": [
-      {
-        "path": "src/components/plugin/PluginSettings.tsx",
-        "reasonCode": "unsupported-composition:src/components/plugin/PluginSettings.tsx"
-      },
-      {
-        "path": "src/components/plugin/PluginSettingsSections.tsx",
-        "reasonCode": "unsupported-composition:src/components/plugin/PluginSettingsSections.tsx"
-      },
-      {
-        "path": "src/components/plugin/PluginsOverview.tsx",
-        "reasonCode": "unsupported-composition:src/components/plugin/PluginsOverview.tsx"
-      },
-      {
-        "path": "src/components/plugin/browse-hero/BrowseArchetypeCards.tsx",
-        "reasonCode": "unsupported-composition:src/components/plugin/browse-hero"
-      },
-      {
-        "path": "src/components/plugin/browse-hero/BrowseHeroCarousel.tsx",
-        "reasonCode": "unsupported-composition:src/components/plugin/browse-hero"
-      },
-      {
-        "path": "src/components/plugin/browse-hero/MiniAppScenes.tsx",
-        "reasonCode": "unsupported-composition:src/components/plugin/browse-hero"
-      },
-      {
-        "path": "src/components/plugin/browse-hero/browse-hero-archetypes.ts",
-        "reasonCode": "unsupported-composition:src/components/plugin/browse-hero"
-      },
-      {
-        "path": "src/components/plugin/management/AddPluginDialog.tsx",
-        "reasonCode": "unsupported-composition:src/components/plugin/management"
-      },
-      {
-        "path": "src/components/plugin/management/BrowsePluginsTab.tsx",
-        "reasonCode": "unsupported-composition:src/components/plugin/management"
-      },
-      {
-        "path": "src/components/plugin/management/CheckPluginUpdatesButton.tsx",
-        "reasonCode": "unsupported-composition:src/components/plugin/management"
-      },
-      {
-        "path": "src/components/plugin/management/InstalledPluginsTab.tsx",
-        "reasonCode": "unsupported-composition:src/components/plugin/management"
-      },
-      {
-        "path": "src/components/plugin/management/PluginAuthorAvatar.tsx",
-        "reasonCode": "unsupported-composition:src/components/plugin/management"
-      },
-      {
-        "path": "src/components/plugin/management/PluginAuthorLink.tsx",
-        "reasonCode": "unsupported-composition:src/components/plugin/management"
-      },
-      {
-        "path": "src/components/plugin/management/PluginAuthorPage.tsx",
-        "reasonCode": "unsupported-composition:src/components/plugin/management"
-      },
-      {
-        "path": "src/components/plugin/management/PluginBrowseControls.tsx",
-        "reasonCode": "unsupported-composition:src/components/plugin/management"
-      },
-      {
-        "path": "src/components/plugin/management/PluginMarketplaceListing.tsx",
-        "reasonCode": "unsupported-composition:src/components/plugin/management"
-      },
-      {
-        "path": "src/components/plugin/management/PluginOverviewMarkdown.tsx",
-        "reasonCode": "unsupported-composition:src/components/plugin/management"
-      },
-      {
-        "path": "src/components/plugin/management/PluginRowSignal.tsx",
-        "reasonCode": "unsupported-composition:src/components/plugin/management"
-      },
-      {
-        "path": "src/components/plugin/management/PluginUpdatesCard.tsx",
-        "reasonCode": "unsupported-composition:src/components/plugin/management"
-      },
-      {
-        "path": "src/components/plugin/management/UpdatePluginDialog.tsx",
-        "reasonCode": "unsupported-composition:src/components/plugin/management"
-      },
-      {
-        "path": "src/components/plugin/management/plugin-browse-discovery.ts",
-        "reasonCode": "unsupported-composition:src/components/plugin/management"
-      },
-      {
-        "path": "src/components/plugin/management/plugin-marketplace-author.ts",
-        "reasonCode": "unsupported-composition:src/components/plugin/management"
-      },
-      {
-        "path": "src/components/plugin/management/plugin-status.ts",
-        "reasonCode": "unsupported-composition:src/components/plugin/management"
-      },
-      {
-        "path": "src/components/plugin/management/plugin-ui.tsx",
-        "reasonCode": "unsupported-composition:src/components/plugin/management"
-      },
-      {
-        "path": "src/components/secondary-panel/BrowserFindBar.tsx",
-        "reasonCode": "unsupported-composition:src/components/secondary-panel/BrowserFindBar.tsx"
-      },
-      {
-        "path": "src/components/secondary-panel/BrowserNewTabScreen.tsx",
-        "reasonCode": "unsupported-composition:src/components/secondary-panel/BrowserNewTabScreen.tsx"
-      },
-      {
-        "path": "src/components/secondary-panel/BrowserTabContent.tsx",
-        "reasonCode": "unsupported-composition:src/components/secondary-panel/BrowserTabContent.tsx"
-      },
-      {
-        "path": "src/components/secondary-panel/BrowserTabDeck.tsx",
-        "reasonCode": "unsupported-composition:src/components/secondary-panel/BrowserTabDeck.tsx"
-      },
-      {
-        "path": "src/components/secondary-panel/browserViewVisibilityCoordinator.ts",
-        "reasonCode": "unsupported-composition:src/components/secondary-panel/browserViewVisibilityCoordinator.ts"
-      },
-      {
-        "path": "src/components/settings/BrowserImportDialog.tsx",
-        "reasonCode": "unsupported-composition:src/components/settings/BrowserImportDialog.tsx"
-      },
-      {
-        "path": "src/components/settings/BrowserSettingsSection.tsx",
-        "reasonCode": "unsupported-composition:src/components/settings/BrowserSettingsSection.tsx"
-      },
-      {
-        "path": "src/components/settings/BrowserSourceIcon.tsx",
-        "reasonCode": "unsupported-composition:src/components/settings/BrowserSourceIcon.tsx"
-      },
-      {
-        "path": "src/components/settings/browser-import-wizard.ts",
-        "reasonCode": "unsupported-composition:src/components/settings/browser-import-wizard.ts"
-      },
-      {
-        "path": "src/components/settings/plugin-settings-entries.ts",
-        "reasonCode": "unsupported-composition:src/components/settings/plugin-settings-entries.ts"
-      },
-      {
-        "path": "src/components/tools/SkillDetailView.tsx",
-        "reasonCode": "unsupported-composition:src/components/tools/SkillDetailView.tsx"
-      },
-      {
-        "path": "src/components/tools/SkillsBrowse.tsx",
-        "reasonCode": "unsupported-composition:src/components/tools/SkillsBrowse.tsx"
-      },
-      {
-        "path": "src/components/tools/SkillsCollection.tsx",
-        "reasonCode": "unsupported-composition:src/components/tools/SkillsCollection.tsx"
-      },
-      {
-        "path": "src/components/tools/SkillsLibrary.tsx",
-        "reasonCode": "unsupported-composition:src/components/tools/SkillsLibrary.tsx"
-      },
-      {
-        "path": "src/components/tools/skill-taxonomy.ts",
-        "reasonCode": "unsupported-composition:src/components/tools/skill-taxonomy.ts"
-      },
-      {
-        "path": "src/hooks/cache-owners/plugin-cache-owner.ts",
-        "reasonCode": "unsupported-composition:src/hooks/cache-owners/plugin-cache-owner.ts"
-      },
-      {
-        "path": "src/hooks/cache-owners/skills-cache-effects.ts",
-        "reasonCode": "unsupported-composition:src/hooks/cache-owners/skills-cache-effects.ts"
-      },
-      {
-        "path": "src/hooks/queries/plugin-catalog-queries.ts",
-        "reasonCode": "unsupported-composition:src/hooks/queries/plugin-catalog-queries.ts"
-      },
-      {
-        "path": "src/hooks/queries/plugin-client.ts",
-        "reasonCode": "unsupported-composition:src/hooks/queries/plugin-client.ts"
-      },
-      {
-        "path": "src/hooks/queries/plugin-contribution-queries.ts",
-        "reasonCode": "unsupported-composition:src/hooks/queries/plugin-contribution-queries.ts"
-      },
-      {
-        "path": "src/hooks/queries/plugin-settings-queries.ts",
-        "reasonCode": "unsupported-composition:src/hooks/queries/plugin-settings-queries.ts"
-      },
-      {
-        "path": "src/hooks/queries/skills-queries.ts",
-        "reasonCode": "unsupported-composition:src/hooks/queries/skills-queries.ts"
-      },
-      {
-        "path": "src/hooks/useBrowserDimmingModal.ts",
-        "reasonCode": "unsupported-composition:src/hooks/useBrowserDimmingModal.ts"
-      },
-      {
-        "path": "src/lib/browser-history.ts",
-        "reasonCode": "unsupported-composition:src/lib/browser-history.ts"
-      },
-      {
-        "path": "src/lib/browser-storage.ts",
-        "reasonCode": "unsupported-composition:src/lib/browser-storage.ts"
-      },
-      {
-        "path": "src/lib/browser-url.ts",
-        "reasonCode": "unsupported-composition:src/lib/browser-url.ts"
-      },
-      {
-        "path": "src/lib/browser-view-bounds-sync.ts",
-        "reasonCode": "unsupported-composition:src/lib/browser-view-bounds-sync.ts"
-      },
-      {
-        "path": "src/lib/command-palette/palette-plugin-actions.ts",
-        "reasonCode": "unsupported-composition:src/lib/command-palette/palette-plugin-actions.ts"
-      },
-      {
-        "path": "src/lib/command-palette/palette-plugin-page-actions.ts",
-        "reasonCode": "unsupported-composition:src/lib/command-palette/palette-plugin-page-actions.ts"
-      },
-      {
-        "path": "src/lib/in-app-browser-link-preference.ts",
-        "reasonCode": "unsupported-composition:src/lib/in-app-browser-link-preference.ts"
-      },
-      {
-        "path": "src/lib/skills-registry.ts",
-        "reasonCode": "unsupported-composition:src/lib/skills-registry.ts"
       },
       {
         "path": "src/lib/use-desktop-browser-reveal.ts",
-        "reasonCode": "unsupported-composition:src/lib/use-desktop-browser-reveal.ts"
+        "reasonCode": "source-port-replacement:src/lib/use-desktop-browser-reveal.ts",
+        "preserveStructure": true
       }
     ],
+    "unsupported": [],
     "nonRuntime": [
       {
         "path": "src/App.hash-navigation.test.tsx",
@@ -806,6 +518,11 @@
         "reasonCode": "test-or-story-root"
       },
       {
+        "path": "src/components/plugin/PluginAppOverlays.tsx",
+        "disposition": "verification-only",
+        "reasonCode": "test-only-reachable"
+      },
+      {
         "path": "src/components/plugin/PluginBranchPicker.test.tsx",
         "disposition": "verification-only",
         "reasonCode": "test-or-story-root"
@@ -839,6 +556,11 @@
         "path": "src/components/plugin/PluginNewThreadComposer.test.tsx",
         "disposition": "verification-only",
         "reasonCode": "test-or-story-root"
+      },
+      {
+        "path": "src/components/plugin/PluginNotificationDescription.tsx",
+        "disposition": "verification-only",
+        "reasonCode": "story-only-reachable"
       },
       {
         "path": "src/components/plugin/PluginPanelRightPanelHost.test.tsx",
@@ -1011,6 +733,11 @@
         "reasonCode": "test-or-story-root"
       },
       {
+        "path": "src/components/plugin/plugin-page-panel-state.ts",
+        "disposition": "verification-only",
+        "reasonCode": "test-only-reachable"
+      },
+      {
         "path": "src/components/plugin/plugin-slot-mounts.test.tsx",
         "disposition": "verification-only",
         "reasonCode": "test-or-story-root"
@@ -1021,9 +748,24 @@
         "reasonCode": "test-or-story-root"
       },
       {
+        "path": "src/components/plugin/pluginNavSidebarAtoms.ts",
+        "disposition": "verification-only",
+        "reasonCode": "story-only-reachable"
+      },
+      {
         "path": "src/components/plugin/pluginNavSidebarOrder.test.ts",
         "disposition": "verification-only",
         "reasonCode": "test-or-story-root"
+      },
+      {
+        "path": "src/components/plugin/pluginNavSidebarOrder.ts",
+        "disposition": "verification-only",
+        "reasonCode": "story-only-reachable"
+      },
+      {
+        "path": "src/components/plugin/plugins-collection-copy.ts",
+        "disposition": "verification-only",
+        "reasonCode": "unreachable-source-review"
       },
       {
         "path": "src/components/plugin/usePluginBranchPickerState.test.tsx",
@@ -1276,6 +1018,11 @@
         "reasonCode": "test-or-story-root"
       },
       {
+        "path": "src/components/secondary-panel/BrowserTabContent.tsx",
+        "disposition": "adapt-boundary",
+        "reasonCode": "source-port-replacement:src/components/secondary-panel/BrowserTabContent.tsx"
+      },
+      {
         "path": "src/components/secondary-panel/BrowserTabDeck.browser-view-ordering.test.tsx",
         "disposition": "verification-only",
         "reasonCode": "test-or-story-root"
@@ -1349,6 +1096,11 @@
         "path": "src/components/secondary-panel/TerminalHostSelector.test.tsx",
         "disposition": "verification-only",
         "reasonCode": "test-or-story-root"
+      },
+      {
+        "path": "src/components/secondary-panel/TerminalHostSelector.tsx",
+        "disposition": "verification-only",
+        "reasonCode": "story-only-reachable"
       },
       {
         "path": "src/components/secondary-panel/ThreadMetadataContent.fixtures.tsx",
@@ -1521,6 +1273,11 @@
         "reasonCode": "test-or-story-root"
       },
       {
+        "path": "src/components/settings/CliSkillsSettingsSection.tsx",
+        "disposition": "verification-only",
+        "reasonCode": "test-only-reachable"
+      },
+      {
         "path": "src/components/settings/CodeRendererSettings.test.tsx",
         "disposition": "verification-only",
         "reasonCode": "test-or-story-root"
@@ -1534,6 +1291,11 @@
         "path": "src/components/settings/InstallCliSkillsDialog.test.tsx",
         "disposition": "verification-only",
         "reasonCode": "test-or-story-root"
+      },
+      {
+        "path": "src/components/settings/InstallCliSkillsDialog.tsx",
+        "disposition": "verification-only",
+        "reasonCode": "test-only-reachable"
       },
       {
         "path": "src/components/settings/KeyboardSettingsSection.test.tsx",
@@ -1626,9 +1388,29 @@
         "reasonCode": "test-or-story-root"
       },
       {
+        "path": "src/components/showcase-hero/ShowcaseArchetypeCards.tsx",
+        "disposition": "verification-only",
+        "reasonCode": "unreachable-source-review"
+      },
+      {
+        "path": "src/components/showcase-hero/ShowcaseFrame.tsx",
+        "disposition": "verification-only",
+        "reasonCode": "unreachable-source-review"
+      },
+      {
+        "path": "src/components/showcase-hero/scene-primitives.tsx",
+        "disposition": "verification-only",
+        "reasonCode": "unreachable-source-review"
+      },
+      {
         "path": "src/components/showcase-hero/showcase-archetype.ts",
-        "disposition": "retain-verbatim",
-        "reasonCode": "runtime-graph-node"
+        "disposition": "verification-only",
+        "reasonCode": "unreachable-source-review"
+      },
+      {
+        "path": "src/components/showcase-hero/showcase-tokens.ts",
+        "disposition": "verification-only",
+        "reasonCode": "unreachable-source-review"
       },
       {
         "path": "src/components/sidebar/BuiltInSidebarSection.test.tsx",
@@ -1639,6 +1421,11 @@
         "path": "src/components/sidebar/PluginThreadList.test.tsx",
         "disposition": "verification-only",
         "reasonCode": "test-or-story-root"
+      },
+      {
+        "path": "src/components/sidebar/PluginThreadList.tsx",
+        "disposition": "verification-only",
+        "reasonCode": "test-only-reachable"
       },
       {
         "path": "src/components/sidebar/ProjectList.modes.test.tsx",
@@ -2261,6 +2048,16 @@
         "reasonCode": "test-or-story-root"
       },
       {
+        "path": "src/components/tools/ProvenancePill.tsx",
+        "disposition": "verification-only",
+        "reasonCode": "story-only-reachable"
+      },
+      {
+        "path": "src/components/tools/ResourceSidebar.tsx",
+        "disposition": "verification-only",
+        "reasonCode": "test-only-reachable"
+      },
+      {
         "path": "src/components/tools/ResourceSidebars.test.tsx",
         "disposition": "verification-only",
         "reasonCode": "test-or-story-root"
@@ -2279,6 +2076,16 @@
         "path": "src/components/tools/path-display.test.ts",
         "disposition": "verification-only",
         "reasonCode": "test-or-story-root"
+      },
+      {
+        "path": "src/components/tools/plugin-detail-banner.tsx",
+        "disposition": "verification-only",
+        "reasonCode": "unreachable-source-review"
+      },
+      {
+        "path": "src/components/tools/plugin-detail-table.tsx",
+        "disposition": "verification-only",
+        "reasonCode": "unreachable-source-review"
       },
       {
         "path": "src/components/ui/app-route-anchor.test.tsx",
@@ -2364,6 +2171,11 @@
         "path": "src/components/ui/markdown-code-highlight.test.ts",
         "disposition": "verification-only",
         "reasonCode": "test-or-story-root"
+      },
+      {
+        "path": "src/components/ui/markdown-document-link-routing.ts",
+        "disposition": "verification-only",
+        "reasonCode": "unreachable-source-review"
       },
       {
         "path": "src/components/ui/markdown-file-image-routing.test.tsx",
@@ -2551,6 +2363,11 @@
         "reasonCode": "test-or-story-root"
       },
       {
+        "path": "src/hooks/buffered-environment-invalidator.ts",
+        "disposition": "verification-only",
+        "reasonCode": "test-only-reachable"
+      },
+      {
         "path": "src/hooks/cache-effect-types.ts",
         "disposition": "retain-verbatim",
         "reasonCode": "runtime-graph-node"
@@ -2569,6 +2386,16 @@
         "path": "src/hooks/cache-owners/query-cache.test.ts",
         "disposition": "verification-only",
         "reasonCode": "test-or-story-root"
+      },
+      {
+        "path": "src/hooks/cache-owners/realtime-cache-registry.ts",
+        "disposition": "verification-only",
+        "reasonCode": "test-only-reachable"
+      },
+      {
+        "path": "src/hooks/cache-owners/resource-route-owner.ts",
+        "disposition": "verification-only",
+        "reasonCode": "unreachable-source-review"
       },
       {
         "path": "src/hooks/cache-owners/sidebar-thread-placeholder.test.ts",
@@ -2736,6 +2563,11 @@
         "reasonCode": "test-or-story-root"
       },
       {
+        "path": "src/hooks/realtime-cache-effects.ts",
+        "disposition": "verification-only",
+        "reasonCode": "test-only-reachable"
+      },
+      {
         "path": "src/hooks/resolvePermissionModeSelection.test.ts",
         "disposition": "verification-only",
         "reasonCode": "test-or-story-root"
@@ -2801,6 +2633,11 @@
         "reasonCode": "test-or-story-root"
       },
       {
+        "path": "src/hooks/useDesktopThemeSync.ts",
+        "disposition": "verification-only",
+        "reasonCode": "test-only-reachable"
+      },
+      {
         "path": "src/hooks/useForkThreadFromMessage.test.tsx",
         "disposition": "verification-only",
         "reasonCode": "test-or-story-root"
@@ -2819,6 +2656,11 @@
         "path": "src/hooks/usePathSuggestions.test.ts",
         "disposition": "verification-only",
         "reasonCode": "test-or-story-root"
+      },
+      {
+        "path": "src/hooks/usePluginAttention.ts",
+        "disposition": "verification-only",
+        "reasonCode": "unreachable-source-review"
       },
       {
         "path": "src/hooks/usePluginFrontendBoot.test.tsx",
@@ -2856,6 +2698,11 @@
         "reasonCode": "test-or-story-root"
       },
       {
+        "path": "src/hooks/useResolvedLiveFileTarget.ts",
+        "disposition": "verification-only",
+        "reasonCode": "test-only-reachable"
+      },
+      {
         "path": "src/hooks/useSecondTick.test.ts",
         "disposition": "verification-only",
         "reasonCode": "test-or-story-root"
@@ -2871,6 +2718,11 @@
         "reasonCode": "test-or-story-root"
       },
       {
+        "path": "src/hooks/useServerDaemonLogsCommand.ts",
+        "disposition": "verification-only",
+        "reasonCode": "test-only-reachable"
+      },
+      {
         "path": "src/hooks/useThreadCreationOptions.test.tsx",
         "disposition": "verification-only",
         "reasonCode": "test-or-story-root"
@@ -2884,6 +2736,11 @@
         "path": "src/hooks/useUpdateInventory.test.ts",
         "disposition": "verification-only",
         "reasonCode": "test-or-story-root"
+      },
+      {
+        "path": "src/hooks/useWebSocket.ts",
+        "disposition": "verification-only",
+        "reasonCode": "unreachable-source-review"
       },
       {
         "path": "src/hooks/voice-input-support.test.ts",
@@ -3076,6 +2933,11 @@
         "reasonCode": "test-or-story-root"
       },
       {
+        "path": "src/lib/notifications/plugin-toast-recording.ts",
+        "disposition": "verification-only",
+        "reasonCode": "test-only-reachable"
+      },
+      {
         "path": "src/lib/pierre-strict-mode-recovery.test.tsx",
         "disposition": "verification-only",
         "reasonCode": "test-or-story-root"
@@ -3091,6 +2953,11 @@
         "reasonCode": "test-or-story-root"
       },
       {
+        "path": "src/lib/plugin-admin-error.ts",
+        "disposition": "verification-only",
+        "reasonCode": "unreachable-source-review"
+      },
+      {
         "path": "src/lib/plugin-app-definition.test.ts",
         "disposition": "verification-only",
         "reasonCode": "test-or-story-root"
@@ -3101,9 +2968,29 @@
         "reasonCode": "test-or-story-root"
       },
       {
+        "path": "src/lib/plugin-composer-action-usage.ts",
+        "disposition": "verification-only",
+        "reasonCode": "test-only-reachable"
+      },
+      {
+        "path": "src/lib/plugin-css.ts",
+        "disposition": "verification-only",
+        "reasonCode": "test-only-reachable"
+      },
+      {
         "path": "src/lib/plugin-frontend-boot-schedule.test.ts",
         "disposition": "verification-only",
         "reasonCode": "test-or-story-root"
+      },
+      {
+        "path": "src/lib/plugin-frontend-boot-schedule.ts",
+        "disposition": "verification-only",
+        "reasonCode": "test-only-reachable"
+      },
+      {
+        "path": "src/lib/plugin-frontend-boot-state.ts",
+        "disposition": "verification-only",
+        "reasonCode": "test-only-reachable"
       },
       {
         "path": "src/lib/plugin-frontend-lazy.test.ts",
@@ -3131,9 +3018,19 @@
         "reasonCode": "test-or-story-root"
       },
       {
+        "path": "src/lib/plugin-json-value.ts",
+        "disposition": "verification-only",
+        "reasonCode": "test-only-reachable"
+      },
+      {
         "path": "src/lib/plugin-nav-panel-chrome.test.tsx",
         "disposition": "verification-only",
         "reasonCode": "test-or-story-root"
+      },
+      {
+        "path": "src/lib/plugin-pierre-diffs-react.tsx",
+        "disposition": "verification-only",
+        "reasonCode": "unreachable-source-review"
       },
       {
         "path": "src/lib/plugin-replacement-preference.test.ts",
@@ -3361,6 +3258,16 @@
         "reasonCode": "test-or-story-root"
       },
       {
+        "path": "src/loom/browser-boundaries.test.ts",
+        "disposition": "verification-only",
+        "reasonCode": "test-or-story-root"
+      },
+      {
+        "path": "src/loom/product-composition.test.ts",
+        "disposition": "verification-only",
+        "reasonCode": "test-or-story-root"
+      },
+      {
         "path": "src/precompress-app-dist.test.ts",
         "disposition": "verification-only",
         "reasonCode": "test-or-story-root"
@@ -3441,9 +3348,19 @@
         "reasonCode": "tsconfig-ambient-build-input"
       },
       {
+        "path": "src/views/AuthCallbackView.tsx",
+        "disposition": "verification-only",
+        "reasonCode": "unreachable-source-review"
+      },
+      {
         "path": "src/views/MachineSettingsView.test.tsx",
         "disposition": "verification-only",
         "reasonCode": "test-or-story-root"
+      },
+      {
+        "path": "src/views/PluginPanelView.tsx",
+        "disposition": "verification-only",
+        "reasonCode": "test-only-reachable"
       },
       {
         "path": "src/views/ProjectDetailSettingsView.test.tsx",
@@ -3668,8 +3585,8 @@
     ],
     "compileOnlyLocal": [
       "src/components/pickers/model-picker-option.ts",
+      "src/components/secondary-panel/BrowserTabContent.tsx",
       "src/components/secondary-panel/secondaryPanelTab.ts",
-      "src/components/showcase-hero/showcase-archetype.ts",
       "src/components/thread/timeline/types.ts",
       "src/components/ui/markdown-link.ts",
       "src/hooks/cache-effect-types.ts",
@@ -3687,33 +3604,31 @@
   },
   "blockers": {
     "runtime": {
-      "count": 71,
+      "count": 3,
       "categories": {
-        "unresolved-workspace-package": 66,
-        "conditional-import": 3,
-        "unresolved-workspace-export": 1,
-        "dynamic-nonliteral": 1
+        "conditional-import": 3
       }
     },
     "test": {
-      "count": 118,
+      "count": 224,
       "categories": {
-        "unresolved-workspace-package": 117,
+        "unresolved-local": 106,
+        "unresolved-external": 117,
         "require-nonliteral": 1
       }
     },
     "story": {
-      "count": 10,
+      "count": 28,
       "categories": {
-        "unresolved-workspace-package": 9,
-        "unresolved-local": 1
+        "unresolved-local": 19,
+        "unresolved-external": 9
       }
     },
     "build": {
       "count": 6,
       "categories": {
         "unresolved-local": 4,
-        "unresolved-workspace-package": 2
+        "unresolved-external": 2
       }
     }
   },
@@ -3726,14 +3641,7 @@
       "path": "src/components/promptbox/NewThreadComposer.tsx",
       "runtimeReachable": true,
       "runtimeWitness": "src/main.tsx>src/App.tsx>src/views/SplitWorkspaceRoute.tsx>src/views/RootComposeView.tsx>src/components/promptbox/NewThreadComposer.tsx",
-      "blocker": {
-        "source": "src/components/promptbox/NewThreadComposer.tsx",
-        "layer": "runtime",
-        "kind": "static",
-        "specifier": "@get-bb/plugin-sdk",
-        "category": "unresolved-workspace-package",
-        "line": 21
-      }
+      "blocker": null
     },
     "automationsVerificationOnly": [
       {
@@ -3757,25 +3665,29 @@
       "path": "src/lib/plugin-slots.ts",
       "disposition": "adapt-boundary",
       "preserveStructure": true
+    },
+    "runtimeBoundary": {
+      "emittedBlockers": 0,
+      "genericPluginSdkValueEdges": 0
     }
   },
   "compilerConsistency": {
-    "compilerSpecifiers": 9186,
-    "graphSpecifiers": 9186,
+    "compilerSpecifiers": 8210,
+    "graphSpecifiers": 8210,
     "missing": [],
     "extra": [],
     "preProcessFileParity": {
-      "compilerLiteralSpecifiers": 9184,
-      "preProcessFileSpecifiers": 9184,
+      "compilerLiteralSpecifiers": 8209,
+      "preProcessFileSpecifiers": 8209,
       "missing": [],
       "extra": []
     }
   },
   "parsers": {
     "typescript": {
-      "files": 1429,
-      "specifiers": 9186,
-      "preProcessFileSpecifiers": 9184
+      "files": 1347,
+      "specifiers": 8210,
+      "preProcessFileSpecifiers": 8209
     },
     "css": {
       "files": 4,
@@ -3787,18 +3699,18 @@
     }
   },
   "batchCoverage": {
-    "expected": 1437,
-    "assigned": 1437,
+    "expected": 1354,
+    "assigned": 1354,
     "missing": [],
     "duplicates": [],
-    "crossStageEdges": 3518,
+    "crossStageEdges": 2928,
     "missingCrossStageEdges": 0,
-    "crossChunkEdges": 3518,
-    "crossChunkOccurrences": 3530,
-    "crossIssueEdges": 1524,
-    "crossIssueOccurrences": 1529,
-    "crossIssueLogicalEdges": 1516,
-    "crossIssueLogicalOccurrences": 1521,
+    "crossChunkEdges": 2928,
+    "crossChunkOccurrences": 2939,
+    "crossIssueEdges": 1326,
+    "crossIssueOccurrences": 1331,
+    "crossIssueLogicalEdges": 1317,
+    "crossIssueLogicalOccurrences": 1322,
     "missingCrossIssueBatchDependencies": 0
   },
   "batchPlan": {
@@ -3806,7 +3718,7 @@
     "executable": false,
     "schedulingUnits": "issueStagesWithSCCConflicts",
     "atomicStageCount": 2,
-    "sccCount": 1,
+    "sccCount": 4,
     "atomicStages": [
       {
         "issue": "W-603",
@@ -3816,8 +3728,7 @@
           "W-603-03",
           "W-603-04",
           "W-603-05",
-          "W-603-06",
-          "W-603-07"
+          "W-603-06"
         ],
         "cyclic": true
       },
@@ -3834,11 +3745,11 @@
         "cyclic": true
       }
     ],
-    "crossIssueEdges": 1524,
-    "crossIssueLogicalEdges": 1516,
-    "crossIssueOccurrences": 1529,
-    "crossIssueLogicalOccurrences": 1521,
-    "crossIssueCycles": 1,
+    "crossIssueEdges": 1326,
+    "crossIssueLogicalEdges": 1317,
+    "crossIssueOccurrences": 1331,
+    "crossIssueLogicalOccurrences": 1322,
+    "crossIssueCycles": 0,
     "crossStageConflict": true
   },
   "batchGraph": {
@@ -3848,77 +3759,42 @@
         "W-603-03",
         "W-603-04",
         "W-603-05",
-        "W-603-06",
-        "W-603-07",
-        "W-604-01",
-        "W-604-03",
-        "W-604-04",
-        "W-604-05"
+        "W-603-06"
       ],
       "W-603-02": [
         "W-603-01",
         "W-603-03",
         "W-603-04",
         "W-603-05",
-        "W-603-06",
-        "W-603-07",
-        "W-604-02",
-        "W-604-05"
+        "W-603-06"
       ],
       "W-603-03": [
         "W-603-01",
         "W-603-02",
         "W-603-04",
         "W-603-05",
-        "W-603-06",
-        "W-604-02",
-        "W-604-03",
-        "W-604-04",
-        "W-604-05"
+        "W-603-06"
       ],
       "W-603-04": [
         "W-603-01",
         "W-603-02",
         "W-603-03",
         "W-603-05",
-        "W-603-06",
-        "W-603-07",
-        "W-604-01",
-        "W-604-02",
-        "W-604-04",
-        "W-604-05"
+        "W-603-06"
       ],
       "W-603-05": [
         "W-603-01",
         "W-603-02",
         "W-603-03",
         "W-603-04",
-        "W-603-06",
-        "W-604-03",
-        "W-604-05"
+        "W-603-06"
       ],
       "W-603-06": [
         "W-603-01",
         "W-603-02",
         "W-603-03",
         "W-603-04",
-        "W-603-05",
-        "W-603-07",
-        "W-604-04",
-        "W-604-05"
-      ],
-      "W-603-07": [
-        "W-603-01",
-        "W-603-02",
-        "W-603-03",
-        "W-603-04",
-        "W-603-05",
-        "W-603-06",
-        "W-604-01",
-        "W-604-02",
-        "W-604-04",
-        "W-604-05",
-        "W-604-06"
+        "W-603-05"
       ],
       "W-604-01": [
         "W-603-01",
@@ -3927,22 +3803,17 @@
         "W-603-04",
         "W-603-05",
         "W-603-06",
-        "W-603-07",
-        "W-604-02",
-        "W-604-04",
         "W-604-05",
         "W-604-06"
       ],
       "W-604-02": [
         "W-603-01",
         "W-603-02",
+        "W-603-03",
         "W-603-04",
         "W-603-05",
         "W-603-06",
-        "W-603-07",
         "W-604-03",
-        "W-604-04",
-        "W-604-05",
         "W-604-06"
       ],
       "W-604-03": [
@@ -3952,7 +3823,7 @@
         "W-603-04",
         "W-603-05",
         "W-603-06",
-        "W-604-05",
+        "W-604-01",
         "W-604-06"
       ],
       "W-604-04": [
@@ -3963,14 +3834,10 @@
         "W-603-05",
         "W-603-06",
         "W-604-01",
-        "W-604-02",
-        "W-604-03",
-        "W-604-05",
         "W-604-06"
       ],
       "W-604-05": [
         "W-603-01",
-        "W-603-02",
         "W-603-03",
         "W-603-04",
         "W-603-05",
@@ -3985,9 +3852,6 @@
         "W-603-04",
         "W-603-05",
         "W-603-06",
-        "W-603-07",
-        "W-604-01",
-        "W-604-04",
         "W-604-05"
       ]
     },
@@ -4000,20 +3864,40 @@
           "W-603-03",
           "W-603-04",
           "W-603-05",
-          "W-603-06",
-          "W-603-07",
+          "W-603-06"
+        ],
+        "cyclic": true
+      },
+      {
+        "component": 1,
+        "batchIds": [
           "W-604-01",
-          "W-604-02",
-          "W-604-03",
           "W-604-04",
           "W-604-05",
           "W-604-06"
         ],
         "cyclic": true
+      },
+      {
+        "component": 2,
+        "batchIds": [
+          "W-604-02"
+        ],
+        "cyclic": false
+      },
+      {
+        "component": 3,
+        "batchIds": [
+          "W-604-03"
+        ],
+        "cyclic": false
       }
     ],
     "dependencyOrder": [
-      0
+      0,
+      1,
+      3,
+      2
     ]
   },
   "batches": {
@@ -4028,35 +3912,29 @@
           "asset-build",
           "retain-verbatim"
         ],
-        "dependencyCount": 224,
+        "dependencyCount": 191,
         "dependsOnBatchIds": [
           "W-603-02",
           "W-603-03",
           "W-603-04",
           "W-603-05",
-          "W-603-06",
-          "W-603-07",
-          "W-604-01",
-          "W-604-03",
-          "W-604-04",
-          "W-604-05"
+          "W-603-06"
         ],
         "cutPoints": [
           "src/App.tsx",
           "src/components/commands/CommandPalette.tsx",
           "src/components/layout/AppLayout.tsx",
-          "src/components/plugin/AppFileExternalNavigationHost.tsx",
           "src/components/plugin/ComposerExtensionHost.tsx",
-          "src/components/plugin/PluginAppOverlays.tsx",
           "src/components/plugin/PluginComposerActions.tsx",
           "src/components/plugin/PluginComposerBanners.tsx",
           "src/components/plugin/PluginHomepageSections.tsx",
-          "src/components/plugin/PluginNavSidebarItems.tsx",
-          "src/components/plugin/PluginNewThreadComposer.tsx",
           "src/components/plugin/PluginPendingInteractionComposer.tsx",
-          "src/components/plugin/PluginProviderModelPicker.tsx",
-          "src/components/plugin/PluginSidebarFooterItems.tsx",
-          "src/components/plugin/PluginSlotMount.tsx"
+          "src/components/plugin/PluginSlotMount.tsx",
+          "src/components/plugin/plugin-composer-host.tsx",
+          "src/components/plugin/plugin-context.ts",
+          "src/components/plugin/plugin-thread-panel-navigation.tsx",
+          "src/components/promptbox/NewThreadComposer.tsx",
+          "src/components/promptbox/NewThreadPromptBox.tsx"
         ],
         "verificationCommands": [
           "pnpm run port-plan:check",
@@ -4073,25 +3951,18 @@
           "adapt-boundary",
           "retain-verbatim"
         ],
-        "dependencyCount": 235,
+        "dependencyCount": 252,
         "dependsOnBatchIds": [
           "W-603-01",
           "W-603-03",
           "W-603-04",
           "W-603-05",
-          "W-603-06",
-          "W-603-07",
-          "W-604-02",
-          "W-604-05"
+          "W-603-06"
         ],
         "cutPoints": [
-          "src/components/plugin/plugin-composer-host.tsx",
-          "src/components/plugin/plugin-context.ts",
-          "src/components/plugin/plugin-execution-routing.ts",
-          "src/components/plugin/plugin-page-panel-state.ts",
-          "src/components/plugin/plugin-thread-panel-navigation.tsx",
-          "src/components/promptbox/NewThreadComposer.tsx",
-          "src/components/promptbox/NewThreadPromptBox.tsx"
+          "src/components/secondary-panel/BrowserTabContent.tsx",
+          "src/components/secondary-panel/BrowserTabDeck.tsx",
+          "src/components/secondary-panel/browserViewVisibilityCoordinator.ts"
         ],
         "verificationCommands": [
           "pnpm run port-plan:check",
@@ -4106,23 +3977,18 @@
         "fileCount": 120,
         "dispositions": [
           "adapt-boundary",
+          "asset-build",
           "retain-verbatim"
         ],
-        "dependencyCount": 248,
+        "dependencyCount": 171,
         "dependsOnBatchIds": [
           "W-603-01",
           "W-603-02",
           "W-603-04",
           "W-603-05",
-          "W-603-06",
-          "W-604-02",
-          "W-604-03",
-          "W-604-04",
-          "W-604-05"
+          "W-603-06"
         ],
         "cutPoints": [
-          "src/components/sidebar/PluginThreadList.tsx",
-          "src/components/sidebar/SidebarPluginAttentionGlyph.tsx",
           "src/components/thread/timeline/PluginTimelineRendererBody.tsx"
         ],
         "verificationCommands": [
@@ -4141,24 +4007,16 @@
           "asset-build",
           "retain-verbatim"
         ],
-        "dependencyCount": 160,
+        "dependencyCount": 138,
         "dependsOnBatchIds": [
           "W-603-01",
           "W-603-02",
           "W-603-03",
           "W-603-05",
-          "W-603-06",
-          "W-603-07",
-          "W-604-01",
-          "W-604-02",
-          "W-604-04",
-          "W-604-05"
+          "W-603-06"
         ],
         "cutPoints": [
-          "src/components/tools/PluginCapabilities.tsx",
-          "src/components/tools/PluginDetail.tsx",
-          "src/components/tools/plugin-detail-banner.tsx",
-          "src/components/tools/plugin-detail-table.tsx"
+          "src/hooks/useBrowserDimmingModal.ts"
         ],
         "verificationCommands": [
           "pnpm run port-plan:check",
@@ -4175,51 +4033,19 @@
           "adapt-boundary",
           "retain-verbatim"
         ],
-        "dependencyCount": 99,
+        "dependencyCount": 83,
         "dependsOnBatchIds": [
           "W-603-01",
           "W-603-02",
           "W-603-03",
           "W-603-04",
-          "W-603-06",
-          "W-604-03",
-          "W-604-05"
+          "W-603-06"
         ],
         "cutPoints": [
-          "src/hooks/usePluginFrontendBoot.ts"
-        ],
-        "verificationCommands": [
-          "pnpm run port-plan:check",
-          "pnpm run provenance:check",
-          "pnpm --filter @loom/ui run typecheck"
-        ]
-      },
-      {
-        "id": "W-603-06",
-        "kind": "reviewChunk",
-        "executable": false,
-        "fileCount": 120,
-        "dispositions": [
-          "adapt-boundary",
-          "retain-verbatim"
-        ],
-        "dependencyCount": 149,
-        "dependsOnBatchIds": [
-          "W-603-01",
-          "W-603-02",
-          "W-603-03",
-          "W-603-04",
-          "W-603-05",
-          "W-603-07",
-          "W-604-04",
-          "W-604-05"
-        ],
-        "cutPoints": [
-          "src/lib/plugin-frontend-boot-schedule.ts",
-          "src/lib/plugin-frontend-boot-state.ts",
-          "src/lib/plugin-frontend-lazy.ts",
-          "src/lib/plugin-frontend.ts",
-          "src/lib/plugin-sdk-app-impl.tsx",
+          "src/lib/browser-storage.ts",
+          "src/lib/browser-url.ts",
+          "src/lib/browser-view-bounds-sync.ts",
+          "src/lib/in-app-browser-link-preference.ts",
           "src/lib/plugin-sdk-hooks.ts",
           "src/lib/plugin-slot-resolvers.ts",
           "src/lib/plugin-slots.ts"
@@ -4231,29 +4057,24 @@
         ]
       },
       {
-        "id": "W-603-07",
+        "id": "W-603-06",
         "kind": "reviewChunk",
         "executable": false,
-        "fileCount": 35,
+        "fileCount": 87,
         "dispositions": [
+          "adapt-boundary",
           "retain-verbatim"
         ],
-        "dependencyCount": 255,
+        "dependencyCount": 258,
         "dependsOnBatchIds": [
           "W-603-01",
           "W-603-02",
           "W-603-03",
           "W-603-04",
-          "W-603-05",
-          "W-603-06",
-          "W-604-01",
-          "W-604-02",
-          "W-604-04",
-          "W-604-05",
-          "W-604-06"
+          "W-603-05"
         ],
         "cutPoints": [
-          "preserve-product-composition"
+          "src/lib/use-desktop-browser-reveal.ts"
         ],
         "verificationCommands": [
           "pnpm run port-plan:check",
@@ -4269,7 +4090,6 @@
         "executable": false,
         "fileCount": 120,
         "dispositions": [
-          "delete-unsupported",
           "verification-only"
         ],
         "dependencyCount": 222,
@@ -4280,45 +4100,31 @@
           "W-603-04",
           "W-603-05",
           "W-603-06",
-          "W-603-07",
-          "W-604-02",
-          "W-604-04",
           "W-604-05",
           "W-604-06"
         ],
         "cutPoints": [
-          "src/components/plugin/PluginSettings.tsx",
-          "src/components/plugin/PluginSettingsSections.tsx",
-          "src/components/plugin/PluginsOverview.tsx",
+          "src/components/plugin/PluginAppOverlays.tsx",
           "src/components/plugin/browse-hero/BrowseArchetypeCards.stories.tsx",
-          "src/components/plugin/browse-hero/BrowseArchetypeCards.tsx",
           "src/components/plugin/browse-hero/BrowseHeroCarousel.stories.tsx",
           "src/components/plugin/browse-hero/BrowseHeroCarousel.test.tsx",
-          "src/components/plugin/browse-hero/BrowseHeroCarousel.tsx",
-          "src/components/plugin/browse-hero/MiniAppScenes.tsx",
-          "src/components/plugin/browse-hero/browse-hero-archetypes.ts",
           "src/components/plugin/management/AddPluginDialog.test.tsx",
-          "src/components/plugin/management/AddPluginDialog.tsx",
           "src/components/plugin/management/BrowsePluginsTab.test.tsx",
-          "src/components/plugin/management/BrowsePluginsTab.tsx",
           "src/components/plugin/management/CheckPluginUpdatesButton.test.tsx",
-          "src/components/plugin/management/CheckPluginUpdatesButton.tsx",
           "src/components/plugin/management/InstalledPluginsTab.test.tsx",
-          "src/components/plugin/management/InstalledPluginsTab.tsx",
-          "src/components/plugin/management/PluginAuthorAvatar.tsx",
-          "src/components/plugin/management/PluginAuthorLink.tsx",
           "src/components/plugin/management/PluginAuthorPage.test.tsx",
-          "src/components/plugin/management/PluginAuthorPage.tsx",
           "src/components/plugin/management/PluginBrowseControls.test.tsx",
-          "src/components/plugin/management/PluginBrowseControls.tsx",
           "src/components/plugin/management/PluginMarketplaceListing.test.tsx",
-          "src/components/plugin/management/PluginMarketplaceListing.tsx",
           "src/components/plugin/management/PluginOverviewMarkdown.test.tsx",
-          "src/components/plugin/management/PluginOverviewMarkdown.tsx",
           "src/components/plugin/management/PluginRowSignal.stories.tsx",
           "src/components/plugin/management/PluginRowSignal.test.tsx",
-          "src/components/plugin/management/PluginRowSignal.tsx",
-          "src/components/plugin/management/PluginUpdatesCard.test.tsx"
+          "src/components/plugin/management/PluginUpdatesCard.test.tsx",
+          "src/components/plugin/management/UpdatePluginDialog.test.tsx",
+          "src/components/plugin/management/plugin-browse-discovery.test.ts",
+          "src/components/plugin/management/plugin-marketplace-author.test.ts",
+          "src/components/plugin/management/plugin-status.test.ts",
+          "src/components/plugin/management/plugin-ui.test.tsx",
+          "src/components/plugin/plugin-page-panel-state.ts"
         ],
         "verificationCommands": [
           "pnpm run port-plan:check",
@@ -4332,42 +4138,21 @@
         "executable": false,
         "fileCount": 120,
         "dispositions": [
-          "delete-unsupported",
           "verification-only"
         ],
-        "dependencyCount": 216,
+        "dependencyCount": 222,
         "dependsOnBatchIds": [
           "W-603-01",
           "W-603-02",
+          "W-603-03",
           "W-603-04",
           "W-603-05",
           "W-603-06",
-          "W-603-07",
           "W-604-03",
-          "W-604-04",
-          "W-604-05",
           "W-604-06"
         ],
         "cutPoints": [
-          "src/components/plugin/management/PluginUpdatesCard.tsx",
-          "src/components/plugin/management/UpdatePluginDialog.test.tsx",
-          "src/components/plugin/management/UpdatePluginDialog.tsx",
-          "src/components/plugin/management/plugin-browse-discovery.test.ts",
-          "src/components/plugin/management/plugin-browse-discovery.ts",
-          "src/components/plugin/management/plugin-marketplace-author.test.ts",
-          "src/components/plugin/management/plugin-marketplace-author.ts",
-          "src/components/plugin/management/plugin-status.test.ts",
-          "src/components/plugin/management/plugin-status.ts",
-          "src/components/plugin/management/plugin-ui.test.tsx",
-          "src/components/plugin/management/plugin-ui.tsx",
-          "src/components/secondary-panel/BrowserFindBar.tsx",
-          "src/components/secondary-panel/BrowserNewTabScreen.tsx",
-          "src/components/secondary-panel/BrowserTabContent.tsx",
-          "src/components/secondary-panel/BrowserTabDeck.tsx",
-          "src/components/secondary-panel/browserViewVisibilityCoordinator.ts",
-          "src/components/settings/BrowserImportDialog.tsx",
-          "src/components/settings/BrowserSettingsSection.tsx",
-          "src/components/settings/BrowserSourceIcon.tsx"
+          "unsupported-composition-policy"
         ],
         "verificationCommands": [
           "pnpm run port-plan:check",
@@ -4381,10 +4166,9 @@
         "executable": false,
         "fileCount": 120,
         "dispositions": [
-          "delete-unsupported",
           "verification-only"
         ],
-        "dependencyCount": 181,
+        "dependencyCount": 152,
         "dependsOnBatchIds": [
           "W-603-01",
           "W-603-02",
@@ -4392,12 +4176,11 @@
           "W-603-04",
           "W-603-05",
           "W-603-06",
-          "W-604-05",
+          "W-604-01",
           "W-604-06"
         ],
         "cutPoints": [
-          "src/components/settings/browser-import-wizard.ts",
-          "src/components/settings/plugin-settings-entries.ts"
+          "src/components/sidebar/PluginThreadList.tsx"
         ],
         "verificationCommands": [
           "pnpm run port-plan:check",
@@ -4411,10 +4194,9 @@
         "executable": false,
         "fileCount": 120,
         "dispositions": [
-          "delete-unsupported",
           "verification-only"
         ],
-        "dependencyCount": 187,
+        "dependencyCount": 205,
         "dependsOnBatchIds": [
           "W-603-01",
           "W-603-02",
@@ -4423,21 +4205,11 @@
           "W-603-05",
           "W-603-06",
           "W-604-01",
-          "W-604-02",
-          "W-604-03",
-          "W-604-05",
           "W-604-06"
         ],
         "cutPoints": [
-          "src/components/tools/SkillDetailView.tsx",
-          "src/components/tools/SkillsBrowse.tsx",
-          "src/components/tools/SkillsCollection.tsx",
-          "src/components/tools/SkillsLibrary.tsx",
-          "src/components/tools/skill-taxonomy.ts",
-          "src/hooks/cache-owners/plugin-cache-owner.ts",
-          "src/hooks/cache-owners/skills-cache-effects.ts",
-          "src/hooks/queries/plugin-catalog-queries.ts",
-          "src/hooks/queries/plugin-client.ts"
+          "src/components/tools/plugin-detail-banner.tsx",
+          "src/components/tools/plugin-detail-table.tsx"
         ],
         "verificationCommands": [
           "pnpm run port-plan:check",
@@ -4451,13 +4223,11 @@
         "executable": false,
         "fileCount": 120,
         "dispositions": [
-          "delete-unsupported",
           "verification-only"
         ],
-        "dependencyCount": 182,
+        "dependencyCount": 183,
         "dependsOnBatchIds": [
           "W-603-01",
-          "W-603-02",
           "W-603-03",
           "W-603-04",
           "W-603-05",
@@ -4466,17 +4236,8 @@
           "W-604-06"
         ],
         "cutPoints": [
-          "src/hooks/queries/plugin-contribution-queries.ts",
-          "src/hooks/queries/plugin-settings-queries.ts",
-          "src/hooks/queries/skills-queries.ts",
-          "src/hooks/useBrowserDimmingModal.ts",
-          "src/lib/browser-history.ts",
-          "src/lib/browser-storage.ts",
-          "src/lib/browser-url.ts",
-          "src/lib/browser-view-bounds-sync.ts",
-          "src/lib/command-palette/palette-plugin-actions.ts",
-          "src/lib/command-palette/palette-plugin-page-actions.ts",
-          "src/lib/in-app-browser-link-preference.ts"
+          "src/lib/plugin-frontend-boot-schedule.ts",
+          "src/lib/plugin-frontend-boot-state.ts"
         ],
         "verificationCommands": [
           "pnpm run port-plan:check",
@@ -4488,12 +4249,11 @@
         "id": "W-604-06",
         "kind": "reviewChunk",
         "executable": false,
-        "fileCount": 82,
+        "fileCount": 67,
         "dispositions": [
-          "delete-unsupported",
           "verification-only"
         ],
-        "dependencyCount": 153,
+        "dependencyCount": 138,
         "dependsOnBatchIds": [
           "W-603-01",
           "W-603-02",
@@ -4501,14 +4261,10 @@
           "W-603-04",
           "W-603-05",
           "W-603-06",
-          "W-603-07",
-          "W-604-01",
-          "W-604-04",
           "W-604-05"
         ],
         "cutPoints": [
-          "src/lib/skills-registry.ts",
-          "src/lib/use-desktop-browser-reveal.ts"
+          "unsupported-composition-policy"
         ],
         "verificationCommands": [
           "pnpm run port-plan:check",
@@ -4522,10 +4278,10 @@
     {
       "name": "@bb/client-core",
       "declaredAs": "dependencies",
-      "actualImports": 204,
-      "runtimeImports": 153,
-      "runtimeValueImports": 107,
-      "runtimeTypeImports": 46,
+      "actualImports": 192,
+      "runtimeImports": 141,
+      "runtimeValueImports": 96,
+      "runtimeTypeImports": 45,
       "verificationValueImports": 40,
       "verificationTypeImports": 10,
       "decision": "reuse",
@@ -4548,9 +4304,9 @@
     {
       "name": "@bb/core-ui",
       "declaredAs": "dependencies",
-      "actualImports": 24,
-      "runtimeImports": 19,
-      "runtimeValueImports": 18,
+      "actualImports": 23,
+      "runtimeImports": 18,
+      "runtimeValueImports": 17,
       "runtimeTypeImports": 1,
       "verificationValueImports": 1,
       "verificationTypeImports": 4,
@@ -4561,23 +4317,23 @@
     {
       "name": "@bb/desktop-contract",
       "declaredAs": "dependencies",
-      "actualImports": 31,
-      "runtimeImports": 14,
-      "runtimeValueImports": 2,
-      "runtimeTypeImports": 12,
+      "actualImports": 24,
+      "runtimeImports": 7,
+      "runtimeValueImports": 0,
+      "runtimeTypeImports": 7,
       "verificationValueImports": 1,
       "verificationTypeImports": 15,
       "decision": "reuse",
       "reasonCode": "existing-workspace-source",
-      "runtimeAllowed": true
+      "runtimeAllowed": false
     },
     {
       "name": "@bb/domain",
       "declaredAs": "dependencies",
-      "actualImports": 373,
-      "runtimeImports": 208,
-      "runtimeValueImports": 80,
-      "runtimeTypeImports": 128,
+      "actualImports": 358,
+      "runtimeImports": 193,
+      "runtimeValueImports": 66,
+      "runtimeTypeImports": 127,
       "verificationValueImports": 49,
       "verificationTypeImports": 111,
       "decision": "reuse",
@@ -4600,10 +4356,10 @@
     {
       "name": "@bb/host-daemon-contract",
       "declaredAs": "dependencies",
-      "actualImports": 50,
-      "runtimeImports": 31,
-      "runtimeValueImports": 5,
-      "runtimeTypeImports": 26,
+      "actualImports": 46,
+      "runtimeImports": 27,
+      "runtimeValueImports": 3,
+      "runtimeTypeImports": 24,
       "verificationValueImports": 4,
       "verificationTypeImports": 13,
       "decision": "adapter",
@@ -4626,9 +4382,9 @@
     {
       "name": "@bb/sdk",
       "declaredAs": "dependencies",
-      "actualImports": 18,
-      "runtimeImports": 12,
-      "runtimeValueImports": 9,
+      "actualImports": 16,
+      "runtimeImports": 10,
+      "runtimeValueImports": 7,
       "runtimeTypeImports": 3,
       "verificationValueImports": 6,
       "verificationTypeImports": 0,
@@ -4639,10 +4395,10 @@
     {
       "name": "@bb/server-contract",
       "declaredAs": "dependencies",
-      "actualImports": 255,
-      "runtimeImports": 142,
-      "runtimeValueImports": 13,
-      "runtimeTypeImports": 129,
+      "actualImports": 235,
+      "runtimeImports": 122,
+      "runtimeValueImports": 9,
+      "runtimeTypeImports": 113,
       "verificationValueImports": 3,
       "verificationTypeImports": 107,
       "decision": "reuse",
@@ -4652,10 +4408,10 @@
     {
       "name": "@bb/shared-ui",
       "declaredAs": "dependencies",
-      "actualImports": 949,
-      "runtimeImports": 822,
-      "runtimeValueImports": 807,
-      "runtimeTypeImports": 15,
+      "actualImports": 799,
+      "runtimeImports": 672,
+      "runtimeValueImports": 661,
+      "runtimeTypeImports": 11,
       "verificationValueImports": 115,
       "verificationTypeImports": 8,
       "decision": "reuse",
@@ -4664,7 +4420,7 @@
     },
     {
       "name": "@bb/templates",
-      "declaredAs": "dependencies",
+      "declaredAs": null,
       "actualImports": 1,
       "runtimeImports": 0,
       "runtimeValueImports": 0,
@@ -4677,7 +4433,7 @@
     },
     {
       "name": "@bb/test-helpers",
-      "declaredAs": "devDependencies",
+      "declaredAs": null,
       "actualImports": 94,
       "runtimeImports": 0,
       "runtimeValueImports": 0,
@@ -4691,9 +4447,9 @@
     {
       "name": "@bb/thread-view",
       "declaredAs": "dependencies",
-      "actualImports": 35,
-      "runtimeImports": 23,
-      "runtimeValueImports": 15,
+      "actualImports": 34,
+      "runtimeImports": 22,
+      "runtimeValueImports": 14,
       "runtimeTypeImports": 8,
       "verificationValueImports": 4,
       "verificationTypeImports": 8,
@@ -4717,9 +4473,9 @@
     {
       "name": "@dnd-kit/core",
       "declaredAs": "dependencies",
-      "actualImports": 20,
-      "runtimeImports": 16,
-      "runtimeValueImports": 12,
+      "actualImports": 19,
+      "runtimeImports": 15,
+      "runtimeValueImports": 11,
       "runtimeTypeImports": 4,
       "verificationValueImports": 1,
       "verificationTypeImports": 3,
@@ -4730,9 +4486,9 @@
     {
       "name": "@dnd-kit/sortable",
       "declaredAs": "dependencies",
-      "actualImports": 12,
-      "runtimeImports": 12,
-      "runtimeValueImports": 12,
+      "actualImports": 11,
+      "runtimeImports": 11,
+      "runtimeValueImports": 11,
       "runtimeTypeImports": 0,
       "verificationValueImports": 0,
       "verificationTypeImports": 0,
@@ -4768,11 +4524,11 @@
     },
     {
       "name": "@get-bb/plugin-sdk",
-      "declaredAs": "dependencies",
-      "actualImports": 99,
-      "runtimeImports": 66,
-      "runtimeValueImports": 5,
-      "runtimeTypeImports": 61,
+      "declaredAs": null,
+      "actualImports": 33,
+      "runtimeImports": 0,
+      "runtimeValueImports": 0,
+      "runtimeTypeImports": 0,
       "verificationValueImports": 3,
       "verificationTypeImports": 30,
       "decision": "adapter",
@@ -4795,28 +4551,28 @@
     {
       "name": "@hugeicons/core-free-icons",
       "declaredAs": "dependencies",
-      "actualImports": 1,
-      "runtimeImports": 1,
-      "runtimeValueImports": 1,
+      "actualImports": 0,
+      "runtimeImports": 0,
+      "runtimeValueImports": 0,
       "runtimeTypeImports": 0,
       "verificationValueImports": 0,
       "verificationTypeImports": 0,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
-      "runtimeAllowed": true
+      "runtimeAllowed": false
     },
     {
       "name": "@hugeicons/react",
       "declaredAs": "dependencies",
-      "actualImports": 1,
-      "runtimeImports": 1,
-      "runtimeValueImports": 1,
+      "actualImports": 0,
+      "runtimeImports": 0,
+      "runtimeValueImports": 0,
       "runtimeTypeImports": 0,
       "verificationValueImports": 0,
       "verificationTypeImports": 0,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
-      "runtimeAllowed": true
+      "runtimeAllowed": false
     },
     {
       "name": "@ladle/react",
@@ -4834,9 +4590,9 @@
     {
       "name": "@pierre/diffs",
       "declaredAs": "dependencies",
-      "actualImports": 33,
-      "runtimeImports": 23,
-      "runtimeValueImports": 12,
+      "actualImports": 31,
+      "runtimeImports": 21,
+      "runtimeValueImports": 10,
       "runtimeTypeImports": 11,
       "verificationValueImports": 3,
       "verificationTypeImports": 6,
@@ -4873,15 +4629,15 @@
     {
       "name": "@radix-ui/react-alert-dialog",
       "declaredAs": "dependencies",
-      "actualImports": 1,
-      "runtimeImports": 1,
-      "runtimeValueImports": 1,
+      "actualImports": 0,
+      "runtimeImports": 0,
+      "runtimeValueImports": 0,
       "runtimeTypeImports": 0,
       "verificationValueImports": 0,
       "verificationTypeImports": 0,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
-      "runtimeAllowed": true
+      "runtimeAllowed": false
     },
     {
       "name": "@radix-ui/react-aspect-ratio",
@@ -4951,54 +4707,54 @@
     {
       "name": "@radix-ui/react-context-menu",
       "declaredAs": "dependencies",
-      "actualImports": 1,
-      "runtimeImports": 1,
-      "runtimeValueImports": 1,
+      "actualImports": 0,
+      "runtimeImports": 0,
+      "runtimeValueImports": 0,
       "runtimeTypeImports": 0,
       "verificationValueImports": 0,
       "verificationTypeImports": 0,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
-      "runtimeAllowed": true
+      "runtimeAllowed": false
     },
     {
       "name": "@radix-ui/react-dialog",
       "declaredAs": "dependencies",
-      "actualImports": 2,
-      "runtimeImports": 1,
-      "runtimeValueImports": 1,
+      "actualImports": 1,
+      "runtimeImports": 0,
+      "runtimeValueImports": 0,
       "runtimeTypeImports": 0,
       "verificationValueImports": 0,
       "verificationTypeImports": 0,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
-      "runtimeAllowed": true
+      "runtimeAllowed": false
     },
     {
       "name": "@radix-ui/react-dropdown-menu",
       "declaredAs": "dependencies",
-      "actualImports": 1,
-      "runtimeImports": 1,
-      "runtimeValueImports": 1,
+      "actualImports": 0,
+      "runtimeImports": 0,
+      "runtimeValueImports": 0,
       "runtimeTypeImports": 0,
       "verificationValueImports": 0,
       "verificationTypeImports": 0,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
-      "runtimeAllowed": true
+      "runtimeAllowed": false
     },
     {
       "name": "@radix-ui/react-hover-card",
       "declaredAs": "dependencies",
-      "actualImports": 1,
-      "runtimeImports": 1,
-      "runtimeValueImports": 1,
+      "actualImports": 0,
+      "runtimeImports": 0,
+      "runtimeValueImports": 0,
       "runtimeTypeImports": 0,
       "verificationValueImports": 0,
       "verificationTypeImports": 0,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
-      "runtimeAllowed": true
+      "runtimeAllowed": false
     },
     {
       "name": "@radix-ui/react-label",
@@ -5016,35 +4772,35 @@
     {
       "name": "@radix-ui/react-menubar",
       "declaredAs": "dependencies",
-      "actualImports": 1,
-      "runtimeImports": 1,
-      "runtimeValueImports": 1,
+      "actualImports": 0,
+      "runtimeImports": 0,
+      "runtimeValueImports": 0,
       "runtimeTypeImports": 0,
       "verificationValueImports": 0,
       "verificationTypeImports": 0,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
-      "runtimeAllowed": true
+      "runtimeAllowed": false
     },
     {
       "name": "@radix-ui/react-navigation-menu",
       "declaredAs": "dependencies",
-      "actualImports": 1,
-      "runtimeImports": 1,
-      "runtimeValueImports": 1,
+      "actualImports": 0,
+      "runtimeImports": 0,
+      "runtimeValueImports": 0,
       "runtimeTypeImports": 0,
       "verificationValueImports": 0,
       "verificationTypeImports": 0,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
-      "runtimeAllowed": true
+      "runtimeAllowed": false
     },
     {
       "name": "@radix-ui/react-popover",
       "declaredAs": "dependencies",
-      "actualImports": 3,
-      "runtimeImports": 3,
-      "runtimeValueImports": 3,
+      "actualImports": 2,
+      "runtimeImports": 2,
+      "runtimeValueImports": 2,
       "runtimeTypeImports": 0,
       "verificationValueImports": 0,
       "verificationTypeImports": 0,
@@ -5094,15 +4850,15 @@
     {
       "name": "@radix-ui/react-select",
       "declaredAs": "dependencies",
-      "actualImports": 1,
-      "runtimeImports": 1,
-      "runtimeValueImports": 1,
+      "actualImports": 0,
+      "runtimeImports": 0,
+      "runtimeValueImports": 0,
       "runtimeTypeImports": 0,
       "verificationValueImports": 0,
       "verificationTypeImports": 0,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
-      "runtimeAllowed": true
+      "runtimeAllowed": false
     },
     {
       "name": "@radix-ui/react-separator",
@@ -5185,15 +4941,15 @@
     {
       "name": "@radix-ui/react-tooltip",
       "declaredAs": "dependencies",
-      "actualImports": 1,
-      "runtimeImports": 1,
-      "runtimeValueImports": 1,
+      "actualImports": 0,
+      "runtimeImports": 0,
+      "runtimeValueImports": 0,
       "runtimeTypeImports": 0,
       "verificationValueImports": 0,
       "verificationTypeImports": 0,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
-      "runtimeAllowed": true
+      "runtimeAllowed": false
     },
     {
       "name": "@rolldown/plugin-babel",
@@ -5224,10 +4980,10 @@
     {
       "name": "@tanstack/react-query",
       "declaredAs": "dependencies",
-      "actualImports": 156,
-      "runtimeImports": 88,
-      "runtimeValueImports": 57,
-      "runtimeTypeImports": 31,
+      "actualImports": 139,
+      "runtimeImports": 71,
+      "runtimeValueImports": 42,
+      "runtimeTypeImports": 29,
       "verificationValueImports": 61,
       "verificationTypeImports": 4,
       "decision": "reuse",
@@ -5406,7 +5162,7 @@
     {
       "name": "@vitejs/plugin-react",
       "declaredAs": "devDependencies",
-      "actualImports": 2,
+      "actualImports": 3,
       "runtimeImports": 0,
       "runtimeValueImports": 0,
       "runtimeTypeImports": 0,
@@ -5509,11 +5265,11 @@
     },
     {
       "name": "bb-plugin-automations",
-      "declaredAs": "devDependencies",
-      "actualImports": 9,
-      "runtimeImports": 0,
-      "runtimeValueImports": 0,
-      "runtimeTypeImports": 0,
+      "declaredAs": "dependencies",
+      "actualImports": 12,
+      "runtimeImports": 3,
+      "runtimeValueImports": 2,
+      "runtimeTypeImports": 1,
       "verificationValueImports": 6,
       "verificationTypeImports": 3,
       "decision": "adapter",
@@ -5523,28 +5279,28 @@
     {
       "name": "class-variance-authority",
       "declaredAs": "dependencies",
-      "actualImports": 1,
-      "runtimeImports": 1,
-      "runtimeValueImports": 1,
+      "actualImports": 0,
+      "runtimeImports": 0,
+      "runtimeValueImports": 0,
       "runtimeTypeImports": 0,
       "verificationValueImports": 0,
       "verificationTypeImports": 0,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
-      "runtimeAllowed": true
+      "runtimeAllowed": false
     },
     {
       "name": "clsx",
       "declaredAs": "dependencies",
-      "actualImports": 2,
-      "runtimeImports": 1,
-      "runtimeValueImports": 1,
+      "actualImports": 1,
+      "runtimeImports": 0,
+      "runtimeValueImports": 0,
       "runtimeTypeImports": 0,
       "verificationValueImports": 1,
       "verificationTypeImports": 0,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
-      "runtimeAllowed": true
+      "runtimeAllowed": false
     },
     {
       "name": "cmdk",
@@ -5601,9 +5357,9 @@
     {
       "name": "jotai",
       "declaredAs": "dependencies",
-      "actualImports": 134,
-      "runtimeImports": 90,
-      "runtimeValueImports": 89,
+      "actualImports": 124,
+      "runtimeImports": 80,
+      "runtimeValueImports": 79,
       "runtimeTypeImports": 1,
       "verificationValueImports": 39,
       "verificationTypeImports": 4,
@@ -5614,9 +5370,9 @@
     {
       "name": "jotai-family",
       "declaredAs": "dependencies",
-      "actualImports": 8,
-      "runtimeImports": 8,
-      "runtimeValueImports": 8,
+      "actualImports": 6,
+      "runtimeImports": 6,
+      "runtimeValueImports": 6,
       "runtimeTypeImports": 0,
       "verificationValueImports": 0,
       "verificationTypeImports": 0,
@@ -5744,10 +5500,10 @@
     {
       "name": "react",
       "declaredAs": "dependencies",
-      "actualImports": 627,
-      "runtimeImports": 430,
-      "runtimeValueImports": 370,
-      "runtimeTypeImports": 60,
+      "actualImports": 567,
+      "runtimeImports": 370,
+      "runtimeValueImports": 312,
+      "runtimeTypeImports": 58,
       "verificationValueImports": 124,
       "verificationTypeImports": 64,
       "decision": "reuse",
@@ -5770,9 +5526,9 @@
     {
       "name": "react-dom",
       "declaredAs": "dependencies",
-      "actualImports": 27,
-      "runtimeImports": 13,
-      "runtimeValueImports": 13,
+      "actualImports": 24,
+      "runtimeImports": 10,
+      "runtimeValueImports": 10,
       "runtimeTypeImports": 0,
       "verificationValueImports": 14,
       "verificationTypeImports": 0,
@@ -5796,9 +5552,9 @@
     {
       "name": "react-markdown",
       "declaredAs": "dependencies",
-      "actualImports": 7,
-      "runtimeImports": 7,
-      "runtimeValueImports": 4,
+      "actualImports": 6,
+      "runtimeImports": 6,
+      "runtimeValueImports": 3,
       "runtimeTypeImports": 3,
       "verificationValueImports": 0,
       "verificationTypeImports": 0,
@@ -5822,9 +5578,9 @@
     {
       "name": "react-router-dom",
       "declaredAs": "dependencies",
-      "actualImports": 169,
-      "runtimeImports": 70,
-      "runtimeValueImports": 69,
+      "actualImports": 153,
+      "runtimeImports": 54,
+      "runtimeValueImports": 53,
       "runtimeTypeImports": 1,
       "verificationValueImports": 90,
       "verificationTypeImports": 6,
@@ -5913,9 +5669,9 @@
     {
       "name": "remark-gfm",
       "declaredAs": "dependencies",
-      "actualImports": 3,
-      "runtimeImports": 3,
-      "runtimeValueImports": 3,
+      "actualImports": 2,
+      "runtimeImports": 2,
+      "runtimeValueImports": 2,
       "runtimeTypeImports": 0,
       "verificationValueImports": 0,
       "verificationTypeImports": 0,
@@ -5965,9 +5721,9 @@
     {
       "name": "sonner",
       "declaredAs": "dependencies",
-      "actualImports": 7,
-      "runtimeImports": 4,
-      "runtimeValueImports": 3,
+      "actualImports": 6,
+      "runtimeImports": 3,
+      "runtimeValueImports": 2,
       "runtimeTypeImports": 1,
       "verificationValueImports": 3,
       "verificationTypeImports": 0,
@@ -5991,15 +5747,15 @@
     {
       "name": "tailwind-merge",
       "declaredAs": "dependencies",
-      "actualImports": 1,
-      "runtimeImports": 1,
-      "runtimeValueImports": 1,
+      "actualImports": 0,
+      "runtimeImports": 0,
+      "runtimeValueImports": 0,
       "runtimeTypeImports": 0,
       "verificationValueImports": 0,
       "verificationTypeImports": 0,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
-      "runtimeAllowed": true
+      "runtimeAllowed": false
     },
     {
       "name": "tailwindcss",
@@ -6082,15 +5838,15 @@
     {
       "name": "vaul",
       "declaredAs": "dependencies",
-      "actualImports": 1,
-      "runtimeImports": 1,
-      "runtimeValueImports": 1,
+      "actualImports": 0,
+      "runtimeImports": 0,
+      "runtimeValueImports": 0,
       "runtimeTypeImports": 0,
       "verificationValueImports": 0,
       "verificationTypeImports": 0,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
-      "runtimeAllowed": true
+      "runtimeAllowed": false
     },
     {
       "name": "vite",
@@ -6108,11 +5864,11 @@
     {
       "name": "vitest",
       "declaredAs": null,
-      "actualImports": 509,
+      "actualImports": 512,
       "runtimeImports": 0,
       "runtimeValueImports": 0,
       "runtimeTypeImports": 0,
-      "verificationValueImports": 509,
+      "verificationValueImports": 511,
       "verificationTypeImports": 0,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
@@ -6121,9 +5877,9 @@
     {
       "name": "zod",
       "declaredAs": "dependencies",
-      "actualImports": 15,
-      "runtimeImports": 14,
-      "runtimeValueImports": 13,
+      "actualImports": 13,
+      "runtimeImports": 12,
+      "runtimeValueImports": 11,
       "runtimeTypeImports": 1,
       "verificationValueImports": 1,
       "verificationTypeImports": 0,
