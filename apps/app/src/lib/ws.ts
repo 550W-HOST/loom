@@ -1,4 +1,5 @@
 import ReconnectingWebSocket from "partysocket/ws";
+import { BB_REALTIME_SUBPROTOCOL } from "@bb/domain";
 import {
   changedMessageLenientSchema,
   pluginSignalLenientSchema,
@@ -41,6 +42,7 @@ export type WebSocketConnectionState =
 
 export const REALTIME_PING_INTERVAL_MS = 25_000;
 export const REALTIME_PONG_TIMEOUT_MS = 5_000;
+export const REALTIME_SUBPROTOCOL = BB_REALTIME_SUBPROTOCOL;
 
 export interface WebSocketManagerBrowserEvents {
   subscribeToVisibility: (listener: () => void) => () => void;
@@ -99,7 +101,7 @@ export class WebSocketManager {
       buildDevWebSocketUrl({ path: "/ws" }) ??
       `${window.location.protocol === "https:" ? "wss:" : "ws:"}//${window.location.host}/ws`;
 
-    const socket = new ReconnectingWebSocket(url, undefined, {
+    const socket = new ReconnectingWebSocket(url, REALTIME_SUBPROTOCOL, {
       minReconnectionDelay: 1000,
       maxReconnectionDelay: 30000,
       reconnectionDelayGrowFactor: 1.5,

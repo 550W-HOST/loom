@@ -10,8 +10,12 @@ use loom_server::http::router;
 use loom_server::state::{AppConfig, AppState};
 use serde_json::{json, Value};
 use tokio::net::TcpStream;
+use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+use tokio_tungstenite::tungstenite::http::HeaderValue;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
+
+use loom_server::PUBLIC_WS_SUBPROTOCOL;
 
 type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
@@ -34,12 +38,14 @@ struct Client {
 }
 
 impl Client {
-    /// Connects and consumes the welcome frame.
+    /// Connects and consumes the hello frame.
     async fn connect(addr: &str) -> Self {
-        let (socket, _) = connect_async(format!("ws://{addr}/ws")).await.unwrap();
+        let (socket, _) = connect_async(format!("ws://{addr}/internal/ws"))
+            .await
+            .unwrap();
         let mut client = Self { socket };
         let welcome = client.recv().await;
-        assert_eq!(welcome["type"], "welcome");
+        assert_eq!(welcome["type"], "hello");
         client
     }
 
@@ -95,6 +101,192 @@ impl Client {
             other => panic!("expected text frame, got {other:?}"),
         }
     }
+}
+
+struct PublicClient {
+    socket: Socket,
+}
+
+impl PublicClient {
+    /// Connects without an Origin header and explicitly negotiates the public protocol.
+    async fn connect(addr: &str) -> Self {
+        let mut request = format!("ws://{addr}/ws").into_client_request().unwrap();
+        request.headers_mut().insert(
+            "Sec-WebSocket-Protocol",
+            HeaderValue::from_static(PUBLIC_WS_SUBPROTOCOL),
+        );
+        assert!(request.headers().get("Origin").is_none());
+        let (socket, response) = connect_async(request).await.unwrap();
+        assert_eq!(
+            response
+                .headers()
+                .get("Sec-WebSocket-Protocol")
+                .and_then(|value| value.to_str().ok()),
+            Some(PUBLIC_WS_SUBPROTOCOL)
+        );
+        Self { socket }
+    }
+
+    async fn send(&mut self, value: Value) {
+        use futures_util::SinkExt;
+        self.socket
+            .send(Message::Text(value.to_string().into()))
+            .await
+            .unwrap();
+    }
+
+    async fn recv(&mut self) -> Value {
+        let message = tokio::time::timeout(TIMEOUT, {
+            use futures_util::StreamExt;
+            self.socket.next()
+        })
+        .await
+        .expect("timed out waiting for a public frame")
+        .expect("public socket closed")
+        .expect("public socket error");
+        match message {
+            Message::Text(text) => serde_json::from_str(text.as_str()).unwrap(),
+            other => panic!("expected public text frame, got {other:?}"),
+        }
+    }
+
+    async fn try_recv(&mut self, window: Duration) -> Option<Value> {
+        let message = tokio::time::timeout(window, {
+            use futures_util::StreamExt;
+            self.socket.next()
+        })
+        .await
+        .ok()?
+        .expect("public socket closed")
+        .expect("public socket error");
+        match message {
+            Message::Text(text) => Some(serde_json::from_str(text.as_str()).unwrap()),
+            other => panic!("expected public text frame, got {other:?}"),
+        }
+    }
+}
+
+#[tokio::test]
+async fn public_socket_is_typed_and_needs_no_origin_header() {
+    let (addr, state) = spawn_server().await;
+    let mut client = PublicClient::connect(&addr).await;
+
+    client.send(json!({ "type": "ping" })).await;
+    assert_eq!(client.recv().await, json!({ "type": "pong" }));
+
+    client
+        .send(json!({ "type": "enroll_host", "name": "not-a-daemon" }))
+        .await;
+    assert!(client.try_recv(Duration::from_millis(100)).await.is_none());
+
+    state.shutdown();
+}
+
+#[tokio::test]
+async fn public_system_subscription_receives_durable_settings_invalidations() {
+    let (addr, state) = spawn_server().await;
+    let mut client = PublicClient::connect(&addr).await;
+    client
+        .send(json!({
+            "type": "subscribe",
+            "target": { "kind": "system" }
+        }))
+        .await;
+    client.send(json!({ "type": "ping" })).await;
+    assert_eq!(client.recv().await, json!({ "type": "pong" }));
+
+    state
+        .publish(
+            Scope::Global,
+            serde_json::to_vec(&json!({
+                "type": "changed",
+                "entity": "system",
+                "changes": ["config-changed"]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+    assert_eq!(
+        client.recv().await,
+        json!({
+            "type": "changed",
+            "entity": "system",
+            "changes": ["config-changed"]
+        })
+    );
+    state.shutdown();
+}
+
+#[tokio::test]
+async fn public_list_and_project_targets_cover_entities_created_after_subscribe() {
+    let (addr, state) = spawn_server().await;
+    let mut list = PublicClient::connect(&addr).await;
+    let mut project = PublicClient::connect(&addr).await;
+    let project_id = loom_domain::ProjectId::mint();
+    let thread_id = loom_domain::ThreadId::mint();
+
+    list.send(json!({
+        "type": "subscribe",
+        "target": { "kind": "thread-list" }
+    }))
+    .await;
+    project
+        .send(json!({
+            "type": "subscribe",
+            "target": { "kind": "project-detail", "projectId": project_id }
+        }))
+        .await;
+    list.send(json!({ "type": "ping" })).await;
+    project.send(json!({ "type": "ping" })).await;
+    assert_eq!(list.recv().await, json!({ "type": "pong" }));
+    assert_eq!(project.recv().await, json!({ "type": "pong" }));
+
+    state
+        .publish_domain_event(&loom_domain::DomainEvent::ThreadStatusChanged {
+            thread_id: thread_id.clone(),
+            project_id: project_id.clone(),
+            from: loom_domain::ThreadStatus::Idle,
+            to: loom_domain::ThreadStatus::Working,
+            at_ms: loom_relay::now_ms(),
+        })
+        .unwrap();
+
+    for message in [list.recv().await, project.recv().await] {
+        assert_eq!(message["type"], "changed");
+        assert_eq!(message["entity"], "thread");
+        assert_eq!(message["id"], thread_id.to_string());
+        assert_eq!(message["metadata"]["projectId"], project_id.to_string());
+        assert_eq!(message["changes"], json!(["status-changed"]));
+    }
+
+    state.shutdown();
+}
+
+#[tokio::test]
+async fn old_daemon_endpoint_receives_a_version_mismatch_frame_then_closes() {
+    use futures_util::StreamExt;
+
+    let (addr, state) = spawn_server().await;
+    let (mut socket, _) = connect_async(format!("ws://{addr}/ws")).await.unwrap();
+    let message = tokio::time::timeout(TIMEOUT, socket.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    let Message::Text(text) = message else {
+        panic!("expected legacy welcome text frame");
+    };
+    let welcome: Value = serde_json::from_str(text.as_str()).unwrap();
+    assert_eq!(welcome["type"], "welcome");
+    assert_eq!(welcome["protocol_version"], loom_server::PROTOCOL_VERSION);
+
+    let closed = tokio::time::timeout(TIMEOUT, socket.next())
+        .await
+        .expect("legacy socket did not close");
+    assert!(matches!(closed, None | Some(Ok(Message::Close(_)))));
+
+    state.shutdown();
 }
 
 #[tokio::test]

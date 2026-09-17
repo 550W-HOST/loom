@@ -1,25 +1,25 @@
-//! WebSocket surface for clients and daemons.
+//! WebSocket surface for public clients and daemons.
 //!
-//! The client protocol is intentionally tiny and scoped. A UI says:
+//! The public client protocol is intentionally tiny and typed. A UI says:
 //!
 //! ```json
 //! // client -> server
-//! {"type":"subscribe","scope":{"kind":"thread","id":"thr_1"}}
-//! {"type":"unsubscribe","scope":{"kind":"thread","id":"thr_1"}}
+//! {"type":"subscribe","target":{"kind":"thread-detail","threadId":"thr_1"}}
+//! {"type":"unsubscribe","target":{"kind":"thread-detail","threadId":"thr_1"}}
 //! {"type":"ping"}
 //! ```
 //!
-//! A daemon uses the same socket to enroll, then follows its own `host:{id}`
+//! A daemon uses `/internal/ws` to enroll, then follows its own `host:{id}`
 //! room:
 //!
 //! ```json
-//! // daemon -> server
+//! // daemon -> server (`/internal/ws`)
 //! {"type":"enroll_host","name":"laptop"}
 //! {"type":"host_heartbeat","host_id":"host_..."}
 //! {"type":"host_disconnect","host_id":"host_..."}
 //!
 //! // server -> daemon
-//! {"type":"welcome","connection_id":1,"protocol_version":2}
+//! {"type":"hello","protocol_version":3}
 //! {"type":"host_enrolled","host":{...},"event_id":"01M..."}
 //! {"type":"host_heartbeat_ack","host_id":"host_...","last_seen_at_ms":1}
 //! {"type":"host_disconnected","host_id":"host_..."}
@@ -28,43 +28,210 @@
 //! {"type":"error","message":"..."}
 //! ```
 //!
-//! Subscribing to a thread is the only thing a UI does to start receiving its
-//! timeline: the same scope a producer published to. No handler is involved,
-//! and the socket never learns what a thread is.
+//! Public clients receive projected `changed` messages. The connection listens
+//! to the relay's complete event stream, then filters those messages against
+//! its typed targets so newly-created entities and narrow detail updates do
+//! not depend on a relay room existing before the subscription.
+
+use std::collections::HashSet;
 
 use axum::extract::ws::{Message, WebSocket};
 use axum::extract::{State, WebSocketUpgrade};
-use axum::response::Response;
+use axum::http::header::SEC_WEBSOCKET_PROTOCOL;
+use axum::http::{HeaderMap, StatusCode};
+use axum::response::{IntoResponse, Response};
 use futures_util::{SinkExt, StreamExt};
 use loom_domain::HostId;
 use loom_relay::event_id::EventId;
 use loom_relay::now_ms;
 use loom_relay::scope::Scope;
+use tokio::sync::broadcast;
 
 use crate::environments::EnvironmentReportOutcome;
 use crate::interactions::RecordOutcome;
-use crate::protocol::{ClientCommand, ServerMessage};
+use crate::protocol::{
+    public_messages_from_frame, ClientMessage, DaemonClientMessage as ClientCommand,
+    DaemonServerMessage as ServerMessage, PublicEntity, ServerMessage as PublicServerMessage,
+    ThreadChangeMetadata,
+};
+use crate::pump::PublicRealtimeEvent;
 use crate::runs::ReportOutcome;
 use crate::state::AppState;
 use crate::transport::ChannelTransport;
+use crate::PUBLIC_WS_SUBPROTOCOL;
 
-/// Upgrades an HTTP request to a client WebSocket.
-pub async fn client_socket(upgrade: WebSocketUpgrade, State(state): State<AppState>) -> Response {
-    upgrade.on_upgrade(move |socket| handle_client(socket, state))
+/// Upgrades an HTTP request to the public bb WebSocket.
+///
+/// Product clients explicitly offer [`PUBLIC_WS_SUBPROTOCOL`]. A connection
+/// without a subprotocol is an old v2 daemon: it receives only the legacy
+/// version-mismatch frame needed to enter self-update, then the socket closes.
+/// No request is classified by `Origin` or user agent.
+pub async fn client_socket(
+    headers: HeaderMap,
+    upgrade: WebSocketUpgrade,
+    State(state): State<AppState>,
+) -> Response {
+    match requested_public_protocol(&headers) {
+        Ok(true) => upgrade
+            .protocols([PUBLIC_WS_SUBPROTOCOL])
+            .on_upgrade(move |socket| handle_public_client(socket, state)),
+        Ok(false) => upgrade.on_upgrade(handle_legacy_daemon),
+        Err(()) => StatusCode::BAD_REQUEST.into_response(),
+    }
 }
 
-async fn handle_client(socket: WebSocket, state: AppState) {
+fn requested_public_protocol(headers: &HeaderMap) -> Result<bool, ()> {
+    let Some(value) = headers.get(SEC_WEBSOCKET_PROTOCOL) else {
+        return Ok(false);
+    };
+    let value = value.to_str().map_err(|_| ())?;
+    if value
+        .split(',')
+        .map(str::trim)
+        .any(|protocol| protocol == PUBLIC_WS_SUBPROTOCOL)
+    {
+        Ok(true)
+    } else {
+        Err(())
+    }
+}
+
+/// Gives a deployed v2 daemon the mismatch it needs to self-update.
+async fn handle_legacy_daemon(mut socket: WebSocket) {
+    let welcome = serde_json::json!({
+        "type": "welcome",
+        "connection_id": 0,
+        "protocol_version": crate::PROTOCOL_VERSION,
+    });
+    let _ = socket.send(Message::Text(welcome.to_string().into())).await;
+    let _ = socket.send(Message::Close(None)).await;
+}
+
+/// Upgrades an HTTP request to the versioned daemon WebSocket.
+pub async fn daemon_socket(upgrade: WebSocketUpgrade, State(state): State<AppState>) -> Response {
+    upgrade.on_upgrade(move |socket| handle_daemon(socket, state))
+}
+
+async fn handle_public_client(mut socket: WebSocket, state: AppState) {
+    let mut events = state.public_events.subscribe();
+    let mut targets = HashSet::new();
+
+    loop {
+        tokio::select! {
+            incoming = socket.recv() => {
+                let Some(Ok(message)) = incoming else {
+                    break;
+                };
+                let text = match message {
+                    Message::Text(text) => text,
+                    Message::Binary(bytes) => match String::from_utf8(bytes.to_vec()) {
+                        Ok(text) => text.into(),
+                        Err(_) => continue,
+                    },
+                    Message::Close(_) => break,
+                    Message::Ping(_) | Message::Pong(_) => continue,
+                };
+
+                let Ok(command) = serde_json::from_str::<ClientMessage>(&text) else {
+                    continue;
+                };
+                if !command.is_valid() {
+                    continue;
+                }
+                match command {
+                    ClientMessage::Subscribe { target } => {
+                        targets.insert(target);
+                    }
+                    ClientMessage::Unsubscribe { target } => {
+                        targets.remove(&target);
+                    }
+                    ClientMessage::Ping => {
+                        let Ok(encoded) = serde_json::to_string(&PublicServerMessage::Pong) else {
+                            continue;
+                        };
+                        if socket.send(Message::Text(encoded.into())).await.is_err() {
+                            break;
+                        }
+                    }
+                }
+            }
+            event = events.recv() => {
+                let envelope = match event {
+                    Ok(PublicRealtimeEvent::Envelope(envelope)) => envelope,
+                    Ok(PublicRealtimeEvent::Reset) => {
+                        let _ = socket.send(Message::Close(None)).await;
+                        break;
+                    }
+                    Err(broadcast::error::RecvError::Lagged(_)) => {
+                        // The public protocol has no replay cursor. Closing is
+                        // the recovery signal: the app reconnects, re-subscribes
+                        // and invalidates caches loaded before the disconnect.
+                        let _ = socket.send(Message::Close(None)).await;
+                        break;
+                    }
+                    Err(broadcast::error::RecvError::Closed) => break,
+                };
+                let messages = public_messages_from_frame(&envelope.payload);
+                for mut message in messages {
+                    attach_thread_project(&state, &mut message);
+                    if !message.is_valid() {
+                        continue;
+                    }
+                    if !targets.iter().any(|target| message.matches_target(target)) {
+                        continue;
+                    }
+                    let Ok(encoded) = serde_json::to_string(&message) else {
+                        continue;
+                    };
+                    if socket.send(Message::Text(encoded.into())).await.is_err() {
+                        return;
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn attach_thread_project(state: &AppState, message: &mut PublicServerMessage) {
+    let PublicServerMessage::Changed {
+        entity: PublicEntity::Thread,
+        id: Some(thread_id),
+        metadata,
+        ..
+    } = message
+    else {
+        return;
+    };
+    if metadata
+        .as_ref()
+        .and_then(|metadata| metadata.project_id.as_ref())
+        .is_some()
+    {
+        return;
+    }
+    let Ok(thread_id) = thread_id.parse::<loom_domain::ThreadId>() else {
+        return;
+    };
+    let Some(thread) = state.registry.thread(&thread_id) else {
+        return;
+    };
+    metadata
+        .get_or_insert_with(ThreadChangeMetadata::default)
+        .project_id = Some(thread.project_id.to_string());
+}
+
+async fn handle_daemon(socket: WebSocket, state: AppState) {
     let (mut sink, mut stream) = socket.split();
     let (transport, mut outbound) = ChannelTransport::with_default_capacity();
 
-    let Ok(connection_id) = state.hub.connect(Box::new(transport), Scope::Global).await else {
+    let pending_scope = Scope::Client(format!("daemon-pending-{}", EventId::new()));
+    let Ok(connection_id) = state.hub.connect(Box::new(transport), pending_scope).await else {
         return;
     };
 
     if send(
         &mut sink,
-        &ServerMessage::Welcome {
-            connection_id,
+        &ServerMessage::Hello {
             protocol_version: crate::PROTOCOL_VERSION,
         },
     )
@@ -137,10 +304,19 @@ async fn handle_client(socket: WebSocket, state: AppState) {
         // no connection has no drivable sessions. The record survives — the
         // process may still be alive on that machine — but its status does not
         // claim to be usable.
+        let disconnected_sessions: Vec<_> = state
+            .terminals
+            .list()
+            .into_iter()
+            .filter(|session| session.host_id == host_id)
+            .collect();
         let changed = state
             .terminals
             .mark_host_disconnected(&host_id, loom_relay::now_ms());
         if changed > 0 {
+            for session in &disconnected_sessions {
+                crate::b9::publish_terminal_change(&state, session.thread_id.as_ref());
+            }
             eprintln!(
                 "loom-server: marked {changed} terminal session(s) disconnected with host {host_id}"
             );

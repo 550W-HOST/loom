@@ -33,7 +33,7 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 
 use crate::error::DomainError;
-use crate::id::{QueuedMessageId, ThreadId};
+use crate::id::{ProjectId, QueuedMessageId, ThreadId};
 use crate::thread::ReasoningLevel;
 
 /// A queued message's position in its own small lifecycle.
@@ -179,6 +179,9 @@ pub struct QueuedMessage {
     pub id: QueuedMessageId,
     /// The thread the message will be delivered to.
     pub thread_id: ThreadId,
+    /// Owning project, retained so cross-node realtime projection needs no lookup.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<ProjectId>,
     /// The thread it was sent *from*, when it came from another conversation.
     pub sender_thread_id: Option<ThreadId>,
     /// Who queued it.
@@ -271,6 +274,7 @@ impl QueuedMessage {
         Ok(Self {
             id: QueuedMessageId::mint(),
             thread_id: new.thread_id,
+            project_id: None,
             sender_thread_id: new.sender_thread_id,
             initiator: new.initiator,
             text: new.text,

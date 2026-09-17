@@ -3,7 +3,10 @@ import type {
   ClientMessage,
   RealtimeSubscriptionTarget,
 } from "@bb/domain";
-import { realtimeSubscriptionTargetKey } from "@bb/domain";
+import {
+  BB_REALTIME_SUBPROTOCOL,
+  realtimeSubscriptionTargetKey,
+} from "@bb/domain";
 import {
   serverMessageLenientSchema,
   type ServerMessage,
@@ -151,7 +154,8 @@ function resolveDefaultWebsocketFactory(): BbRealtimeSocketFactory | null {
   if (typeof WebSocket === "undefined") {
     return null;
   }
-  return (url) => wrapStandardWebsocket(new WebSocket(url));
+  return (url, protocols) =>
+    wrapStandardWebsocket(new WebSocket(url, protocols));
 }
 
 function isTargetedListener(
@@ -355,6 +359,7 @@ export class BbRealtimeClient implements BbRealtime {
     }
     const socket = websocketFactory(
       resolveRealtimeUrl({ transport: this.transport }),
+      BB_REALTIME_SUBPROTOCOL,
     );
 
     if (this.reconnectTimer) {

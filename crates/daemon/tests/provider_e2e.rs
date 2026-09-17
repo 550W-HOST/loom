@@ -722,7 +722,7 @@ async fn a_run_on_a_silent_daemon_is_reaped_by_the_stale_heartbeat_sweep() {
 #[test]
 fn the_protocol_version_is_pinned() {
     // A wire-format change has to be deliberate; this fails loudly otherwise.
-    assert_eq!(PROTOCOL_VERSION, 2);
+    assert_eq!(PROTOCOL_VERSION, 3);
 }
 
 #[tokio::test]

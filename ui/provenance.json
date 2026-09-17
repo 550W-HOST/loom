@@ -8588,7 +8588,7 @@
       "localSourceDisposition": "loom-native-reference-client",
       "sourceTree": {
         "files": 7,
-        "sha256": "d54cebb6556bc4d0e0a198fcf9e8487ccc2cad930b21ae98e8845e421bd91cd2"
+        "sha256": "b07d302687956d584507c47fd56a05f374a21ae7bc90d65f26b34b26a9c4db3d"
       },
       "packageJson": {
         "bytes": 507,
@@ -8611,20 +8611,20 @@
       "dependencyDigest": "d4fe9eceba8c40e09ab7f77258786956a027269ac7d032bd212e245baaed5776",
       "bundlePath": "ui/app.js",
       "bundle": {
-        "bytes": 1233748,
-        "sha256": "abe6eebd4a112abda64c53b3a6829bd6c688b78b2a6a7e289ee689c9d2e4ce10"
+        "bytes": 1233757,
+        "sha256": "9f06e0abcf678e520ea5e127799aac6ec6b514622d19ff9262a855e95de1390e"
       }
     },
     "productApp": {
       "upstreamPath": "apps/app",
       "localPath": "apps/app",
       "disposition": "source-port",
-      "gitTree": "32b28a564d7389ed14f0b56a7075146636e1660b",
+      "gitTree": "94e08aab0b39096adbd186d9329e2673c75e2aed",
       "snapshot": {
         "path": "apps/app",
         "tree": {
           "files": 1466,
-          "sha256": "69371cab1d5b3b9902d8082cfe2587cf62378a7119aac92dd57619de511b39ce"
+          "sha256": "c95dd3516ee60dd3773118d3fc5365280bae6f80148fc806343922b1987e8436"
         },
         "files": [
           {
@@ -15334,13 +15334,13 @@
           },
           {
             "path": "src/lib/ws.test.ts",
-            "bytes": 13129,
-            "sha256": "d2dacd6e444435b7b29dfbbded4f071349c56f8c0a9f3350f764e9b2e7c896ad"
+            "bytes": 13630,
+            "sha256": "3fa5f85da12aa0b5e6e3386e4ed5bc4f24ac66155dc72ea9e2371df858ea453f"
           },
           {
             "path": "src/lib/ws.ts",
-            "bytes": 12742,
-            "sha256": "d54d90917a98648f693f842202dfae2c7492f47da06a55f70f42ee3f402dfd6a"
+            "bytes": 12868,
+            "sha256": "afa43ecdbc17e03c2cdf9b3a1043fc08d51f42df52fb4fe4cf50108f6572bec8"
           },
           {
             "path": "src/loom/LoomShellBoundary.test.tsx",
@@ -15374,8 +15374,8 @@
           },
           {
             "path": "src/loom/loom-native-boundaries.test.ts",
-            "bytes": 4229,
-            "sha256": "eab83b1fb94f41d3bcc9fbd18e5c426e099a033fa11d3df90c8c8ad44810c6f4"
+            "bytes": 4412,
+            "sha256": "3a20c9a6248d021dda1d1f59f50eb5633b871296b0c10b088d13935e82cdc9cf"
           },
           {
             "path": "src/loom/loom-thread-runtime.test.ts",
@@ -15404,8 +15404,8 @@
           },
           {
             "path": "src/main.tsx",
-            "bytes": 1776,
-            "sha256": "59689827082a73853db50daa123894365fb42ab1f39cebeddaf9798e22a30cf7"
+            "bytes": 1938,
+            "sha256": "f9cb738a91501ef4e688f904f7efa4a75571cd48980598440afbfc3b98d1fe25"
           },
           {
             "path": "src/precompress-app-dist.test.ts",
@@ -15944,8 +15944,8 @@
           },
           {
             "path": "vite.dev.config.ts",
-            "bytes": 944,
-            "sha256": "c1dea3a9c23518b31a3a3a6fb3311f754e4e6e7b3ed4f133bc9fab2695f9cb74"
+            "bytes": 1091,
+            "sha256": "7c887a610161cdd5d8f687d54c9b96b704a3d5648d8a9dd544e5c433c5e0a5c1"
           },
           {
             "path": "vitest.config.ts",
@@ -15954,8 +15954,8 @@
           },
           {
             "path": "vitest.loom.config.ts",
-            "bytes": 1263,
-            "sha256": "47b8abba5431d4c1db97ce1c080b88ab42a34f03b5dbf48bfd4797ce296009f2"
+            "bytes": 1341,
+            "sha256": "17baa389ce08b794f0eea095b44b5f174c8a580f9fcfb33add2f804679b50258"
           }
         ]
       }
@@ -15965,11 +15965,11 @@
         "name": "@bb/domain",
         "upstreamPath": "packages/domain",
         "disposition": "retain-source",
-        "gitTree": "818e8405783536193677024e00072805341a52f0",
+        "gitTree": "152a5bb09211ac5e75eee5e5f44b787cc2c62e01",
         "path": "ui/packages/domain",
         "tree": {
           "files": 53,
-          "sha256": "8067470830e3bef1b80d0bd30c382f9987ea700f00f93b02e0406adea6b9962c"
+          "sha256": "6c5342c28363b5c63f6801bcd2d04979a0acdbf01b3c84f110a94b145cbd0eed"
         },
         "packageJson": {
           "bytes": 474,
@@ -16302,11 +16302,11 @@
         "name": "@bb/sdk",
         "upstreamPath": "packages/sdk",
         "disposition": "retain-source",
-        "gitTree": "8bb24dda8e89d2b762edf87c248af1e76b524780",
+        "gitTree": "a1af04b2c23c66ea3fe082574f538622582f23b4",
         "path": "ui/packages/sdk",
         "tree": {
-          "files": 39,
-          "sha256": "37b6e9f9362d87f923f7d275eae657c442d96932901e1720b8c67a30c69bd2e4"
+          "files": 40,
+          "sha256": "f102890a53de6060583f373f2a61d622fd0f41a4fb0efaf0a8a0e7f2f2548406"
         },
         "packageJson": {
           "bytes": 810,

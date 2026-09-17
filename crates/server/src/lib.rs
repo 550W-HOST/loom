@@ -65,7 +65,9 @@ pub use host_rpc::{HostRpcBroker, HostRpcTransportError, HOST_RPC_TIMEOUT};
 pub use hub_actor::{HubCommand, HubHandle};
 pub use interactions::DeliverOutcome;
 pub use persistence::{DomainSnapshot, SnapshotError, SNAPSHOT_FILE};
-pub use protocol::{ClientCommand, ServerMessage};
+pub use protocol::{
+    ClientMessage, DaemonClientMessage, DaemonServerMessage, ServerMessage, SubscriptionTarget,
+};
 pub use pump::{Pump, PumpConfig};
 pub use queue::{DeliveryOutcome, WaitingOn};
 pub use runs::{
@@ -77,7 +79,14 @@ pub use transport::ChannelTransport;
 
 /// Protocol version reported by `/api/v1/version` and negotiated by daemons.
 ///
-/// Version 2 makes ACP the only provider wire protocol and removes the legacy
-/// direct-Pi JSON-RPC launch kind. Server and daemon must upgrade together (or
-/// use the existing daemon self-update path).
-pub const PROTOCOL_VERSION: u32 = 2;
+/// Version 3 separates the public bb `/ws` protocol from the daemon
+/// `/internal/ws` protocol and introduces the daemon `hello` handshake. Server
+/// and daemon must upgrade together (or use the existing daemon self-update
+/// path).
+pub const PROTOCOL_VERSION: u32 = 3;
+
+/// Explicit transport negotiation token for the public bb realtime protocol.
+///
+/// Connections without this token are handled only by the temporary v2 daemon
+/// migration shim; client role is never inferred from `Origin`.
+pub const PUBLIC_WS_SUBPROTOCOL: &str = "loom-bb-realtime-v1";

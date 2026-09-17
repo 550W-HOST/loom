@@ -1,7 +1,7 @@
 //! Batch B10: server settings, themes and UI preferences.
 //!
-//! These handlers own server-local configuration state. They never publish a
-//! relay frame: settings are persisted in the domain snapshot, while active
+//! These handlers own server-local configuration state. Settings are persisted
+//! in the domain snapshot and publish typed public cache invalidations; active
 //! runs remain owned by the run registry and provider session on the daemon.
 
 #![allow(clippy::result_large_err)]
@@ -13,6 +13,7 @@ use axum::Json;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
+use crate::protocol::{PublicChangeKind, PublicEntity, ServerMessage};
 use crate::settings::{
     self, ExperimentSettings, GeneralSettings, PreferenceUpdateError, UiPreference,
 };
@@ -38,6 +39,18 @@ fn persist(state: &AppState) -> Result<(), Response> {
 
 fn invalid_settings(message: impl Into<String>) -> Response {
     api_error(StatusCode::BAD_REQUEST, "invalid_request", message)
+}
+
+fn publish_system_change(state: &AppState, change: PublicChangeKind) {
+    let message = ServerMessage::Changed {
+        entity: PublicEntity::System,
+        id: None,
+        metadata: None,
+        changes: vec![change],
+    };
+    if let Err(error) = state.publish_public_change(&message) {
+        eprintln!("loom-server: could not publish settings invalidation: {error}");
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -68,6 +81,7 @@ pub async fn update_appearance(
     if let Err(response) = persist(&state) {
         return response;
     }
+    publish_system_change(&state, PublicChangeKind::ConfigChanged);
     Json(settings::appearance_value(&appearance)).into_response()
 }
 
@@ -100,6 +114,7 @@ pub async fn update_experiments(
     if let Err(response) = persist(&state) {
         return response;
     }
+    publish_system_change(&state, PublicChangeKind::ConfigChanged);
     Json(settings::experiments_value(&experiments)).into_response()
 }
 
@@ -141,6 +156,7 @@ pub async fn update_general(
     if let Err(response) = persist(&state) {
         return response;
     }
+    publish_system_change(&state, PublicChangeKind::ConfigChanged);
     Json(settings::general_value(&general)).into_response()
 }
 
@@ -158,6 +174,7 @@ pub async fn update_keyboard(
     if let Err(response) = persist(&state) {
         return response;
     }
+    publish_system_change(&state, PublicChangeKind::ConfigChanged);
     Json(Value::Array(keyboard)).into_response()
 }
 
@@ -344,6 +361,7 @@ pub async fn update_ui_preference(
     if let Err(response) = persist(&state) {
         return response;
     }
+    publish_system_change(&state, PublicChangeKind::UiPreferencesChanged);
     preference_response(&key, preference)
 }
 
@@ -359,12 +377,47 @@ pub async fn reset_ui_preference(
     if let Err(response) = persist(&state) {
         return response;
     }
+    publish_system_change(&state, PublicChangeKind::UiPreferencesChanged);
     preference_response(&key, preference)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn settings_mutation_publishes_a_typed_system_invalidation() {
+        let state = AppState::build(crate::state::AppConfig::default()).unwrap();
+        let mut events = state.public_events.subscribe();
+
+        let response = update_appearance(
+            State(state.clone()),
+            Json(AppearanceRequest {
+                theme_id: "default".into(),
+                favicon_color: "blue".into(),
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let event = tokio::time::timeout(std::time::Duration::from_secs(2), events.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        let crate::pump::PublicRealtimeEvent::Envelope(envelope) = event else {
+            panic!("settings success unexpectedly reset public realtime");
+        };
+        let messages = crate::protocol::public_messages_from_frame(&envelope.payload);
+        assert_eq!(
+            serde_json::to_value(messages.first().unwrap()).unwrap(),
+            json!({
+                "type": "changed",
+                "entity": "system",
+                "changes": ["config-changed"]
+            })
+        );
+        state.shutdown();
+    }
 
     #[test]
     fn usage_limit_fallback_is_not_an_ok_window() {

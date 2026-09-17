@@ -10,6 +10,8 @@ import {
   threadStatusSchema,
 } from "./thread.js";
 
+export const BB_REALTIME_SUBPROTOCOL = "loom-bb-realtime-v1";
+
 export const THREAD_CHANGE_KINDS = [
   "thread-created",
   "thread-deleted",

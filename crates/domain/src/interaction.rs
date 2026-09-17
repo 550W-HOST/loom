@@ -40,7 +40,7 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 
 use crate::error::DomainError;
-use crate::id::{InteractionId, ThreadId};
+use crate::id::{InteractionId, ProjectId, ThreadId};
 
 /// Where an interaction is in its life.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -317,6 +317,9 @@ pub struct Interaction {
     pub id: InteractionId,
     /// The thread the request belongs to.
     pub thread_id: ThreadId,
+    /// Owning project, retained so cross-node realtime projection needs no lookup.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<ProjectId>,
     /// The turn that raised it. The contract requires a turn id; a provider
     /// frame that arrives outside a run is recorded against the thread's most
     /// recent run, and an interaction with no run at all carries the empty
@@ -398,6 +401,7 @@ impl Interaction {
         Ok(Self {
             id: new.id.unwrap_or_else(InteractionId::mint),
             thread_id: new.thread_id,
+            project_id: None,
             turn_id: new.turn_id,
             kind: new.kind,
             origin: new.origin,

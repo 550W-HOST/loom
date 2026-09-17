@@ -7,7 +7,7 @@
 //!
 //! 1. **Pull, not push.** The daemon asks on connect; the server never tells a
 //!    connected daemon to update. Everything needed is already in the handshake
-//!    — the server's protocol version arrives in the `welcome` frame — so the
+//!    — the server's protocol version arrives in the internal `hello` frame — so the
 //!    daemon needs no update state machine driven by the control plane and the
 //!    server never has to track who is current. See `docs/upgrades.md` for the
 //!    conclusion and the trade-offs against a push design.

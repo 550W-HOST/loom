@@ -192,11 +192,11 @@ async fn spawn_scripted_host(
     addr: &str,
     requests: mpsc::UnboundedSender<HostRpcOperation>,
 ) -> (HostId, JoinHandle<()>) {
-    let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/ws"))
+    let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/internal/ws"))
         .await
         .unwrap();
     let welcome = recv_value(&mut socket).await;
-    assert_eq!(welcome["type"], "welcome");
+    assert_eq!(welcome["type"], "hello");
     socket
         .send(Message::Text(
             json!({ "type": "enroll_host", "name": "b6-scripted" })

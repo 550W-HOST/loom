@@ -95,12 +95,16 @@ describe("loom-native boundaries", () => {
     expect(pairingCode).not.toContain("curl ");
   });
 
-  it("never invents realtime to stand in for HTTP", () => {
-    // The shell must load over HTTP. Opening a WebSocket would make
-    // loading/empty/error unreachable and belongs to the realtime issue.
+  it("keeps realtime separate from the HTTP shell boundary", () => {
+    // Shell loading/error/empty state still comes from HTTP. Realtime is
+    // mounted beside it in the composition root after W-587.
     const boundary = read("src/loom/LoomShellBoundary.tsx");
     expect(boundary).not.toContain("wsManager");
     expect(boundary).not.toContain("useWebSocket");
     expect(boundary).not.toContain("setInterval");
+
+    const main = read("src/main.tsx");
+    expect(main).toContain('import { useWebSocket } from "./hooks/useWebSocket"');
+    expect(main).toContain("<LoomRealtimeConnection />");
   });
 });

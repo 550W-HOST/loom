@@ -457,6 +457,7 @@ pub fn router(state: AppState) -> Router {
             post(crate::b9::terminals_restart),
         )
         .route("/ws", get(ws::client_socket))
+        .route("/internal/ws", get(ws::daemon_socket))
         // Daemon self-update: the version to compare against, and the binary
         // that matches it. Deliberately not behind the `/api` namespace — a
         // daemon fetching its own replacement is not a domain operation — and

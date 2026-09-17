@@ -17,6 +17,8 @@ export default defineConfig({
       "src/loom/**/*.test.ts",
       "src/loom/**/*.test.tsx",
       "src/hooks/queries/sidebar-navigation-query.test.tsx",
+      "src/hooks/realtime-cache-effects.test.ts",
+      "src/lib/ws.test.ts",
       "src/App.hash-navigation.test.tsx",
       "src/lib/route-paths.test.ts",
       "src/lib/split-layout/persistence.test.ts",

@@ -52,11 +52,10 @@ Two prerequisites for installability, both satisfied by the Tailscale path:
 
 ## What works, and what does not
 
-- Works: browse projects and threads, read timelines, send messages. The client
-  subscribes to `thread:{id}` on `/ws`, then replays the backlog from
-  `localStorage` cursor `loom:last-event:<kind>:<id>`, merging live and replayed
-  frames by `event_id` — so backgrounding the app and returning does not lose
-  frames.
+- Works: browse projects and threads, read timelines, send messages. The product
+  app subscribes to typed targets on public `/ws`; reconnect invalidates caches
+  and reloads them over HTTP. The embedded reference client uses
+  `/internal/ws` plus its persisted raw-relay replay cursor.
 - Works: several phones, a desktop and a webview watching the same threads at
   once. Frames fan out from the relay; none of them is authoritative.
 - Does not work: modifying the phone's own filesystem or running an agent

@@ -509,6 +509,7 @@ mod tests {
                 message: ThreadMessage {
                     id: crate::id::MessageId::mint(),
                     thread_id: ThreadId::mint(),
+                    project_id: None,
                     role: MessageRole::User,
                     content: "x".into(),
                     created_at_ms: 1,

@@ -1,6 +1,8 @@
 # Upgrading
 
-loom is three artifacts that must agree on one number:
+loom ships three coordinated artifacts. The server and daemon negotiate one
+internal protocol number; the bundled UI uses the separately exported bb public
+schema and WebSocket subprotocol:
 
 | Artifact | What it is | Where it runs |
 | --- | --- | --- |
@@ -19,9 +21,13 @@ an in-process swap — and this page is how that is used rather than fought.
 
 Two version fields exist, and only one of them is a compatibility gate:
 
-- **`protocol_version`** — the wire contract on `/ws` and for
-  `RunDispatch`/`ProviderReport`. Currently `2`
-  (`crates/server/src/lib.rs`, bumped for the ACP-only provider wire). **This is the gate.**
+- **`protocol_version`** — the internal daemon wire contract on `/internal/ws`
+  and for `RunDispatch`/`ProviderReport`. Currently `3`
+  (`crates/server/src/lib.rs`, bumped for the public/internal WebSocket split).
+  **This is the daemon compatibility gate.**
+- **`loom-bb-realtime-v1`** — the explicit public `/ws` subprotocol. Its message
+  shapes are validated against `contracts/bb/client-ws.json`; it is not selected
+  from `Origin`.
 - **`version`** — the crate semver (`0.1.0`). Informational; releases with the
   same `protocol_version` are interoperable regardless of `version`.
 
@@ -29,16 +35,16 @@ Two version fields exist, and only one of them is a compatibility gate:
 
 ```bash
 curl -s http://127.0.0.1:38886/api/v1/version
-# {"version":"0.1.0","protocol_version":2}
+# {"version":"0.1.0","protocol_version":3}
 ```
 
-The server also sends `protocol_version` in the first frame of every `/ws`
-connection (`{"type":"welcome",…,"protocol_version":2}`). A daemon reads it
-before enrolling and refuses a mismatch
-(`loom_daemon::ensure_compatible_protocol`) — and now, instead of failing
-permanently, that refusal **starts the update flow below**. The reference UI
-bundle does not yet enforce it, so treat the bundle as required to match the
-server's release as well.
+The server sends `protocol_version` in the first `hello` frame on
+`/internal/ws`. A v3 daemon reads it before enrolling and refuses a mismatch
+(`loom_daemon::ensure_compatible_protocol`). During the v2 to v3 transition, an
+old daemon still dials `/ws` without a WebSocket subprotocol; the server sends
+one legacy `welcome` carrying v3 and closes, which drives that daemon into the
+same self-update flow. A public client must negotiate `loom-bb-realtime-v1` and
+never sees either internal handshake.
 
 Both binaries answer the same question about the file itself, before either one
 has been started — which is what a download has to be checked with
@@ -46,16 +52,17 @@ has been started — which is what a download has to be checked with
 
 ```bash
 loom-server --version
-# loom-server 0.1.0 (x86_64-unknown-linux-musl, protocol 2, commit 0f1e2d3c…)
+# loom-server 0.1.0 (x86_64-unknown-linux-musl, protocol 3, commit 0f1e2d3c…)
 ```
 
 The line names the target triple and the commit the file was built from as well
 as the version, so two binaries from different releases are told apart without
 starting either of them.
 
-> **Rule:** every server, every daemon and the UI bundle must be from releases
-> with the same `protocol_version`. Within that, upgrade in any order; across it,
-> the daemon follows the server.
+> **Rule:** server and daemon must speak the same internal `protocol_version`,
+> and the UI bundle must match the server's exported public schema. For a
+> protocol bump, deploy the server first: old daemons receive the migration
+> mismatch and pull the matching binary before they can enroll.
 
 A mismatch is not a degraded mode. The daemon refuses to enroll, and — with
 self-update enabled, which is the default — installs the server's own daemon and
@@ -70,7 +77,7 @@ curl -s http://127.0.0.1:38886/api/v1/version | grep protocol_version
 
 # what the server hosts for daemons
 curl -s http://127.0.0.1:38886/install/version
-# {"version":"0.1.0","protocolVersion":2}
+# {"version":"0.1.0","protocolVersion":3}
 
 # each daemon reports the number it speaks at startup, and a mismatch in its log
 journalctl -u 'loom-host-daemon@builder-1' | grep -i 'protocol version'
@@ -118,38 +125,31 @@ A protocol mismatch on connect now ends in a restart, not in a permanent
 failure:
 
 ```text
-  daemon                                server (new protocol 2)
+  deployed v2 daemon                    server (protocol 3)
     │                                         │
-    │── dial /ws ────────────────────────────▶│
-    │◀─ welcome {protocol_version: 2} ────────│
+    │── dial /ws (no subprotocol) ──────────▶│
+    │◀─ legacy welcome {protocol_version:3} ─│
+    │◀─ close ───────────────────────────────│
     │                                         │
-    │  ensure_compatible_protocol(2)
-    │    local is 1 → ProtocolMismatch        │
+    │  ensure_compatible_protocol(3)
+    │    local is 2 → ProtocolMismatch        │
     │  (nothing enrolled; no dispatch read)   │
     │                                         │
     │── GET /install/version ────────────────▶│
-    │◀─ {version, protocolVersion: 2} ────────│
-    │   2 > 1, so an update is warranted      │
-    │  (2 <= 1 would be a DOWNGRADE → refuse) │
-    │                                         │
+    │◀─ {version, protocolVersion:3} ─────────│
     │── GET /install/loom-daemon ────────────▶│
     │   ?target=<this binary's triple>        │
-    │   If-None-Match: "sha256-<installed>"    │  (only after a first install)
-    │◀─ 200 + X-Loom-Artifact-Sha256: <d> ────│   or 304, already installed
+    │   If-None-Match: "sha256-<installed>"   │
+    │◀─ 200 + X-Loom-Artifact-Sha256: <d> ───│
     │                                         │
-    │  sha256(bytes) == d ?  ──── no ──▶ fail, keep running, back off
-    │         │ yes
-    │         ▼
-    │  write <.loom-daemon.update.PID> in the install directory
-    │  fsync; chmod 0755; rename over the running executable
-    │  record <d> in host-artifact.sha256
-    │                                         │
+    │  verify digest; fsync; chmod 0755;      │
+    │  atomically rename; record digest       │
     │  exit 0                                 │
     ▼                                         │
-  systemd Restart=always starts the new file ─┘
+  systemd starts the v3 binary ───────────────┘
     │
-    │── dial /ws ────────────────────────────▶│
-    │◀─ welcome {protocol_version: 2} ────────│
+    │── dial /internal/ws ──────────────────▶│
+    │◀─ hello {protocol_version:3} ──────────│
     │  match → enroll → subscribe → replay from the persisted cursor
     ▼
 ```
@@ -158,7 +158,7 @@ failure:
 
 | Route | Answer |
 | --- | --- |
-| `GET /install/version` | `{"version":"0.1.0","protocolVersion":2}` |
+| `GET /install/version` | `{"version":"0.1.0","protocolVersion":3}` |
 | `GET /install/loom-daemon?target=<triple>` | the binary, with `X-Loom-Artifact-Sha256` and `ETag` |
 
 The server looks in `LOOM_ARTIFACT_DIR`, and **by default in the directory
@@ -220,7 +220,8 @@ between the two steps all leave the old binary in place and working.
 ### In-flight runs
 
 The update is only attempted on a connection that **never enrolled**: the
-protocol refusal happens on the `welcome` frame, before `enroll_host` and before
+protocol refusal happens on the internal `hello` frame (or the temporary v2
+migration `welcome`), before `enroll_host` and before
 a single dispatch is read. So the process that performs an update has no run in
 flight on that connection.
 

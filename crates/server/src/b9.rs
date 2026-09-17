@@ -62,6 +62,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::host_files::HostFileTransportError;
+use crate::protocol::{PublicChangeKind, PublicEntity, ServerMessage, ThreadChangeMetadata};
 use crate::state::AppState;
 use crate::terminals::{TerminalSessions, TerminalTransportError};
 use crate::{b5::validate_absolute_path, b5::validate_relative_path};
@@ -177,6 +178,25 @@ fn terminal_failure(code: &str, message: &str) -> Response {
         _ => (StatusCode::BAD_GATEWAY, "host_unavailable"),
     };
     api_error(status, public_code, message)
+}
+
+pub(crate) fn publish_terminal_change(state: &AppState, thread_id: Option<&loom_domain::ThreadId>) {
+    let project_id = thread_id
+        .and_then(|thread_id| state.registry.thread(thread_id))
+        .map(|thread| thread.project_id.to_string());
+    let metadata = project_id.map(|project_id| ThreadChangeMetadata {
+        project_id: Some(project_id),
+        ..ThreadChangeMetadata::default()
+    });
+    let message = ServerMessage::Changed {
+        entity: PublicEntity::Thread,
+        id: thread_id.map(ToString::to_string),
+        metadata,
+        changes: vec![PublicChangeKind::TerminalsChanged],
+    };
+    if let Err(error) = state.publish_public_change(&message) {
+        eprintln!("loom-server: could not publish terminal invalidation: {error}");
+    }
 }
 
 /* ------------------------------------------------------------------ */
@@ -391,6 +411,44 @@ pub struct TerminalUpdateRequest {
 struct FileScope {
     host_id: HostId,
     root: Option<String>,
+}
+
+fn path_is_within(path: &str, parent: &str) -> bool {
+    let path = path.trim_end_matches(['/', '\\']);
+    let parent = parent.trim_end_matches(['/', '\\']);
+    path == parent
+        || path
+            .strip_prefix(parent)
+            .is_some_and(|suffix| suffix.starts_with('/') || suffix.starts_with('\\'))
+}
+
+fn publish_file_scope_change(state: &AppState, scope: &FileScope) {
+    let Some(root) = scope.root.as_deref() else {
+        return;
+    };
+    let Some(environment) = state
+        .registry
+        .environments()
+        .into_iter()
+        .find(|environment| {
+            environment.host_id == scope.host_id
+                && environment
+                    .path
+                    .as_deref()
+                    .is_some_and(|path| path_is_within(root, path))
+        })
+    else {
+        return;
+    };
+    let message = ServerMessage::Changed {
+        entity: PublicEntity::Environment,
+        id: Some(environment.id.to_string()),
+        metadata: None,
+        changes: vec![PublicChangeKind::WorkStatusChanged],
+    };
+    if let Err(error) = state.publish_public_change(&message) {
+        eprintln!("loom-server: could not publish file invalidation: {error}");
+    }
 }
 
 /// Resolves the host and root for a file route.
@@ -678,7 +736,10 @@ pub async fn files_mkdir(
         .await;
     match outcome {
         Err(error) => transport_error(error),
-        Ok(HostFileOutcome::Done) => Json(json!({ "ok": true })).into_response(),
+        Ok(HostFileOutcome::Done) => {
+            publish_file_scope_change(&state, &scope);
+            Json(json!({ "ok": true })).into_response()
+        }
         Ok(HostFileOutcome::Failed { code, message }) => host_file_failure(&code, &message),
         Ok(_) => api_error(
             StatusCode::BAD_GATEWAY,
@@ -732,7 +793,10 @@ pub async fn files_move(
         .await;
     match outcome {
         Err(error) => transport_error(error),
-        Ok(HostFileOutcome::Done) => Json(json!({ "ok": true })).into_response(),
+        Ok(HostFileOutcome::Done) => {
+            publish_file_scope_change(&state, &scope);
+            Json(json!({ "ok": true })).into_response()
+        }
         Ok(HostFileOutcome::Failed { code, message }) => host_file_failure(&code, &message),
         Ok(_) => api_error(
             StatusCode::BAD_GATEWAY,
@@ -778,7 +842,10 @@ pub async fn files_remove(
         .await;
     match outcome {
         Err(error) => transport_error(error),
-        Ok(HostFileOutcome::Done) => Json(json!({ "ok": true })).into_response(),
+        Ok(HostFileOutcome::Done) => {
+            publish_file_scope_change(&state, &scope);
+            Json(json!({ "ok": true })).into_response()
+        }
         Ok(HostFileOutcome::Failed { code, message }) => host_file_failure(&code, &message),
         Ok(_) => api_error(
             StatusCode::BAD_GATEWAY,
@@ -929,6 +996,7 @@ pub async fn files_write(
                     "the host wrote the file but did not report its hash",
                 );
             };
+            publish_file_scope_change(&state, &scope);
             Json(json!({
                 "outcome": "written",
                 "sha256": sha256,
@@ -1005,6 +1073,9 @@ pub fn close_thread_terminals(
     let closing = state
         .terminals
         .threads_to_close(thread_id, reason, loom_relay::now_ms());
+    if !closing.is_empty() {
+        publish_terminal_change(state, Some(thread_id));
+    }
     spawn_close_terminals(state, closing);
 }
 
@@ -1015,6 +1086,11 @@ pub fn close_environment_terminals(state: &AppState, environment_id: &loom_domai
         loom_provider_protocol::TerminalCloseReason::EnvironmentDestroyed,
         loom_relay::now_ms(),
     );
+    for id in &closing {
+        if let Some(session) = state.terminals.get(id) {
+            publish_terminal_change(state, session.thread_id.as_ref());
+        }
+    }
     spawn_close_terminals(state, closing);
 }
 
@@ -1288,6 +1364,7 @@ pub async fn terminals_create(
         Ok(TerminalOutcome::Session { session }) => {
             let session = adopt(session, &plan, now);
             state.terminals.put(session.clone());
+            publish_terminal_change(&state, session.thread_id.as_ref());
             (StatusCode::CREATED, Json(session_value(&session))).into_response()
         }
         Ok(TerminalOutcome::Failed { code, message }) => terminal_failure(&code, &message),
@@ -1474,6 +1551,7 @@ pub async fn terminals_restart(
         Err(error) => terminal_transport_error(error),
         Ok(TerminalOutcome::Session { session }) => {
             state.terminals.put(session.clone());
+            publish_terminal_change(&state, session.thread_id.as_ref());
             (StatusCode::CREATED, Json(session_value(&session))).into_response()
         }
         Ok(TerminalOutcome::Failed { code, message }) => terminal_failure(&code, &message),
@@ -1513,6 +1591,7 @@ pub async fn terminals_update(
     session.title = request.title;
     session.updated_at_ms = loom_relay::now_ms();
     state.terminals.put(session.clone());
+    publish_terminal_change(&state, session.thread_id.as_ref());
     Json(session_value(&session)).into_response()
 }
 
@@ -1611,9 +1690,11 @@ fn terminal_session_outcome(
                 let mut session = session;
                 session.id = terminal_id;
                 state.terminals.put(session.clone());
+                publish_terminal_change(state, session.thread_id.as_ref());
                 return (success, Json(session_value(&session))).into_response();
             }
             state.terminals.put(session.clone());
+            publish_terminal_change(state, session.thread_id.as_ref());
             (success, Json(session_value(&session))).into_response()
         }
         Ok(TerminalOutcome::Failed { code, message }) => terminal_failure(&code, &message),
@@ -1661,4 +1742,18 @@ fn session_value(session: &TerminalSession) -> Value {
         "updatedAt": session.updated_at_ms,
         "lastUserInputAt": session.last_user_input_at_ms,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::path_is_within;
+
+    #[test]
+    fn workspace_subroots_match_only_on_path_boundaries() {
+        assert!(path_is_within("/srv/project", "/srv/project"));
+        assert!(path_is_within("/srv/project/src", "/srv/project"));
+        assert!(path_is_within(r"C:\\project\\src", r"C:\\project"));
+        assert!(!path_is_within("/srv/project-other", "/srv/project"));
+        assert!(!path_is_within(r"C:\\project-other", r"C:\\project"));
+    }
 }

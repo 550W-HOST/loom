@@ -138,7 +138,7 @@ async function openThread(id: string): Promise<void> {
   };
   const subscription = new ThreadRelaySubscription({
     threadId: id,
-    wsUrl: `${WS_BASE}/ws`,
+    wsUrl: `${WS_BASE}/internal/ws`,
     cursorStore: createBrowserCursorStore(),
     loadReplay: ({ threadId, since }) => replayPage(threadId, since),
     onFrames(frames) {

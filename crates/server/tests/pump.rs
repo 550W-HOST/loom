@@ -138,6 +138,39 @@ async fn a_long_burst_arrives_in_order_across_batches() {
     assert_eq!(payloads, expected);
 }
 
+#[tokio::test]
+async fn public_broadcast_reports_lag_instead_of_silently_losing_frames() {
+    let backend: SharedBackend = Arc::new(MemoryBackend::new(100_000));
+    let relay = Relay::with_defaults(backend, "test").unwrap();
+    let (hub, _actor) = HubHandle::spawn(1_024);
+    let (public_events, mut public_rx) = tokio::sync::broadcast::channel(1);
+    let pump = Pump::spawn_with_public_events(
+        relay.clone(),
+        hub,
+        public_events,
+        PumpConfig {
+            batch_limit: 8,
+            safety_tick: Duration::from_millis(20),
+        },
+    );
+
+    for i in 0..3 {
+        relay
+            .publish(Scope::Global, format!("{{\"n\":{i}}}"))
+            .unwrap();
+    }
+    pump.wake();
+
+    let result = tokio::time::timeout(Duration::from_secs(2), public_rx.recv())
+        .await
+        .expect("public receiver did not observe the burst");
+    pump.stop();
+    assert!(matches!(
+        result,
+        Err(tokio::sync::broadcast::error::RecvError::Lagged(_))
+    ));
+}
+
 /// Envelopes published after a reader is already caught up must still arrive;
 /// the cursor is not a one-way door.
 #[tokio::test]

@@ -19,8 +19,8 @@
 
 use std::time::Duration;
 
-use loom_relay::{Relay, SHARD_COUNT};
-use tokio::sync::Notify;
+use loom_relay::{Envelope, Relay, SHARD_COUNT};
+use tokio::sync::{broadcast, Notify};
 use tokio::task::JoinHandle;
 
 use crate::hub_actor::{DeliveryOutcome, HubHandle};
@@ -45,6 +45,15 @@ impl Default for PumpConfig {
     }
 }
 
+/// One item delivered to public realtime consumers.
+#[derive(Clone, Debug)]
+pub enum PublicRealtimeEvent {
+    /// A durable relay envelope to project into bb change messages.
+    Envelope(Envelope),
+    /// Cache correctness can no longer be proven; reconnect and refetch.
+    Reset,
+}
+
 /// Runs the fixed set of shard readers.
 pub struct Pump {
     notify: std::sync::Arc<Notify>,
@@ -55,15 +64,38 @@ pub struct Pump {
 impl Pump {
     /// Starts `SHARD_COUNT` readers over `relay`, delivering into `hub`.
     pub fn spawn(relay: Relay, hub: HubHandle, config: PumpConfig) -> Self {
+        Self::spawn_inner(relay, hub, None, config)
+    }
+
+    /// Starts the fixed readers and mirrors every envelope to public realtime.
+    ///
+    /// The broadcast sender is fed by the same readers as the internal hub, so
+    /// public clients observe remote-node events without adding relay readers.
+    pub fn spawn_with_public_events(
+        relay: Relay,
+        hub: HubHandle,
+        public_events: broadcast::Sender<PublicRealtimeEvent>,
+        config: PumpConfig,
+    ) -> Self {
+        Self::spawn_inner(relay, hub, Some(public_events), config)
+    }
+
+    fn spawn_inner(
+        relay: Relay,
+        hub: HubHandle,
+        public_events: Option<broadcast::Sender<PublicRealtimeEvent>>,
+        config: PumpConfig,
+    ) -> Self {
         let notify = std::sync::Arc::new(Notify::new());
         let mut tasks = Vec::with_capacity(usize::from(SHARD_COUNT));
 
         for shard in 0..SHARD_COUNT {
             let relay = relay.clone();
             let hub = hub.clone();
+            let public_events = public_events.clone();
             let notify = std::sync::Arc::clone(&notify);
             tasks.push(tokio::spawn(async move {
-                read_shard(shard, relay, hub, notify, config).await;
+                read_shard(shard, relay, hub, public_events, notify, config).await;
             }));
         }
 
@@ -125,6 +157,7 @@ async fn read_shard(
     shard: u8,
     relay: Relay,
     hub: HubHandle,
+    public_events: Option<broadcast::Sender<PublicRealtimeEvent>>,
     notify: std::sync::Arc<Notify>,
     config: PumpConfig,
 ) {
@@ -136,7 +169,14 @@ async fn read_shard(
         let waiter = notify.notified();
         tokio::pin!(waiter);
 
-        drain(shard, &relay, &hub, &mut cursor, config.batch_limit);
+        drain(
+            shard,
+            &relay,
+            &hub,
+            public_events.as_ref(),
+            &mut cursor,
+            config.batch_limit,
+        );
 
         tokio::select! {
             () = &mut waiter => {}
@@ -153,6 +193,7 @@ fn drain(
     shard: u8,
     relay: &Relay,
     hub: &HubHandle,
+    public_events: Option<&broadcast::Sender<PublicRealtimeEvent>>,
     cursor: &mut Option<loom_relay::EventId>,
     batch_limit: usize,
 ) {
@@ -174,6 +215,12 @@ fn drain(
         let mut stopped = false;
         for envelope in records {
             *cursor = Some(envelope.event_id);
+            if let Some(public_events) = public_events {
+                // No receivers is normal when no product UI is open. A slow
+                // receiver observes `Lagged` and reconnects rather than
+                // silently retaining stale cache state.
+                let _ = public_events.send(PublicRealtimeEvent::Envelope(envelope.clone()));
+            }
             match hub.try_deliver(envelope) {
                 // A backpressured frame is dropped, but the cursor still
                 // advances: the reader must not spin on a subscriber that is

@@ -337,6 +337,9 @@ pub struct ThreadMessage {
     pub id: MessageId,
     /// The thread it belongs to.
     pub thread_id: ThreadId,
+    /// Owning project, retained so cross-node realtime projection needs no lookup.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<ProjectId>,
     /// Who produced it.
     pub role: MessageRole,
     /// The message body, verbatim.
@@ -855,6 +858,7 @@ impl Thread {
         let message = ThreadMessage {
             id: MessageId::mint(),
             thread_id: self.id.clone(),
+            project_id: Some(self.project_id.clone()),
             role,
             content,
             created_at_ms: now_ms,

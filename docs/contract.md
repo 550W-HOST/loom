@@ -31,21 +31,25 @@ checked in against it later, but loom is allowed to differ. This is the
 "明确分歧" the issue asked for: the divergence is real and is confined to the
 daemon half of the wire.
 
-### What this changes for the current code
+### Current wire split
 
-`crates/server/src/protocol.rs` currently serves both audiences on one `/ws`.
-That is the thing to split, and it is follow-up work (this issue is export
-tooling only):
+`crates/server/src/protocol.rs` now exposes two disjoint message unions:
 
-- `/ws` becomes bb's client protocol. loom's `welcome`, `subscribed`,
-  `event`, `host_enrolled` and friends move off it.
-- daemon traffic moves to a daemon-only endpoint (bb uses `/internal/ws`).
-- `/api/v1/*` is reserved for bb's routes. loom-native control endpoints
-  (`/api/v1/publish`, `/api/v1/replay`, the current `/api/v1/version`) must move
-  under a distinct prefix so they cannot collide with a route bb's UI expects.
+- `/ws` accepts only bb `subscribe`/`unsubscribe`/`ping` messages when the
+  client explicitly negotiates `loom-bb-realtime-v1`; it emits only
+  `changed`/`pong`.
+- `/internal/ws` carries daemon enrollment, scoped relay delivery, reports and
+  replay under `PROTOCOL_VERSION`.
 
-Until that split lands, loom's `/ws` and `/api/v1/*` are knowingly divergent and
-the contract tests will not cover them.
+No `Origin` or user-agent heuristic selects a protocol. During the v2 to v3
+migration only, a `/ws` connection that offers no subprotocol receives a legacy
+`welcome` carrying v3 and is immediately closed. That single refusal frame lets
+an already-deployed v2 daemon enter self-update; it cannot enroll or send an
+internal command on the public endpoint. New daemons connect directly to
+`/internal/ws` and receive the versioned `hello` frame.
+
+The loom-native HTTP control endpoints remain contract-external and are listed
+explicitly in `docs/api-coverage.md`; they are not counted as bb routes.
 
 ## Artifact format: JSON Schema, not OpenAPI
 
@@ -54,7 +58,7 @@ The export is **JSON Schema 2020-12 plus a manifest**, one file per surface.
 Why not OpenAPI:
 
 - Two of the four surfaces are not HTTP. bb's UI `/ws`, terminal `/ws` and the
-  daemon `/ws` are WebSocket message protocols. OpenAPI cannot express them, so
+  daemon `/internal/ws` are WebSocket message protocols. OpenAPI cannot express them, so
   an OpenAPI document would cover at most a third of the contract and hide the
   rest.
 - The contract is generated from zod and TypeScript, not spec-first. zod v4

@@ -26,6 +26,12 @@ export default defineConfig({
         changeOrigin: true,
         xfwd: true,
       },
+      "/internal/ws": {
+        target: viteDevConfig.serverHttpOrigin,
+        changeOrigin: true,
+        ws: true,
+        xfwd: true,
+      },
       "/ws": {
         target: viteDevConfig.serverHttpOrigin,
         changeOrigin: true,
