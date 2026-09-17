@@ -239,9 +239,11 @@ struct Subscriber {
 
 impl Subscriber {
     async fn subscribe(addr: &str, scope: Scope) -> Self {
-        let (mut socket, _) = connect_async(format!("ws://{addr}/ws")).await.unwrap();
+        let (mut socket, _) = connect_async(format!("ws://{addr}/internal/ws"))
+            .await
+            .unwrap();
         let welcome = recv(&mut socket).await;
-        assert_eq!(welcome["type"], "welcome");
+        assert_eq!(welcome["type"], "hello");
         send(&mut socket, json!({ "type": "subscribe", "scope": scope })).await;
         let ack = recv(&mut socket).await;
         assert_eq!(ack["type"], "subscribed", "unexpected ack: {ack}");

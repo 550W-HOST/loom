@@ -33,33 +33,30 @@ Rules that apply to every source:
   `404`. A missing script must not silently become an HTML page.
 * A **non-GET/HEAD** fallback request returns `404` (the proxy forwards
   methods as-is, for the dev server).
-* `/api/**` and `/ws` never fall through to the UI. A mistyped API route is a
-  JSON `404`, not the SPA shell with a `200`. This is the failure mode that
-  makes an API error look like a UI bug, so it is refused explicitly.
+* `/api/**`, `/ws` and `/internal/ws` never fall through to the UI. A mistyped API or
+  socket route is a `404`, not the SPA shell with a `200`.
 * Directory paths are never normalised silently: `..`, absolute paths and
   prefixes are rejected instead of clamped, so a bug cannot become a sandbox
   escape.
 
 The proxy tunnels WebSocket upgrades as well as HTTP, so Vite's HMR socket keeps
-working while `/api` and `/ws` stay on `loom-server`. During development the UI
+working while `/api`, `/ws` and `/internal/ws` stay on `loom-server`. During development the UI
 therefore still uses one origin and needs no CORS configuration.
 
 ## The client contract
 
-The reference client (`ui/`, compiled into the server) is the living
-specification for any client, including the ported bb UI. It uses only the
-public server surface:
+The product app uses the schema-checked public `/ws` protocol on the same
+origin and explicitly negotiates `loom-bb-realtime-v1`. It subscribes with bb
+targets such as `thread-detail`, `project-list` and `host-list`, and receives
+only `changed`/`pong` messages.
 
-1. **Derive the server from the origin.** `const base = window.location.origin`
-   and `ws(s)://location.host/ws`. There is no server-address setting anywhere.
+The embedded reference client is a temporary raw-relay diagnostic client. It
+uses `ws(s)://location.host/internal/ws` plus `/api/v1/replay`:
+
+1. **Derive the server from the origin.** There is no server-address setting.
 2. **List projects, then threads over HTTP.** `GET /api/v1/projects` and
-   `GET /api/v1/threads` both answer a **bare array** — of `projectSchema`
-   (active first, archived last, stable order) and of `threadListEntrySchema`
-   (newest first) respectively. There is no `{ "projects": … }` envelope, so a
-   client reads the body as the list. A thread must name a project when it is
-   created, so the project list is what fills the create control; the seeded
-   personal project is listed like any other. See [`projects.md`](projects.md).
-3. **Open a thread on the socket.** Connect to `/ws`, then send
+   `GET /api/v1/threads` answer bare arrays.
+3. **Open a thread on the internal socket.** Connect to `/internal/ws`, then send
    `{"type":"subscribe","scope":{"kind":"thread","id":"<id>"}}`. The same scope
    a producer published to; no handler is involved.
 4. **Subscribe first, then replay.** After the subscription is acknowledged,

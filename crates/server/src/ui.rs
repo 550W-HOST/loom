@@ -15,7 +15,8 @@
 //!   the UI can be developed with hot reload against the real server.
 //!
 //! Everything here is deliberate about one thing: an unmatched *client* path
-//! falls back to `index.html`, but an unmatched `/api` or `/ws` path must not,
+//! falls back to `index.html`, but an unmatched `/api`, `/ws` or `/internal/ws`
+//! path must not,
 //! or a mistyped API route would answer with an HTML page.
 
 use std::path::{Component, Path, PathBuf};
@@ -106,7 +107,7 @@ impl Ui {
         // socket path is not. Otherwise `GET /api/v1/typo` would return the
         // SPA shell with a 200, which is exactly the kind of failure that is
         // hard to diagnose from the browser.
-        if path == "/ws" || path == "/api" || path.starts_with("/api/") {
+        if path == "/ws" || path == "/internal/ws" || path == "/api" || path.starts_with("/api/") {
             return not_found();
         }
 
@@ -262,7 +263,7 @@ fn cache_for(path: &str) -> &'static str {
 /// The development shape: forward unmatched requests to a frontend dev server.
 ///
 /// WebSocket upgrades are tunnelled too, so Vite's HMR socket keeps working
-/// while `/api` and `/ws` stay on loom-server. The client therefore needs no
+/// while `/api`, `/ws` and `/internal/ws` stay on loom-server. The client therefore needs no
 /// CORS configuration and no second origin.
 pub struct ProxyClient {
     base: Uri,

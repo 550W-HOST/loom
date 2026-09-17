@@ -15,6 +15,7 @@ use loom_domain::{DomainEvent, DomainScope, HostId, RunId, RunOutcome, ThreadId,
 use loom_provider_protocol::ProviderSpec;
 use loom_relay::retention::Retention;
 use loom_relay::{now_ms, Relay, Result as RelayResult, Scope};
+use tokio::sync::broadcast;
 
 use crate::artifacts::Artifacts;
 use crate::domain_state::DomainRegistry;
@@ -24,7 +25,7 @@ use crate::host_rpc::HostRpcBroker;
 use crate::hub_actor::HubHandle;
 use crate::join_codes::JoinCodeRegistry;
 use crate::persistence::{self, DomainSnapshot, SNAPSHOT_VERSION};
-use crate::pump::{Pump, PumpConfig};
+use crate::pump::{PublicRealtimeEvent, Pump, PumpConfig};
 use crate::runs::{RunRecord, RunRegistry};
 use crate::settings::SettingsRegistry;
 use crate::ui::Ui;
@@ -160,6 +161,8 @@ pub struct AppState {
     pub hub: HubHandle,
     /// The fixed shard readers.
     pub pump: Arc<Pump>,
+    /// Complete relay stream projected into the typed public realtime socket.
+    pub(crate) public_events: broadcast::Sender<PublicRealtimeEvent>,
     /// In-memory domain entities for the command API.
     pub registry: Arc<DomainRegistry>,
     /// Provider runs that have been dispatched and not yet terminated.
@@ -244,7 +247,13 @@ impl AppState {
         let artifacts = Arc::new(Artifacts::from_config(config.artifact_dir.clone()));
         let relay = Relay::new(backend, config.retention, config.node_id.clone())?;
         let (hub, _actor) = HubHandle::spawn(config.hub_queue_capacity);
-        let pump = Arc::new(Pump::spawn(relay.clone(), hub.clone(), config.pump));
+        let (public_events, _) = broadcast::channel(config.hub_queue_capacity.max(1));
+        let pump = Arc::new(Pump::spawn_with_public_events(
+            relay.clone(),
+            hub.clone(),
+            public_events.clone(),
+            config.pump,
+        ));
         let started_at_ms = now_ms();
 
         // Domain-state persistence rides on the durable backend: it is the
@@ -258,6 +267,7 @@ impl AppState {
             relay,
             hub,
             pump,
+            public_events,
             registry: Arc::new(DomainRegistry::new(started_at_ms)),
             runs: Arc::new(RunRegistry::new()),
             settings: Arc::new(SettingsRegistry::new(&provider_id)),
@@ -385,11 +395,17 @@ impl AppState {
     ) -> RelayResult<loom_relay::Envelope> {
         let payload = payload.into();
         let frame_scope = scope.clone();
-        let envelope = self
+        let envelope = match self
             .relay
             .publish_with(scope, move |event_id, created_at_ms| {
                 crate::protocol::build_event_frame(&frame_scope, &payload, event_id, created_at_ms)
-            })?;
+            }) {
+            Ok(envelope) => envelope,
+            Err(error) => {
+                let _ = self.public_events.send(PublicRealtimeEvent::Reset);
+                return Err(error);
+            }
+        };
         self.pump.wake();
         Ok(envelope)
     }
@@ -406,6 +422,19 @@ impl AppState {
     ) -> RelayResult<loom_relay::Envelope> {
         let payload = serde_json::to_vec(event).expect("a DomainEvent always serializes to JSON");
         self.publish(relay_scope(&event.scope()), payload)
+    }
+
+    /// Publishes a durable public cache invalidation with no domain-event peer.
+    ///
+    /// Server-local settings do not belong in the domain aggregate, but their
+    /// browser caches still need a replayable invalidation shared by all nodes.
+    pub(crate) fn publish_public_change(
+        &self,
+        message: &crate::protocol::ServerMessage,
+    ) -> RelayResult<loom_relay::Envelope> {
+        let payload =
+            serde_json::to_vec(message).expect("a public realtime message always serializes");
+        self.publish(Scope::Global, payload)
     }
 
     /// Milliseconds since the server was wired up.
@@ -748,8 +777,9 @@ impl AppState {
 /// scope is the frame's scope. Run dispatches and any raw producer payloads
 /// share the log, so "is it JSON object with a `type` tag" is not enough.
 pub(crate) fn domain_event_from_envelope(envelope: &loom_relay::Envelope) -> Option<DomainEvent> {
-    let message: crate::protocol::ServerMessage = serde_json::from_slice(&envelope.payload).ok()?;
-    let crate::protocol::ServerMessage::Event { payload, .. } = message else {
+    let message: crate::protocol::DaemonServerMessage =
+        serde_json::from_slice(&envelope.payload).ok()?;
+    let crate::protocol::DaemonServerMessage::Event { payload, .. } = message else {
         return None;
     };
     let event: DomainEvent = serde_json::from_str(&payload).ok()?;
@@ -938,11 +968,11 @@ mod tests {
         let mut changes = Vec::new();
         for frame in &frames {
             let Ok(message) =
-                serde_json::from_slice::<crate::protocol::ServerMessage>(&frame.payload)
+                serde_json::from_slice::<crate::protocol::DaemonServerMessage>(&frame.payload)
             else {
                 continue;
             };
-            let crate::protocol::ServerMessage::Event { payload, .. } = message else {
+            let crate::protocol::DaemonServerMessage::Event { payload, .. } = message else {
                 continue;
             };
             let Ok(event) = serde_json::from_str::<DomainEvent>(&payload) else {

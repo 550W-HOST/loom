@@ -12,7 +12,7 @@
 //!
 //! | Route | Answer |
 //! | --- | --- |
-//! | `GET /install/version` | `{"version":"0.1.0","protocolVersion":2}` |
+//! | `GET /install/version` | `{"version":"0.1.0","protocolVersion":3}` |
 //! | `GET /install/loom-daemon?target=<triple>` | the binary, its SHA-256 in `ETag` and `X-Loom-Artifact-Sha256` |//!
 //! The artifact directory defaults to the directory the running
 //! `loom-server` was started from — `deploy/install.sh` puts
@@ -559,7 +559,11 @@ fn http_origin(server_url: &str) -> Result<String, String> {
     } else {
         trimmed.to_owned()
     };
-    let origin = origin.strip_suffix("/ws").unwrap_or(&origin).to_owned();
+    let origin = origin
+        .strip_suffix("/internal/ws")
+        .or_else(|| origin.strip_suffix("/ws"))
+        .unwrap_or(&origin)
+        .to_owned();
 
     if origin.starts_with("https://") {
         return Err(
@@ -717,6 +721,10 @@ mod tests {
             "http://127.0.0.1:38886"
         );
         assert_eq!(http_origin("http://host:1/ws").unwrap(), "http://host:1");
+        assert_eq!(
+            http_origin("ws://host:1/internal/ws").unwrap(),
+            "http://host:1"
+        );
         assert_eq!(http_origin("ws://host:1").unwrap(), "http://host:1");
         assert_eq!(http_origin("host:1").unwrap(), "http://host:1");
         assert!(http_origin("https://loom.example.com").is_err());

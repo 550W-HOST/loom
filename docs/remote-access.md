@@ -9,8 +9,10 @@ What reaching the server grants an attacker:
 
 - `POST /api/v1/publish` writes any frame into any scope, and
   `GET /api/v1/replay` reads the whole retained window of every scope;
-- `GET /ws` subscribes to any scope, including `host:{id}`, which carries the
-  dispatches sent to execution machines;
+- `GET /internal/ws` is the daemon/raw relay endpoint and can subscribe to
+  internal scopes, including `host:{id}`, which carries execution dispatches;
+- `GET /ws` is the schema-checked public UI invalidation protocol and does not
+  accept daemon commands or raw scopes;
 - `POST /api/v1/threads/{id}/messages` starts a run, which is dispatched to a
   daemon — and a daemon runs provider CLIs and tools and reads files, as its own
   user, on its own machine.
@@ -60,8 +62,8 @@ desktop webview all use — no per-client server setting.
 
 Because Tailscale terminates TLS and forwards to loopback, the server never
 needs a certificate and never needs to know it is remote. `tailscale serve`
-proxies WebSocket upgrades as well as HTTP, so `/ws` and the UI work through it
-without extra configuration.
+proxies WebSocket upgrades as well as HTTP, so `/ws`, `/internal/ws` and the UI
+work through it without extra configuration.
 
 Useful commands:
 
@@ -91,14 +93,17 @@ no real authentication in front, this is not a safe alternative — it is
 
 Requirements for any proxy:
 
-- **WebSocket upgrade** on `/ws`. A proxy that strips the upgrade headers
-  breaks the UI and every daemon. Verify `Upgrade` / `Connection` are forwarded.
+- **WebSocket upgrade** on both `/ws` and `/internal/ws`. A proxy that strips
+  the upgrade or `Sec-WebSocket-Protocol` headers breaks public realtime and
+  daemon connectivity. Verify `Upgrade`, `Connection` and
+  `Sec-WebSocket-Protocol` are forwarded.
 - **No buffering of the socket**, or a long read timeout, so idle connections
   are not reaped mid-stream.
 - **`X-Forwarded-*` may be ignored**: the UI derives its API and socket from its
-  own origin, so it needs no rewrite as long as `/` and `/ws` are on one origin.
-- **Streaming responses** left alone: `GET /api/v1/replay` and `/ws` are not
-  request/response.
+  own origin, so it needs no rewrite as long as `/`, `/ws` and `/internal/ws`
+  are on one origin.
+- **Streaming responses** left alone: `GET /api/v1/replay`, `/ws` and
+  `/internal/ws` are not request/response.
 
 ```nginx
 location / {

@@ -70,8 +70,8 @@ Recorded output:
 
 ```
 ### 1. start server (server-only), loopback + durable local log
-  health:  {"status":"ok","protocol_version":2,"node_id":"verify-node","uptime_ms":11,"readers":8,"retained_events":0}
-  version: {"version":"0.1.0","protocol_version":2}
+  health:  {"status":"ok","protocol_version":3,"node_id":"verify-node","uptime_ms":11,"readers":8,"retained_events":0}
+  version: {"version":"0.1.0","protocol_version":3}
   server log: loom-server (server-only) listening on http://127.0.0.1:38899 (node verify-node, no local daemon)
 
 ### 2. join a daemon (daemon-only, outbound)
@@ -103,7 +103,7 @@ Recorded output:
 
 What this proves, item by item:
 
-- The server answers `/health` and `/api/v1/version` with `protocol_version: 2`,
+- The server answers `/health` and `/api/v1/version` with `protocol_version: 3`,
   and its startup line says **server-only, no local daemon** — it did not wait
   for or start one.
 - The daemon enrolled as `host_01M…`, and the same id is in the state file. The

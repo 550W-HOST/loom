@@ -13,8 +13,12 @@ const fakeSocketState = vi.hoisted(() => {
     onopen: OpenHandler | null = null;
     readyState = 1;
     readonly sentMessages: string[] = [];
+    readonly url: string;
+    readonly protocols: string | string[] | undefined;
 
-    constructor() {
+    constructor(url: string, protocols?: string | string[]) {
+      this.url = url;
+      this.protocols = protocols;
       instances.push(this);
     }
 
@@ -52,6 +56,7 @@ vi.mock("./dev-websocket-url", () => ({
 import {
   REALTIME_PING_INTERVAL_MS,
   REALTIME_PONG_TIMEOUT_MS,
+  REALTIME_SUBPROTOCOL,
   WebSocketManager,
   type WebSocketConnectedEvent,
   type WebSocketManagerBrowserEvents,
@@ -123,6 +128,15 @@ describe("WebSocketManager subscriptions", () => {
       configurable: true,
       value: originalWebSocket,
     });
+  });
+
+  it("uses the explicit loom public realtime subprotocol", () => {
+    const manager = new WebSocketManager();
+    manager.connect();
+
+    const socket = fakeSocketState.instances[0];
+    expect(socket?.url).toBe("ws://bb.test/ws");
+    expect(socket?.protocols).toBe(REALTIME_SUBPROTOCOL);
   });
 
   it("ref-counts duplicate subscriptions and unsubscribes only after the final cleanup", () => {

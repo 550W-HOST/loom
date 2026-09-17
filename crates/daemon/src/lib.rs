@@ -18,7 +18,7 @@
 //! # Lifecycle
 //!
 //! ```text
-//!   connect ──▶ welcome ──▶ enroll_host ──▶ host_enrolled ──▶ subscribe host:{id}
+//!   connect ──▶ hello ──▶ enroll_host ──▶ host_enrolled ──▶ subscribe host:{id}
 //!                                                   │              │
 //!                                                   │              ▼
 //!                                                   │        replay since cursor
@@ -64,7 +64,9 @@ use loom_provider_protocol::{
 };
 use loom_relay::dedup::SeenSet;
 use loom_relay::{EventId, Scope};
-use loom_server::protocol::{ClientCommand, ServerMessage};
+use loom_server::protocol::{
+    DaemonClientMessage as ClientCommand, DaemonServerMessage as ServerMessage,
+};
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message;
@@ -199,7 +201,7 @@ impl From<serde_json::Error> for DaemonError {
     }
 }
 
-/// Refuses a server whose welcome protocol version this daemon cannot speak.
+/// Refuses a server whose hello protocol version this daemon cannot speak.
 ///
 /// The server and every daemon and UI bundle must agree on
 /// [`loom_server::PROTOCOL_VERSION`]: it is the wire contract, not a marketing
@@ -312,7 +314,8 @@ impl DaemonConfig {
         }
     }
 
-    /// The WebSocket endpoint derived from [`DaemonConfig::server_url`].
+    /// The internal daemon WebSocket endpoint derived from
+    /// [`DaemonConfig::server_url`].
     ///
     /// Accepts the URL an operator would paste into a browser and turns it
     /// into the socket path, so "the server is a URL" holds for daemons too.
@@ -327,10 +330,12 @@ impl DaemonConfig {
         } else {
             format!("ws://{base}")
         };
-        if base.ends_with("/ws") {
+        if base.ends_with("/internal/ws") {
             base
+        } else if let Some(prefix) = base.strip_suffix("/ws") {
+            format!("{prefix}/internal/ws")
         } else {
-            format!("{base}/ws")
+            format!("{base}/internal/ws")
         }
     }
 }
@@ -423,14 +428,12 @@ pub struct Daemon {
 }
 
 impl Daemon {
-    /// Opens the socket and consumes the server's welcome frame.
+    /// Opens the internal socket and consumes the server's hello frame.
     pub async fn connect(config: DaemonConfig) -> Result<Self, DaemonError> {
         let url = config.websocket_url();
         let (mut socket, _) = connect_async(&url).await?;
         match next_message(&mut socket).await? {
-            ServerMessage::Welcome {
-                protocol_version, ..
-            } => {
+            ServerMessage::Hello { protocol_version } => {
                 // Refuse a peer this build cannot speak to, before enrolling.
                 // A mismatch after enrollment would corrupt dispatch/runs.
                 ensure_compatible_protocol(protocol_version)?;
@@ -468,7 +471,7 @@ impl Daemon {
                 })
             }
             other => Err(DaemonError::Protocol(format!(
-                "expected welcome, got {other:?}"
+                "expected hello, got {other:?}"
             ))),
         }
     }
@@ -671,7 +674,7 @@ impl Daemon {
                 ..
             } => self.observe_event(&event_id, &scope, &payload),
             ServerMessage::Error { message } => Err(DaemonError::Protocol(message)),
-            // Welcome, acks and pongs are the transport shell's to ignore.
+            // Hello, acks and pongs are the transport shell's to ignore.
             _ => Ok(()),
         }
     }
@@ -982,16 +985,16 @@ mod tests {
     #[test]
     fn a_plain_http_url_becomes_a_websocket_url() {
         let config = DaemonConfig::new("http://127.0.0.1:38886", "laptop");
-        assert_eq!(config.websocket_url(), "ws://127.0.0.1:38886/ws");
+        assert_eq!(config.websocket_url(), "ws://127.0.0.1:38886/internal/ws");
 
         let config = DaemonConfig::new("https://loom.example.com/", "laptop");
-        assert_eq!(config.websocket_url(), "wss://loom.example.com/ws");
+        assert_eq!(config.websocket_url(), "wss://loom.example.com/internal/ws");
 
         let config = DaemonConfig::new("ws://host:9/ws", "laptop");
-        assert_eq!(config.websocket_url(), "ws://host:9/ws");
+        assert_eq!(config.websocket_url(), "ws://host:9/internal/ws");
 
         let config = DaemonConfig::new("host:1234", "laptop");
-        assert_eq!(config.websocket_url(), "ws://host:1234/ws");
+        assert_eq!(config.websocket_url(), "ws://host:1234/internal/ws");
     }
 
     #[test]

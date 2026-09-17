@@ -14,7 +14,11 @@ const contentTypes = {
 
 const server = createServer(async (request, response) => {
   const requestPath = new URL(request.url ?? "/", "http://localhost").pathname;
-  if (requestPath.startsWith("/api/") || requestPath === "/ws") {
+  if (
+    requestPath.startsWith("/api/") ||
+    requestPath === "/ws" ||
+    requestPath === "/internal/ws"
+  ) {
     response.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
     response.end("Use LOOM_UI_PROXY on loom-server for API and WebSocket traffic.\n");
     return;

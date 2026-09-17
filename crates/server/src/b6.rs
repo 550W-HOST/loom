@@ -22,6 +22,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::host_rpc::HostRpcTransportError;
+use crate::protocol::{PublicChangeKind, PublicEntity, ServerMessage};
 use crate::state::AppState;
 use crate::CommandError;
 
@@ -46,6 +47,22 @@ fn api_error(status: StatusCode, code: &'static str, message: impl Into<String>)
         Json(json!({ "code": code, "message": message.into() })),
     )
         .into_response()
+}
+
+fn publish_environment_change(
+    state: &AppState,
+    environment_id: &EnvironmentId,
+    changes: Vec<PublicChangeKind>,
+) {
+    let message = ServerMessage::Changed {
+        entity: PublicEntity::Environment,
+        id: Some(environment_id.to_string()),
+        metadata: None,
+        changes,
+    };
+    if let Err(error) = state.publish_public_change(&message) {
+        eprintln!("loom-server: could not publish workspace invalidation: {error}");
+    }
 }
 
 fn parse_environment_id(raw: &str) -> Result<EnvironmentId, Response> {
@@ -608,6 +625,14 @@ pub async fn environment_actions(
                     "host returned an invalid commit result",
                 );
             };
+            publish_environment_change(
+                &state,
+                &environment.id,
+                vec![
+                    PublicChangeKind::GitRefsChanged,
+                    PublicChangeKind::WorkStatusChanged,
+                ],
+            );
             Json(json!({
                 "ok": true,
                 "action": "commit",
@@ -618,6 +643,16 @@ pub async fn environment_actions(
             .into_response()
         }
         HostRpcOutcome::Result { .. } => {
+            if request.action == "pull_request_merge" {
+                publish_environment_change(
+                    &state,
+                    &environment.id,
+                    vec![
+                        PublicChangeKind::GitRefsChanged,
+                        PublicChangeKind::WorkStatusChanged,
+                    ],
+                );
+            }
             let mut response = json!({
                 "ok": true,
                 "action": request.action,

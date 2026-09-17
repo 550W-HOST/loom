@@ -183,7 +183,7 @@ curl -X POST localhost:38886/api/v1/threads/thr_.../messages \
 curl localhost:38886/api/v1/runs
 ```
 
-Connect a client on `ws://127.0.0.1:38886/ws`, send
+Connect a raw relay/daemon client on `ws://127.0.0.1:38886/internal/ws`, send
 `{"type":"subscribe","scope":{"kind":"thread","id":"thr_1"}}`, and the
 published frame arrives.
 

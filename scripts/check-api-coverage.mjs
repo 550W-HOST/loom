@@ -504,7 +504,7 @@ ${batchRows.join("\n")}
 
 ${extraList}
 
-其中 ${markdownCode("/health")}, ${markdownCode("/ws")}, ${markdownCode("/api/v1/publish")} 和 ${markdownCode("/api/v1/replay")} 属于 loom relay/control 面；
+其中 ${markdownCode("/health")}, ${markdownCode("/ws")}, ${markdownCode("/internal/ws")}, ${markdownCode("/api/v1/publish")} 和 ${markdownCode("/api/v1/replay")} 属于 loom relay/control 面；
 ${markdownCode("/api/v1/version")} 与契约的 ${markdownCode("/api/v1/system/version")} 路径不同；其余是当前
 域模型的早期端点。它们保持“契约外”是显式记录，不将其静默折算进 bb 覆盖率。
 

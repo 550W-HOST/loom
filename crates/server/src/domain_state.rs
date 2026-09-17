@@ -2071,16 +2071,14 @@ impl DomainRegistry {
         now_ms: u64,
     ) -> Result<(QueuedMessage, DomainEvent), CommandError> {
         let mut inner = self.lock();
-        if !inner
+        let project_id = inner
             .threads
             .get(&new.thread_id)
-            .is_some_and(|thread| thread.deleted_at_ms.is_none())
-        {
-            return Err(CommandError::NotFound(format!(
-                "thread {} is not known",
-                new.thread_id
-            )));
-        }
+            .filter(|thread| thread.deleted_at_ms.is_none())
+            .map(|thread| thread.project_id.clone())
+            .ok_or_else(|| {
+                CommandError::NotFound(format!("thread {} is not known", new.thread_id))
+            })?;
         if let Some(sender) = &new.sender_thread_id {
             if !inner.threads.contains_key(sender) {
                 return Err(CommandError::NotFound(format!(
@@ -2090,6 +2088,7 @@ impl DomainRegistry {
         }
         let message = QueuedMessage::create(new, now_ms)?;
         let mut message = message;
+        message.project_id = Some(project_id);
         let previous_key = inner
             .queued_messages
             .values()
@@ -2592,18 +2591,20 @@ impl DomainRegistry {
         now_ms: u64,
     ) -> Result<(Interaction, Option<DomainEvent>), CommandError> {
         let mut inner = self.lock();
-        if !inner.threads.contains_key(&new.thread_id) {
-            return Err(CommandError::NotFound(format!(
-                "thread {} is not known",
-                new.thread_id
-            )));
-        }
+        let project_id = inner
+            .threads
+            .get(&new.thread_id)
+            .map(|thread| thread.project_id.clone())
+            .ok_or_else(|| {
+                CommandError::NotFound(format!("thread {} is not known", new.thread_id))
+            })?;
         if let Some(id) = &new.id {
             if let Some(existing) = inner.interactions.get(id) {
                 return Ok((existing.clone(), None));
             }
         }
-        let interaction = Interaction::create(new, now_ms)?;
+        let mut interaction = Interaction::create(new, now_ms)?;
+        interaction.project_id = Some(project_id);
         inner
             .interactions
             .insert(interaction.id.clone(), interaction.clone());

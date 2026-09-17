@@ -272,11 +272,11 @@ async fn spawn_scripted_host(
     requests: mpsc::UnboundedSender<HostFileOperation>,
     mut script: mpsc::UnboundedReceiver<HostFileOutcome>,
 ) -> HostId {
-    let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/ws"))
+    let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/internal/ws"))
         .await
         .unwrap();
     let welcome = recv_value(&mut socket).await;
-    assert_eq!(welcome["type"], "welcome");
+    assert_eq!(welcome["type"], "hello");
 
     socket
         .send(tokio_tungstenite::tungstenite::Message::Text(
@@ -1178,10 +1178,10 @@ struct Subscriber {
 
 impl Subscriber {
     async fn subscribe(addr: &str, scope: Scope) -> Self {
-        let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/ws"))
+        let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/internal/ws"))
             .await
             .unwrap();
-        // Consume the welcome frame before the command, so the ack below is the
+        // Consume the hello frame before the command, so the ack below is the
         // subscription's and not the handshake's.
         let _ = recv_text(&mut socket).await;
         socket

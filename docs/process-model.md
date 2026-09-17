@@ -55,10 +55,11 @@ can stop either alone.
 
 ## The daemon contract
 
-A daemon speaks the same WebSocket as a UI, on `GET /ws`:
+A daemon uses the versioned internal WebSocket on `GET /internal/ws`; the
+browser's bb-compatible realtime protocol remains exclusively on `GET /ws`:
 
 ```json
-// daemon -> server
+// daemon -> server (`/internal/ws`)
 {"type":"enroll_host","name":"laptop"}
 {"type":"enroll_host","host_id":"host_01M…","name":"laptop"}   // reconnect
 {"type":"host_heartbeat","host_id":"host_01M…"}
@@ -67,7 +68,7 @@ A daemon speaks the same WebSocket as a UI, on `GET /ws`:
 {"type":"replay","scope":{"kind":"host","id":"host_…"},"since":"01M…"}
 
 // server -> daemon
-{"type":"welcome","connection_id":1,"protocol_version":2}
+{"type":"hello","protocol_version":3}
 {"type":"host_enrolled","host":{"id":"host_01M…","status":"connected",…},"event_id":"01M…"}
 {"type":"host_heartbeat_ack","host_id":"host_01M…","last_seen_at_ms":1}
 {"type":"host_disconnected","host_id":"host_01M…"}

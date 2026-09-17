@@ -40,6 +40,7 @@ use axum::extract::{Query, State};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
+use loom_daemon::{Daemon, DaemonConfig};
 use loom_domain::{MessageRole, ThreadStatus};
 use loom_provider_protocol::ProviderSpec;
 use loom_server::artifacts::{sha256_hex, DIGEST_HEADER};
@@ -78,7 +79,7 @@ async fn spawn_fake_server(bytes: Vec<u8>) -> (String, FakeServer) {
         artifact_requests: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
     };
     let app = Router::new()
-        .route("/ws", get(fake_ws))
+        .route("/internal/ws", get(fake_ws))
         .route("/install/version", get(fake_version))
         .route("/install/loom-daemon", get(fake_artifact))
         .with_state(state.clone());
@@ -90,7 +91,7 @@ async fn spawn_fake_server(bytes: Vec<u8>) -> (String, FakeServer) {
     (format!("http://{}:{}", addr.ip(), addr.port()), state)
 }
 
-/// The `welcome` frame a newer server sends: accepted as the first frame, then
+/// The `hello` frame a newer server sends: accepted as the first frame, then
 /// refused by the daemon before it enrolls.
 async fn fake_ws(upgrade: WebSocketUpgrade, State(state): State<FakeServer>) -> Response {
     upgrade.on_upgrade(move |socket| fake_ws_session(socket, state))
@@ -98,12 +99,11 @@ async fn fake_ws(upgrade: WebSocketUpgrade, State(state): State<FakeServer>) -> 
 
 async fn fake_ws_session(mut socket: WebSocket, state: FakeServer) {
     // `axum`'s `WebSocket` has an inherent `send`, so no `SinkExt` is needed.
-    let welcome = json!({
-        "type": "welcome",
-        "connection_id": 1,
+    let hello = json!({
+        "type": "hello",
         "protocol_version": state.protocol_version,
     });
-    let _ = socket.send(Message::Text(welcome.to_string().into())).await;
+    let _ = socket.send(Message::Text(hello.to_string().into())).await;
     // The daemon drops the socket itself on the refusal; this only keeps the
     // task alive long enough for the frame to flush.
     let _ = socket.recv().await;
@@ -292,6 +292,30 @@ async fn spawn_daemon(
 
 /// The acceptance scenario, in one process:
 /// mismatch → update → reconnect → the run is handled correctly.
+#[tokio::test]
+async fn a_v3_daemon_fails_fast_when_deployed_before_a_v2_server() {
+    let app = Router::new().route("/ws", get(|| async { "legacy websocket" }));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+
+    let config = DaemonConfig::new(format!("http://{addr}"), "new-daemon");
+    let result = tokio::time::timeout(Duration::from_secs(2), Daemon::connect(config))
+        .await
+        .expect("a missing internal endpoint must fail rather than hang");
+    let error = match result {
+        Err(error) => error,
+        Ok(_) => panic!("a v3 daemon must not enroll against a v2-only server"),
+    };
+    let detail = error.to_string();
+    assert!(
+        detail.contains("404") || detail.contains("HTTP error"),
+        "unexpected diagnostic: {detail}"
+    );
+}
+
 #[tokio::test]
 #[ignore = "runs a real daemon binary and a fake network endpoint"]
 async fn a_protocol_mismatch_updates_the_daemon_and_the_new_binary_runs_a_turn() {

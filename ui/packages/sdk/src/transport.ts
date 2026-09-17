@@ -39,7 +39,10 @@ export interface BbRealtimeSocket {
   send(data: string): void;
 }
 
-export type BbRealtimeSocketFactory = (url: string) => BbRealtimeSocket;
+export type BbRealtimeSocketFactory = (
+  url: string,
+  protocols?: string | string[],
+) => BbRealtimeSocket;
 
 export interface BbSdkContext {}
 

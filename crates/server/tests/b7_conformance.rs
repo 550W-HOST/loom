@@ -374,11 +374,11 @@ async fn spawn_scripted_host(
     mut file_script: mpsc::UnboundedReceiver<HostFileOutcome>,
     mut rpc_script: mpsc::UnboundedReceiver<HostRpcOutcome>,
 ) -> HostId {
-    let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/ws"))
+    let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/internal/ws"))
         .await
         .unwrap();
     let welcome = recv_value(&mut socket).await;
-    assert_eq!(welcome["type"], "welcome");
+    assert_eq!(welcome["type"], "hello");
 
     socket
         .send(tokio_tungstenite::tungstenite::Message::Text(
