@@ -273,7 +273,12 @@ pub enum WorkspaceKind {
     Unmanaged {
         /// Absolute path on the host. Absent and `null` are the same thing to
         /// this layer: the response always writes the key.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ///
+        /// The key is *required* by the contract
+        /// (`z.string().min(1).nullable()`), which `skip_serializing_if` would
+        /// violate by dropping it whenever no path is set — so `null` is
+        /// written instead of the key going missing.
+        #[serde(default)]
         path: Option<String>,
         /// The branch the workspace should be on.
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1874,5 +1879,68 @@ mod tests {
         assert_eq!(value["execution"]["reasoningLevel"], "medium");
         assert_eq!(value["execution"]["environment"]["type"], "project-default");
         assert!(value.get("consecutiveFailures").is_none());
+    }
+
+    #[test]
+    fn an_unmanaged_workspace_always_writes_its_path_key() {
+        // The contract spells `path` as `z.string().min(1).nullable()` inside a
+        // `.strict()` object, so every response for an `unmanaged` workspace
+        // must carry the key even when there is no path. Omitting it made the
+        // response fail the contract's own validation.
+        for (label, workspace) in [
+            (
+                "absent",
+                WorkspaceKind::Unmanaged {
+                    path: None,
+                    branch: None,
+                },
+            ),
+            (
+                "set",
+                WorkspaceKind::Unmanaged {
+                    path: Some("/srv/loom".into()),
+                    branch: None,
+                },
+            ),
+        ] {
+            let value = serde_json::to_value(&workspace).expect("serializable");
+            assert!(
+                value.as_object().expect("an object").contains_key("path"),
+                "the {label} path still writes the required `path` key: {value}"
+            );
+        }
+        let absent = serde_json::to_value(WorkspaceKind::Unmanaged {
+            path: None,
+            branch: None,
+        })
+        .expect("serializable");
+        assert_eq!(absent["path"], serde_json::Value::Null);
+    }
+
+    #[test]
+    fn a_host_environment_keeps_the_contract_field_set_in_its_response() {
+        // The execution projection carries a host environment end to end. The
+        // unmanaged workspace is the one that used to lose its `path` key, so
+        // the projection is asserted through the full response, not just the
+        // workspace on its own.
+        let mut automation = automation(schedule());
+        let AutomationExecution::Agent(agent) = &mut automation.execution else {
+            panic!("agent execution");
+        };
+        agent.environment = AgentEnvironment::Host {
+            host_id: Some(HostId::mint()),
+            workspace: WorkspaceKind::Unmanaged {
+                path: None,
+                branch: None,
+            },
+        };
+        let value = serde_json::to_value(automation.response()).expect("serializable");
+        let workspace = &value["execution"]["environment"]["workspace"];
+        assert_eq!(workspace["type"], "unmanaged");
+        assert_eq!(workspace["path"], serde_json::Value::Null);
+        assert!(workspace
+            .as_object()
+            .expect("an object")
+            .contains_key("path"));
     }
 }
