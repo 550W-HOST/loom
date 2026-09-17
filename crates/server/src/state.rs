@@ -392,6 +392,13 @@ impl AppState {
                 eprintln!("loom-server: persisting scheduled automation runs failed: {error}");
             }
         }
+        // After the write, never before: a client told to refetch must find the
+        // run that made it do so. A manual run publishes its own frame where the
+        // client asked for it; a scheduled one is announced here, because this
+        // is the only half of the pipeline that knows whose schedules fired.
+        for project_id in &report.claimed_projects {
+            self.publish_automations_changed(&project_id.to_string());
+        }
         if let Some(diagnostic) = report.diagnostic() {
             eprintln!("loom-server: {diagnostic}");
         }
@@ -887,6 +894,85 @@ impl std::fmt::Debug for AppState {
             .field("relay", &self.relay)
             .field("readers", &self.pump.reader_count())
             .finish_non_exhaustive()
+    }
+}
+
+/// Test support for the public realtime channel.
+///
+/// Every invalidation test asserts the same thing — that a mutation published
+/// one decodable `changed` frame — so the reading of that channel lives here
+/// once rather than in each producer's test module.
+#[cfg(test)]
+pub(crate) mod realtime_test_support {
+    use crate::pump::PublicRealtimeEvent;
+    use tokio::sync::broadcast::Receiver;
+
+    /// Waits for the project invalidation automations publish, decoded as JSON.
+    ///
+    /// Other entities' frames are stepped over: one request runs through the
+    /// whole pipeline, so the environment, thread or host it touches publish
+    /// their own changes alongside the automations one, and the assertion is
+    /// about the automations frame arriving at all. A frame for a *different*
+    /// project fails the test rather than being skipped.
+    pub(crate) async fn expect_project_invalidation(
+        events: &mut Receiver<PublicRealtimeEvent>,
+        project: &str,
+    ) -> serde_json::Value {
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            assert!(
+                !remaining.is_zero(),
+                "no invalidation for project {project} was published"
+            );
+            let envelope = tokio::time::timeout(remaining, events.recv())
+                .await
+                .expect("a frame should be published")
+                .expect("the channel stays open");
+            let PublicRealtimeEvent::Envelope(envelope) = envelope else {
+                panic!("a mutation must not reset public realtime");
+            };
+            let messages = crate::protocol::public_messages_from_frame(&envelope.payload);
+            let Some(message) = messages.first() else {
+                continue;
+            };
+            let frame = serde_json::to_value(message).expect("serializes");
+            if frame.get("entity").and_then(|entity| entity.as_str()) != Some("project") {
+                continue;
+            }
+            assert_eq!(
+                frame,
+                serde_json::json!({
+                    "type": "changed",
+                    "entity": "project",
+                    "id": project,
+                    "changes": ["project-updated"]
+                })
+            );
+            return frame;
+        }
+    }
+
+    /// Consumes frames until none has arrived for a moment.
+    ///
+    /// One operation can publish more than one — a manual run announces the run
+    /// and then its settle when the dispatch had nowhere to go — so a test that
+    /// asserts what the *next* operation publishes has to be looking at a quiet
+    /// channel first.
+    pub(crate) async fn drain(events: &mut Receiver<PublicRealtimeEvent>) {
+        while let Ok(Ok(_)) =
+            tokio::time::timeout(std::time::Duration::from_millis(150), events.recv()).await
+        {
+        }
+    }
+
+    /// Asserts nothing was published: the operation changed no client's view.
+    pub(crate) async fn no_change(events: &mut Receiver<PublicRealtimeEvent>) {
+        if let Ok(Ok(event)) =
+            tokio::time::timeout(std::time::Duration::from_millis(200), events.recv()).await
+        {
+            panic!("an unchanged view was invalidated: {event:?}");
+        }
     }
 }
 

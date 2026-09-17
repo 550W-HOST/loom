@@ -138,12 +138,12 @@
       },
       "local": {
         "path": "apps/app/src/lib/loom-http.ts",
-        "sha256": "9b38c58b12b3e368ad3316ff22138c6fa6786277f4dd4d80bdc85d906452de3e",
+        "sha256": "fa74ee8b50fa29c27bc4ad03b0857d1c94bba82ef3d5825269115f16a85a0cd6",
         "mode": "100644"
       },
-      "issue": "W-593",
+      "issue": "W-593+W-622",
       "owner": "PuQing",
-      "reason": "Add the loom-native same-origin HTTP client, typed request spec, query/cache/router boundary, or shell verification that W-593 owns."
+      "reason": "Add the loom-native same-origin HTTP client, typed request spec, query/cache/router boundary, or shell verification that W-593 owns. W-622 wires the pinned Automations panel to loom-server's own routes: the unavailable client is replaced by a real one over same-origin loom-native requests, and the public `project:changed` invalidation is bridged into the panel's refetch signals."
     },
     {
       "kind": "add",
@@ -458,12 +458,12 @@
       },
       "local": {
         "path": "apps/app/src/loom/product-composition.test.ts",
-        "sha256": "73cdbc4c7ffe5fd94ce81434237c978aa34c43f1dcac99cb9e5a462e44b8a68a",
+        "sha256": "3b94a0611bf761421bb240b3260faa77a6f5d7e3b18ca1cd4add38553f490b0f",
         "mode": "100644"
       },
-      "issue": "W-604",
+      "issue": "W-604+W-622",
       "owner": "PuQing",
-      "reason": "Add a loom-owned browser boundary, Automations route, or focused product-composition verification."
+      "reason": "Add a loom-owned browser boundary, Automations route, or focused product-composition verification. W-622 wires the pinned Automations panel to loom-server's own routes: the unavailable client is replaced by a real one over same-origin loom-native requests, and the public `project:changed` invalidation is bridged into the panel's refetch signals."
     },
     {
       "kind": "add",
@@ -522,12 +522,12 @@
       },
       "local": {
         "path": "apps/app/src/views/AutomationsView.tsx",
-        "sha256": "518540ef151e32fde6c12cdcf96cb63dc3b51f1846e478688e999fc454fa4ba8",
+        "sha256": "955f0f58130609bf2a0f82716144d790ea3cc9870d6540aa8beb8e9b766ec871",
         "mode": "100644"
       },
-      "issue": "W-604",
+      "issue": "W-604+W-622",
       "owner": "PuQing",
-      "reason": "Add a loom-owned browser boundary, Automations route, or focused product-composition verification."
+      "reason": "Add a loom-owned browser boundary, Automations route, or focused product-composition verification. W-622 wires the pinned Automations panel to loom-server's own routes: the unavailable client is replaced by a real one over same-origin loom-native requests, and the public `project:changed` invalidation is bridged into the panel's refetch signals."
     },
     {
       "kind": "add",
@@ -3728,6 +3728,38 @@
       "issue": "W-587",
       "owner": "PuQing",
       "reason": "Negotiate and verify loom's typed public realtime protocol in the product app."
+    },
+    {
+      "kind": "add",
+      "upstream": {
+        "path": null,
+        "sha256": null,
+        "mode": null
+      },
+      "local": {
+        "path": "apps/app/src/lib/loom-automations-client.ts",
+        "sha256": "1038a488ea2a10f6bdd1699d4ebf9695ef5cd8cc682caae3164b83d31bf2b91e",
+        "mode": "100644"
+      },
+      "issue": "W-622",
+      "owner": "PuQing",
+      "reason": "W-622 wires the pinned Automations panel to loom-server's own routes: the unavailable client is replaced by a real one over same-origin loom-native requests, and the public `project:changed` invalidation is bridged into the panel's refetch signals."
+    },
+    {
+      "kind": "add",
+      "upstream": {
+        "path": null,
+        "sha256": null,
+        "mode": null
+      },
+      "local": {
+        "path": "apps/app/src/loom/loom-automations-client.test.ts",
+        "sha256": "d5588b4ba432ad24b0d37f63832c7afdeb55d3893cb1a587802dd9f276427b5f",
+        "mode": "100644"
+      },
+      "issue": "W-622",
+      "owner": "PuQing",
+      "reason": "W-622 wires the pinned Automations panel to loom-server's own routes: the unavailable client is replaced by a real one over same-origin loom-native requests, and the public `project:changed` invalidation is bridged into the panel's refetch signals."
     }
   ]
 }

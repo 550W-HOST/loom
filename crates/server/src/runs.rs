@@ -1256,6 +1256,12 @@ impl AppState {
                 closed.automation_id,
                 closed.state.as_str()
             );
+            // An automation run that ended is a run a client is rendering, so
+            // its project is told to refetch — the same frame the script path
+            // publishes when it settles one.
+            if let Some(project_id) = self.automations.project_of_run(&closed.id) {
+                self.publish_automations_changed(&project_id.to_string());
+            }
         }
     }
 
