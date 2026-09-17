@@ -48,7 +48,10 @@ therefore still uses one origin and needs no CORS configuration.
 The product app uses the schema-checked public `/ws` protocol on the same
 origin and explicitly negotiates `loom-bb-realtime-v1`. It subscribes with bb
 targets such as `thread-detail`, `project-list` and `host-list`, and receives
-only `changed`/`pong` messages.
+only `changed`/`pong` messages. Product surfaces loom added on top of bb's
+routes ride the same vocabulary: automations, for instance, are invalidated as
+`project:changed` for the project that owns them, because the pinned client's
+targets and event names are fixed (`docs/automations.md` § Invalidation).
 
 The embedded reference client is a temporary raw-relay diagnostic client. It
 uses `ws(s)://location.host/internal/ws` plus `/api/v1/replay`:

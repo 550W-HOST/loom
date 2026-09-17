@@ -61,7 +61,10 @@ describe("loom product composition", () => {
     expect(appSource).toContain("AUTOMATION_DETAIL_ROUTE_PATH");
     expect(appSource).toContain("<AutomationsView />");
     expect(automationsSource).toContain("AutomationsPanel");
-    expect(automationsSource).toContain("createUnavailableAutomationsClient");
+    // The panel's client is loom's own, over loom-server's automations routes;
+    // the unavailable seam W-610 shipped it against is gone.
+    expect(automationsSource).toContain("createLoomAutomationsClient");
+    expect(automationsSource).not.toContain("createUnavailableAutomationsClient");
     expect(automationsSource).toContain("getThreadRoutePath");
   });
 

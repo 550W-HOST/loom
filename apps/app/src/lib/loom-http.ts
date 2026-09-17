@@ -501,19 +501,29 @@ export async function loomApiFetch<Id extends LoomApiRouteId>(
 }
 
 /**
- * Perform a request against a loom-native path (`/health`), which is outside
- * the bb contract and therefore has no route-table entry.
+ * Perform a request against a loom-native path, which is outside the bb
+ * contract and therefore has no route-table entry. Product surfaces loom added
+ * on top of bb (automations, for instance) live there.
  *
  * It shares the transport's error mapping with the contract routes so a 404 or
- * a backend failure is reported the same way on either side.
+ * a backend failure is reported the same way on either side. `method` defaults
+ * to `GET`; `json` is serialized only when a method that carries one is named,
+ * so a body on a GET stays impossible by construction.
  */
 export async function loomNativeJson<TResponse>(
   path: string,
-  args: { signal?: AbortSignal } = {},
+  args: {
+    method?: LoomApiMethod;
+    json?: unknown;
+    signal?: AbortSignal;
+  } = {},
 ): Promise<TResponse> {
+  const method = args.method ?? "GET";
+  const body = args.json === undefined ? undefined : JSON.stringify(args.json);
+  const headers = body === undefined ? undefined : { "content-type": "application/json" };
   const response = await fetch(
     new URL(path, resolveOrigin()),
-    appSurfaceRequestInit({ method: "GET", signal: args.signal }),
+    appSurfaceRequestInit({ method, body, headers, signal: args.signal }),
   );
   if (!response.ok) {
     await throwLoomHttpError(response);

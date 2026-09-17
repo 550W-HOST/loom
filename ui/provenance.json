@@ -8619,12 +8619,12 @@
       "upstreamPath": "apps/app",
       "localPath": "apps/app",
       "disposition": "source-port",
-      "gitTree": "c187224288dac0a393860a2090c31d737d8f326d",
+      "gitTree": "cde203869a57a62794cfc54bc1ba1257096fc87e",
       "snapshot": {
         "path": "apps/app",
         "tree": {
-          "files": 1472,
-          "sha256": "88b0ed68b4b8d053233c640f4a76ea244e37c81ad5f8bad98054e422ff7b9372"
+          "files": 1474,
+          "sha256": "c04a73d5c0e669073a4d010a5fa5b958e602299d1c09af025a8038cfb54571c7"
         },
         "files": [
           {
@@ -14538,9 +14538,14 @@
             "sha256": "99d30832a1b592d43ad55b526faf651a90e232c0764ec04ea8cc8683bcfda52a"
           },
           {
+            "path": "src/lib/loom-automations-client.ts",
+            "bytes": 8378,
+            "sha256": "1038a488ea2a10f6bdd1699d4ebf9695ef5cd8cc682caae3164b83d31bf2b91e"
+          },
+          {
             "path": "src/lib/loom-http.ts",
-            "bytes": 16245,
-            "sha256": "9b38c58b12b3e368ad3316ff22138c6fa6786277f4dd4d80bdc85d906452de3e"
+            "bytes": 16744,
+            "sha256": "fa74ee8b50fa29c27bc4ad03b0857d1c94bba82ef3d5825269115f16a85a0cd6"
           },
           {
             "path": "src/lib/loom-interactions.ts",
@@ -15393,6 +15398,11 @@
             "sha256": "12c4d498559c6414673d30e293144280a9a31543dc21523b664ae6786029eba3"
           },
           {
+            "path": "src/loom/loom-automations-client.test.ts",
+            "bytes": 7654,
+            "sha256": "d5588b4ba432ad24b0d37f63832c7afdeb55d3893cb1a587802dd9f276427b5f"
+          },
+          {
             "path": "src/loom/loom-interactions.test.ts",
             "bytes": 4874,
             "sha256": "f81c24b949a9afcf08bf8dca040a816a3a059c728706615f04afc1d2e0595c51"
@@ -15419,8 +15429,8 @@
           },
           {
             "path": "src/loom/product-composition.test.ts",
-            "bytes": 3237,
-            "sha256": "73cdbc4c7ffe5fd94ce81434237c978aa34c43f1dcac99cb9e5a462e44b8a68a"
+            "bytes": 3455,
+            "sha256": "3b94a0611bf761421bb240b3260faa77a6f5d7e3b18ca1cd4add38553f490b0f"
           },
           {
             "path": "src/loom/retry-classification.test.ts",
@@ -15529,8 +15539,8 @@
           },
           {
             "path": "src/views/AutomationsView.tsx",
-            "bytes": 1533,
-            "sha256": "518540ef151e32fde6c12cdcf96cb63dc3b51f1846e478688e999fc454fa4ba8"
+            "bytes": 1520,
+            "sha256": "955f0f58130609bf2a0f82716144d790ea3cc9870d6540aa8beb8e9b766ec871"
           },
           {
             "path": "src/views/MachineSettingsView.test.tsx",

@@ -142,6 +142,35 @@ impl AutomationExecutionReport {
 }
 
 impl AppState {
+    /// Tells every client watching this project to refetch its automations.
+    ///
+    /// bb's public protocol has no automation entity — automations were a
+    /// plugin there and their invalidation rode the plugin's own realtime
+    /// channel — while the pinned client's subscription targets and the
+    /// `changed` frame are fixed. So an automation or run change is published
+    /// as a **project** change: the frame says "this project changed, refetch
+    /// it", which is what every other invalidation in this protocol means. A
+    /// client subscribed to the project (or to the project list) receives it,
+    /// and no new frame type, entity or target is invented.
+    ///
+    /// The granularity is deliberately one frame for both: a client cannot act
+    /// on "an automation changed" differently from "a run changed" — both mean
+    /// refetch the automations it holds for this project.
+    pub(crate) fn publish_automations_changed(&self, project_id: &str) {
+        let message = crate::protocol::ServerMessage::Changed {
+            entity: crate::protocol::PublicEntity::Project,
+            id: Some(project_id.to_owned()),
+            metadata: None,
+            changes: vec![crate::protocol::PublicChangeKind::ProjectUpdated],
+        };
+        if let Err(error) = self.publish_public_change(&message) {
+            eprintln!(
+                "loom-server: the invalidation for project {project_id}'s automations could not be \
+                 published: {error}"
+            );
+        }
+    }
+
     /// Dispatches the queued runs of every automation, oldest first.
     ///
     /// This is the second half of the automation loop: the sweep decides *when*
@@ -617,6 +646,9 @@ impl AppState {
                     closed.automation_id,
                     closed.state.as_str()
                 );
+                if let Some(project_id) = self.automations.project_of_run(&closed.id) {
+                    self.publish_automations_changed(&project_id.to_string());
+                }
                 ScriptReportOutcome::Applied
             }
             Err(error) => {
@@ -669,7 +701,12 @@ impl AppState {
                 reason: reason.to_owned(),
             };
             match self.automations.close_run(&run.id, &outcome, now) {
-                Ok(closed) => cancelled.push(closed),
+                Ok(closed) => {
+                    if let Some(project_id) = self.automations.project_of_run(&closed.id) {
+                        self.publish_automations_changed(&project_id.to_string());
+                    }
+                    cancelled.push(closed);
+                }
                 Err(error) => eprintln!(
                     "loom-server: could not settle cancelled automation run {}: {error}",
                     run.id
@@ -737,6 +774,9 @@ impl AppState {
             };
             if self.automations.close_run(&run.id, &outcome, now).is_ok() {
                 eprintln!("loom-server: automation run {} failed: {reason}", run.id);
+                if let Some(project_id) = self.automations.project_of_run(&run.id) {
+                    self.publish_automations_changed(&project_id.to_string());
+                }
                 failed += 1;
             }
         }
@@ -752,12 +792,17 @@ impl AppState {
             exit_code: None,
         };
         match self.automations.close_run(&run.id, &outcome, now) {
-            Ok(closed) => eprintln!(
-                "loom-server: automation run {} ({}) failed before dispatch: {}",
-                closed.id,
-                closed.automation_id,
-                closed.error.unwrap_or_default()
-            ),
+            Ok(closed) => {
+                eprintln!(
+                    "loom-server: automation run {} ({}) failed before dispatch: {}",
+                    closed.id,
+                    closed.automation_id,
+                    closed.error.unwrap_or_default()
+                );
+                if let Some(project_id) = self.automations.project_of_run(&closed.id) {
+                    self.publish_automations_changed(&project_id.to_string());
+                }
+            }
             Err(error) => eprintln!(
                 "loom-server: could not close automation run {}: {error}",
                 run.id
@@ -780,6 +825,7 @@ pub fn execution_now() -> u64 {
 mod tests {
     use super::*;
     use crate::runs::ReportOutcome;
+    use crate::state::realtime_test_support::expect_project_invalidation;
     use crate::state::AppConfig;
     use loom_domain::automation::AutomationRunStatus;
     use loom_domain::automation::{
@@ -990,6 +1036,7 @@ mod tests {
     #[tokio::test]
     async fn the_provider_run_ending_closes_the_automation_run_it_belongs_to() {
         let state = state();
+        let mut events = state.public_events.subscribe();
         let host_id = host(&state);
         let project = state.registry.personal_project_id();
         let environment = environment(&state, &host_id, &project, "/srv/loom");
@@ -1050,6 +1097,10 @@ mod tests {
             Some(AutomationRunState::Succeeded)
         );
         assert_eq!(automation.last_run_thread_id, Some(thread_id));
+        // The agent path settles through the provider's report rather than the
+        // script one, and it publishes the same project invalidation: a client
+        // rendering the automation's history is told the same way either way.
+        expect_project_invalidation(&mut events, &project.to_string()).await;
         state.shutdown();
     }
 
@@ -1779,6 +1830,67 @@ mod tests {
         );
         let settled = state.automations.run(&run.id).expect("stored");
         assert_eq!(settled.state, AutomationRunState::Succeeded);
+        state.shutdown();
+    }
+
+    #[tokio::test]
+    async fn a_settled_script_run_invalidates_its_project() {
+        let state = state();
+        let mut events = state.public_events.subscribe();
+        let (host, run) = dispatched_script_run(&state, "reported").await;
+
+        assert_eq!(
+            report_exited(&state, &host, &run, Some(0), "done\n", false),
+            ScriptReportOutcome::Applied
+        );
+        let project = state.registry.personal_project_id().to_string();
+        expect_project_invalidation(&mut events, &project).await;
+        state.shutdown();
+    }
+
+    #[tokio::test]
+    async fn cancelling_a_script_run_invalidates_its_project() {
+        let state = state();
+        let mut events = state.public_events.subscribe();
+        let (host, run) = dispatched_script_run(&state, "cancelled").await;
+
+        let cancelled = state.cancel_script_runs(
+            &run.automation_id.to_string(),
+            "cancelled: the automation was paused",
+            now_ms(),
+        );
+        assert_eq!(cancelled.len(), 1, "the running script should be settled");
+        let project = state.registry.personal_project_id().to_string();
+        expect_project_invalidation(&mut events, &project).await;
+        assert_eq!(run.host_id, Some(host));
+        state.shutdown();
+    }
+
+    #[tokio::test]
+    async fn a_run_that_cannot_be_dispatched_invalidates_its_project() {
+        let state = state();
+        let mut events = state.public_events.subscribe();
+        // No machine is enrolled, so the queued script cannot be handed to
+        // anyone: the settle is what a client has to see.
+        let project = state.registry.personal_project_id();
+        let automation = script_automation(&state, &project, "nowhere");
+        let (queued, _) = state
+            .automations
+            .queue_manual_run(
+                &project.to_string(),
+                &automation.id.to_string(),
+                None,
+                now_ms(),
+            )
+            .expect("queues");
+
+        let report = state.execute_pending_automation_runs(now_ms());
+        assert_eq!(report.failed, 1, "{report:?}");
+        assert_eq!(
+            queued.run_mode,
+            loom_domain::automation::AutomationRunMode::Script
+        );
+        expect_project_invalidation(&mut events, &project.to_string()).await;
         state.shutdown();
     }
 

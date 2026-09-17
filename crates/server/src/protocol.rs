@@ -865,6 +865,41 @@ mod tests {
     }
 
     #[test]
+    fn an_automation_invalidation_reaches_project_subscribers() {
+        // What the automations side publishes: bb's public vocabulary has no
+        // automation entity, so the frame is the project's own change — and it
+        // has to be a shape both the contract and the matching table accept.
+        let message = ServerMessage::Changed {
+            entity: PublicEntity::Project,
+            id: Some("proj_1".into()),
+            metadata: None,
+            changes: vec![PublicChangeKind::ProjectUpdated],
+        };
+        assert!(message.is_valid());
+
+        // The project the view is looking at, and the workspace-wide list: both
+        // are targets the pinned client asks for.
+        assert!(message.matches_target(&SubscriptionTarget::ProjectDetail {
+            project_id: "proj_1".into()
+        }));
+        assert!(message.matches_target(&SubscriptionTarget::ProjectList));
+        // A different project is not told about this one's automations, and a
+        // thread subscription is not a project subscription.
+        assert!(!message.matches_target(&SubscriptionTarget::ProjectDetail {
+            project_id: "proj_2".into()
+        }));
+        assert!(!message.matches_target(&SubscriptionTarget::ThreadList));
+
+        let value = serde_json::to_value(&message).unwrap();
+        assert!(
+            loom_contract::Contract::load()
+                .validate_server_message("client", &value)
+                .is_empty(),
+            "the invalidation diverged from the exported bb schema: {value}"
+        );
+    }
+
+    #[test]
     fn public_projection_rejects_cross_entity_and_invalid_metadata_payloads() {
         let invalid = [
             serde_json::json!({

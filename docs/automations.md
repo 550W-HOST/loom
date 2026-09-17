@@ -82,6 +82,49 @@ used as it is, and `422 invalid_request` when the body does not match the
 contract at all (an unknown field, a bad enum), exactly as the contract routes
 behave.
 
+## Invalidation
+
+A client renders automations from the routes above, and it is told to refetch
+them the way it is told about every other change: a schema-checked `changed`
+frame on the public socket, replayed through the relay, so a client that
+reconnects does not have to know what it missed.
+
+**The frame is the project's.** bb's public vocabulary has no automation entity
+— automations were a plugin there, and their invalidation rode the plugin's own
+realtime channel — while the pinned client's event names (`project:changed`)
+and targets (`project-detail`, `project-list`) are fixed. So an automation or
+run change is published as:
+
+```json
+{"type":"changed","entity":"project","id":"proj_…","changes":["project-updated"]}
+```
+
+That reaches exactly the clients that hold automations: the view for that
+project subscribed with `project-detail`, and the workspace-wide overview
+subscribed with `project-list` — list targets match by entity, detail targets by
+id, and both are targets the pinned SDK already asks for. The frame says "this
+project changed", not what changed: one frame covers an automation edit, a
+pause, a queued run and a settled run, because a client cannot act on them
+differently — each means refetch the automations it holds for this project.
+
+**What publishes one.** Every mutation that a client could be rendering:
+
+| producer | when |
+| --- | --- |
+| the write routes | after a successful create, update, delete, pause or resume is persisted |
+| a manual run | after the run row exists — a deduplicated request publishes nothing, because nothing changed |
+| the scheduler | for each project whose window it claimed, after the claim is on disk |
+| a settle | a script report, a cancel, the reaper, a pre-dispatch failure, and a provider run's terminal event closing the agent run behind it |
+
+Dispatch itself publishes nothing: a queued run and a dispatched one both report
+`running`, so the transition is not a change a client could see.
+
+Publishing is durable (`Scope::Global` in the relay, like settings) and happens
+after the write, never before: a client told to refetch must find the run that
+made it do so. A publish that fails resets public realtime rather than dropping
+the frame silently, which is the same failure the socket already handles by
+reconnecting and re-invalidating.
+
 ## The scheduler
 
 A background sweep runs every `AppConfig::schedule_interval` (10 s by default,
@@ -428,8 +471,11 @@ The scheduler's state is the payload, so a restart is a resume:
   `project-default` execution fails rather than provisioning a workspace per
   run; bind a ready environment with `reuse` or name a host and an explicit
   path.
-- **No realtime invalidation.** Mutations write no relay event, so no client is
-  told to refetch; the routes are the only way to observe a change.
+- **The invalidation is coarser than bb's was.** bb published two kinds
+  (`automations-changed`, `automation-runs-changed`) on its plugin channel; the
+  public protocol has one project frame, so a client refetches both. The
+  alternative — a new entity or target — would need the pinned client to know a
+  vocabulary it does not have.
 - **No UI change.** The ported Automations view still talks to its typed seam;
   nothing here is wired to it yet.
 - **No provider routing or permission resolution** against a provider catalog:
@@ -473,6 +519,19 @@ The scheduler's state is the payload, so a restart is a resume:
   its timeout is killed and reported, pausing the automation stops a running
   script and the run settles as cancelled, and a script path that leaves the
   script directory is refused by the host with the reason on the run.
+- `crates/server/src/state.rs` (test support) — the public realtime channel is
+  read the same way in every invalidation test: subscribe, decode the frame,
+  assert it is the project's change.
+- `crates/server/src/automations.rs` — the write routes publish one project
+  scoped invalidation each (and a read publishes none), a deduplicated manual
+  run publishes none, and a claimed window publishes for the project it belongs
+  to.
+- `crates/server/src/automation_execution.rs` — a settled script run, a
+  cancelled one, a run that could not be dispatched, and a provider run ending
+  the agent run behind it all publish the same frame.
+- `crates/server/src/protocol.rs` — the frame is a legal project change, reaches
+  both project targets, misses another project's, and passes the exported bb
+  schema.
 - `crates/server/tests/automations_conformance.rs` — every operation over HTTP,
   with request bodies validated against loom-authored schemas before they are
   sent and response bodies after they are read (through the same validator the

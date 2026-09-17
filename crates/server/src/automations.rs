@@ -530,12 +530,18 @@ fn migrate_payload(state: &mut AutomationState) {
 }
 
 /// What one sweep found and did, for the log line and for the tests.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SweepReport {
     /// Enabled automations whose window had arrived.
     pub due: usize,
     /// Runs queued by this sweep.
     pub claimed: usize,
+    /// The projects those runs belong to, deduplicated, oldest first.
+    ///
+    /// The caller publishes one invalidation per project: a queued run is a
+    /// change a client has to be told about, and the scheduler is the only
+    /// producer that does not know whose automations it just moved.
+    pub claimed_projects: Vec<ProjectId>,
     /// Enabled schedules that had no next instant and now have one.
     pub armed: usize,
     /// Due automations that already had work in flight and were left alone.
@@ -999,6 +1005,9 @@ impl AutomationsRegistry {
                 report.exhausted += 1;
             }
             state.runs.push(encode_run(&run));
+            if !report.claimed_projects.contains(&automation.project_id) {
+                report.claimed_projects.push(automation.project_id.clone());
+            }
             state.automations[position] = encode(&automation);
             report.claimed += 1;
         }
@@ -1276,6 +1285,25 @@ impl AutomationsRegistry {
     }
 
     /// One run by id.
+    /// The project a run belongs to.
+    ///
+    /// A run row names its automation rather than its project, and the
+    /// invalidation a settle publishes is project-scoped, so the lookup happens
+    /// here — once, under one lock — instead of at each call site.
+    pub fn project_of_run(&self, run_id: &AutomationRunId) -> Option<ProjectId> {
+        let state = self.lock();
+        let automation_id = state
+            .runs
+            .iter()
+            .find(|row| row.id == run_id.to_string())
+            .map(|row| row.automation_id.clone())?;
+        let row = state
+            .automations
+            .iter()
+            .find(|row| row.id == automation_id)?;
+        decode(row).ok().map(|automation| automation.project_id)
+    }
+
     pub fn run(&self, run_id: &AutomationRunId) -> Option<AutomationRun> {
         let state = self.lock();
         state
@@ -1705,6 +1733,7 @@ pub async fn create(
     if let Err(response) = persist(&state) {
         return response;
     }
+    state.publish_automations_changed(&automation.project_id.to_string());
     (StatusCode::CREATED, Json(json!(automation.response()))).into_response()
 }
 
@@ -1731,6 +1760,7 @@ pub async fn update(
     if let Err(response) = persist(&state) {
         return response;
     }
+    state.publish_automations_changed(&automation.project_id.to_string());
     Json(json!(automation.response())).into_response()
 }
 
@@ -1765,6 +1795,9 @@ pub async fn delete(
     if let Err(response) = persist(&state) {
         return response;
     }
+    // The automation's rows are gone, so every client holding its list or its
+    // history refetches.
+    state.publish_automations_changed(&project_id);
     Json(json!({ "ok": true })).into_response()
 }
 
@@ -1828,6 +1861,9 @@ async fn set_enabled(
     if let Err(response) = persist(&state) {
         return response;
     }
+    // A pause or resume changes the automation *and* every run it cancelled,
+    // so one frame per project covers both.
+    state.publish_automations_changed(&project_id);
     Json(json!(automation.response())).into_response()
 }
 
@@ -1872,6 +1908,11 @@ pub async fn run(
     }
     if let Err(response) = persist(&state) {
         return response;
+    }
+    // A run that already existed is not a change: the client that sent the
+    // duplicate key gets the run back, and everyone else has seen it.
+    if !deduped {
+        state.publish_automations_changed(&project_id);
     }
     // The response is the run as it stands after the dispatch attempt: a run
     // that reached a host is `running` with its thread, and one that could not
@@ -2000,6 +2041,7 @@ fn not_found(project_id: &str, automation_id: &str) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::state::realtime_test_support::{drain, expect_project_invalidation, no_change};
     use loom_domain::automation::{
         AgentEnvironment, AgentExecution, AgentExecutionUpdate, AutomationExecution,
         AutomationRunStatus, AutomationTrigger, PermissionMode, ScriptExecution, ScriptInterpreter,
@@ -2039,6 +2081,165 @@ mod tests {
             origin: AutomationOrigin::Human,
             created_by_thread_id: None,
         }
+    }
+
+    /* -------------------------------------------------------------- */
+    /* Public invalidation                                             */
+    /* -------------------------------------------------------------- */
+
+    /// A server with its background loops off, and a subscription to what it
+    /// tells public clients.
+    fn served() -> (
+        AppState,
+        tokio::sync::broadcast::Receiver<crate::pump::PublicRealtimeEvent>,
+    ) {
+        let state = AppState::build(crate::state::AppConfig {
+            reconcile_interval: std::time::Duration::ZERO,
+            schedule_interval: std::time::Duration::ZERO,
+            ..crate::state::AppConfig::default()
+        })
+        .expect("builds");
+        let events = state.public_events.subscribe();
+        (state, events)
+    }
+
+    #[tokio::test]
+    async fn creating_updating_and_deleting_each_invalidate_their_project() {
+        let (state, mut events) = served();
+        let project = state.registry.personal_project_id().to_string();
+
+        let response = create(
+            State(state.clone()),
+            Path(project.clone()),
+            Json(new_automation("nightly")),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("a body");
+        let automation = serde_json::from_slice::<serde_json::Value>(&body)
+            .expect("json")
+            .get("id")
+            .and_then(|id| id.as_str())
+            .expect("an id")
+            .to_owned();
+        expect_project_invalidation(&mut events, &project).await;
+
+        let response = update(
+            State(state.clone()),
+            Path((project.clone(), automation.clone())),
+            Json(AutomationUpdate {
+                name: Some("nightly review".into()),
+                ..AutomationUpdate::default()
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        expect_project_invalidation(&mut events, &project).await;
+
+        let response = delete(
+            State(state.clone()),
+            Path((project.clone(), automation.clone())),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        expect_project_invalidation(&mut events, &project).await;
+
+        // A read never invalidates anything: only mutations do.
+        let response = get(State(state.clone()), Path((project.clone(), automation))).await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        no_change(&mut events).await;
+        state.shutdown();
+    }
+
+    #[tokio::test]
+    async fn pausing_and_resuming_invalidate_the_project() {
+        let (state, mut events) = served();
+        let project = state.registry.personal_project_id().to_string();
+        let automation = state
+            .automations
+            .create(project_of(&state), new_automation("mornings"), now())
+            .expect("creates");
+
+        let response = pause(
+            State(state.clone()),
+            Path((project.clone(), automation.id.to_string())),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        expect_project_invalidation(&mut events, &project).await;
+
+        let response = resume(
+            State(state.clone()),
+            Path((project.clone(), automation.id.to_string())),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        expect_project_invalidation(&mut events, &project).await;
+        state.shutdown();
+    }
+
+    #[tokio::test]
+    async fn a_manual_run_invalidates_the_project_once_and_a_duplicate_does_not() {
+        let (state, mut events) = served();
+        let project = state.registry.personal_project_id().to_string();
+        let automation = state
+            .automations
+            .create(project_of(&state), new_automation("on demand"), now())
+            .expect("creates");
+
+        let response = run(
+            State(state.clone()),
+            Path((project.clone(), automation.id.to_string())),
+            Some(Json(RunAutomationRequest {
+                idempotency_key: Some("once".into()),
+            })),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::CREATED);
+        expect_project_invalidation(&mut events, &project).await;
+        drain(&mut events).await;
+
+        // The same key answers with the run it already created; nothing new
+        // exists, so nothing new is announced.
+        let response = run(
+            State(state.clone()),
+            Path((project.clone(), automation.id.to_string())),
+            Some(Json(RunAutomationRequest {
+                idempotency_key: Some("once".into()),
+            })),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        no_change(&mut events).await;
+        state.shutdown();
+    }
+
+    #[tokio::test]
+    async fn a_scheduled_claim_invalidates_the_project_that_owns_it() {
+        let (state, mut events) = served();
+        let project = state.registry.personal_project_id().to_string();
+        let automation = state
+            .automations
+            .create(project_of(&state), new_automation("scheduled"), now())
+            .expect("creates");
+        make_due(&state.automations, &automation.id, now() - 1_000);
+
+        let report = state.sweep_automations(now());
+        assert_eq!(report.claimed, 1, "{report:?}");
+        assert_eq!(
+            report.claimed_projects,
+            vec![project_of(&state)],
+            "{report:?}"
+        );
+        expect_project_invalidation(&mut events, &project).await;
+        state.shutdown();
+    }
+
+    /// The stored project, as the routes take it.
+    fn project_of(state: &AppState) -> ProjectId {
+        state.registry.personal_project_id()
     }
 
     #[test]
