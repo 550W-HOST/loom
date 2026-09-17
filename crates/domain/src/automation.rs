@@ -600,6 +600,14 @@ impl AutomationExecution {
         }
     }
 
+    /// The agent half, when this is an agent execution.
+    pub fn agent(&self) -> Option<&AgentExecution> {
+        match self {
+            Self::Agent(agent) => Some(agent),
+            Self::Script(_) => None,
+        }
+    }
+
     /// The thread this execution targets, when it targets one.
     pub fn target_thread_id(&self) -> Option<&ThreadId> {
         match self {
@@ -1083,6 +1091,14 @@ pub struct AutomationRun {
     /// Stored, and deliberately absent from the response: it is a transport
     /// detail of the request that created the row.
     pub idempotency_key: Option<String>,
+    /// The provider run this automation run became, once it was dispatched.
+    ///
+    /// The mapping is stored, not derived: it is what lets a terminal provider
+    /// report close the automation run that asked for it, and it is the pair
+    /// (`thread_id`, `provider_run_id`) a client needs to open the thread a
+    /// history row ran in. Absent while the run is only queued, and for a run
+    /// that never reached a provider.
+    pub provider_run_id: Option<String>,
     /// The instant the run was due at. For a manual run that is when it was
     /// asked for.
     pub scheduled_for: u64,
@@ -1163,6 +1179,7 @@ impl AutomationRun {
             output: None,
             exit_code: None,
             idempotency_key,
+            provider_run_id: None,
             scheduled_for,
             started_at: now_ms,
             finished_at: None,
@@ -1189,6 +1206,18 @@ impl AutomationRun {
         self.state = AutomationRunState::Running;
         self.started_at = now_ms;
         Ok(())
+    }
+
+    /// Records the thread and provider run this run became.
+    ///
+    /// Called by the executor once the dispatch has been published: from that
+    /// point the automation run is a *view* of a provider run, and the provider
+    /// run's terminal event is what ends it. A queued run that never got this
+    /// far has neither id, which is exactly how a pre-dispatch failure is told
+    /// apart from a run that reached a machine.
+    pub fn attach_dispatch(&mut self, thread_id: ThreadId, provider_run_id: String) {
+        self.thread_id = Some(thread_id);
+        self.provider_run_id = Some(provider_run_id);
     }
 
     /// Ends an in-flight run.

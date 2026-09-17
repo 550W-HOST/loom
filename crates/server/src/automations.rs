@@ -191,6 +191,9 @@ pub struct StoredAutomationRun {
     /// The client's deduplication key.
     #[serde(default)]
     pub idempotency_key: Option<String>,
+    /// The provider run this one became, once it was dispatched.
+    #[serde(default)]
+    pub provider_run_id: Option<String>,
     /// When the run was due.
     #[serde(default)]
     pub scheduled_for: u64,
@@ -386,6 +389,7 @@ fn decode_run(row: &StoredAutomationRun) -> Option<AutomationRun> {
         output: row.output.clone(),
         exit_code: row.exit_code,
         idempotency_key: row.idempotency_key.clone(),
+        provider_run_id: row.provider_run_id.clone(),
         scheduled_for: row.scheduled_for,
         started_at: row.started_at,
         finished_at: row.finished_at,
@@ -406,6 +410,7 @@ fn encode_run(run: &AutomationRun) -> StoredAutomationRun {
         output: run.output.clone(),
         exit_code: run.exit_code,
         idempotency_key: run.idempotency_key.clone(),
+        provider_run_id: run.provider_run_id.clone(),
         scheduled_for: run.scheduled_for,
         started_at: run.started_at,
         finished_at: run.finished_at,
@@ -730,6 +735,19 @@ impl AutomationsRegistry {
     pub fn get(&self, project_id: &str, automation_id: &str) -> Option<StoredAutomation> {
         let state = self.lock();
         Self::row(&state, project_id, automation_id).cloned()
+    }
+
+    /// One automation by id, decoded.
+    ///
+    /// The executor works from the decoded row: it needs the trigger and the
+    /// execution, not the wire projection.
+    pub fn automation(&self, automation_id: &AutomationId) -> Option<Automation> {
+        let state = self.lock();
+        state
+            .automations
+            .iter()
+            .find(|row| row.id == automation_id.to_string())
+            .and_then(|row| decode(row).ok())
     }
 
     /// Creates an automation.
@@ -1076,6 +1094,107 @@ impl AutomationsRegistry {
         failed
     }
 
+    /// The runs still waiting for execution, oldest first.
+    ///
+    /// This is the executor's queue: a queued run is durable work, and the
+    /// order is the order the queue was filled, so a burst of windows is
+    /// dispatched in the order it arrived.
+    pub fn pending_runs(&self, limit: usize) -> Vec<AutomationRun> {
+        let state = self.lock();
+        let mut runs: Vec<AutomationRun> = state
+            .runs
+            .iter()
+            .filter_map(decode_run)
+            .filter(|run| run.state == AutomationRunState::Pending)
+            .collect();
+        runs.sort_by(|left, right| {
+            left.started_at
+                .cmp(&right.started_at)
+                .then_with(|| left.id.to_string().cmp(&right.id.to_string()))
+        });
+        runs.truncate(limit);
+        runs
+    }
+
+    /// Whether an automation already has work in flight.
+    pub fn has_in_flight(&self, automation_id: &str) -> bool {
+        in_flight_run(&self.lock(), automation_id).is_some()
+    }
+
+    /// Records the thread and provider run an automation run became.
+    ///
+    /// The thread mark is written in the same critical section: a run that has
+    /// a provider run but no mark would be a thread the server cannot tell was
+    /// automation-produced, and the two facts are only ever true together.
+    pub fn attach_run_dispatch(
+        &self,
+        run_id: &AutomationRunId,
+        thread_id: &ThreadId,
+        provider_run_id: &str,
+        now_ms: u64,
+    ) -> Result<AutomationRun, AutomationError> {
+        let mut state = self.lock();
+        let position = state
+            .runs
+            .iter()
+            .position(|row| row.id == run_id.to_string())
+            .ok_or_else(|| AutomationError::NotFound(format!("run {run_id} is not known")))?;
+        let mut run = decode_run(&state.runs[position]).ok_or_else(|| {
+            AutomationError::Conflict(format!("run {run_id} has invalid stored data"))
+        })?;
+        run.attach_dispatch(thread_id.clone(), provider_run_id.to_owned());
+        state.runs[position] = encode_run(&run);
+        let mark = encode_thread_mark(&AutomationThreadMark {
+            thread_id: thread_id.clone(),
+            automation_id: run.automation_id.clone(),
+            run_id: run.id.clone(),
+            created_at_ms: now_ms,
+        });
+        match state
+            .thread_marks
+            .iter_mut()
+            .find(|row| row.thread_id == mark.thread_id)
+        {
+            Some(existing) => *existing = mark,
+            None => state.thread_marks.push(mark),
+        }
+        Ok(run)
+    }
+
+    /// Closes the automation run that became `provider_run_id`.
+    ///
+    /// The execution plane reports on provider runs; an automation run is a
+    /// view of one, so this is where the view learns its outcome. `None` means
+    /// no automation run claimed that provider run — an ordinary thread turn,
+    /// or a run whose row was already closed.
+    pub fn close_run_by_provider_run(
+        &self,
+        provider_run_id: &str,
+        outcome: &AutomationRunOutcome,
+        now_ms: u64,
+    ) -> Option<AutomationRun> {
+        let state = self.lock();
+        let run_id = state
+            .runs
+            .iter()
+            .filter(|row| row.provider_run_id.as_deref() == Some(provider_run_id))
+            .filter_map(decode_run)
+            .find(|run| run.is_in_flight())
+            .map(|run| run.id)?;
+        drop(state);
+        self.close_run(&run_id, outcome, now_ms).ok()
+    }
+
+    /// One run by id.
+    pub fn run(&self, run_id: &AutomationRunId) -> Option<AutomationRun> {
+        let state = self.lock();
+        state
+            .runs
+            .iter()
+            .find(|row| row.id == run_id.to_string())
+            .and_then(decode_run)
+    }
+
     /// One page of an automation's run history, newest first.
     pub fn runs(
         &self,
@@ -1263,6 +1382,17 @@ impl AutomationError {
         }
     }
 }
+
+impl std::fmt::Display for AutomationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotFound(message) | Self::Conflict(message) => f.write_str(message),
+            Self::Invalid { field, reason } => write!(f, "{field} {reason}"),
+        }
+    }
+}
+
+impl std::error::Error for AutomationError {}
 
 impl From<loom_domain::DomainError> for AutomationError {
     fn from(error: loom_domain::DomainError) -> Self {
@@ -1615,6 +1745,20 @@ pub async fn run(
         Ok(outcome) => outcome,
         Err(error) => return error_response(error),
     };
+    // A manual run is an execution intent, and the client that asked for it is
+    // waiting: dispatch it now rather than at the next scheduled tick. The
+    // executor is the same one the sweep uses, so a manual run and a due window
+    // cannot take different paths.
+    if !deduped {
+        state.execute_pending_automation_runs(now);
+    }
+    if let Err(response) = persist(&state) {
+        return response;
+    }
+    // The response is the run as it stands after the dispatch attempt: a run
+    // that reached a host is `running` with its thread, and one that could not
+    // be dispatched is already `failed` with the reason.
+    let run = state.automations.run(&run.id).unwrap_or(run);
     if let Err(response) = persist(&state) {
         return response;
     }

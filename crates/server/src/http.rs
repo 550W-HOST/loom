@@ -26,6 +26,7 @@ use serde_json::{json, Value};
 use crate::domain_state::CommandError;
 use crate::interactions::DeliverOutcome;
 use crate::queue::DeliveryOutcome;
+use crate::runs::DispatchOutcome;
 use crate::state::{domain_event_from_envelope, AppState};
 use crate::ui;
 use crate::ws;
@@ -5227,6 +5228,41 @@ async fn post_thread_message(
     }
 }
 
+/// What appending a message did.
+pub struct ThreadTurn {
+    /// The events the append published, in order.
+    events: Vec<PublishedEvent>,
+    /// What the dispatch decided. `None` means the message was appended
+    /// without starting a turn — the thread already had a run, or its status
+    /// does not start one.
+    pub outcome: Option<DispatchOutcome>,
+}
+
+/// Why a turn could not be appended.
+pub enum TurnError {
+    /// The domain refused the message.
+    Command(CommandError),
+    /// The events could not be published.
+    Publish(String),
+}
+
+impl TurnError {
+    /// The reason, for a caller that has no client to answer.
+    pub fn reason(&self) -> String {
+        match self {
+            Self::Command(error) => error.to_string(),
+            Self::Publish(message) => message.clone(),
+        }
+    }
+
+    fn into_response(self) -> Response {
+        match self {
+            Self::Command(error) => command_error_response(error),
+            Self::Publish(message) => error_response(StatusCode::INTERNAL_SERVER_ERROR, message),
+        }
+    }
+}
+
 /// Appends a message, publishes its domain events and dispatches a newly
 /// started user turn through the existing relay path.
 #[allow(clippy::result_large_err)]
@@ -5236,26 +5272,58 @@ fn append_thread_message(
     role: MessageRole,
     content: String,
 ) -> Result<Vec<PublishedEvent>, Response> {
+    append_thread(state, thread_id, role, content)
+        .map(|turn| turn.events)
+        .map_err(TurnError::into_response)
+}
+
+/// The same append, reporting the dispatch outcome and a plain-text reason.
+///
+/// The HTTP handlers only need the events — a dispatch failure is already on
+/// the thread's timeline — but an automation run has to close itself with the
+/// same reason, so what the dispatch decided is returned instead of dropped.
+pub fn append_thread_message_or_reason(
+    state: &AppState,
+    thread_id: &ThreadId,
+    role: MessageRole,
+    content: String,
+) -> Result<ThreadTurn, String> {
+    append_thread(state, thread_id, role, content).map_err(|error| error.reason())
+}
+
+#[allow(clippy::result_large_err)]
+fn append_thread(
+    state: &AppState,
+    thread_id: &ThreadId,
+    role: MessageRole,
+    content: String,
+) -> Result<ThreadTurn, TurnError> {
     let events = state
         .registry
         .post_message(thread_id, role, content.clone(), loom_relay::now_ms())
-        .map_err(command_error_response)?;
-    let published = publish_all(state, &events)
-        .map_err(|error| error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
+        .map_err(TurnError::Command)?;
+    let published =
+        publish_all(state, &events).map_err(|error| TurnError::Publish(error.to_string()))?;
 
     // A user message into an idle thread moves it to `working`. That is the
     // trigger for dispatch: find a machine and publish a run to its scope
     // through the relay. If no machine exists the dispatcher fails the thread
     // on the spot, so the status change is never left dangling.
-    if published
+    let started = published
         .iter()
-        .any(|event| event.event_type == "thread_status_changed")
-    {
-        if let Some(thread) = state.registry.public_thread(thread_id) {
-            state.dispatch_thread(&thread, &content);
-        }
-    }
-    Ok(published)
+        .any(|event| event.event_type == "thread_status_changed");
+    let outcome = if started {
+        state
+            .registry
+            .public_thread(thread_id)
+            .map(|thread| state.dispatch_thread(&thread, &content))
+    } else {
+        None
+    };
+    Ok(ThreadTurn {
+        events: published,
+        outcome,
+    })
 }
 
 /// Provider runs currently dispatched and not yet terminal.

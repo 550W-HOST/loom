@@ -1389,3 +1389,264 @@ where
     }
     predicate().await
 }
+
+/* ------------------------------------------------------------------ */
+/* Automations                                                         */
+/* ------------------------------------------------------------------ */
+
+/// The automation fixture: an agent automation in the personal project whose
+/// execution reuses an unmanaged environment at `workspace`.
+fn automation_fixture(
+    state: &AppState,
+    host_id: &HostId,
+    workspace: &Path,
+    trigger: loom_domain::automation::AutomationTrigger,
+) -> loom_domain::automation::Automation {
+    let project = state.registry.personal_project_id();
+    let (environment, events) = state
+        .registry
+        .create_environment(
+            Some(project.clone()),
+            host_id.clone(),
+            EnvironmentKind::Unmanaged,
+            Some(workspace.to_string_lossy().into_owned()),
+            loom_relay::now_ms(),
+        )
+        .unwrap();
+    for event in &events {
+        state.publish_domain_event(event).unwrap();
+    }
+    state
+        .automations
+        .create(
+            project,
+            loom_domain::automation::NewAutomation {
+                name: "nightly summary".into(),
+                enabled: true,
+                trigger,
+                execution: loom_domain::automation::AutomationExecution::Agent(
+                    loom_domain::automation::AgentExecution {
+                        prompt: "summarise the repository".into(),
+                        provider_id: "pi".into(),
+                        model: "pi/default".into(),
+                        reasoning_level: loom_domain::ReasoningLevel::Medium,
+                        service_tier: None,
+                        permission_mode: loom_domain::automation::PermissionMode::Auto,
+                        environment: loom_domain::automation::AgentEnvironment::Reuse {
+                            environment_id: environment.id,
+                        },
+                        target_thread_id: None,
+                    },
+                ),
+                origin: loom_domain::automation::AutomationOrigin::Human,
+                created_by_thread_id: None,
+            },
+            loom_relay::now_ms(),
+        )
+        .unwrap()
+}
+
+/// Polls until an automation run reaches a terminal state.
+async fn wait_for_automation_run(
+    state: &AppState,
+    run_id: &loom_domain::AutomationRunId,
+) -> loom_domain::AutomationRun {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+    loop {
+        let run = state.automations.run(run_id).expect("the run is stored");
+        if !matches!(
+            run.state,
+            loom_domain::AutomationRunState::Pending | loom_domain::AutomationRunState::Running
+        ) {
+            return run;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the automation run never reached a terminal state: {run:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+#[tokio::test]
+async fn a_scheduled_automation_run_becomes_a_real_turn() {
+    let dir = tempfile::tempdir().unwrap();
+    let workspace = tempfile::tempdir().unwrap();
+    let provider = write_stub(
+        dir.path(),
+        "automation-agent.sh",
+        r#"printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"stub-session","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"scheduled run complete"}}}}'
+"#,
+    );
+    let (url, state) = spawn_server(AppConfig {
+        provider_spec: provider.clone(),
+        schedule_interval: Duration::ZERO,
+        ..AppConfig::default()
+    })
+    .await;
+    let (host_id, daemon) =
+        enroll_daemon(&url, None, Some(provider), Duration::from_secs(10)).await;
+    assert!(
+        eventually(|| state
+            .registry
+            .host(&host_id)
+            .map(|host| host.status == HostStatus::Connected)
+            .unwrap_or(false))
+        .await
+    );
+
+    // A one-shot window that has already arrived: the sweep claims it, and the
+    // executor turns it into a turn.
+    let now = loom_relay::now_ms();
+    let automation = automation_fixture(
+        &state,
+        &host_id,
+        workspace.path(),
+        loom_domain::automation::AutomationTrigger::Once {
+            run_at: now + 1_000,
+        },
+    );
+    state.sweep_automations(now + 2_000);
+
+    let (runs, _) = state
+        .automations
+        .runs(
+            &automation.project_id.to_string(),
+            &automation.id.to_string(),
+            10,
+            None,
+        )
+        .unwrap();
+    assert_eq!(runs.len(), 1, "the window was claimed into exactly one run");
+    assert_eq!(
+        runs[0].trigger,
+        loom_domain::automation::AutomationRunTrigger::Schedule
+    );
+    let run = wait_for_automation_run(&state, &runs[0].id).await;
+
+    // The provider really ran: the thread the run created carries the stub's
+    // output, and the run says which thread that was.
+    assert_eq!(
+        run.state,
+        loom_domain::AutomationRunState::Succeeded,
+        "{run:?}"
+    );
+    let thread_id = run.thread_id.clone().expect("the run names its thread");
+    assert_eq!(
+        wait_for_terminal(&state, &thread_id).await,
+        ThreadStatus::Idle
+    );
+    let events = thread_events(&state, &thread_id);
+    assert_eq!(terminal_outcome(&events), Some("completed".into()));
+    assert_eq!(output_texts(&events), vec!["scheduled run complete"]);
+    assert_eq!(
+        run.response().status,
+        loom_domain::AutomationRunStatus::Succeeded
+    );
+    assert!(run.finished_at.is_some());
+    assert!(
+        run.provider_run_id.is_some(),
+        "the run records the provider run it became"
+    );
+
+    // A one-shot automation does not fire twice.
+    state.sweep_automations(now + 3_000);
+    let (runs, _) = state
+        .automations
+        .runs(
+            &automation.project_id.to_string(),
+            &automation.id.to_string(),
+            10,
+            None,
+        )
+        .unwrap();
+    assert_eq!(runs.len(), 1);
+
+    daemon.abort();
+    state.shutdown();
+}
+
+#[tokio::test]
+async fn a_manual_automation_run_dispatches_and_closes_with_its_thread() {
+    let dir = tempfile::tempdir().unwrap();
+    let workspace = tempfile::tempdir().unwrap();
+    let provider = write_stub(
+        dir.path(),
+        "manual-agent.sh",
+        r#"printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"stub-session","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"manual run complete"}}}}'
+"#,
+    );
+    let (url, state) = spawn_server(AppConfig {
+        provider_spec: provider.clone(),
+        schedule_interval: Duration::ZERO,
+        ..AppConfig::default()
+    })
+    .await;
+    let (host_id, daemon) =
+        enroll_daemon(&url, None, Some(provider), Duration::from_secs(10)).await;
+    assert!(
+        eventually(|| state
+            .registry
+            .host(&host_id)
+            .map(|host| host.status == HostStatus::Connected)
+            .unwrap_or(false))
+        .await
+    );
+
+    let automation = automation_fixture(
+        &state,
+        &host_id,
+        workspace.path(),
+        loom_domain::automation::AutomationTrigger::Schedule {
+            cron: "0 9 * * *".into(),
+            timezone: "UTC".into(),
+        },
+    );
+
+    // The client's request, over the real HTTP surface.
+    let addr = url.trim_start_matches("http://").to_string();
+    let (status, body) = http(
+        &addr,
+        "POST",
+        &format!(
+            "/api/v1/projects/{}/automations/{}/run",
+            automation.project_id, automation.id
+        ),
+        Some(&serde_json::json!({ "idempotencyKey": "manual-1" })),
+    )
+    .await;
+    assert_eq!(status, 201, "{body}");
+    let run_id: loom_domain::AutomationRunId = body["run"]["id"].as_str().unwrap().parse().unwrap();
+    let run = wait_for_automation_run(&state, &run_id).await;
+    assert_eq!(
+        run.state,
+        loom_domain::AutomationRunState::Succeeded,
+        "{run:?}"
+    );
+
+    // The response the client saw and the run the history carries agree on the
+    // thread, and that thread is the one the provider ran in.
+    let thread_id = run.thread_id.clone().expect("the run names its thread");
+    let (status, fetched) = http(
+        &addr,
+        "GET",
+        &format!(
+            "/api/v1/projects/{}/automations/{}/runs",
+            automation.project_id, automation.id
+        ),
+        None,
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(fetched["runs"][0]["id"], body["run"]["id"]);
+    assert_eq!(fetched["runs"][0]["threadId"], thread_id.to_string());
+    assert_eq!(fetched["runs"][0]["status"], "succeeded");
+    assert_eq!(fetched["runs"][0]["trigger"], "manual");
+
+    let events = thread_events(&state, &thread_id);
+    assert_eq!(terminal_outcome(&events), Some("completed".into()));
+    assert_eq!(output_texts(&events), vec!["manual run complete"]);
+
+    daemon.abort();
+    state.shutdown();
+}
