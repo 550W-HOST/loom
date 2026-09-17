@@ -5,18 +5,13 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter } from "react-router-dom";
 import type { PendingInteraction, PluginPendingInteraction } from "@bb/domain";
-import type { PluginPendingInteractionProps } from "@get-bb/plugin-sdk";
-import {
-  resetPluginSlotStoreForTest,
-  setPluginSlotRegistrations,
-} from "@/lib/plugin-slots";
+import { resetPluginSlotStoreForTest } from "@/lib/plugin-slots";
 import {
   resetPluginLogoStoreForTest,
   setPluginLogoUrls,
 } from "@/lib/plugin-logos";
 import { resetAllCrashedPluginSlotsForTest } from "../../plugin/PluginSlotMount";
 import { ThreadPendingInteractionBanner } from "./ThreadPendingInteractionBanner";
-import { makePluginRegistrationSet as registrationSet } from "@/test/fixtures/plugins";
 
 const mocks = vi.hoisted(() => ({
   cancelMutateAsync: vi.fn(async () => ({})),
@@ -211,25 +206,8 @@ describe("ThreadPendingInteractionBanner tool-use approval", () => {
     );
   });
 
-  it("renders a permission grant with the provider's available decisions", () => {
-    const permissionGrant: PendingInteraction = {
-      ...toolUseApproval,
-      id: "pint_permission_grant",
-      payload: {
-        ...toolUseApproval.payload,
-        subject: {
-          kind: "permission_grant",
-          itemId: "permission-1",
-          toolName: "filesystem",
-          permissions: {
-            network: { enabled: true },
-            fileSystem: { read: ["/workspace"], write: [] },
-          },
-        },
-      },
-    };
-
-    renderBanner(permissionGrant);
+  it("renders the provider's decisions and cancellation for an ACP tool-use request", () => {
+    renderBanner(toolUseApproval);
     expandBanner();
     expect(screen.getByRole("button", { name: "Allow once" })).toBeTruthy();
     expect(
@@ -239,13 +217,13 @@ describe("ThreadPendingInteractionBanner tool-use approval", () => {
     expect(screen.getByRole("button", { name: "Cancel" })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
     expect(mocks.cancelMutateAsync).toHaveBeenLastCalledWith({
-      interactionId: "pint_permission_grant",
+      interactionId: "pint_tool",
       threadId: "thr_1",
     });
     fireEvent.click(screen.getByRole("button", { name: "Deny" }));
     expect(mocks.resolveMutateAsync).toHaveBeenLastCalledWith(
       expect.objectContaining({
-        interactionId: "pint_permission_grant",
+        interactionId: "pint_tool",
         resolution: { decision: "deny" },
       }),
     );
@@ -335,48 +313,25 @@ describe("ThreadPendingInteractionBanner request family", () => {
     );
   });
 
-  it("renders a plugin request through the plugin's pendingInteraction slot, keyed by <pluginId>/<kind>", () => {
-    function SecretForm({ interaction }: PluginPendingInteractionProps) {
-      return <div data-testid="secret-form">{interaction.title}</div>;
-    }
-    setPluginSlotRegistrations(
-      "secrets",
-      registrationSet({
-        pendingInteractions: [{ id: "secret-request", component: SecretForm }],
-      }),
-    );
+  it("keeps a generic plugin request visibly unavailable without loading plugin runtime", () => {
     renderBanner(pluginRequest);
     const banner = screen.getByTestId("plugin-request-banner");
     expect(banner.getAttribute("data-request-kind")).toBe(
       "secrets/secret-request",
     );
-    expect(screen.getByTestId("secret-form").textContent).toBe("Add secrets");
+    expect(screen.getByText("This interaction is unavailable.")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeTruthy();
   });
 
-  it("renders a provider's plugin-defined request through the same slot, with the form's data", () => {
-    function SecretForm({ interaction }: PluginPendingInteractionProps) {
-      return (
-        <div data-testid="secret-form">
-          {interaction.title}:{JSON.stringify(interaction.payload)}
-        </div>
-      );
-    }
-    setPluginSlotRegistrations(
-      "secrets",
-      registrationSet({
-        pendingInteractions: [{ id: "secret-request", component: SecretForm }],
-      }),
-    );
+  it("keeps a provider plugin-defined request fail-closed", () => {
     renderBanner(providerPluginRequest);
     expect(
       screen
         .getByTestId("plugin-request-banner")
         .getAttribute("data-request-kind"),
     ).toBe("secrets/secret-request");
-    expect(screen.getByTestId("secret-form").textContent).toBe(
-      'Add a token:{"fields":["TOKEN"]}',
-    );
-    expect(screen.getByText(/The agent asks through/)).toBeTruthy();
+    expect(screen.getByText("This interaction is unavailable.")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Stop turn" })).toBeTruthy();
   });
 
   it("backs out of a provider's request by stopping the turn, never by cancelling", () => {

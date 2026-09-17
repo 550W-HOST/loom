@@ -3,11 +3,16 @@ import { fetchWithAppSurface } from "./app-surface";
 import {
   loomGetEnvironment,
   loomGetThread,
+  loomGetThreadTabs,
   loomGetThreadTimeline,
   loomListEnvironmentProviders,
+  loomMarkThreadRead,
+  loomMarkThreadUnread,
   loomProjectDefaultExecutionOptions,
   loomSendThreadMessage,
   loomSpawnThread,
+  loomThreadDefaultExecutionOptions,
+  loomUpdateThreadTabs,
 } from "./loom-thread-runtime";
 import {
   loomCancelThreadInteraction,
@@ -15,6 +20,12 @@ import {
   loomListThreadInteractions,
   loomResolveThreadInteraction,
 } from "./loom-interactions";
+
+import {
+  loomResetUiPreference,
+  loomListUiPreferences,
+  loomSetUiPreference,
+} from "./loom-ui-preferences";
 
 const BASE_URL =
   typeof window === "undefined" ? "http://localhost" : window.location.origin;
@@ -41,8 +52,18 @@ export const sdk = {
     ...compileOnlySdk.projects,
     defaultExecutionOptions: loomProjectDefaultExecutionOptions,
   },
+  system: {
+    ...compileOnlySdk.system,
+    uiPreferences: {
+      ...compileOnlySdk.system.uiPreferences,
+      list: loomListUiPreferences,
+      reset: loomResetUiPreference,
+      set: loomSetUiPreference,
+    },
+  },
   threads: {
     ...compileOnlySdk.threads,
+    defaultExecutionOptions: loomThreadDefaultExecutionOptions,
     get: loomGetThread,
     interactions: {
       ...compileOnlySdk.threads.interactions,
@@ -51,8 +72,15 @@ export const sdk = {
       list: loomListThreadInteractions,
       resolve: loomResolveThreadInteraction,
     },
+    markRead: loomMarkThreadRead,
+    markUnread: loomMarkThreadUnread,
     send: loomSendThreadMessage,
     spawn: loomSpawnThread,
+    tabs: {
+      ...compileOnlySdk.threads.tabs,
+      get: loomGetThreadTabs,
+      update: loomUpdateThreadTabs,
+    },
     timeline: loomGetThreadTimeline,
   },
 };

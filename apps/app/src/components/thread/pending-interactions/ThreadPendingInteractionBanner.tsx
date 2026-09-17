@@ -312,11 +312,7 @@ function ApprovalPendingInteractionBanner({
           disabled={submitDisabled}
           loadingDecision={isResolving ? submittedDecision : null}
           onDecide={submitDecision}
-          onCancel={
-            subject.kind === "permission_grant"
-              ? cancelInteraction
-              : undefined
-          }
+          onCancel={cancelInteraction}
           cancelLoading={cancelPendingInteraction.isPending}
           subjectKind={subject.kind}
         />

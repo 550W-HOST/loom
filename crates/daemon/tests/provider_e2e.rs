@@ -1106,10 +1106,7 @@ async fn a_permission_request_is_answered_through_the_interaction_routes() {
         &format!("/api/v1/threads/{thread_id}/interactions/{interaction_id}/resolve"),
         Some(&serde_json::json!({
             "decision": "allow_once",
-            "grantedPermissions": {
-                "network": { "enabled": true },
-                "fileSystem": { "read": [], "write": [] },
-            },
+            "grantedPermissions": null,
         })),
     )
     .await;
@@ -1212,6 +1209,85 @@ async fn a_denied_permission_selects_the_agents_rejecting_option() {
     assert!(
         !decision.contains("allow-once"),
         "a denial must not contain an allowing option: {decision}"
+    );
+
+    daemon.abort();
+    state.shutdown();
+}
+
+/// A client cancellation settles the durable row and reaches the blocked ACP
+/// request as `Cancelled`, rather than merely hiding the prompt in the UI.
+#[tokio::test]
+async fn a_client_cancelled_permission_unblocks_the_agent() {
+    let dir = tempfile::tempdir().unwrap();
+    let provider = write_stub(dir.path(), "cancel.sh", PERMISSION_STUB);
+    let (url, state) = spawn_server(AppConfig {
+        provider_spec: provider.clone(),
+        run_timeout: Duration::from_secs(30),
+        ..AppConfig::default()
+    })
+    .await;
+    let (host_id, daemon) =
+        enroll_daemon(&url, None, Some(provider), Duration::from_secs(30)).await;
+    assert!(
+        eventually(|| state
+            .registry
+            .host(&host_id)
+            .map(|host| host.status == HostStatus::Connected)
+            .unwrap_or(false))
+        .await
+    );
+    let thread_id = start_turn(&state, dir.path(), "do the thing");
+    let addr = url.trim_start_matches("http://").to_string();
+
+    let listed = eventually_async(|| {
+        let addr = addr.clone();
+        let thread_id = thread_id.clone();
+        async move {
+            let (status, body) = http(
+                &addr,
+                "GET",
+                &format!("/api/v1/threads/{thread_id}/interactions"),
+                None,
+            )
+            .await;
+            (status == 200 && body.as_array().is_some_and(|rows| !rows.is_empty())).then_some(body)
+        }
+    })
+    .await
+    .expect("the request must appear");
+    assert_eq!(listed[0]["payload"]["subject"]["kind"], "tool_use");
+    let interaction_id = listed[0]["id"].as_str().unwrap().to_owned();
+
+    let (status, cancelled) = http(
+        &addr,
+        "POST",
+        &format!("/api/v1/threads/{thread_id}/interactions/{interaction_id}/cancel"),
+        None,
+    )
+    .await;
+    assert_eq!(status, 200, "{cancelled}");
+    assert_eq!(cancelled["status"], "interrupted");
+    assert_eq!(cancelled["resolution"], Value::Null);
+
+    assert_eq!(
+        wait_for_terminal(&state, &thread_id).await,
+        ThreadStatus::Idle,
+        "client cancellation must unblock the provider immediately"
+    );
+    let events = thread_events(&state, &thread_id);
+    assert_eq!(terminal_outcome(&events), Some("completed".into()));
+    assert_eq!(output_texts(&events), vec!["decision received"]);
+
+    let decision = std::fs::read_to_string(dir.path().join("cancel.sh.decision"))
+        .expect("the agent must have received a cancellation response");
+    assert!(
+        decision.contains("\"outcome\":{\"outcome\":\"cancelled\"}"),
+        "client cancellation must become ACP Cancelled: {decision}"
+    );
+    assert!(
+        !decision.contains("optionId"),
+        "cancellation must not select an allow or deny option: {decision}"
     );
 
     daemon.abort();

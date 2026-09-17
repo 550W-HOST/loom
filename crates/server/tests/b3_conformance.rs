@@ -792,10 +792,7 @@ async fn interactions_are_listed_fetched_resolved_and_cancelled() {
             &format!("{base}/interactions/{}/resolve", approval.id),
             json!({
                 "decision": "allow_once",
-                "grantedPermissions": {
-                    "network": { "enabled": true },
-                    "fileSystem": { "read": [], "write": [] },
-                },
+                "grantedPermissions": null,
             }),
         )
         .await;

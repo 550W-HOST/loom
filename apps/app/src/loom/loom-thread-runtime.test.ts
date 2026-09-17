@@ -12,7 +12,12 @@ import {
   PERSONAL_WORKSPACE_PROVIDER_ID,
   PROJECT_CHECKOUT_PROVIDER_ID,
   loomListEnvironmentProviders,
+  loomMarkThreadRead,
+  loomMarkThreadUnread,
+  loomGetThreadTabs,
   loomSpawnThread,
+  loomThreadDefaultExecutionOptions,
+  loomUpdateThreadTabs,
   resolveLoomThreadEnvironment,
 } from "@/lib/loom-thread-runtime";
 
@@ -323,8 +328,103 @@ describe("loom New Thread runtime", () => {
     ).toBe(false);
   });
 
+  it("uses typed thread-detail support routes for defaults and read state", async () => {
+    const requests: Array<{ method: string; path: string }> = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: URL | RequestInfo, init?: RequestInit) => {
+        const url = new URL(String(input));
+        const method = init?.method ?? "GET";
+        requests.push({ method, path: url.pathname });
+        if (
+          url.pathname ===
+          "/api/v1/threads/thr_1/default-execution-options"
+        ) {
+          return jsonResponse(null);
+        }
+        if (
+          url.pathname === "/api/v1/threads/thr_1/read" ||
+          url.pathname === "/api/v1/threads/thr_1/unread"
+        ) {
+          return jsonResponse(thread("proj_actual_personal", "env_1"));
+        }
+        if (url.pathname === "/api/v1/threads/thr_1/tabs") {
+          return jsonResponse({ revision: method === "PUT" ? 1 : 0, tabs: [] });
+        }
+        if (url.pathname === "/api/v1/sidebar-bootstrap") {
+          return jsonResponse(sidebar());
+        }
+        throw new Error(`unexpected ${method} ${url.pathname}`);
+      }),
+    );
+
+    await expect(
+      loomThreadDefaultExecutionOptions({ threadId: "thr_1" }),
+    ).resolves.toBeNull();
+    await expect(loomMarkThreadRead({ threadId: "thr_1" })).resolves.toMatchObject(
+      { projectId: PERSONAL_PROJECT_ID },
+    );
+    await expect(
+      loomMarkThreadUnread({ threadId: "thr_1" }),
+    ).resolves.toMatchObject({ projectId: PERSONAL_PROJECT_ID });
+    await expect(loomGetThreadTabs({ threadId: "thr_1" })).resolves.toEqual({
+      revision: 0,
+      tabs: [],
+    });
+    await expect(
+      loomUpdateThreadTabs({
+        threadId: "thr_1",
+        expectedRevision: 0,
+        tabs: [],
+      }),
+    ).resolves.toEqual({ revision: 1, tabs: [] });
+
+    expect(requests).toContainEqual({
+      method: "GET",
+      path: "/api/v1/threads/thr_1/default-execution-options",
+    });
+    expect(requests).toContainEqual({
+      method: "POST",
+      path: "/api/v1/threads/thr_1/read",
+    });
+    expect(requests).toContainEqual({
+      method: "POST",
+      path: "/api/v1/threads/thr_1/unread",
+    });
+    expect(requests).toContainEqual({
+      method: "GET",
+      path: "/api/v1/threads/thr_1/tabs",
+    });
+    expect(requests).toContainEqual({
+      method: "PUT",
+      path: "/api/v1/threads/thr_1/tabs",
+    });
+  });
+
+  it("does not mutate read state when personal-project normalization fails", async () => {
+    const requests: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: URL | RequestInfo) => {
+        const url = new URL(String(input));
+        requests.push(url.pathname);
+        return jsonResponse({ code: "internal_error", message: "offline" }, 500);
+      }),
+    );
+
+    await expect(loomMarkThreadRead({ threadId: "thr_1" })).rejects.toThrow();
+    expect(requests).toEqual(["/api/v1/sidebar-bootstrap"]);
+  });
+
   it("wires only the scoped browser SDK operations", async () => {
     expect(sdk.threads.spawn).toBe(loomSpawnThread);
+    expect(sdk.threads.defaultExecutionOptions).toBe(
+      loomThreadDefaultExecutionOptions,
+    );
+    expect(sdk.threads.markRead).toBe(loomMarkThreadRead);
+    expect(sdk.threads.markUnread).toBe(loomMarkThreadUnread);
+    expect(sdk.threads.tabs.get).toBe(loomGetThreadTabs);
+    expect(sdk.threads.tabs.update).toBe(loomUpdateThreadTabs);
     expect(sdk.environments.listProviders).toBe(loomListEnvironmentProviders);
     await expect(sdk.threads.stop({ threadId: "thr_missing" })).rejects.toBeInstanceOf(
       BrowserSdkUnavailableError,

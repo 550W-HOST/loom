@@ -26,7 +26,6 @@ import {
 import {
   COMPACT_THREAD_TIMELINE_SEGMENT_LIMIT,
   didThreadDetailBootstrapRefreshAfterMount,
-  getLatestPendingInteraction,
   isPendingInteractionStateUnknown,
   useArchivedThreads,
   useChildThreads,
@@ -420,57 +419,6 @@ describe("useThreadQueuedMessages", () => {
 });
 
 describe("useThreadPendingInteractions", () => {
-  function interactionWithStatus(
-    status: PendingInteraction["status"],
-    createdAt: number,
-  ): PendingInteraction {
-    return {
-      id: `${status}-${createdAt}`,
-      threadId: "thread-1",
-      turnId: "turn-1",
-      providerId: "pi",
-      providerThreadId: "provider-thread-1",
-      providerRequestId: `request-${createdAt}`,
-      origin: {
-        kind: "provider",
-        providerId: "pi",
-        providerThreadId: "provider-thread-1",
-        providerRequestId: `request-${createdAt}`,
-      },
-      status,
-      statusReason: null,
-      createdAt,
-      resolvedAt: status === "resolved" ? createdAt + 1 : null,
-      resolution: null,
-      payload: {
-        kind: "approval",
-        reason: "Allow this command?",
-        availableDecisions: ["allow_once", "deny"],
-        subject: {
-          kind: "command",
-          itemId: `item-${createdAt}`,
-          command: "ls",
-          cwd: null,
-          actions: [],
-          sessionGrant: null,
-        },
-      },
-    };
-  }
-
-  it("does not select settled interaction history for the composer", () => {
-    const resolved = interactionWithStatus("resolved", 3);
-    const interrupted = interactionWithStatus("interrupted", 4);
-    const pending = interactionWithStatus("pending", 2);
-    const resolving = interactionWithStatus("resolving", 5);
-
-    expect(
-      getLatestPendingInteraction([resolved, interrupted, pending]),
-    ).toBe(pending);
-    expect(getLatestPendingInteraction([resolved, interrupted])).toBeNull();
-    expect(getLatestPendingInteraction([pending, resolving])).toBe(resolving);
-  });
-
   it("keeps cached empty interactions unknown while their refresh is pending", () => {
     expect(isPendingInteractionStateUnknown([], true)).toBe(true);
     expect(isPendingInteractionStateUnknown([], false)).toBe(false);

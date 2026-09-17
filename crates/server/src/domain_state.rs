@@ -2645,12 +2645,51 @@ impl DomainRegistry {
         interactions
     }
 
-    /// The interactions of a thread that still need an answer.
+    /// The interactions of a thread that have not reached a terminal state.
     pub fn pending_interactions(&self, thread_id: &ThreadId) -> Vec<Interaction> {
         self.interactions_for(Some(thread_id))
             .into_iter()
-            .filter(|interaction| interaction.status.is_open())
+            .filter(|interaction| !interaction.status.is_terminal())
             .collect()
+    }
+
+    /// Accepts an answer and records the replayable delivery intent.
+    pub fn prepare_interaction_resolution(
+        &self,
+        id: &InteractionId,
+        resolution: Resolution,
+        now_ms: u64,
+    ) -> Result<(Interaction, DomainEvent), CommandError> {
+        let mut inner = self.lock();
+        let interaction = inner
+            .interactions
+            .get_mut(id)
+            .ok_or_else(|| CommandError::NotFound(format!("interaction {id} is not known")))?;
+        interaction.begin_resolution(resolution, now_ms)?;
+        let interaction = interaction.clone();
+        Ok((
+            interaction.clone(),
+            DomainEvent::ThreadInteractionChanged { interaction },
+        ))
+    }
+
+    /// Completes an answer after its provider delivery was stored.
+    pub fn complete_interaction_resolution(
+        &self,
+        id: &InteractionId,
+        now_ms: u64,
+    ) -> Result<(Interaction, DomainEvent), CommandError> {
+        let mut inner = self.lock();
+        let interaction = inner
+            .interactions
+            .get_mut(id)
+            .ok_or_else(|| CommandError::NotFound(format!("interaction {id} is not known")))?;
+        interaction.complete_resolution(now_ms)?;
+        let interaction = interaction.clone();
+        Ok((
+            interaction.clone(),
+            DomainEvent::ThreadInteractionChanged { interaction },
+        ))
     }
 
     /// Answers an interaction and returns the event to publish.
@@ -2677,6 +2716,45 @@ impl DomainRegistry {
             )));
         }
         interaction.resolve(resolution, now_ms)?;
+        let interaction = interaction.clone();
+        Ok((
+            interaction.clone(),
+            DomainEvent::ThreadInteractionChanged { interaction },
+        ))
+    }
+
+    /// Records a cancellation that still has to reach a blocked provider.
+    pub fn prepare_interaction_cancellation(
+        &self,
+        id: &InteractionId,
+        reason: Option<String>,
+        now_ms: u64,
+    ) -> Result<(Interaction, DomainEvent), CommandError> {
+        let mut inner = self.lock();
+        let interaction = inner
+            .interactions
+            .get_mut(id)
+            .ok_or_else(|| CommandError::NotFound(format!("interaction {id} is not known")))?;
+        interaction.begin_cancellation(reason, now_ms)?;
+        let interaction = interaction.clone();
+        Ok((
+            interaction.clone(),
+            DomainEvent::ThreadInteractionChanged { interaction },
+        ))
+    }
+
+    /// Completes a cancellation after its provider delivery was stored.
+    pub fn complete_interaction_cancellation(
+        &self,
+        id: &InteractionId,
+        now_ms: u64,
+    ) -> Result<(Interaction, DomainEvent), CommandError> {
+        let mut inner = self.lock();
+        let interaction = inner
+            .interactions
+            .get_mut(id)
+            .ok_or_else(|| CommandError::NotFound(format!("interaction {id} is not known")))?;
+        interaction.complete_cancellation(now_ms)?;
         let interaction = interaction.clone();
         Ok((
             interaction.clone(),

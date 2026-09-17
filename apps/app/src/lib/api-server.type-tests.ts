@@ -19,6 +19,8 @@ import type {
   CreateThreadRequest,
   ResolvePendingInteractionRequest,
   SendMessageRequest,
+  UpdateThreadTabsRequest,
+  UpdateUiPreferenceRequest,
 } from "@bb/server-contract";
 import { apiClient } from "./api-server";
 import { loomApiFetch, loomApiJson, resolveLoomApiMethod } from "./loom-http";
@@ -197,6 +199,8 @@ void resolveLoomApiMethod("threads.notReal", "GET");
 declare const createThreadRequest: CreateThreadRequest;
 declare const resolvePendingInteractionRequest: ResolvePendingInteractionRequest;
 declare const sendMessageRequest: SendMessageRequest;
+declare const updateThreadTabsRequest: UpdateThreadTabsRequest;
+declare const updateUiPreferenceRequest: UpdateUiPreferenceRequest;
 
 void loomApiFetch("threads.create", { json: createThreadRequest });
 void loomApiFetch("threads.send", {
@@ -228,6 +232,32 @@ void apiClient.threads[":id"].interactions[":interactionId"].resolve.$post({
 void apiClient.threads[":id"].interactions[":interactionId"].cancel.$post({
   param: { id: "t1", interactionId: "interaction-1" },
 });
+void apiClient.threads[":id"]["default-execution-options"].$get({
+  param: { id: "t1" },
+});
+void apiClient.threads[":id"].read.$post({ param: { id: "t1" } });
+void apiClient.threads[":id"].tabs.$get({ param: { id: "t1" } });
+void apiClient.threads[":id"].tabs.$put({
+  param: { id: "t1" },
+  json: updateThreadTabsRequest,
+});
+void apiClient.threads[":id"].unread.$post({ param: { id: "t1" } });
+void apiClient.preferences.ui.$get();
+void apiClient.preferences.ui[":key"].$put({
+  param: { key: "sidebar.collapsedProjects" },
+  json: updateUiPreferenceRequest,
+});
+void apiClient.preferences.ui[":key"].$delete({
+  param: { key: "sidebar.collapsedProjects" },
+});
+
+// @ts-expect-error a UI preference update requires its JSON body
+void apiClient.preferences.ui[":key"].$put({
+  param: { key: "sidebar.collapsedProjects" },
+});
+
+// @ts-expect-error a UI preference reset requires its path key
+void apiClient.preferences.ui[":key"].$delete({});
 
 // @ts-expect-error thread creation requires its contract JSON body
 void loomApiFetch("threads.create");

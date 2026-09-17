@@ -4346,7 +4346,7 @@ async fn respond_to_thread_interaction(
 #[derive(Clone, Debug, Deserialize)]
 #[serde(untagged)]
 enum ResolveInteractionRequest {
-    /// `{ decision, grantedPermissions? }` — a permission decision.
+    /// `{ decision, grantedPermissions }` — a permission decision.
     Decision(DecisionRequest),
     /// `{ kind: "user_answer", answers }`.
     UserAnswer(UserAnswerRequest),
@@ -4360,8 +4360,22 @@ enum ResolveInteractionRequest {
 #[serde(rename_all = "camelCase")]
 struct DecisionRequest {
     decision: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_present_json")]
     granted_permissions: Option<Value>,
+}
+
+/// Keeps a required nullable JSON field distinct from an omitted field.
+///
+/// Serde's ordinary `Option<Value>` maps both JSON `null` and a missing key to
+/// `None`. The public contract requires `grantedPermissions` on allow decisions
+/// while explicitly permitting `null`, so a present value is wrapped in
+/// `Some` even when that value is [`Value::Null`]. `#[serde(default)]` above
+/// remains the missing-key path.
+fn deserialize_present_json<'de, D>(deserializer: D) -> Result<Option<Value>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Value::deserialize(deserializer).map(Some)
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -4460,7 +4474,8 @@ impl ResolveInteractionRequest {
 ///
 /// * `respond` — an opaque value for an interaction loom does not interpret;
 /// * `resolve` — a typed answer, matched to the request's kind;
-/// * `cancel` — no answer at all, settled as `interrupted`.
+/// * `cancel` — no permission decision, settled as `interrupted` and reported
+///   to a blocked provider as cancellation.
 async fn resolve_thread_interaction(
     State(state): State<AppState>,
     Path((raw_thread_id, raw_interaction_id)): Path<(String, String)>,
@@ -4507,6 +4522,14 @@ fn deliver_interaction_response(
         DeliverOutcome::Delivered(interaction) => {
             Json(interaction_value(state, &interaction)).into_response()
         }
+        DeliverOutcome::DeliveryFailed { interaction, error } => error_response_with_code(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal_error",
+            format!(
+                "interaction {} answer is queued for retry: {error}",
+                interaction.id
+            ),
+        ),
         DeliverOutcome::Settled(interaction) => error_response_with_code(
             StatusCode::CONFLICT,
             "awaiting_user_interaction",
@@ -4522,14 +4545,14 @@ fn deliver_interaction_response(
     }
 }
 
-/// `threads.cancelInteraction`: settles an interaction without an answer.
+/// `threads.cancelInteraction`: settles an interaction without a decision.
 ///
 /// Cancelling is the verb for "this will never be answered": the run was
-/// stopped, or the provider went away. It is **not** a denial — a denial is a
-/// decision the provider receives, a cancellation is loom giving up on the
-/// question — which is why it does not go through `resolve`. A settled
-/// interaction cannot be cancelled twice: that is a race with whoever answered
-/// it, and reporting success for it would hide the answer.
+/// stopped, the provider went away, or a client withdrew the prompt. It is
+/// **not** a denial — a denial selects the provider's rejecting option, while a
+/// cancellation returns ACP's `Cancelled` outcome. A settled interaction cannot
+/// be cancelled twice: that is a race with whoever answered it, and reporting
+/// success for it would hide the answer.
 async fn cancel_thread_interaction(
     State(state): State<AppState>,
     Path((raw_thread_id, raw_interaction_id)): Path<(String, String)>,
@@ -4550,8 +4573,18 @@ async fn cancel_thread_interaction(
         Some("cancelled by a client".into()),
         loom_relay::now_ms(),
     ) {
-        Ok(interaction) => Json(interaction_value(&state, &interaction)).into_response(),
-        Err(CommandError::Conflict(_)) => error_response_with_code(
+        DeliverOutcome::Delivered(interaction) => {
+            Json(interaction_value(&state, &interaction)).into_response()
+        }
+        DeliverOutcome::DeliveryFailed { interaction, error } => error_response_with_code(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal_error",
+            format!(
+                "interaction {} cancellation is queued for retry: {error}",
+                interaction.id
+            ),
+        ),
+        DeliverOutcome::Settled(interaction) => error_response_with_code(
             StatusCode::CONFLICT,
             "awaiting_user_interaction",
             format!(
@@ -4559,7 +4592,10 @@ async fn cancel_thread_interaction(
                 interaction.id, interaction.status
             ),
         ),
-        Err(error) => command_error_response(error),
+        DeliverOutcome::Unknown => error_response(
+            StatusCode::NOT_FOUND,
+            format!("interaction {} is not known", interaction.id),
+        ),
     }
 }
 

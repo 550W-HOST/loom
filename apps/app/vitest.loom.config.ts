@@ -16,6 +16,8 @@ export default defineConfig({
     include: [
       "src/loom/**/*.test.ts",
       "src/loom/**/*.test.tsx",
+      "src/hooks/mutations/thread-interaction-mutations.test.tsx",
+      "src/hooks/queries/thread-pending-interactions.loom.test.ts",
       "src/hooks/queries/sidebar-navigation-query.test.tsx",
       "src/hooks/realtime-cache-effects.test.ts",
       "src/lib/ws.test.ts",
@@ -28,6 +30,8 @@ export default defineConfig({
       "src/components/promptbox/modifier-submit-shortcut.test.ts",
       "src/components/promptbox/mentions/*.test.ts",
       "src/components/promptbox/editor/*.test.ts",
+      "src/components/thread/pending-interactions/ThreadPendingInteractionBanner.test.tsx",
+      "src/components/thread/pending-interactions/ThreadPendingInteractionBanner.shortcuts.test.tsx",
       "src/components/thread/timeline/GeneratedConversationMessage.test.ts",
       "src/components/thread/timeline/streaming-markdown-split.test.ts",
       "src/components/thread/timeline/timeline-auto-expand.test.ts",
