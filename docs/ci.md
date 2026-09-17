@@ -16,16 +16,19 @@ Both triggers have been observed green: the `push` run
 [34666491758](https://github.com/550W-HOST/loom/actions/runs/34666491758) and the
 `pull_request` run
 [34666503929](https://github.com/550W-HOST/loom/actions/runs/34666503929), each
-with all five jobs succeeding. The durations below are those runs.
+with all five jobs succeeding. The durations below are those runs; the workflow
+has gained the `api-coverage` job and the client change since, and the places
+where a measurement no longer describes today's job say so.
 
 ## What runs
 
 | Job | Check name | What it proves |
 | --- | --- | --- |
 | `checks` | `fmt + clippy + test` | `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace` |
+| `api-coverage` | `API coverage document is current` | `node scripts/check-api-coverage.mjs` re-reads the contract and the source routes and refuses a stale row, or an implemented JSON-body route with no `validate_request*` assertion |
 | `msrv` | `MSRV` | the workspace still compiles on the `rust-version` floor in the manifests |
 | `contract` | `bb contract is reproducible` | re-exporting bb's contract yields the committed `contracts/bb` byte for byte |
-| `ui` | `UI typecheck, tests, bundle and provenance` | `pnpm install --frozen-lockfile`, `pnpm run typecheck`, `pnpm run test`, a fresh build reproduces `ui/app.js`, `pnpm provenance:test` covers patch-ledger negative cases, and `BB_SRC=... pnpm run provenance:check` verifies recomputed source/package/contract hashes and the import closure |
+| `ui` | `UI typecheck, tests, bundle and provenance` | `pnpm install --frozen-lockfile`, `pnpm run typecheck`, `pnpm run test`, `pnpm --filter @bb/app run build` builds the bundle the release ships, `pnpm run check:bundle` holds that build to the committed budget, `pnpm provenance:test` covers patch-ledger negative cases and `BB_SRC=... pnpm run provenance:check` verifies recomputed source/package/contract hashes and the import closure, and `BB_SRC=... pnpm run port-plan:test`/`port-plan:check` verifies the route-level port plan |
 | `pi` | `real pi provider (allowed to fail)` | the `#[ignore]`d provider tests against the real `pi` CLI — `provider_e2e` drives the streamed turn, `real_pi` adds the first-turn-plus-cross-run-resume property — skipped unless the runner has a configured `pi` |
 | `self-update` | `daemon self-update end to end` | the `#[ignore]`d self-update tests: a real daemon process, refused by a server that speaks a newer protocol, installing that server's binary over itself, and the reinstalled binary running a real turn |
 
@@ -33,9 +36,9 @@ with all five jobs succeeding. The durations below are those runs.
 lockfile update fails instead of quietly resolving one. `pnpm install
 --frozen-lockfile` is the same guarantee for the JavaScript side.
 
-`checks`, `msrv` and `pi` all run with `needs: ui`. Every one of them compiles
-`loom-server` — `pi` through `loom-daemon`, which depends on it — so each would
-otherwise embed a stale bundle and pass. The [UI job](#the-ui-job) explains why.
+`checks`, `msrv` and `pi` all run with `needs: ui`, so the client's checks are a
+single gate ahead of every job that compiles the Rust workspace. The [UI
+job](#the-ui-job) explains what they cover.
 
 ## Toolchain
 
@@ -180,14 +183,17 @@ cold miss (`reused 0, downloaded 183`) and the cargo caches were warm from
 | Step | Push |
 | --- | --- |
 | `pnpm install --frozen-lockfile` | 5 s |
-| `pnpm typecheck` (8 projects) | 31 s |
-| `pnpm test` (18 tests) | 7 s |
-| `pnpm --filter @loom/ui run build` | under 1 s |
-| the committed-bundle check | under 1 s |
+| `pnpm typecheck` | 31 s |
+| `pnpm test` | 7 s |
+| rebuilding the reference bundle (`ui/`) | under 1 s |
 
-`typecheck` dominates — it is `tsc --noEmit` over eight projects — while esbuild
-rebuilds the 1.19 MB bundle in well under a second, which is why the artifact
-check costs almost nothing next to the install that precedes it.
+That last row is a step that no longer exists: those runs rebuilt the buildless
+reference client and required the committed bytes to match. The job now builds
+the product app and holds it to its budget, which is a Vite build of a whole
+application rather than one file bundled with esbuild, so the row is recorded
+history rather than a measurement of today's job. `typecheck` is still the
+dominant step — `tsc --noEmit` over every workspace project — and the metadata
+checks that follow it are unchanged.
 
 For reference, the individual steps measured cold on a 24-core workstation
 constrained to `-j4` to approximate a runner:
@@ -256,107 +262,92 @@ fork does not track.
 ## The UI job
 
 The Rust workspace is not the only thing in this repository that can break
-silently. `ui/` is a pnpm workspace of nine projects — `@loom/ui` and the seven
-projection packages ported from bb, listed in
-[`ui-package-sync.md`](ui-package-sync.md) — carrying a strict `tsc --noEmit`
-and a vitest suite of 18 tests. None of it ran on a push or a pull request
-before this job: `thread-view` is a 16k-line projection layer, and the only way
-to know a change to it was sound was to run pnpm by hand.
+silently. The client is a pnpm workspace of the product app and the pinned bb
+packages it builds against — `apps/app` plus `ui/packages/*`, listed in
+[`ui-package-sync.md`](ui-package-sync.md) — carrying a strict `tsc --noEmit`, a
+vitest suite, and the only build of the bundle the release ships. None of it ran
+on a push or a pull request before this job: `thread-view` is a 16k-line
+projection layer, and the only way to know a change to it was sound was to run
+pnpm by hand.
+
+The app is also the only UI there is. There is no buildless bundle in the binary
+and no compiled-in fallback ([`ui.md`](ui.md)), so a client that does not build
+is not a degraded server — it is a server with no UI at all. That is what makes
+this job required rather than advisory.
 
 The job is the repository's own entry points, in the order a developer runs
 them:
 
 ```bash
 pnpm install --frozen-lockfile
-pnpm run typecheck   # the root script: @loom/ui and every ui/packages/*
-pnpm run test        # the same fan-out; 18 tests today
-pnpm --filter @loom/ui run build
+pnpm run typecheck                  # every ui/packages/* and apps/app
+pnpm run test                       # the same fan-out
+pnpm --filter @bb/app run build     # → apps/app/dist
+pnpm run check:bundle               # the budget, against that build
 ```
 
 `typecheck` and `test` are the root scripts rather than an explicit list of
-packages, so a package added to `ui/packages/` is checked as soon as it joins
-the workspace. `build` is not the root script: each package's own `build` is a
-second `tsc --noEmit` over what the typecheck step just checked, and the only
-artifact that has to be produced is `@loom/ui`'s.
+packages, so a project added to the workspace is checked as soon as it joins.
+The build is the app's own, because the app's bundle is the artifact every
+downstream consumer needs: the release archive stages it as `ui/`
+([`releasing.md`](releasing.md)) and the server image carries it at
+`/usr/local/share/loom/ui` ([`containers.md`](containers.md)).
+
+### The bundle budget
+
+`pnpm run check:bundle` reads the `bundle-stats.json` the build just wrote and
+holds it to `apps/app/bundle-budget.json`: a boot payload that grew past its
+allowance, a heavy package that reached the boot path again, or an on-demand
+package that leaked out of its dynamic-import gate into another chunk's static
+closure. Every measured lazy route gets the same ratchet — the JavaScript between
+"app shell painted" and "route content painted" — so a route that quietly doubles
+its payload fails here instead of in a browser on a phone.
+
+The budget is a ratchet, not a target: making the client bigger is allowed, but
+only by editing `bundle-budget.json` in the same commit, which is the reviewable
+form of that decision.
 
 pnpm's version is not written in the workflow. The `ui` job sets up pnpm with no
 `version:` input, and the action reads `packageManager` from the root
 `package.json` — the same shape as the bb revision, which the `contract` job
 reads from the manifest rather than repeating. Node is pinned to the `22` major:
-it only has to run `tsc`, `vitest` and esbuild, each of which the lockfile
-fixes. The pnpm store is cached, keyed on `pnpm-lock.yaml`.
+it only has to run `tsc`, `vitest`, Vite and the checker scripts, each of which
+the lockfile fixes. The pnpm store is cached, keyed on `pnpm-lock.yaml`.
 
-### Why the bundle is committed
+### What else the job checks
 
-`ui/app.js` is generated **and committed on purpose**, because the server embeds
-it at compile time:
-
-```rust
-const INDEX_HTML: &[u8] = include_bytes!("../../../ui/index.html");
-const APP_JS: &[u8] = include_bytes!("../../../ui/app.js");
-const STYLE_CSS: &[u8] = include_bytes!("../../../ui/style.css");
-```
-
-A `cargo build` therefore needs no JavaScript toolchain and no `LOOM_UI_DIR`
-set: the binary carries a working UI with zero setup, which is the property
-[`ui.md`](ui.md) describes. `ui/scripts/build.mjs` builds `ui/dist/app.js` with
-esbuild and copies it back over `ui/app.js`; `ui/index.html` and `ui/style.css`
-are copied *into* `dist/`, never written back, so `app.js` — 32,774 lines,
-1.19 MB — is the one file that can fall behind.
-
-That drift is invisible to every other check. `cargo test` compiles and passes
-against whatever `ui/app.js` contains, while `vitest` and `tsc` exercise
-`ui/src`, and nothing compares the two trees. Change `ui/src`, forget
-`pnpm --filter @loom/ui run build`, and every job is green while the server
-serves a UI no current source describes — a defect visible only in a browser.
-(`LOOM_UI_DIR` means a deployment can serve a different bundle again, which is
-another reason the check is about the committed bytes and not about what some
-running server happens to return.)
-
-So the last two steps are the `contract` job's check applied to `ui/`:
+Two generated-metadata checks ride along, because they are the same kind of claim
+as the bundle — a machine-readable statement that nothing else verifies:
 
 ```bash
-git diff --exit-code -- ui/
-test -z "$(git status --porcelain -- ui/)"
+BB_SRC=… pnpm run provenance:test && BB_SRC=… pnpm run provenance:check
+BB_SRC=… pnpm run port-plan:test  && BB_SRC=… pnpm run port-plan:check
 ```
 
-Both halves matter for the same reason they do for `contracts/bb`: `git diff`
-catches a modified `ui/app.js`, and `git status` catches one the build added or
-removed. The build's output under `ui/dist/` is gitignored, so a successful
-build leaves the tree clean and any difference is a real one.
+`provenance:check` recomputes the app tree, every package it builds against, the
+contract manifest and the pinned commit's own `HEAD`, and fails on unregistered,
+duplicate, overlapping, glob, hash, add/delete/rename, mode or symlink drift;
+`provenance:test` covers those negative cases first. `port-plan:check` verifies
+the route-level port plan. Both fetch the pinned checkout shallow from the
+manifest's own commit, so a failure here means drift in this repository and never
+progress in bb.
 
-### The command that reproduces the bundle
+The last step applies the `contract` job's check to the client tree:
 
-The bundle only reproduces from inside `ui/`. esbuild writes one module path
-comment per bundled module, relative to the working directory it was given, so
-`pnpm --filter @loom/ui run build` — which runs the script with `ui/` as its cwd,
-exactly as the root `build` script does — is the invocation that produces the
-committed bytes. Running `node ui/scripts/build.mjs` from the repository root
-rewrites 177 of those comments and changes no behaviour at all, and the job then
-fails on the diff while the UI is in fact correct. Worth knowing before
-debugging the first such failure: the check is about reproducibility, and the fix
-is to run the command the job runs. Making the build independent of the caller's
-working directory would change the committed bundle, which is a `ui/` change
-rather than a CI one.
+```bash
+git diff --exit-code -- ui/ apps/app/
+test -z "$(git status --porcelain -- ui/ apps/app/)"
+```
 
-### Why the Rust jobs wait for it
+Both halves are needed: `git diff` catches a modified checked-in file and
+`git status` catches one the build added or removed. The app's `dist/` is
+gitignored, so a successful build leaves the tree clean and any difference is a
+real one.
 
-`include_bytes!` reads the tree, so every job that compiles `loom-server`
-compiles the UI whether or not the change touched it. `needs: ui` makes a stale
-bundle stop the workflow at the job that can explain it, instead of letting the
-other four run to a green result against a UI no source describes.
-
-It costs wall-clock: a run is now roughly the `ui` job plus the slowest Rust
-job, since those three no longer start until `ui` is done. That is the trade —
-a trustworthy signal over total duration — and the durations below are measured
-with it in place.
-
-Uploading the built bundle as an artifact from `ui` and downloading it in the
-Rust jobs would couple them more tightly, but it is not needed while the bundle
-is committed: the Rust jobs read the same bytes the diff check just approved.
-Replacing `include_bytes!` with a runtime load is the other real alternative —
-the `LOOM_UI_DIR` source already exists — but it trades a compile-time guarantee
-for a deployment-time one, and it is a separate decision from adding CI.
+`checks`, `msrv` and `pi` declare `needs: ui`, so the client's checks are a
+single gate ahead of every Rust job. It costs wall-clock — a run is roughly the
+`ui` job plus the slowest Rust job — and the durations below are measured with
+that in place.
 
 ## The `pi` job
 
@@ -461,12 +452,13 @@ Protect `main` and require these five checks:
 | `fmt + clippy + test` | format, lint and the full test suite |
 | `MSRV` | the declared floor keeps compiling |
 | `bb contract is reproducible` | the committed contract is what the exporter produces |
-| `UI typecheck, tests, bundle and provenance` | the UI packages type-check and pass their tests, the committed bundle is what the build produces, and the source/package/contract provenance matches its manifest |
+| `UI typecheck, tests, bundle and provenance` | the client type-checks and passes its tests, the product app builds and holds its bundle budget, and the source/package/contract provenance and the port plan match their manifests |
 | `daemon self-update end to end` | a real daemon follows a newer-protocol server: fetch, verify, install over itself, restart, run a turn |
 
-The last four jobs of the workflow are skipped when `ui` fails, which is not a
-hole: `ui` is itself required, so a red one blocks the merge and the skipped
-jobs only save runner time.
+The four jobs that declare `needs: ui` — `checks`, `msrv`, `pi` and
+`self-update` — are skipped when `ui` fails, which is not a hole: `ui` is itself
+required, so a red one blocks the merge and the skipped jobs only save runner
+time.
 
 `daemon self-update end to end` is the one `#[ignore]`d, process-executing job
 that **is** required: it depends on nothing outside this repository (the artifact
@@ -520,21 +512,23 @@ git diff --exit-code -- contracts/bb
 ```
 
 The `ui` job needs Node and pnpm (`corepack enable` picks up the pinned pnpm
-from `packageManager`), then runs the four commands above plus the artifact
-check:
+from `packageManager`), then runs the app's build and every metadata check:
 
 ```bash
 pnpm install --frozen-lockfile
 pnpm run typecheck
 pnpm run test
-pnpm --filter @loom/ui run build
-git diff --exit-code -- ui/
-test -z "$(git status --porcelain -- ui/)"
+pnpm --filter @bb/app run build
+pnpm run check:bundle
+BB_SRC=/tmp/bb pnpm run provenance:test && BB_SRC=/tmp/bb pnpm run provenance:check
+BB_SRC=/tmp/bb pnpm run port-plan:test  && BB_SRC=/tmp/bb pnpm run port-plan:check
+git diff --exit-code -- ui/ apps/app/
+test -z "$(git status --porcelain -- ui/ apps/app/)"
 ```
 
-The build has to go through `pnpm --filter`, not `node ui/scripts/build.mjs`
-from the repository root — see
-[the command that reproduces the bundle](#the-command-that-reproduces-the-bundle).
+`/tmp/bb` is the pinned checkout the `contract` job's recipe above produces —
+provenance and the port plan read their commit from `ui/provenance.json`, which
+is the same bb revision.
 
 The `pi` job needs `pi` installed *and configured*; the test is skipped in CI
 without the latter, so this is where it actually runs:

@@ -5,14 +5,20 @@
 //! address from `window.location.origin` and has nothing to configure. See
 //! `docs/ui.md` for the client contract.
 //!
-//! Three sources, picked by configuration and mutually exclusive:
+//! Two sources, picked by configuration and mutually exclusive — and no
+//! default, because there is exactly one client and a server that cannot serve
+//! it must say so instead of quietly serving something else:
 //!
-//! * **Embedded** (default) — a small, buildless reference client compiled
-//!   into the binary. `loom-server` serves a working UI with zero setup.
-//! * **Directory** (`LOOM_UI_DIR`) — a built bundle on disk. This is the
-//!   production shape and the one the ported bb UI will use.
-//! * **Proxy** (`LOOM_UI_PROXY`) — reverse-proxy to a frontend dev server, so
-//!   the UI can be developed with hot reload against the real server.
+//! * **Directory** (`LOOM_UI_DIR`) — the built product bundle on disk. This is
+//!   the production shape: `deploy/install.sh` installs the app's build at
+//!   `<prefix>/share/loom/ui` and points this at it.
+//! * **Proxy** (`LOOM_UI_PROXY`) — development only: reverse-proxy to the
+//!   frontend dev server, so the UI can be edited with hot reload against the
+//!   real server.
+//!
+//! A buildless reference client used to be compiled in here. It is gone
+//! (W-586 / W-588): two clients meant two behaviours to keep in step, and the
+//! one that shipped by default was the one nobody used.
 //!
 //! Everything here is deliberate about one thing: an unmatched *client* path
 //! falls back to `index.html`, but an unmatched `/api`, `/ws` or `/internal/ws`
@@ -29,10 +35,6 @@ use axum::response::{IntoResponse, Response};
 
 use crate::state::AppState;
 
-const INDEX_HTML: &[u8] = include_bytes!("../../../ui/index.html");
-const APP_JS: &[u8] = include_bytes!("../../../ui/app.js");
-const STYLE_CSS: &[u8] = include_bytes!("../../../ui/style.css");
-
 const HTML: &str = "text/html; charset=utf-8";
 const JS: &str = "text/javascript; charset=utf-8";
 const CSS: &str = "text/css; charset=utf-8";
@@ -45,7 +47,6 @@ pub struct Ui {
 
 #[derive(Clone)]
 enum UiSource {
-    Embedded,
     Directory(PathBuf),
     Proxy(Arc<ProxyClient>),
     Disabled,
@@ -54,7 +55,6 @@ enum UiSource {
 impl std::fmt::Debug for Ui {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match &self.source {
-            UiSource::Embedded => f.write_str("Ui::Embedded"),
             UiSource::Directory(path) => f.debug_tuple("Ui::Directory").field(path).finish(),
             UiSource::Proxy(proxy) => f.debug_tuple("Ui::Proxy").field(proxy).finish(),
             UiSource::Disabled => f.write_str("Ui::Disabled"),
@@ -68,6 +68,10 @@ impl Ui {
     /// `dir` and `proxy` are mutually exclusive: two UI sources would make the
     /// behaviour depend on evaluation order, which is not something an operator
     /// should have to reason about.
+    ///
+    /// Neither configured is an error rather than a built-in client. The one
+    /// exception is [`Ui::disabled`], which a library embedding the server —
+    /// and a test that asserts on the API alone — asks for explicitly.
     pub fn from_config(dir: Option<PathBuf>, proxy: Option<String>) -> Result<Self, String> {
         let source = match (dir, proxy) {
             (Some(_), Some(_)) => {
@@ -77,7 +81,14 @@ impl Ui {
             }
             (_, Some(base)) => UiSource::Proxy(Arc::new(ProxyClient::new(&base)?)),
             (Some(path), None) => UiSource::Directory(path),
-            (None, None) => UiSource::Embedded,
+            (None, None) => {
+                return Err(
+                    "no UI source is configured: set LOOM_UI_DIR to a built product bundle \
+                     (deploy/install.sh installs one under <prefix>/share/loom/ui), or \
+                     LOOM_UI_PROXY to a frontend dev server"
+                        .into(),
+                )
+            }
         };
         Ok(Self { source })
     }
@@ -92,7 +103,6 @@ impl Ui {
     /// A human-readable description of the active source, for the startup log.
     pub fn describe(&self) -> String {
         match &self.source {
-            UiSource::Embedded => "embedded reference client".into(),
             UiSource::Directory(path) => format!("bundle at {}", path.display()),
             UiSource::Proxy(proxy) => format!("dev-server proxy {}", proxy.base),
             UiSource::Disabled => "disabled".into(),
@@ -113,7 +123,6 @@ impl Ui {
 
         match self.source {
             UiSource::Disabled => not_found(),
-            UiSource::Embedded => embedded_response(&path, request.method()),
             UiSource::Directory(root) => directory_response(&root, &path, request.method()).await,
             UiSource::Proxy(proxy) => proxy.forward(request).await,
         }
@@ -123,32 +132,6 @@ impl Ui {
 /// Axum fallback handler.
 pub async fn serve(State(state): State<AppState>, request: Request) -> Response {
     state.ui.clone().handle(request).await
-}
-
-/* ------------------------------------------------------------------ */
-/* Embedded reference client                                           */
-/* ------------------------------------------------------------------ */
-
-fn embedded(path: &str) -> Option<(&'static [u8], &'static str)> {
-    match path {
-        "/" | "/index.html" | "" => Some((INDEX_HTML, HTML)),
-        "/app.js" => Some((APP_JS, JS)),
-        "/style.css" => Some((STYLE_CSS, CSS)),
-        _ => None,
-    }
-}
-
-fn embedded_response(path: &str, method: &Method) -> Response {
-    if !is_read(method) {
-        return not_found();
-    }
-    if let Some((bytes, content_type)) = embedded(path) {
-        return asset_response(Body::from(bytes), content_type, cache_for(path));
-    }
-    if is_client_route(path) {
-        return asset_response(Body::from(INDEX_HTML), HTML, "no-cache");
-    }
-    not_found()
 }
 
 /* ------------------------------------------------------------------ */
@@ -424,39 +407,28 @@ mod tests {
         String::from_utf8(bytes.to_vec()).unwrap()
     }
 
-    #[tokio::test]
-    async fn the_default_source_serves_a_working_client() {
-        let ui = Ui::from_config(None, None).unwrap();
-        let response = ui
-            .clone()
-            .handle(Request::builder().uri("/").body(Body::empty()).unwrap())
-            .await;
-        assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(
-            response.headers()[header::CONTENT_TYPE],
-            HeaderValue::from_static(HTML)
-        );
-        let html = body_text(response).await;
-        assert!(html.contains("/app.js"));
-
-        let js = ui
-            .handle(
-                Request::builder()
-                    .uri("/app.js")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await;
-        assert_eq!(js.headers()[header::CONTENT_TYPE], JS);
-        let js = body_text(js).await;
-        // The client must derive its server from its own origin, never from a
-        // configuration value.
-        assert!(js.contains("window.location.origin"));
+    #[test]
+    fn an_unconfigured_server_refuses_to_serve_a_client() {
+        // There is no built-in client to fall back to, so "no source" is a
+        // configuration error the operator has to fix — not a quiet default
+        // that serves something nobody asked for.
+        let error = Ui::from_config(None, None).expect_err("no source must be an error");
+        assert!(error.contains("LOOM_UI_DIR"), "{error}");
+        assert!(error.contains("LOOM_UI_PROXY"), "{error}");
     }
 
     #[tokio::test]
     async fn client_routes_fall_back_to_the_shell_but_api_paths_do_not() {
-        let ui = Ui::from_config(None, None).unwrap();
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(
+            dir.path().join("index.html"),
+            "<title>loom</title><script src=\"/assets/app.js\"></script>",
+        )
+        .unwrap();
+        std::fs::create_dir_all(dir.path().join("assets")).unwrap();
+        std::fs::write(dir.path().join("assets/app.js"), "console.log(1)").unwrap();
+        let ui = Ui::from_config(Some(dir.path().to_path_buf()), None).unwrap();
+
         let client = ui
             .clone()
             .handle(
@@ -467,6 +439,10 @@ mod tests {
             )
             .await;
         assert_eq!(client.status(), StatusCode::OK);
+        assert_eq!(
+            client.headers()[header::CONTENT_TYPE],
+            HeaderValue::from_static(HTML)
+        );
         assert!(body_text(client).await.contains("<title>loom</title>"));
 
         let api = ui
@@ -480,7 +456,7 @@ mod tests {
         assert_eq!(api.status(), StatusCode::NOT_FOUND);
 
         // A missing *asset* is a 404, not the shell.
-        let ui = Ui::from_config(None, None).unwrap();
+        let ui = Ui::from_config(Some(dir.path().to_path_buf()), None).unwrap();
         let asset = ui
             .handle(
                 Request::builder()

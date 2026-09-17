@@ -441,22 +441,6 @@ function pathsOverlap(left, right) {
   return left === right || left.startsWith(`${right}/`) || right.startsWith(`${left}/`);
 }
 
-function localAppRecord(previous, appEntry) {
-  const packageJson = readJsonAt("ui/package.json", repoRoot);
-  return {
-    upstreamPath: appEntry.upstreamPath,
-    upstreamDisposition: previous?.upstreamDisposition ?? "defer-source-port",
-    localSourcePath: "ui/src",
-    localSourceDisposition: previous?.localSourceDisposition ?? "loom-native-reference-client",
-    sourceTree: treeDigest("ui/src"),
-    packageJson: fileDigest("ui/package.json"),
-    dependencies: dependencySnapshot(packageJson),
-    dependencyDigest: dependencyDigest(packageJson),
-    bundlePath: "ui/app.js",
-    bundle: fileDigest("ui/app.js"),
-  };
-}
-
 function upstreamRecord(root, previous, registry) {
   if (!root) return previous;
   const appEntry = registry.app;
@@ -617,7 +601,6 @@ function buildManifest(existing, upstreamRoot) {
     }),
   );
   const local = {
-    referenceApp: localAppRecord(existing?.local?.referenceApp ?? existing?.app, registry.app),
     productApp: {
       upstreamPath: registry.app.upstreamPath,
       localPath: registry.app.localPath,
@@ -656,13 +639,6 @@ function buildManifest(existing, upstreamRoot) {
     upstream: upstreamRecord(upstreamRoot, existing?.upstream, registry),
     local,
     contracts: contractRecord(existing?.contracts),
-    forbiddenReferenceAppImports: existing?.forbiddenReferenceAppImports ?? [
-      "apps/app",
-      "plugins/",
-      "marketplace",
-      "desktopBrowsers",
-      "cli-skills",
-    ],
   };
 }
 
@@ -1272,14 +1248,6 @@ function checkLocal(manifest, upstreamRoot) {
   checkLocalProductApp(manifest, upstreamRoot);
   checkPatchLedger(manifest, upstreamRoot);
 
-  const referenceApp = manifest.local.referenceApp;
-  const localAppPackageJson = readJsonAt("ui/package.json", repoRoot);
-  assertEqual(treeDigest(referenceApp.localSourcePath), referenceApp.sourceTree, "local reference app source tree");
-  assertEqual(fileDigest("ui/package.json"), referenceApp.packageJson, "local reference app package.json");
-  assertEqual(dependencySnapshot(localAppPackageJson), referenceApp.dependencies, "local reference app dependencies");
-  assertEqual(dependencyDigest(localAppPackageJson), referenceApp.dependencyDigest, "local reference app dependency digest");
-  assertEqual(fileDigest(referenceApp.bundlePath), referenceApp.bundle, "local reference app bundle");
-
   if (!Array.isArray(manifest.local.packages)) throw new Error("local packages must be an array");
   assertEqual(manifest.local.packages.map((item) => item.name), registry.packages.map((item) => item.name), "local package names");
   for (const item of manifest.local.packages) {
@@ -1324,12 +1292,6 @@ function checkLocal(manifest, upstreamRoot) {
   assertEqual(contracts.sourceRepository, manifest.source.repository, "contract source repository");
   assertEqual(contracts.sourceCommit, manifest.source.commit, "contract source commit");
 
-  const sourceText = filesUnder(referenceApp.localSourcePath)
-    .map((relativeFile) => fs.readFileSync(path.join(repoRoot, referenceApp.localSourcePath, relativeFile), "utf8"))
-    .join("\n");
-  for (const forbidden of manifest.forbiddenReferenceAppImports) {
-    if (sourceText.includes(forbidden)) throw new Error(`forbidden reference app import/surface found: ${forbidden}`);
-  }
 }
 
 function parseUpstreamArgument() {

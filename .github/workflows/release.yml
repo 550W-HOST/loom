@@ -3,8 +3,8 @@ name: Release
 # Validation and publication are deliberately split across two workflows. CI
 # (ci.yml) runs on every push and pull request and ships nothing; this one runs
 # on a `v*` tag and publishes, and the only thing it re-checks is what a release
-# has to prove for itself — the committed UI bundle is current, the artifacts
-# run, and the archive is what it claims to be.
+# has to prove for itself — that the product app builds a bundle the server can
+# serve, that the artifacts run, and that the archive is what it claims to be.
 #
 # The manual trigger is the rehearsal: it runs the identical pipeline and stops
 # before the release job, so a pre-release can be built and verified from a
@@ -29,14 +29,17 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # `include_bytes!` in crates/server/src/ui.rs embeds `ui/app.js`, so every
-  # Rust job below compiles whichever bundle is committed. A bundle that drifted
-  # from `ui/src` would therefore be compiled into a release and be wrong only
-  # in a browser, which is precisely the failure a release must not have. This
-  # job is ci.yml's `ui` job: rebuild the bundle, then require the tree to be
-  # unchanged. docs/ci.md has the full reasoning.
+  # Every job below needs the built product app: the server serves no client of
+  # its own, so a release that ships no bundle ships a server that refuses to
+  # start. The bundle is built once here and handed to the target jobs as an
+  # artifact — one build for both architectures, and one bundle for the archive
+  # and the container images that stage it. The typecheck and test steps are the
+  # app's own gates, and the only place this workflow runs them: a bundle that
+  # does not typecheck or pass its tests must fail the release rather than be
+  # staged into it. ci.yml keeps checking the committed `apps/app` snapshot on
+  # every push (docs/ci.md).
   ui:
-    name: UI bundle is current
+    name: UI bundle
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -61,14 +64,27 @@ jobs:
       - name: pnpm run test
         run: pnpm run test
 
-      - name: Rebuild the committed bundle
-        run: pnpm --filter @loom/ui run build
+      - name: Build the product app
+        run: pnpm --filter @bb/app run build
 
-      - name: The committed bundle must match
+      - name: The bundle must be self-contained
         run: |
           set -euo pipefail
-          git diff --exit-code -- ui/
-          test -z "$(git status --porcelain -- ui/)"
+          # The shape a server serves from a directory: an entry document plus
+          # the hashed assets it references. An index.html without its assets is
+          # a bundle that answers 200 and paints nothing, which is what this
+          # catches before it reaches an archive or an image.
+          test -f apps/app/dist/index.html
+          grep -q 'src="/assets/[^"]*\.js"' apps/app/dist/index.html
+          ls apps/app/dist/assets/*.js >/dev/null
+          ls apps/app/dist/assets/*.css >/dev/null
+
+      - name: Upload the bundle
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ui-dist
+          path: apps/app/dist/
+          if-no-files-found: error
 
   build:
     name: ${{ matrix.target }}
@@ -87,6 +103,17 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # The bundle the `ui` job built, at the path a checkout builds it to. Both
+      # steps below need it: the x86_64 pair is started against it — a server
+      # with no UI source refuses to start — and the archive stages it as `ui/`,
+      # which is platform-independent, so both matrix entries download the same
+      # one.
+      - name: Download the UI bundle
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: ui-dist
+          path: apps/app/dist
 
       - name: Install the toolchain pinned by rust-toolchain.toml
         run: |
@@ -112,13 +139,16 @@ jobs:
       - name: cargo build --release --locked --target ${{ matrix.target }}
         run: cargo build --release --locked --target "${{ matrix.target }}"
 
-      # The x86_64 artifact is started, `/health` answered, the embedded UI
-      # fetched, a project created and a daemon enrolled against it. `GITHUB_SHA`
-      # is the commit the build stamped, so a mismatch fails here.
+      # The x86_64 artifact is started, `/health` answered, the bundle served
+      # from `apps/app/dist`, a client route fallen back to it, an unknown API
+      # path answered as a JSON 404, a project created and a daemon enrolled
+      # against it. `GITHUB_SHA` is the commit the build stamped, so a mismatch
+      # fails here.
       - name: Verify the x86_64 binaries end to end
         if: matrix.target == 'x86_64-unknown-linux-musl'
         run: |
           scripts/verify-release-binaries.sh "target/${{ matrix.target }}/release" \
+            --ui-dir apps/app/dist \
             --expect-commit "$GITHUB_SHA" --expect-target "${{ matrix.target }}"
 
       # The same script without execution: an aarch64 binary needs an arm64
@@ -173,7 +203,10 @@ jobs:
           cd dist
           # `--` first: a file name is not an option, and the glob is left to
           # expand rather than listed by hand so an asset added above is
-          # covered without touching this line.
+          # covered without touching this line. The tarball's own digest is what
+          # covers the UI bundle inside it: a file named here is a file a
+          # downloader checks with `sha256sum -c`, and the bundle is only ever
+          # consumed from an extracted archive.
           sha256sum -- loom-server-* loom-daemon-* *.tar.gz >SHA256SUMS
           sha256sum -c SHA256SUMS
 
@@ -240,8 +273,8 @@ jobs:
 
           | Asset | What it is |
           | --- | --- |
-          | `loom-__VERSION__-x86_64-unknown-linux-musl.tar.gz` | server and daemon for x86_64, with `deploy/` |
-          | `loom-__VERSION__-aarch64-unknown-linux-musl.tar.gz` | server and daemon for aarch64, with `deploy/` |
+          | `loom-__VERSION__-x86_64-unknown-linux-musl.tar.gz` | server and daemon for x86_64, with the product app, `deploy/` |
+          | `loom-__VERSION__-aarch64-unknown-linux-musl.tar.gz` | server and daemon for aarch64, with the product app, `deploy/` |
           | `loom-server-<target>` | the control plane alone |
           | `loom-daemon-<target>` | the execution daemon alone |
           | `SHA256SUMS` | checksums for every file above |
@@ -270,7 +303,8 @@ jobs:
           ```
 
           `LOOM_BIN_SOURCE=.` is the extracted directory itself: the archive
-          holds the two binaries unnamed at its top level for exactly that.
+          holds the two binaries unnamed at its top level for exactly that, and
+          the installer takes the UI bundle from the `ui/` beside them.
           `deploy/README.md` has the rest.
 
           ## Verify before you install
@@ -285,11 +319,15 @@ jobs:
 
           ## What was verified before publishing
 
-          * the x86_64 pair was started: `/health` answered, the embedded UI was
-            served from the API's origin, a project was created and read back,
-            and a daemon enrolled against it (`scripts/verify-release-binaries.sh`)
-          * the committed `ui/` bundle was rebuilt and matched the tree that was
-            compiled in, so neither artifact carries a stale UI
+          * the x86_64 pair was started against the bundle this release ships:
+            `/health` answered, the app's entry document and its hashed assets
+            were served, a client route fell back to it, an unknown `/api` path
+            was a JSON 404, a project was created and read back, and a daemon
+            enrolled against it (`scripts/verify-release-binaries.sh`)
+          * the product app was built from source, and the bundle it produced was
+            checked for the shape a server serves from a directory
+            (`index.html` plus `assets/`): neither artifact carries a bundle that
+            cannot paint a page
           * both pairs were checked as self-contained artifacts: 64-bit ELF of
             the target machine, no interpreter, no `NEEDED` shared library, and
             the commit above stamped into the file
@@ -338,6 +376,23 @@ jobs:
         with:
           name: release-dist
           path: dist
+
+      # The bundle the image carries comes out of the tarball rather than off a
+      # build machine, which is the rule the binaries already follow: a `docker
+      # pull` serves the app a `sha256sum -c SHA256SUMS` downloader gets, not a
+      # second build of the same commit. `apps/app/dist` is where
+      # `scripts/build-container-images.sh` looks for it by default, and only the
+      # x86_64 archive is needed — the bundle is the same static files for both
+      # architectures.
+      - name: Stage the UI bundle from the release archive
+        env:
+          VERSION: ${{ needs.assemble.outputs.version }}
+        run: |
+          set -euo pipefail
+          name="loom-$VERSION-x86_64-unknown-linux-musl"
+          mkdir -p apps/app/dist
+          tar --extract --gzip --file "dist/$name.tar.gz" --strip-components=2 \
+            --directory apps/app/dist "$name/ui"
 
       # The builder that ships as the default is the `docker` driver, and it
       # refuses a multi-platform build outright. A container driver is what
@@ -392,8 +447,11 @@ jobs:
       # list is pulled back (or taken from what was loaded) and asked what it is:
       # a push that carried somebody else's bytes, or an image built from the
       # wrong architecture's binary, fails here rather than in a user's terminal.
-      # The aarch64 half is a foreign-platform build of the same files and is not
-      # executed anywhere in this pipeline, by the same reasoning as
+      # The server image is asked a second question — whether it serves the app —
+      # because a Dockerfile that copied no bundle, or set no LOOM_UI_DIR, still
+      # reports the right version and serves nothing. The aarch64 half is a
+      # foreign-platform build of the same files and is not executed anywhere in
+      # this pipeline, by the same reasoning as
       # `verify-release-binaries.sh --elf-only`.
       - name: Run what was pushed
         env:
@@ -411,6 +469,35 @@ jobs:
               exit 1
             }
           done
+
+          # The image claims a UI at /usr/local/share/loom/ui. Asked by running
+          # it: a random host port, the app's entry document, and the asset that
+          # document names — which is the part a missing or wrong bundle cannot
+          # answer, since the server has no client to fall back to.
+          docker run --detach --name ui-check --publish 127.0.0.1::38886 \
+            "$REGISTRY/loom-server:$TAG" >/dev/null
+          # Removed on every path, a failed assertion included: the name has to
+          # be free the next time this job runs.
+          trap 'docker rm --force ui-check >/dev/null 2>&1 || true' EXIT
+          base="http://$(docker port ui-check 38886 | head -n 1)"
+          for _ in $(seq 1 100); do
+            curl -fsS --max-time 1 "$base/health" >/dev/null 2>&1 && break
+            sleep 0.2
+          done
+          index="$(curl -fsS --max-time 5 "$base/")" || {
+            echo "the server image answered no index document on /" >&2
+            exit 1
+          }
+          entry="$(sed -n 's/.*<script[^>]*src="\(\/assets\/[^"]*\.js\)".*/\1/p' <<<"$index" | head -n 1)"
+          [[ -n "$entry" ]] || {
+            echo "GET / named no /assets/*.js entry point: the image's LOOM_UI_DIR is not the bundle copied into it" >&2
+            exit 1
+          }
+          curl -fsS --max-time 5 -o /dev/null "$base$entry" || {
+            echo "GET $entry failed: the image carries an incomplete bundle" >&2
+            exit 1
+          }
+          echo "the server image serves $entry from /usr/local/share/loom/ui"
 
   # The rehearsal path stops here: everything above ran, nothing was published.
   release:

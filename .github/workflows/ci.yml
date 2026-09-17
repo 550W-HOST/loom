@@ -21,10 +21,10 @@ jobs:
     name: fmt + clippy + test
     runs-on: ubuntu-24.04
     timeout-minutes: 20
-    # `include_bytes!` embeds the UI bundle into loom-server, so this job
-    # compiles the UI whether or not the pull request touched it. Waiting for
-    # `ui` means a bundle that drifted from `ui/src` fails there rather than
-    # compiling into a Rust build that looks green.
+    # The UI job owns the workspace's JavaScript gates (typecheck, tests,
+    # build, bundle budget, provenance). Waiting for it means a client that
+    # fails any of them stops the pipeline before the Rust jobs spend twenty
+    # minutes on a change that cannot ship.
     needs: ui
     steps:
       - name: Checkout
@@ -81,8 +81,8 @@ jobs:
     name: MSRV
     runs-on: ubuntu-24.04
     timeout-minutes: 20
-    # Same reason as `checks`: `cargo check --workspace` compiles loom-server,
-    # and with it whichever revision of `ui/app.js` is in the tree.
+    # Same reason as `checks`: the Rust crates compile against the workspace
+    # state the `ui` job produces, so a broken bundle is caught there first.
     needs: ui
     steps:
       - name: Checkout
@@ -162,14 +162,13 @@ jobs:
           git diff --exit-code -- contracts/bb
           test -z "$(git status --porcelain -- contracts/bb)"
 
-  # The UI is a pnpm workspace of nine projects (`ui/`, its seven projection
-  # packages and the workspace root) whose tests and type checks nothing else
-  # runs. It also produces `ui/app.js`, a generated bundle that is committed on
-  # purpose: the server embeds it with `include_bytes!`
-  # (crates/server/src/ui.rs), so the Rust build compiles whichever revision is
-  # in the tree. A bundle that drifted from `ui/src` therefore ships a server
-  # that is wrong only in a browser, which is the failure this job exists to
-  # catch.
+  # The client is a pnpm workspace of the product app and the pinned bb
+  # packages it builds against (`apps/app` + `ui/packages/*`), whose tests and
+  # type checks nothing else runs. The app is also the only UI the server can
+  # serve (there is no buildless fallback), so this job builds the bundle the
+  # release ships and checks it against the bundle budget: a client that drifts
+  # from its source, or grows past its budget, otherwise ships a server that is
+  # wrong only in a browser.
   ui:
     name: UI typecheck, tests, bundle and provenance
     runs-on: ubuntu-24.04
@@ -197,7 +196,7 @@ jobs:
       - name: pnpm install --frozen-lockfile
         run: pnpm install --frozen-lockfile
 
-      # The root scripts fan out over `@loom/ui` and every `ui/packages/*`
+      # The root scripts fan out over every `ui/packages/*` and `apps/app`
       # through pnpm's own workspace filter, so a package added to the workspace
       # is covered without editing this file.
       - name: pnpm typecheck
@@ -206,15 +205,17 @@ jobs:
       - name: pnpm test
         run: pnpm run test
 
-      # The same command the root `build` script runs first, and the one
-      # docs/ci.md gives as the local equivalent; the packages' own `build` is
-      # another `tsc --noEmit`, which the typecheck step above already ran. It
-      # is not interchangeable with `node ui/scripts/build.mjs` from the
-      # repository root: esbuild writes its module path comments relative to the
-      # working directory, so the committed bytes only reproduce from inside
-      # `ui/`.
-      - name: Rebuild the committed bundle
-        run: pnpm --filter @loom/ui run build
+      # The same command the root `build` script runs last, and the one
+      # docs/ci.md gives as the local equivalent. Its output is the bundle the
+      # release archive stages as `ui/` and the container image carries.
+      - name: Build the product app bundle
+        run: pnpm --filter @bb/app run build
+
+      # The build above writes bundle-stats.json, which this reads. The budget
+      # is what keeps the client loadable on a slow link: a route that grows
+      # past its allowance fails here rather than in a user's browser.
+      - name: Bundle budget
+        run: pnpm --filter @bb/app run check:bundle
 
       # Fetch the exact source baseline as a separate checkout. The provenance
       # checker reads this checkout's HEAD and hashes apps/app plus every
@@ -239,10 +240,9 @@ jobs:
       - name: Product app port plan
         run: BB_SRC="$RUNNER_TEMP/bb-ui" pnpm run port-plan:test && BB_SRC="$RUNNER_TEMP/bb-ui" pnpm run port-plan:check
 
-      # Modifications, additions and removals all have to fail: the bundle is
-      # generated, so any difference means the committed UI is wrong. The
-      # product app snapshot is checked separately from the reference client;
-      # provenance compares its complete file list and per-file digests.
+      # Modifications, additions and removals all have to fail: provenance
+      # compares the app's complete file list and per-file digests against the
+      # manifest, so a checked-in tree that drifted from it is a failure here.
       - name: The committed UI and product app must match
         run: |
           set -euo pipefail
@@ -256,8 +256,8 @@ jobs:
   # package and a release of it is not a reason to block a merge into this
   # repository.
   #
-  # It needs `ui` for the same reason as `checks`: the daemon depends on
-  # loom-server, so this job embeds the bundle too.
+  # It builds the same UI as `checks` for the same reason: nothing in the Rust
+  # build needs the bundle any more, but the workspace job's gates do.
   pi:
     name: real pi provider (allowed to fail)
     runs-on: ubuntu-24.04

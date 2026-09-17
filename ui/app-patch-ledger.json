@@ -1978,12 +1978,12 @@
       },
       "local": {
         "path": "apps/app/package.json",
-        "sha256": "9e0695480785f4fcd0a5055a136af5b146c160661b8db1ce097729587604d43c",
+        "sha256": "fc17d962743e90544cac2d19a1a3dbcb0850be0b976d268156b34ae172909215",
         "mode": "100644"
       },
-      "issue": "W-604+W-593",
+      "issue": "W-604+W-593+W-588",
       "owner": "PuQing",
-      "reason": "W-604 introduced this path in the source port; W-593 changed it again for the same-origin typed HTTP boundary (api-server seam, product composition, or the collected app test set). Both stages are recorded here so neither audit trail is lost."
+      "reason": "W-604 introduced this path in the source port; W-593 changed it again for the same-origin typed HTTP boundary (api-server seam, product composition, or the collected app test set). Both stages are recorded here so neither audit trail is lost. W-586/W-588: the reference client is gone and the product app is the only UI. The app's `build` now also writes the Brotli siblings the bundle-budget check measures, so a built bundle is directly publishable and the budget gate can actually run."
     },
     {
       "kind": "modify",
@@ -3760,6 +3760,22 @@
       "issue": "W-622",
       "owner": "PuQing",
       "reason": "W-622 wires the pinned Automations panel to loom-server's own routes: the unavailable client is replaced by a real one over same-origin loom-native requests, and the public `project:changed` invalidation is bridged into the panel's refetch signals."
+    },
+    {
+      "kind": "add",
+      "upstream": {
+        "path": null,
+        "sha256": null,
+        "mode": null
+      },
+      "local": {
+        "path": "apps/app/scripts/precompress-app-dist.mjs",
+        "sha256": "45a84a493126a4643c17e9398bae2cf4d3baa5bea2002c679722f00d79cbedd0",
+        "mode": "100755"
+      },
+      "issue": "W-588",
+      "owner": "PuQing",
+      "reason": "W-586/W-588: the reference client is gone and the product app is the only UI. The app's `build` now also writes the Brotli siblings the bundle-budget check measures, so a built bundle is directly publishable and the budget gate can actually run."
     }
   ]
 }

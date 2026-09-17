@@ -20,12 +20,17 @@ Don't.
 
 ## Installing the PWA
 
-The bb web UI already carries what an installable PWA needs — a web app
+The product app already carries what an installable PWA needs — a web app
 manifest, maskable icons, `display: standalone` and safe-area insets — so
-nothing mobile-specific needs to be built. Serve it from the server:
+nothing mobile-specific needs to be built. Build it, and serve it from the
+server:
+
+```bash
+pnpm --filter @bb/app run build          # → apps/app/dist
+```
 
 ```
-LOOM_UI_DIR=/usr/local/share/loom/ui     # the built bb bundle
+LOOM_UI_DIR=/usr/local/share/loom/ui     # where deploy/install.sh puts that bundle
 ```
 
 and open the server URL on the phone:
@@ -37,7 +42,7 @@ and open the server URL on the phone:
 
 Two prerequisites for installability, both satisfied by the Tailscale path:
 
-- **HTTPS** — service workers and install prompts need a secure origin. The
+- **HTTPS** — install prompts and a manifest-backed app need a secure origin. The
   tailnet `https://<machine>.<tailnet>.ts.net` URL counts; `http://` on a LAN IP
   does not (loopback is exempt, which does not help a phone). See
   [`remote-access.md`](remote-access.md).
@@ -45,24 +50,27 @@ Two prerequisites for installability, both satisfied by the Tailscale path:
   `window.location.origin`, so the installed app talks to the server with no
   per-device configuration.
 
-> The buildless reference client (`ui/` in this repository, the zero-config
-> default) is intentionally plain: no manifest, no service worker, not
-> installable. It exists to prove the path, not to be the phone app. Point
-> `LOOM_UI_DIR` at the built bb bundle for a real install.
+> There is no mobile-specific build and no second client: the app served from
+> `LOOM_UI_DIR` is the one you install. It declares a manifest with maskable
+> icons (`apps/app/dist/manifest.webmanifest`) and handles the notch and
+> home-indicator insets (`env(safe-area-inset-*)` in `AppLayout`). It registers
+> no service worker, so nothing about the shell is cached for offline use and
+> installability is the browser's own: Chrome and Edge install from the manifest,
+> iOS uses *Add to Home Screen*.
 
 ## What works, and what does not
 
-- Works: browse projects and threads, read timelines, send messages. The product
-  app subscribes to typed targets on public `/ws`; reconnect invalidates caches
-  and reloads them over HTTP. The embedded reference client uses
-  `/internal/ws` plus its persisted raw-relay replay cursor.
+- Works: browse projects and threads, read timelines, send messages. The app
+  subscribes to typed targets on the public `/ws` socket; a reconnect
+  invalidates the caches that predate the disconnect and reloads them over HTTP
+  ([`ui.md`](ui.md) § The client contract).
 - Works: several phones, a desktop and a webview watching the same threads at
   once. Frames fan out from the relay; none of them is authoritative.
 - Does not work: modifying the phone's own filesystem or running an agent
   locally. That is what a daemon on a real machine is for.
-- Offline: the installed shell may open without a network, but there is no
-  offline mode for the data — a UI holds no state, so with no server there is
-  nothing to render. Frames resume on reconnect.
+- Offline: there is no offline mode — a UI holds no state and the shell is not
+  cached by a service worker, so with no server there is nothing to render.
+  Frames resume, and the caches that went stale are reloaded, on reconnect.
 
 ## Keeping a phone from appearing as an execution machine
 

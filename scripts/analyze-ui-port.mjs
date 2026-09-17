@@ -912,7 +912,7 @@ export function batchDetails(rawBatches, edges, nodeByPath, issue, globalBatchBy
       verificationCommands: [
         "pnpm run port-plan:check",
         "pnpm run provenance:check",
-        "pnpm --filter @loom/ui run typecheck",
+        "pnpm --filter @bb/app run typecheck",
       ],
       dispositions: [...new Set(batch.files.map((file) => nodeByPath.get(file)?.disposition).filter(Boolean))].sort(),
     };
