@@ -1266,3 +1266,77 @@ async fn a_run_page_is_cursored_newest_first() {
     assert!(second["nextCursor"].is_null());
     state.shutdown();
 }
+
+/// A host environment with an `unmanaged` workspace must keep its `path` key.
+///
+/// The contract spells the workspace as a `.strict()` object whose `path` is
+/// `z.string().min(1).nullable()`: the key is *required*, and only its value
+/// may be null. A response that dropped the key when no path was set passed
+/// every other assertion here — nothing else exercised a `host` environment —
+/// yet failed the contract's own validation, so the omission was invisible to
+/// both this suite and the response schema it validates against.
+#[tokio::test]
+async fn a_host_environment_response_keeps_the_contract_workspace_shape() {
+    let (state, app, project) = server().await;
+    let host = loom_domain::HostId::mint().to_string();
+
+    for (label, workspace, expect_path) in [
+        (
+            "no path",
+            json!({ "type": "unmanaged", "path": null }),
+            Value::Null,
+        ),
+        (
+            "with a path",
+            json!({ "type": "unmanaged", "path": "/srv/loom" }),
+            json!("/srv/loom"),
+        ),
+    ] {
+        let mut body = create_body(&format!("host {label}"));
+        body["execution"]["environment"] = json!({
+            "type": "host",
+            "hostId": host,
+            "workspace": workspace,
+        });
+        assert_schema(&contract::create_request(), &body, "create request");
+
+        let response = post(
+            &app,
+            &format!("/api/v1/projects/{project}/automations"),
+            Some(body),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::CREATED, "{label}");
+        let created = body_json(response).await;
+        // The whole response still satisfies the contract, which is what a
+        // dropped `path` key breaks.
+        assert_schema(&contract::response(), &created, "create response");
+
+        let echoed = &created["execution"]["environment"]["workspace"];
+        assert_eq!(echoed["type"], "unmanaged", "{label}");
+        assert_eq!(echoed["path"], expect_path, "{label}");
+        assert!(
+            echoed.as_object().expect("an object").contains_key("path"),
+            "{label}: the required `path` key is present: {echoed}"
+        );
+
+        // The stored round trip keeps it too: a read is the same projection.
+        let fetched = body_json(
+            get(
+                &app,
+                &format!(
+                    "/api/v1/projects/{project}/automations/{}",
+                    created["id"].as_str().unwrap()
+                ),
+            )
+            .await,
+        )
+        .await;
+        assert_schema(&contract::read_result(), &fetched, "get response");
+        assert_eq!(
+            fetched["execution"]["environment"]["workspace"]["path"], expect_path,
+            "{label}"
+        );
+    }
+    state.shutdown();
+}
