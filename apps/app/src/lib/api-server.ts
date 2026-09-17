@@ -204,6 +204,14 @@ export const apiClient = {
   threads: {
     ":id": {
       "host-files": { content: route("threads.hostFileContent") },
+      interactions: {
+        ...route("threads.interactions"),
+        ":interactionId": {
+          ...route("threads.interaction"),
+          cancel: route("threads.cancelInteraction"),
+          resolve: route("threads.resolveInteraction"),
+        },
+      },
       "thread-storage": {
         content: route("threads.storageContent"),
         files: { ":filePath{.+}": route("threads.storageFile") },

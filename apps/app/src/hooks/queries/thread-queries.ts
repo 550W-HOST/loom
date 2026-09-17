@@ -1034,11 +1034,15 @@ export function useThreadTimelineTurnSummaryDetails(
 export function getLatestPendingInteraction(
   interactions: readonly PendingInteraction[] | undefined,
 ): PendingInteraction | null {
-  if (!interactions || interactions.length === 0) {
+  const openInteractions = interactions?.filter(
+    (interaction) =>
+      interaction.status === "pending" || interaction.status === "resolving",
+  );
+  if (!openInteractions || openInteractions.length === 0) {
     return null;
   }
 
-  const [firstInteraction, ...restInteractions] = interactions;
+  const [firstInteraction, ...restInteractions] = openInteractions;
   return restInteractions.reduce<PendingInteraction>(
     (latest, interaction) =>
       interaction.createdAt > latest.createdAt ? interaction : latest,

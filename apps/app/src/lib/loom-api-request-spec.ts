@@ -22,12 +22,19 @@ import type {
   ThreadFilesRawQuery,
   ThreadGetQuery,
   ThreadHostFileContentQuery,
+  ResolvePendingInteractionRequest,
   ThreadResponse,
+  ThreadPendingInteractionsResponse,
   ThreadStorageContentQuery,
   ThreadTimelineQuery,
   ThreadTimelineResponse,
 } from "@bb/server-contract";
-import type { Environment, Host, ProjectExecutionDefaults } from "@bb/domain";
+import type {
+  Environment,
+  Host,
+  PendingInteraction,
+  ProjectExecutionDefaults,
+} from "@bb/domain";
 
 /**
  * The request shape of every allowlisted route, derived from the exported
@@ -125,7 +132,14 @@ export const LOOM_API_REQUEST_SPECS = {
     source: "query",
     query: {} as ThreadHostFileContentQuery,
   },
+  "threads.interaction": { source: "none" },
+  "threads.interactions": { source: "none" },
   "threads.rawFile": { source: "query", query: {} as ThreadFilesRawQuery },
+  "threads.resolveInteraction": {
+    source: "json",
+    json: {} as ResolvePendingInteractionRequest,
+  },
+  "threads.cancelInteraction": { source: "none" },
   "threads.send": { source: "json", json: {} as SendMessageRequest },
   "threads.storageContent": {
     source: "query",
@@ -168,7 +182,11 @@ export interface LoomApiResponseSpecs {
   "threads.create": ThreadResponse;
   "threads.get": ThreadResponse;
   "threads.hostFileContent": unknown;
+  "threads.interaction": PendingInteraction;
+  "threads.interactions": ThreadPendingInteractionsResponse;
   "threads.rawFile": unknown;
+  "threads.resolveInteraction": PendingInteraction;
+  "threads.cancelInteraction": PendingInteraction;
   "threads.send": SendMessageResponse;
   "threads.storageContent": unknown;
   "threads.storageFile": unknown;

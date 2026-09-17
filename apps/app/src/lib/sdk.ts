@@ -9,6 +9,12 @@ import {
   loomSendThreadMessage,
   loomSpawnThread,
 } from "./loom-thread-runtime";
+import {
+  loomCancelThreadInteraction,
+  loomGetThreadInteraction,
+  loomListThreadInteractions,
+  loomResolveThreadInteraction,
+} from "./loom-interactions";
 
 const BASE_URL =
   typeof window === "undefined" ? "http://localhost" : window.location.origin;
@@ -38,6 +44,13 @@ export const sdk = {
   threads: {
     ...compileOnlySdk.threads,
     get: loomGetThread,
+    interactions: {
+      ...compileOnlySdk.threads.interactions,
+      cancel: loomCancelThreadInteraction,
+      get: loomGetThreadInteraction,
+      list: loomListThreadInteractions,
+      resolve: loomResolveThreadInteraction,
+    },
     send: loomSendThreadMessage,
     spawn: loomSpawnThread,
     timeline: loomGetThreadTimeline,

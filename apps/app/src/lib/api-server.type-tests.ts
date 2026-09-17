@@ -17,6 +17,7 @@
 
 import type {
   CreateThreadRequest,
+  ResolvePendingInteractionRequest,
   SendMessageRequest,
 } from "@bb/server-contract";
 import { apiClient } from "./api-server";
@@ -194,6 +195,7 @@ void resolveLoomApiMethod("threads.notReal", "GET");
 // --- W-583 thread runtime routes stay contract-bound ----------------------
 
 declare const createThreadRequest: CreateThreadRequest;
+declare const resolvePendingInteractionRequest: ResolvePendingInteractionRequest;
 declare const sendMessageRequest: SendMessageRequest;
 
 void loomApiFetch("threads.create", { json: createThreadRequest });
@@ -211,6 +213,20 @@ void loomApiJson("threads.timeline", {
 });
 void loomApiJson("system.environmentProviders", {
   query: { projectId: "p1", hostId: "h1" },
+});
+
+void apiClient.threads[":id"].interactions.$get({
+  param: { id: "t1" },
+});
+void apiClient.threads[":id"].interactions[":interactionId"].$get({
+  param: { id: "t1", interactionId: "interaction-1" },
+});
+void apiClient.threads[":id"].interactions[":interactionId"].resolve.$post({
+  param: { id: "t1", interactionId: "interaction-1" },
+  json: resolvePendingInteractionRequest,
+});
+void apiClient.threads[":id"].interactions[":interactionId"].cancel.$post({
+  param: { id: "t1", interactionId: "interaction-1" },
 });
 
 // @ts-expect-error thread creation requires its contract JSON body

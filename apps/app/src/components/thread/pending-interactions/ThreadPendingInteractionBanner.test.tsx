@@ -204,6 +204,40 @@ describe("ThreadPendingInteractionBanner tool-use approval", () => {
     );
   });
 
+  it("renders a permission grant with the provider's available decisions", () => {
+    const permissionGrant: PendingInteraction = {
+      ...toolUseApproval,
+      id: "pint_permission_grant",
+      payload: {
+        ...toolUseApproval.payload,
+        subject: {
+          kind: "permission_grant",
+          itemId: "permission-1",
+          toolName: "filesystem",
+          permissions: {
+            network: { enabled: true },
+            fileSystem: { read: ["/workspace"], write: [] },
+          },
+        },
+      },
+    };
+
+    renderBanner(permissionGrant);
+    expandBanner();
+    expect(screen.getByRole("button", { name: "Allow once" })).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: "Allow for session" }),
+    ).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Deny" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Deny" }));
+    expect(mocks.resolveMutateAsync).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        interactionId: "pint_permission_grant",
+        resolution: { decision: "deny" },
+      }),
+    );
+  });
+
   it("draws a plugin-declared icon as a tinted mask when the inventory has it, else the per-kind glyph with no mask", () => {
     const namespacedAsk: PendingInteraction = {
       ...toolUseApproval,
