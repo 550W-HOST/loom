@@ -220,11 +220,15 @@
     {
       "issue": "W-585",
       "owner": "PuQing",
-      "reason": "Connect the product app to durable ACP permission interactions through typed list, get, resolve, and cancel operations.",
+      "reason": "Connect the product app to durable ACP permission interactions through typed list, get, resolve, and cancel operations, with recoverable two-phase provider delivery.",
       "baselineCommit": "24ef770",
       "paths": [
+        "apps/app/src/components/thread/pending-interactions/ThreadPendingInteractionBanner.shortcuts.test.tsx",
         "apps/app/src/components/thread/pending-interactions/ThreadPendingInteractionBanner.test.tsx",
+        "apps/app/src/components/thread/pending-interactions/ThreadPendingInteractionBanner.tsx",
         "apps/app/src/hooks/mutations/thread-interaction-mutations.test.tsx",
+        "apps/app/src/hooks/mutations/thread-interaction-mutations.ts",
+        "apps/app/src/hooks/queries/thread-pending-interactions.loom.test.ts",
         "apps/app/src/hooks/queries/thread-queries.test.tsx",
         "apps/app/src/hooks/queries/thread-queries.ts",
         "apps/app/src/lib/api-server.ts",
@@ -232,8 +236,13 @@
         "apps/app/src/lib/loom-api-request-spec.ts",
         "apps/app/src/lib/loom-api-routes.ts",
         "apps/app/src/lib/loom-interactions.ts",
+        "apps/app/src/lib/loom-thread-runtime.ts",
+        "apps/app/src/lib/loom-ui-preferences.ts",
         "apps/app/src/lib/sdk.ts",
-        "apps/app/src/loom/loom-interactions.test.ts"
+        "apps/app/src/loom/loom-interactions.test.ts",
+        "apps/app/src/loom/loom-thread-runtime.test.ts",
+        "apps/app/src/loom/loom-ui-preferences.test.ts",
+        "apps/app/vitest.loom.config.ts"
       ]
     }
   ]

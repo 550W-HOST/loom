@@ -41,8 +41,24 @@
         "mode": null
       },
       "local": {
+        "path": "apps/app/src/hooks/queries/thread-pending-interactions.loom.test.ts",
+        "sha256": "e35993b60f2e9f92db618206b9e5b24f2196087bee15723019f9c08d76edc8a9",
+        "mode": "100644"
+      },
+      "issue": "W-585",
+      "owner": "PuQing",
+      "reason": "W-585 verifies pending-interaction selection without the unavailable upstream test helper."
+    },
+    {
+      "kind": "add",
+      "upstream": {
+        "path": null,
+        "sha256": null,
+        "mode": null
+      },
+      "local": {
         "path": "apps/app/src/lib/api-server.type-tests.ts",
-        "sha256": "9842eb40120a08a2caa6ba5811a50e3bf53e8288673a9a855b903cb90a439659",
+        "sha256": "cc638efed57ea0305aa9d5f1ac041e45d1374003a106180511b44dffd7965a4f",
         "mode": "100644"
       },
       "issue": "W-593+W-583+W-585",
@@ -90,7 +106,7 @@
       },
       "local": {
         "path": "apps/app/src/lib/loom-api-request-spec.ts",
-        "sha256": "9af8fccfc6ae1141e50cc1c97e37412885e46395f3356831952dddc0b1a0cff3",
+        "sha256": "0e61adbfbcaf309b78b30f67d5b6eaf7e0a847606c2b9db7d825ac63b8049d79",
         "mode": "100644"
       },
       "issue": "W-593+W-583+W-585",
@@ -106,7 +122,7 @@
       },
       "local": {
         "path": "apps/app/src/lib/loom-api-routes.ts",
-        "sha256": "950bb49c8a6c188741f974b4e7ff2230240efb21da4014700089b4afd04aa9d5",
+        "sha256": "99d30832a1b592d43ad55b526faf651a90e232c0764ec04ea8cc8683bcfda52a",
         "mode": "100644"
       },
       "issue": "W-593+W-583+W-585",
@@ -218,12 +234,28 @@
       },
       "local": {
         "path": "apps/app/src/lib/loom-thread-runtime.ts",
-        "sha256": "a5356fe3b91fb60d47d3e8d0edc37ad960204fb422cbfacaa73a0c97276b0191",
+        "sha256": "04e1508aa84b24028e37a124f2ae5667e2f802d8e6569612384b2892a123f39a",
         "mode": "100644"
       },
-      "issue": "W-583",
+      "issue": "W-583+W-585",
       "owner": "PuQing",
-      "reason": "Wire the bb New Thread product flow to loom-native host-bound environments and typed thread create/send/read operations."
+      "reason": "Wire the bb New Thread product flow to loom-native host-bound environments and typed thread create/send/read operations. W-585 adds the thread detail routes the product shell calls while rendering a permission prompt."
+    },
+    {
+      "kind": "add",
+      "upstream": {
+        "path": null,
+        "sha256": null,
+        "mode": null
+      },
+      "local": {
+        "path": "apps/app/src/lib/loom-ui-preferences.ts",
+        "sha256": "21b4f5e5c0e7f8f841b209497ffc656716c85216b14ff5aaaf9933310723f08d",
+        "mode": "100644"
+      },
+      "issue": "W-585",
+      "owner": "PuQing",
+      "reason": "W-585 wires the B10 UI preference routes the ported product shell reads and writes."
     },
     {
       "kind": "add",
@@ -346,12 +378,28 @@
       },
       "local": {
         "path": "apps/app/src/loom/loom-thread-runtime.test.ts",
-        "sha256": "8605f637e757f9e3d0cde73f230be373c51d4b8761941332b20d0ad363ae13f7",
+        "sha256": "baaa40fe590bc0ef750513eb552fa43a84aef36901d9db5bf177b882d394e509",
         "mode": "100644"
       },
-      "issue": "W-583",
+      "issue": "W-583+W-585",
       "owner": "PuQing",
-      "reason": "Wire the bb New Thread product flow to loom-native host-bound environments and typed thread create/send/read operations."
+      "reason": "Wire the bb New Thread product flow to loom-native host-bound environments and typed thread create/send/read operations. W-585 verifies typed thread defaults, read state, and tabs against the contract."
+    },
+    {
+      "kind": "add",
+      "upstream": {
+        "path": null,
+        "sha256": null,
+        "mode": null
+      },
+      "local": {
+        "path": "apps/app/src/loom/loom-ui-preferences.test.ts",
+        "sha256": "839d38ee4842d87f2c24c0065cfc9cb3ce2c2016e695cfacdf3d68619d136742",
+        "mode": "100644"
+      },
+      "issue": "W-585",
+      "owner": "PuQing",
+      "reason": "W-585 verifies the typed UI preference adapter and the fail-closed boundary it replaces."
     },
     {
       "kind": "add",
@@ -506,12 +554,12 @@
       },
       "local": {
         "path": "apps/app/vitest.loom.config.ts",
-        "sha256": "17baa389ce08b794f0eea095b44b5f174c8a580f9fcfb33add2f804679b50258",
+        "sha256": "4afeb402c4c4aaecdfe33765c59a10bbef4e0cc55d50ac1a2f0943d5600c7647",
         "mode": "100644"
       },
-      "issue": "W-604+W-593+W-587",
+      "issue": "W-604+W-593+W-587+W-585",
       "owner": "PuQing",
-      "reason": "W-604 introduced this path in the source port; W-593 changed it again for the same-origin typed HTTP boundary (api-server seam, product composition, or the collected app test set). Both stages are recorded here so neither audit trail is lost. W-587 additionally wires typed public realtime and its product-level verification."
+      "reason": "W-604 introduced this path in the source port; W-593 changed it again for the same-origin typed HTTP boundary (api-server seam, product composition, or the collected app test set). Both stages are recorded here so neither audit trail is lost. W-587 additionally wires typed public realtime and its product-level verification. W-585 adds the permission interaction suites to the app test gate."
     },
     {
       "kind": "delete",
@@ -2618,7 +2666,7 @@
       },
       "local": {
         "path": "apps/app/src/components/thread/pending-interactions/ThreadPendingInteractionBanner.test.tsx",
-        "sha256": "5397736d05f77dc847f962fea4799815f9349b411eff51155d3c9b4f9396a749",
+        "sha256": "3fcd3a1fe85e775c78c38d28ea448c236f7b0cf35ba356050e26dc59cc06c5a4",
         "mode": "100644"
       },
       "issue": "W-585",
@@ -2634,7 +2682,7 @@
       },
       "local": {
         "path": "apps/app/src/components/thread/pending-interactions/ThreadPendingInteractionBanner.tsx",
-        "sha256": "a434aa3b063079fccdcfa8bd9bc6a9b58101f871349e7bf6760a66159f18ed1c",
+        "sha256": "5890349b53c815139a067cdb312c5969a4c14c2924805a4d1928cdfc13a8292a",
         "mode": "100644"
       },
       "issue": "W-585",
@@ -2932,22 +2980,6 @@
     {
       "kind": "modify",
       "upstream": {
-        "path": "apps/app/src/hooks/queries/thread-queries.test.tsx",
-        "sha256": "08c9bc0634b06e7eb6359dde47ccccde5ef123dda6c7e0c4d3e3b17db36856fc",
-        "mode": "100644"
-      },
-      "local": {
-        "path": "apps/app/src/hooks/queries/thread-queries.test.tsx",
-        "sha256": "b1ec668da8dd66a17cf387c04bdb86aa921142000f8df35832ecdd355e6fc63b",
-        "mode": "100644"
-      },
-      "issue": "W-585",
-      "owner": "PuQing",
-      "reason": "W-585 verifies that settled interaction history is excluded from pending UI selection."
-    },
-    {
-      "kind": "modify",
-      "upstream": {
         "path": "apps/app/src/hooks/queries/thread-queries.ts",
         "sha256": "afabc6fe922768cb1cbdec981291d38a12350bfc55796620c92933df8c9c27d1",
         "mode": "100644"
@@ -3082,7 +3114,7 @@
       },
       "local": {
         "path": "apps/app/src/lib/api-server.ts",
-        "sha256": "bf407213813abdc180e08ca76e6cbccb4f506f54c365b12f66d15a744e3ff79e",
+        "sha256": "fe821d1c43cafaf64e007b1b437568c6270db336cc6a7bcdab3e1a324d9cd22e",
         "mode": "100644"
       },
       "issue": "W-604+W-593+W-585",
@@ -3418,7 +3450,7 @@
       },
       "local": {
         "path": "apps/app/src/lib/sdk.ts",
-        "sha256": "aa9174b731549610055b2314e561dbcdfc2469f26510ba5011c2db849413e4d0",
+        "sha256": "973aa12fb8286f948991c64771c78f6b1e6c148328237095db0275e3ad36f7c8",
         "mode": "100644"
       },
       "issue": "W-583+W-585",
