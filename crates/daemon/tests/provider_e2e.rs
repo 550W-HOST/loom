@@ -846,14 +846,23 @@ async fn a_failing_provision_records_the_daemon_reason() {
 /// require a model to answer, so it passes on a machine with no credentials
 /// (the run simply ends `timed_out`). Run it explicitly with
 /// `cargo test -p loom-daemon --test provider_e2e -- --ignored`.
+///
+/// **A model that answered must not end in `timed_out`.** The run timeout is a
+/// backstop for a provider that never reports completion; a turn that produced
+/// an assistant message and then sat there is the W-623 hang — real Pi reported
+/// `agent_settled`, pi-acp settled the turn and resolved `session/prompt`, and
+/// the v2 completion notification was dropped (its outbound connector had died
+/// on an unconvertible update), so loom waited for a timeout that now closes the
+/// turn from the prompt response instead.
 #[tokio::test]
 #[ignore = "runs the real `pi` CLI"]
 async fn the_real_pi_process_streams_through_the_bridge() {
     let dir = tempfile::tempdir().unwrap();
     let (url, state) = spawn_server(AppConfig::default()).await;
-    // 20s is long enough to see Pi's startup frames and short enough that a
-    // model-less environment still ends the turn.
-    let (host_id, daemon) = enroll_daemon(&url, None, None, None, Duration::from_secs(20)).await;
+    // A minute is long enough for Pi's startup and a model round trip on a
+    // machine with credentials, and short enough that a model-less environment
+    // still ends the turn by itself.
+    let (host_id, daemon) = enroll_daemon(&url, None, None, None, Duration::from_secs(60)).await;
     assert!(
         eventually(|| state
             .registry
@@ -864,7 +873,7 @@ async fn the_real_pi_process_streams_through_the_bridge() {
     );
 
     let thread_id = start_turn(&state, dir.path(), "Reply with exactly the word: pong");
-    let status = wait_for_terminal_for(&state, &thread_id, Duration::from_secs(60)).await;
+    let status = wait_for_terminal_for(&state, &thread_id, Duration::from_secs(120)).await;
     assert!(
         matches!(status, ThreadStatus::Idle | ThreadStatus::Error),
         "a run must end in idle or error, got {status}"
@@ -879,6 +888,15 @@ async fn the_real_pi_process_streams_through_the_bridge() {
         terminal_outcome(&events).is_some(),
         "every run must end with exactly one terminal event"
     );
+    // Only a machine with credentials sees text here; such a machine must see
+    // the turn close on its own (W-623).
+    if !output_texts(&events).is_empty() {
+        assert_ne!(
+            terminal_outcome(&events),
+            Some("timed_out".to_string()),
+            "a turn that produced an answer must not end in a timeout"
+        );
+    }
 
     // Every event a real Pi turn produced must be a valid bb `ThreadEvent`.
     // This is the conformance check the contract export exists for: the frame
