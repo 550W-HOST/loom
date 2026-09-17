@@ -23,6 +23,7 @@
 
 pub mod artifacts;
 pub mod automations;
+pub mod automations_contract;
 pub mod b10;
 pub mod b5;
 pub mod b6;
