@@ -1677,12 +1677,18 @@ mod tests {
         state.shutdown();
     }
 
-    /// Dispatches one script run to an enrolled host and returns the run.
+    /// Dispatches one script run to an enrolled host.
+    ///
+    /// Returns the host the *dispatch* chose, read back from the run, rather
+    /// than the one enrolled here: a script goes to the primary host, and a test
+    /// that enrolls several (one per phase) must report from whichever host the
+    /// control plane actually picked, or it fails on ordering it does not
+    /// control.
     async fn dispatched_script_run(
         state: &AppState,
         name: &str,
     ) -> (loom_domain::HostId, AutomationRun) {
-        let (host, events) = state
+        let (_host, events) = state
             .registry
             .enroll_host_with_data_dir(
                 None,
@@ -1707,7 +1713,9 @@ mod tests {
             .expect("queues");
         let report = state.execute_pending_automation_runs(now_ms());
         assert_eq!(report.dispatched, 1, "{report:?}");
-        (host.id, state.automations.run(&queued.id).expect("stored"))
+        let run = state.automations.run(&queued.id).expect("stored");
+        let dispatched_to = run.host_id.clone().expect("the dispatch recorded its host");
+        (dispatched_to, run)
     }
 
     /// Applies one exit report the way the daemon's socket would.
