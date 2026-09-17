@@ -13,6 +13,7 @@
 //! Everything is also settable through the environment (`LOOM_SERVER_URL`,
 //! `LOOM_HOST_NAME`, `LOOM_HOST_ID`, `LOOM_HEARTBEAT_MS`, `LOOM_DAEMON_STATE`,
 //! `LOOM_PROVIDER_CMD`, `LOOM_PROVIDER_ARGS`, `LOOM_JOIN_CODE`,
+//! `LOOM_ACP_TRACE`,
 //! `LOOM_RUN_TIMEOUT_MS`, `LOOM_DATA_DIR`, `LOOM_WORKSPACE_ROOT`,
 //! `LOOM_AUTO_UPDATE`) so a systemd unit needs no command line.
 //!

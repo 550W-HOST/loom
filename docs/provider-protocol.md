@@ -197,7 +197,13 @@ giving the terminal state **two independent owners**:
 
 1. **The daemon** guarantees it per ACP connection. The ACP driver maps a
    terminal prompt result, a transport exit or a timeout to exactly one
-   `turn/completed`.
+   `turn/completed`. The completion signal is taken from **whichever arrives
+   first**: v1 reports `stop_reason` on the `session/prompt` response, v2 reports
+   it in a `state_update: idle` notification (there is no stop reason on a v2
+   response), and the response closes the turn when the notification never
+   comes. That last case is not hypothetical — pi-acp drops the idle update when
+   its outbound connector dies on a single unconvertible update, which is how a
+   real turn used to sit until the run timeout (W-623).
 2. **The server** guarantees it per run. `AppState::reconcile_runs` reaps a run
    whose deadline passed (`timed_out`) and every run on a host that stopped
    heartbeating (`host_stale`). It does not trust the execution plane to report
@@ -263,6 +269,12 @@ An operator can override the provider executable on a machine with
 `LOOM_PROVIDER_CMD` / `LOOM_PROVIDER_ARGS`, cap a run with
 `LOOM_RUN_TIMEOUT_MS`, and choose the managed-workspace root with
 `LOOM_WORKSPACE_ROOT`. The override never changes the workspace.
+
+When a run behaves oddly — text arrives but the turn never closes, or an
+expected frame is missing — `LOOM_ACP_TRACE=1` makes the daemon print what the
+ACP boundary received (every notification by name, every translated event, and
+every terminal decision). It is the difference between "the agent never said the
+turn was over" and "the daemon never heard it".
 
 ## Test coverage
 

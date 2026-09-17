@@ -63,6 +63,61 @@ pub enum Transport {
     },
 }
 
+/// Whether the ACP boundary should print what it receives.
+///
+/// `LOOM_ACP_TRACE=1` turns on a line per notification, per translated event and
+/// per terminal decision. It exists because a missing frame is invisible
+/// otherwise: the daemon has no logging framework, and "no terminal event ever
+/// arrived" is indistinguishable from "the agent never said the turn was over".
+fn acp_trace_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        matches!(
+            std::env::var("LOOM_ACP_TRACE").as_deref(),
+            Ok("1") | Ok("true") | Ok("yes")
+        )
+    })
+}
+
+/// A short name for one v2 session update, for the trace line.
+#[cfg_attr(not(test), allow(dead_code))]
+fn v2_update_name(update: &v2::SessionUpdate) -> &'static str {
+    match update {
+        v2::SessionUpdate::StateUpdate(state) => match state {
+            v2::StateUpdate::Running(_) => "state:running",
+            v2::StateUpdate::Idle(_) => "state:idle",
+            v2::StateUpdate::RequiresAction(_) => "state:requires-action",
+            v2::StateUpdate::Other(_) => "state:other",
+            _ => "state:unknown",
+        },
+        v2::SessionUpdate::AgentMessageChunk(_) => "agent_message_chunk",
+        v2::SessionUpdate::AgentMessage(_) => "agent_message",
+        v2::SessionUpdate::AgentThoughtChunk(_) => "agent_thought_chunk",
+        v2::SessionUpdate::AgentThought(_) => "agent_thought",
+        v2::SessionUpdate::UserMessageChunk(_) => "user_message_chunk",
+        v2::SessionUpdate::UserMessage(_) => "user_message",
+        v2::SessionUpdate::ToolCallContentChunk(_) => "tool_call_content_chunk",
+        v2::SessionUpdate::ToolCallUpdate(_) => "tool_call_update",
+        v2::SessionUpdate::TerminalUpdate(_) => "terminal_update",
+        v2::SessionUpdate::TerminalOutputChunk(_) => "terminal_output_chunk",
+        v2::SessionUpdate::PlanUpdate(_) => "plan_update",
+        v2::SessionUpdate::SessionInfoUpdate(_) => "session_info_update",
+        v2::SessionUpdate::UsageUpdate(_) => "usage_update",
+        v2::SessionUpdate::AvailableCommandsUpdate(_) => "available_commands_update",
+        v2::SessionUpdate::ConfigOptionUpdate(_) => "config_option_update",
+        _ => "other",
+    }
+}
+
+/// Prints one ACP trace line when [`acp_trace_enabled`].
+macro_rules! acp_trace {
+    ($($arg:tt)*) => {
+        if crate::acp::session::acp_trace_enabled() {
+            eprintln!("loom-daemon acp: {}", format!($($arg)*));
+        }
+    };
+}
+
 /// Drives one ACP session to completion, reporting as it goes.
 ///
 /// Returns `Err` only for a failure *before* a terminal event was sent; once
@@ -474,6 +529,11 @@ impl UpdateSink {
     /// between "not identified" and "identity released".
     async fn on_notification(&self, notification: SessionNotification) {
         let session_id = notification.session_id.0.to_string();
+        acp_trace!(
+            "v1 update {:?} for session {}",
+            std::mem::discriminant(&notification.update),
+            session_id
+        );
         let events = {
             let mut state = self.state.lock().await;
             match &state.phase {
@@ -512,6 +572,11 @@ impl UpdateSink {
     /// until it reaches the adapter translator.
     async fn on_v2_notification(&self, notification: v2::UpdateSessionNotification) {
         let session_id = notification.session_id.0.to_string();
+        acp_trace!(
+            "v2 update {} for session {}",
+            v2_update_name(&notification.update),
+            session_id
+        );
         let events = {
             let mut state = self.state.lock().await;
             match &state.phase {
@@ -712,6 +777,7 @@ impl UpdateSink {
     /// intentionally omits `replayFrom`: loom's timeline already owns the
     /// history, so replaying it would duplicate events in the current run.
     async fn converse_v2(&self, connection: &ConnectionTo<Agent>, cwd: &str) -> Result<(), Error> {
+        acp_trace!("negotiated ACP v2 for run {}", self.run.run_id);
         let initialized = connection
             .send_request(v2::InitializeRequest::new(
                 ProtocolVersion::V2,
@@ -765,13 +831,42 @@ impl UpdateSink {
                 self.run.prompt.clone(),
             ))],
         );
-        connection.send_request(prompt).block_task().await?;
+        let _response = connection.send_request(prompt).block_task().await?;
+        // The response ends the prompt. A v2 agent normally reports the *reason*
+        // through `state_update: idle`, and that notification is the primary
+        // signal — but the response is evidence too, and an agent can lose the
+        // notification on the way out: pi-acp, for instance, tears down its
+        // outbound connector when one update fails to convert, and the idle
+        // update that follows is dropped. Trusting only the notification leaves
+        // the run in flight until the control plane's timeout (W-623), so the
+        // response closes the turn when nothing else has.
+        self.settle_from_prompt_response().await;
         self.wait_for_completion().await;
         Ok(())
     }
 
+    /// Ends the turn from the prompt response, when nothing else did.
+    ///
+    /// The reason a v2 response cannot carry is `EndTurn`: a cancelled turn is
+    /// reported as `Cancelled` by the notification path, and loom has no
+    /// client-side cancel for an ACP run at all. The mapping is therefore the
+    /// same one pi-acp uses to build the idle notification it may have dropped.
+    async fn settle_from_prompt_response(&self) {
+        use std::sync::atomic::Ordering;
+        if self.terminal_sent.load(Ordering::SeqCst) {
+            return;
+        }
+        acp_trace!("prompt response returned; closing the turn from it");
+        let events = {
+            let mut state = self.state.lock().await;
+            state.translator.on_v2_stop_reason(v2::StopReason::EndTurn)
+        };
+        self.report_all(events).await;
+    }
+
     async fn wait_for_completion(&self) {
         use std::sync::atomic::Ordering;
+        acp_trace!("prompt sent; waiting for a terminal event");
         while !self.terminal_sent.load(Ordering::SeqCst) {
             self.completion_notify.notified().await;
         }
@@ -820,6 +915,11 @@ impl UpdateSink {
     ) {
         use std::sync::atomic::Ordering;
         for body in events {
+            acp_trace!(
+                "translated {} (terminal: {})",
+                body.kind(),
+                body.is_terminal()
+            );
             if self.terminal_sent.load(Ordering::SeqCst) {
                 // A terminal event already ended this run; anything after it
                 // would be reported against a finished run.
