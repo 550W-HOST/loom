@@ -10,9 +10,9 @@
 //! # The state machine
 //!
 //! ```text
-//!   pending ──resolve/respond──▶ resolving ──settle──▶ resolved
-//!      │
-//!      └──cancel──────────────────────────────────────▶ interrupted
+//!   pending ──resolve/respond──▶ resolving ──delivery stored──▶ resolved
+//!      │                            │
+//!      └────────cancel──────────────┴──delivery stored────────▶ interrupted
 //! ```
 //!
 //! Three verbs, three different things, and the difference is the reason
@@ -27,13 +27,12 @@
 //!   the run was stopped, or the provider went away, and there is nothing to
 //!   answer any more.
 //!
-//! `resolving` exists because a resolution is a two-step fact: the server has
-//! accepted the answer and is delivering it, but the provider has not yet
-//! confirmed. A client that sees `resolving` keeps the row disabled; only
-//! `resolved` means the provider has it. loom's provider protocol cannot
-//! report the confirmation yet, so a resolved interaction settles in one step —
-//! the status is modelled anyway, because a client's rendering of it is part of
-//! the contract and inventing a second meaning later is the breaking change.
+//! `resolving` exists because an answer is a two-step fact: the server has
+//! accepted it and retained the delivery intent, but the replayable daemon
+//! frame is not stored yet. A client that sees `resolving` keeps the row
+//! disabled; `resolved` means the provider answer can be delivered or replayed.
+//! Cancellation uses the same intermediate state so a relay failure cannot hide
+//! a prompt while its provider remains blocked.
 
 use std::fmt;
 
@@ -416,13 +415,12 @@ impl Interaction {
         })
     }
 
-    /// Applies an answer, moving the interaction to `resolved`.
-    ///
-    /// The resolution must match the payload kind: a decision cannot answer a
-    /// question. A mismatched or repeated answer is [`DomainError::IllegalInteractionTransition`]
-    /// rather than a silent overwrite, because the second write is a race and
-    /// the first answer is the one the provider must have.
-    pub fn resolve(&mut self, resolution: Resolution, now_ms: u64) -> Result<(), DomainError> {
+    /// Records an answer as accepted but not yet delivered.
+    pub fn begin_resolution(
+        &mut self,
+        resolution: Resolution,
+        now_ms: u64,
+    ) -> Result<(), DomainError> {
         if !resolution.answers(self.kind) {
             return Err(DomainError::InvalidField {
                 field: "resolution",
@@ -433,18 +431,70 @@ impl Interaction {
                 ),
             });
         }
+        if self.status == InteractionStatus::Resolving
+            && self.resolution.as_ref() == Some(&resolution)
+        {
+            return Ok(());
+        }
         self.transition(InteractionStatus::Resolving, now_ms)?;
         self.resolution = Some(resolution);
+        self.status_reason = None;
+        Ok(())
+    }
+
+    /// Marks a previously accepted answer as delivered.
+    pub fn complete_resolution(&mut self, now_ms: u64) -> Result<(), DomainError> {
+        if self.status != InteractionStatus::Resolving || self.resolution.is_none() {
+            return Err(DomainError::IllegalInteractionTransition {
+                from: self.status,
+                to: InteractionStatus::Resolved,
+            });
+        }
         self.settle(InteractionStatus::Resolved, None, now_ms);
+        Ok(())
+    }
+
+    /// Applies an answer atomically for callers with no external delivery step.
+    pub fn resolve(&mut self, resolution: Resolution, now_ms: u64) -> Result<(), DomainError> {
+        self.begin_resolution(resolution, now_ms)?;
+        self.complete_resolution(now_ms)
+    }
+
+    /// Records a cancellation as accepted but not yet delivered.
+    pub fn begin_cancellation(
+        &mut self,
+        reason: Option<String>,
+        now_ms: u64,
+    ) -> Result<(), DomainError> {
+        if self.status == InteractionStatus::Resolving
+            && self.resolution.is_none()
+            && self.status_reason == reason
+        {
+            return Ok(());
+        }
+        self.transition(InteractionStatus::Resolving, now_ms)?;
+        self.resolution = None;
+        self.status_reason = reason;
+        Ok(())
+    }
+
+    /// Marks a previously accepted cancellation as delivered.
+    pub fn complete_cancellation(&mut self, now_ms: u64) -> Result<(), DomainError> {
+        if self.status != InteractionStatus::Resolving || self.resolution.is_some() {
+            return Err(DomainError::IllegalInteractionTransition {
+                from: self.status,
+                to: InteractionStatus::Interrupted,
+            });
+        }
+        let reason = self.status_reason.take();
+        self.settle(InteractionStatus::Interrupted, reason, now_ms);
         Ok(())
     }
 
     /// Settles the interaction without an answer.
     ///
-    /// Cancellation is legal from `pending` and from `resolving`: a run stopped
-    /// while its answer was in flight leaves an interaction that will never be
-    /// confirmed, and leaving it in `resolving` forever would be the stuck
-    /// state this exists to avoid.
+    /// Run teardown may interrupt either a pending request or an answer whose
+    /// delivery was still in flight.
     pub fn cancel(&mut self, reason: Option<String>, now_ms: u64) -> Result<(), DomainError> {
         if self.status.is_terminal() {
             return Err(DomainError::IllegalInteractionTransition {
@@ -605,6 +655,45 @@ mod tests {
             approval.provider_thread_id.as_deref(),
             Some("acp-session-1")
         );
+    }
+
+    #[test]
+    fn resolution_stays_retryable_until_delivery_completes() {
+        let mut approval = interaction(InteractionKind::Approval);
+        let decision = Resolution::Decision {
+            decision: "deny".into(),
+            granted_permissions: None,
+        };
+        approval.begin_resolution(decision.clone(), 6).unwrap();
+        assert_eq!(approval.status, InteractionStatus::Resolving);
+        assert_eq!(approval.resolution.as_ref(), Some(&decision));
+        assert_eq!(approval.resolved_at_ms, None);
+        approval
+            .begin_resolution(decision, 7)
+            .expect("an identical delivery retry is idempotent");
+        approval.complete_resolution(8).unwrap();
+        assert_eq!(approval.status, InteractionStatus::Resolved);
+        assert_eq!(approval.resolved_at_ms, Some(8));
+    }
+
+    #[test]
+    fn cancellation_stays_retryable_until_delivery_completes() {
+        let mut approval = interaction(InteractionKind::Approval);
+        let reason = Some("cancelled by a client".to_owned());
+        approval.begin_cancellation(reason.clone(), 6).unwrap();
+        assert_eq!(approval.status, InteractionStatus::Resolving);
+        assert_eq!(approval.status_reason, reason);
+        assert_eq!(approval.resolution, None);
+        approval
+            .begin_cancellation(Some("cancelled by a client".to_owned()), 7)
+            .expect("an identical cancellation retry is idempotent");
+        approval.complete_cancellation(8).unwrap();
+        assert_eq!(approval.status, InteractionStatus::Interrupted);
+        assert_eq!(
+            approval.status_reason.as_deref(),
+            Some("cancelled by a client")
+        );
+        assert_eq!(approval.resolved_at_ms, Some(8));
     }
 
     #[test]

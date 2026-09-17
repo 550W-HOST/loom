@@ -16,30 +16,25 @@
 //! thread scope like every other fact. The daemon never holds a question open
 //! on a socket.
 //!
-//! # What the protocol can and cannot do
+//! # Delivery protocol
 //!
-//! `loom_provider_protocol` has no "answer an interaction" frame. An answer is
-//! therefore **recorded** — the interaction moves to `resolved` with its
-//! machine-readable resolution, the same shape bb's clients render — and
-//! published through the thread room as `thread_interaction_changed`, but the
-//! provider process is not told and the route does not claim it was. That is
-//! the same honest divergence `threads.stop` already documents: the control
-//! plane is authoritative, the execution plane learns when the protocol grows
-//! the frame. Until then a provider that is blocked on a question settles the
-//! turn through its own timeout and the daemon reports the outcome.
-//!
-//! The `resolving` status exists in the domain state machine for the day the
-//! confirmation frame exists; today a resolution settles in one step, and
-//! [`crate::interactions`] is the single place that changes when it does not.
+//! The provider protocol carries an [`InteractionResolutionFrame`] back to the
+//! daemon. Delivery is two-phase: accepting an answer moves the durable row to
+//! `resolving`, the host-scoped frame is appended to the replayable relay, and
+//! only then does the row become `resolved` (or `interrupted` for cancellation).
+//! A relay failure therefore leaves a durable delivery intent instead of a
+//! hidden, settled row with a provider still blocked. The run reconciler retries
+//! every resolving interaction until delivery succeeds or run teardown cancels
+//! it.
 
 use loom_domain::{
     Interaction, InteractionId, InteractionKind, InteractionOrigin, InteractionPayload,
-    NewInteraction, Resolution, RunId, ThreadId,
+    InteractionStatus, NewInteraction, Resolution, RunId, ThreadId,
 };
 use loom_provider_protocol::{
     InteractionAnswer, InteractionRequest, InteractionResolutionFrame, PermissionDecision,
 };
-use loom_relay::Scope;
+use loom_relay::{Result as RelayResult, Scope};
 
 use crate::domain_state::CommandError;
 use crate::state::AppState;
@@ -59,8 +54,13 @@ pub enum RecordOutcome {
 /// What happened when an answer was delivered.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DeliverOutcome {
-    /// The interaction moved to `resolved` and its change was published.
+    /// The provider answer is replayable and the interaction is terminal.
     Delivered(Box<Interaction>),
+    /// The answer is retained in `resolving` for the reconciler to retry.
+    DeliveryFailed {
+        interaction: Box<Interaction>,
+        error: String,
+    },
     /// The interaction does not exist.
     Unknown,
     /// The interaction was already settled by someone else.
@@ -108,14 +108,8 @@ impl AppState {
         Ok(interaction)
     }
 
-    /// Answers an interaction and publishes the change.
-    ///
-    /// The order matters and is the crash-safety argument: the entity is
-    /// updated **before** the frame is published, so a crash between the two
-    /// leaves an interaction a client sees as answered and a frame it did not
-    /// see — recoverable by re-reading the interaction — rather than a frame a
-    /// provider might have acted on while the entity still says `pending`,
-    /// which would let a second client answer the same question.
+    /// Accepts an answer, persists its delivery intent, and finishes only after
+    /// the daemon frame is replayable.
     pub fn deliver_interaction_resolution(
         &self,
         interaction_id: &InteractionId,
@@ -125,15 +119,38 @@ impl AppState {
         let Some(existing) = self.registry.interaction(interaction_id) else {
             return DeliverOutcome::Unknown;
         };
-        if !existing.status.is_open() {
-            return DeliverOutcome::Settled(Box::new(existing));
+        let resolution = self.normalize_permission_resolution(&existing, resolution);
+        match self
+            .registry
+            .prepare_interaction_resolution(interaction_id, resolution, now_ms)
+        {
+            Ok((interaction, event)) => {
+                if let Err(error) = self.publish_domain_event(&event) {
+                    return Self::delivery_failed(interaction, error);
+                }
+                self.finish_prepared_resolution(interaction, now_ms)
+            }
+            Err(CommandError::NotFound(_)) => DeliverOutcome::Unknown,
+            Err(_) => self
+                .registry
+                .interaction(interaction_id)
+                .map_or(DeliverOutcome::Unknown, |current| {
+                    DeliverOutcome::Settled(Box::new(current))
+                }),
         }
-        let resolution = match resolution {
+    }
+
+    fn normalize_permission_resolution(
+        &self,
+        interaction: &Interaction,
+        resolution: Resolution,
+    ) -> Resolution {
+        match resolution {
             Resolution::Decision {
                 decision,
                 granted_permissions,
             } if decision == "allow_for_session"
-                && existing
+                && interaction
                     .turn_id
                     .parse::<RunId>()
                     .ok()
@@ -149,54 +166,137 @@ impl AppState {
                 }
             }
             other => other,
-        };
-        match self
-            .registry
-            .resolve_interaction(interaction_id, resolution.clone(), now_ms)
-        {
-            Ok((interaction, event)) => {
-                let _ = self.publish_domain_event(&event);
-                // A permission request is the one interaction a provider is
-                // *blocked on*, so the answer has to reach the daemon's socket
-                // loop, not only a client's. The frame goes through the relay to
-                // the host scope — the same path a dispatch takes — so a
-                // resolution published while the daemon was reconnecting is
-                // replayed to it rather than lost.
-                self.publish_interaction_resolution(&interaction, &resolution, now_ms);
-                DeliverOutcome::Delivered(Box::new(interaction))
-            }
-            // A conflict means another client settled it while this request was
-            // in flight. Report what the interaction actually is; that is what
-            // the caller has to know, and it is not an error.
-            Err(CommandError::Conflict(_)) => match self.registry.interaction(interaction_id) {
-                Some(current) => DeliverOutcome::Settled(Box::new(current)),
-                None => DeliverOutcome::Unknown,
-            },
-            // A kind mismatch was validated by the route before this call, so
-            // reaching here means the interaction changed underneath us.
-            Err(_) => match self.registry.interaction(interaction_id) {
-                Some(current) => DeliverOutcome::Settled(Box::new(current)),
-                None => DeliverOutcome::Unknown,
-            },
         }
     }
 
-    /// Settles an interaction without an answer.
-    ///
-    /// Cancelling is what a stopped run leaves behind: the question will never
-    /// be answered by the provider, and leaving it `pending` would keep the
-    /// thread's pending-interaction flag set forever.
+    fn finish_prepared_resolution(&self, interaction: Interaction, now_ms: u64) -> DeliverOutcome {
+        let Some(resolution) = interaction.resolution.as_ref() else {
+            return DeliverOutcome::Settled(Box::new(interaction));
+        };
+        if let Err(error) = self.publish_interaction_resolution(&interaction, resolution, now_ms) {
+            return Self::delivery_failed(interaction, error);
+        }
+        match self
+            .registry
+            .complete_interaction_resolution(&interaction.id, now_ms)
+        {
+            Ok((completed, event)) => {
+                if let Err(error) = self.publish_domain_event(&event) {
+                    eprintln!(
+                        "loom-server: provider received interaction {} but its terminal event failed: {error}",
+                        completed.id
+                    );
+                }
+                DeliverOutcome::Delivered(Box::new(completed))
+            }
+            Err(CommandError::NotFound(_)) => DeliverOutcome::Unknown,
+            Err(_) => self
+                .registry
+                .interaction(&interaction.id)
+                .map_or(DeliverOutcome::Unknown, |current| {
+                    DeliverOutcome::Settled(Box::new(current))
+                }),
+        }
+    }
+
+    /// Cancels an interaction and tells a blocked provider the request ended.
     pub fn cancel_interaction(
         &self,
         interaction_id: &InteractionId,
         reason: Option<String>,
         now_ms: u64,
-    ) -> Result<Interaction, CommandError> {
-        let (interaction, event) =
-            self.registry
-                .cancel_interaction(interaction_id, reason, now_ms)?;
-        let _ = self.publish_domain_event(&event);
-        Ok(interaction)
+    ) -> DeliverOutcome {
+        match self
+            .registry
+            .prepare_interaction_cancellation(interaction_id, reason, now_ms)
+        {
+            Ok((interaction, event)) => {
+                if let Err(error) = self.publish_domain_event(&event) {
+                    return Self::delivery_failed(interaction, error);
+                }
+                self.finish_prepared_cancellation(interaction, now_ms)
+            }
+            Err(CommandError::NotFound(_)) => DeliverOutcome::Unknown,
+            Err(_) => self
+                .registry
+                .interaction(interaction_id)
+                .map_or(DeliverOutcome::Unknown, |current| {
+                    DeliverOutcome::Settled(Box::new(current))
+                }),
+        }
+    }
+
+    fn finish_prepared_cancellation(
+        &self,
+        interaction: Interaction,
+        now_ms: u64,
+    ) -> DeliverOutcome {
+        let reason = interaction
+            .status_reason
+            .clone()
+            .unwrap_or_else(|| "interaction cancelled".to_owned());
+        if let Err(error) = self.publish_interaction_answer(
+            &interaction,
+            InteractionAnswer::Cancelled { reason },
+            now_ms,
+        ) {
+            return Self::delivery_failed(interaction, error);
+        }
+        match self
+            .registry
+            .complete_interaction_cancellation(&interaction.id, now_ms)
+        {
+            Ok((completed, event)) => {
+                if let Err(error) = self.publish_domain_event(&event) {
+                    eprintln!(
+                        "loom-server: provider received interaction cancellation {} but its terminal event failed: {error}",
+                        completed.id
+                    );
+                }
+                DeliverOutcome::Delivered(Box::new(completed))
+            }
+            Err(CommandError::NotFound(_)) => DeliverOutcome::Unknown,
+            Err(_) => self
+                .registry
+                .interaction(&interaction.id)
+                .map_or(DeliverOutcome::Unknown, |current| {
+                    DeliverOutcome::Settled(Box::new(current))
+                }),
+        }
+    }
+
+    /// Retries every provider answer retained in the `resolving` state.
+    pub(crate) fn retry_resolving_interactions(&self, now_ms: u64) -> usize {
+        let mut delivered = 0;
+        for interaction in self
+            .registry
+            .interactions()
+            .into_iter()
+            .filter(|interaction| interaction.status == InteractionStatus::Resolving)
+        {
+            let event = loom_domain::DomainEvent::ThreadInteractionChanged {
+                interaction: interaction.clone(),
+            };
+            if self.publish_domain_event(&event).is_err() {
+                continue;
+            }
+            let outcome = if interaction.resolution.is_some() {
+                self.finish_prepared_resolution(interaction, now_ms)
+            } else {
+                self.finish_prepared_cancellation(interaction, now_ms)
+            };
+            if matches!(outcome, DeliverOutcome::Delivered(_)) {
+                delivered += 1;
+            }
+        }
+        delivered
+    }
+
+    fn delivery_failed(interaction: Interaction, error: impl std::fmt::Display) -> DeliverOutcome {
+        DeliverOutcome::DeliveryFailed {
+            interaction: Box::new(interaction),
+            error: error.to_string(),
+        }
     }
 
     /// Cancels every open interaction a thread has, returning how many.
@@ -205,7 +305,12 @@ impl AppState {
     /// answer, so the interactions it raised are settled with it. This is the
     /// invariant that keeps `hasPendingInteraction` honest in the thread list.
     pub fn cancel_thread_interactions(&self, thread_id: &ThreadId, now_ms: u64) -> usize {
-        let open = self.registry.pending_interactions(thread_id);
+        let open = self
+            .registry
+            .interactions_for(Some(thread_id))
+            .into_iter()
+            .filter(|interaction| !interaction.status.is_terminal())
+            .collect::<Vec<_>>();
         let mut cancelled = 0;
         for interaction in open {
             if self
@@ -295,41 +400,18 @@ impl AppState {
         }
     }
 
-    /// Publishes an answered permission request to the answering host's scope.
+    /// Publishes a resolved permission request to the answering host's scope.
     ///
-    /// Only a provider-origin, *resolved* approval produces a frame: a question
-    /// or a cancellation has no ACP request to unblock, and a plugin
-    /// interaction has no daemon waiting. Publishing a frame nothing waits on
-    /// would put an unfalsifiable fact in the host's log.
+    /// Only a typed decision can resolve an approval. Client cancellation uses
+    /// the same transport through [`Self::publish_interaction_answer`], but is
+    /// kept separate here so an unknown resolution can never become an allow.
     fn publish_interaction_resolution(
         &self,
         interaction: &Interaction,
         resolution: &Resolution,
         now_ms: u64,
-    ) {
-        if interaction.kind != InteractionKind::Approval {
-            return;
-        }
-        let InteractionOrigin::Provider {
-            provider_request_id,
-            ..
-        } = &interaction.origin
-        else {
-            return;
-        };
-        // The run that asked. `turn_id` is the run id (see
-        // `record_interaction_request`); a request that reached the domain by
-        // another path may carry a different turn id, in which case there is no
-        // run to address the frame to and nothing is published.
-        let Ok(run_id) = interaction.turn_id.parse() else {
-            return;
-        };
-        let Some(record) = self.runs.get(&run_id) else {
-            return;
-        };
+    ) -> RelayResult<()> {
         let answer = match resolution {
-            // The typed decision is the only resolution the contract admits for
-            // an approval, so it is the only arm that can produce an answer.
             Resolution::Decision { decision, .. } => {
                 let decision = match decision.as_str() {
                     "allow_once" => PermissionDecision::AllowOnce,
@@ -342,9 +424,40 @@ impl AppState {
             }
             // The other resolutions cannot answer an approval; the route
             // already refused them, so reaching here means the interaction
-            // changed. Publishing nothing is the safe reading — and publishing
-            // nothing is strictly better than publishing an allow.
-            _ => return,
+            // changed. Publishing nothing is strictly better than guessing.
+            _ => return Ok(()),
+        };
+        self.publish_interaction_answer(interaction, answer, now_ms)
+    }
+
+    /// Sends one provider approval answer through the replayable host scope.
+    fn publish_interaction_answer(
+        &self,
+        interaction: &Interaction,
+        answer: InteractionAnswer,
+        now_ms: u64,
+    ) -> RelayResult<()> {
+        if interaction.kind != InteractionKind::Approval {
+            return Ok(());
+        }
+        let InteractionOrigin::Provider {
+            provider_request_id,
+            ..
+        } = &interaction.origin
+        else {
+            return Ok(());
+        };
+        // The run that asked. `turn_id` is the run id (see
+        // `record_interaction_request`); a request that reached the domain by
+        // another path may carry a different turn id, in which case there is no
+        // run to address the frame to and nothing is published.
+        let Ok(run_id) = interaction.turn_id.parse() else {
+            return Ok(());
+        };
+        let Some(record) = self.runs.get(&run_id) else {
+            // Interactions can also be created by non-provider API/plugin
+            // paths. With no in-flight run there is no daemon waiter to unblock.
+            return Ok(());
         };
         let frame = InteractionResolutionFrame {
             host_id: record.host_id.clone(),
@@ -356,7 +469,8 @@ impl AppState {
             created_at_ms: now_ms,
         };
         let payload = serde_json::to_vec(&frame).expect("an interaction frame always serializes");
-        let _ = self.publish(Scope::Host(record.host_id.to_string()), payload);
+        self.publish(Scope::Host(record.host_id.to_string()), payload)
+            .map(|_| ())
     }
 }
 
@@ -409,8 +523,69 @@ mod tests {
 
     use crate::state::AppConfig;
     use loom_domain::{EnvironmentKind, MessageRole, RunEvent, Thread};
-    use loom_relay::now_ms;
-    use loom_relay::Scope;
+    use loom_relay::backend::memory::MemoryBackend;
+    use loom_relay::backend::{LogRecord, RelayBackend};
+    use loom_relay::{now_ms, EventId, RelayError, ShardId};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    struct FailOnAppendBackend {
+        inner: MemoryBackend,
+        append_count: AtomicUsize,
+        fail_at: AtomicUsize,
+    }
+
+    impl FailOnAppendBackend {
+        fn new() -> Self {
+            Self {
+                inner: MemoryBackend::new(2_000),
+                append_count: AtomicUsize::new(0),
+                fail_at: AtomicUsize::new(0),
+            }
+        }
+
+        fn fail_on_append_after_next(&self) {
+            let after_next = self.append_count.load(Ordering::Acquire).saturating_add(2);
+            self.fail_at.store(after_next, Ordering::Release);
+        }
+
+        fn disable_failure(&self) {
+            self.fail_at.store(0, Ordering::Release);
+        }
+    }
+
+    impl RelayBackend for FailOnAppendBackend {
+        fn shard_count(&self) -> u8 {
+            self.inner.shard_count()
+        }
+
+        fn append(&self, shard: ShardId, record: LogRecord) -> loom_relay::Result<()> {
+            let append_number = self.append_count.fetch_add(1, Ordering::AcqRel) + 1;
+            if self.fail_at.load(Ordering::Acquire) == append_number {
+                return Err(RelayError::backend(format!(
+                    "injected append failure at append {append_number}"
+                )));
+            }
+            self.inner.append(shard, record)
+        }
+
+        fn read_after(
+            &self,
+            shard: ShardId,
+            after: Option<EventId>,
+            limit: usize,
+        ) -> loom_relay::Result<Vec<LogRecord>> {
+            self.inner.read_after(shard, after, limit)
+        }
+
+        fn trim(&self, shard: ShardId, before_ms: u64) -> loom_relay::Result<u64> {
+            self.inner.trim(shard, before_ms)
+        }
+
+        fn len(&self, shard: ShardId) -> loom_relay::Result<usize> {
+            self.inner.len(shard)
+        }
+    }
 
     /// A state that neither reconciles nor snapshots, so a test drives it.
     fn state() -> AppState {
@@ -418,6 +593,17 @@ mod tests {
             reconcile_interval: std::time::Duration::ZERO,
             ..AppConfig::default()
         })
+        .unwrap()
+    }
+
+    fn state_with_backend(backend: Arc<FailOnAppendBackend>) -> AppState {
+        AppState::build_for_test(
+            AppConfig {
+                reconcile_interval: std::time::Duration::ZERO,
+                ..AppConfig::default()
+            },
+            backend,
+        )
         .unwrap()
     }
 
@@ -561,6 +747,181 @@ mod tests {
         assert_eq!(frame["thread_id"], thread.id.to_string());
         assert_eq!(frame["answer"]["kind"], "decision");
         assert_eq!(frame["answer"]["decision"], "deny");
+
+        state.shutdown();
+    }
+
+    #[tokio::test]
+    async fn a_host_permission_ceiling_downgrades_session_scope_before_delivery() {
+        let state = state();
+        let (host_id, thread, run_id) = dispatched_run(&state, "/srv/project-a");
+        state
+            .registry
+            .update_host_permission_ceiling(
+                &host_id,
+                loom_domain::HostPermissionMode::Auto,
+                now_ms(),
+            )
+            .unwrap();
+        let interaction = match state.record_interaction_request(
+            request(&host_id, &thread, &run_id, "call-ceiling"),
+            now_ms(),
+        ) {
+            RecordOutcome::Recorded(interaction) => interaction,
+            other => panic!("expected a recorded request, got {other:?}"),
+        };
+
+        let outcome = state.deliver_interaction_resolution(
+            &interaction.id,
+            Resolution::Decision {
+                decision: "allow_for_session".into(),
+                granted_permissions: Some(serde_json::Value::Null),
+            },
+            now_ms(),
+        );
+        let DeliverOutcome::Delivered(interaction) = outcome else {
+            panic!("expected a delivered answer, got {outcome:?}");
+        };
+        assert_eq!(
+            interaction.resolution,
+            Some(Resolution::Decision {
+                decision: "allow_once".into(),
+                granted_permissions: Some(serde_json::Value::Null),
+            })
+        );
+        let frame = host_frames(&state, &host_id)
+            .into_iter()
+            .find(|frame| frame["request_id"] == "call-ceiling")
+            .expect("the downgraded answer reached the host");
+        assert_eq!(frame["answer"]["decision"], "allow_once");
+
+        state.shutdown();
+    }
+
+    #[tokio::test]
+    async fn a_failed_provider_append_stays_resolving_until_reconciliation_retries_it() {
+        let backend = Arc::new(FailOnAppendBackend::new());
+        let state = state_with_backend(backend.clone());
+        let (host_id, thread, run_id) = dispatched_run(&state, "/srv/project-a");
+        let interaction = match state
+            .record_interaction_request(request(&host_id, &thread, &run_id, "call-retry"), now_ms())
+        {
+            RecordOutcome::Recorded(interaction) => interaction,
+            other => panic!("expected a recorded request, got {other:?}"),
+        };
+
+        // The resolving domain event is the next append. Fail the host-scoped
+        // answer immediately after it, leaving the durable intent retryable.
+        backend.fail_on_append_after_next();
+        let outcome = state.deliver_interaction_resolution(
+            &interaction.id,
+            Resolution::Decision {
+                decision: "deny".into(),
+                granted_permissions: None,
+            },
+            now_ms(),
+        );
+        assert!(matches!(outcome, DeliverOutcome::DeliveryFailed { .. }));
+        assert_eq!(
+            state.registry.interaction(&interaction.id).unwrap().status,
+            InteractionStatus::Resolving
+        );
+        assert!(
+            host_frames(&state, &host_id)
+                .iter()
+                .all(|frame| frame["request_id"] != "call-retry"),
+            "a failed append must not look delivered"
+        );
+
+        backend.disable_failure();
+        assert_eq!(state.retry_resolving_interactions(now_ms()), 1);
+        assert_eq!(
+            state.registry.interaction(&interaction.id).unwrap().status,
+            InteractionStatus::Resolved
+        );
+        let frame = host_frames(&state, &host_id)
+            .into_iter()
+            .find(|frame| frame["request_id"] == "call-retry")
+            .expect("reconciliation must make the answer replayable");
+        assert_eq!(frame["answer"]["decision"], "deny");
+
+        state.shutdown();
+    }
+
+    #[tokio::test]
+    async fn a_client_cancellation_becomes_a_provider_cancellation_frame() {
+        let state = state();
+        let (host_id, thread, run_id) = dispatched_run(&state, "/srv/project-a");
+        let interaction = match state.record_interaction_request(
+            request(&host_id, &thread, &run_id, "call-cancel"),
+            now_ms(),
+        ) {
+            RecordOutcome::Recorded(interaction) => interaction,
+            other => panic!("expected a recorded request, got {other:?}"),
+        };
+
+        let cancelled = match state.cancel_interaction(
+            &interaction.id,
+            Some("cancelled by a client".into()),
+            now_ms(),
+        ) {
+            DeliverOutcome::Delivered(interaction) => *interaction,
+            other => panic!("expected delivered cancellation, got {other:?}"),
+        };
+        assert_eq!(
+            cancelled.status,
+            loom_domain::InteractionStatus::Interrupted
+        );
+        assert!(cancelled.resolution.is_none());
+
+        let frames = host_frames(&state, &host_id);
+        let frame = frames
+            .iter()
+            .find(|frame| frame["request_id"] == "call-cancel")
+            .expect("the cancellation reached the host scope");
+        assert_eq!(frame["interaction_id"], interaction.id.to_string());
+        assert_eq!(frame["answer"]["kind"], "cancelled");
+        assert_eq!(frame["answer"]["reason"], "cancelled by a client");
+
+        state.shutdown();
+    }
+
+    #[tokio::test]
+    async fn a_failed_cancellation_append_is_retried_without_becoming_a_denial() {
+        let backend = Arc::new(FailOnAppendBackend::new());
+        let state = state_with_backend(backend.clone());
+        let (host_id, thread, run_id) = dispatched_run(&state, "/srv/project-a");
+        let interaction = match state.record_interaction_request(
+            request(&host_id, &thread, &run_id, "cancel-retry"),
+            now_ms(),
+        ) {
+            RecordOutcome::Recorded(interaction) => interaction,
+            other => panic!("expected a recorded request, got {other:?}"),
+        };
+
+        backend.fail_on_append_after_next();
+        let outcome = state.cancel_interaction(
+            &interaction.id,
+            Some("cancelled by a client".into()),
+            now_ms(),
+        );
+        assert!(matches!(outcome, DeliverOutcome::DeliveryFailed { .. }));
+        let pending = state.registry.interaction(&interaction.id).unwrap();
+        assert_eq!(pending.status, InteractionStatus::Resolving);
+        assert!(pending.resolution.is_none());
+
+        backend.disable_failure();
+        assert_eq!(state.retry_resolving_interactions(now_ms()), 1);
+        assert_eq!(
+            state.registry.interaction(&interaction.id).unwrap().status,
+            InteractionStatus::Interrupted
+        );
+        let frame = host_frames(&state, &host_id)
+            .into_iter()
+            .find(|frame| frame["request_id"] == "cancel-retry")
+            .expect("reconciliation must make the cancellation replayable");
+        assert_eq!(frame["answer"]["kind"], "cancelled");
+        assert!(frame["answer"].get("decision").is_none());
 
         state.shutdown();
     }

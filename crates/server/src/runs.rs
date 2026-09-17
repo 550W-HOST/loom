@@ -849,6 +849,10 @@ impl AppState {
         // the same sweep that reaps runs also bounds their in-memory lifetime.
         self.join_codes.purge_expired(now);
         self.file_previews.purge_expired(now);
+        // Interaction answers are a durable two-phase delivery. Retry them
+        // before run deadlines so a transient relay failure cannot leave an
+        // ACP permission request blocked until timeout.
+        let _ = self.retry_resolving_interactions(now);
         let mut summary = ReconcileSummary::default();
 
         // 1. A host that has not heartbeat within the staleness window is

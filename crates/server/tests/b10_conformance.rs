@@ -1,13 +1,15 @@
 //! B10 conformance and persistence tests.
 //!
 //! The settings surface is server-local state: successful mutations must be
-//! contract-shaped, survive a durable restart, and leave the relay untouched.
+//! contract-shaped, survive a durable restart, and publish typed cache
+//! invalidations without exposing the settings payload through the relay.
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use axum::Router;
 use http_body_util::BodyExt;
 use loom_contract::shared;
+use loom_relay::Scope;
 use loom_server::http::router;
 use loom_server::state::{AppConfig, AppState};
 use serde_json::{json, Value};
@@ -196,8 +198,27 @@ async fn b10_routes_validate_requests_and_responses() {
     assert_eq!(unknown_theme.status(), StatusCode::NOT_FOUND);
     assert_error(StatusCode::NOT_FOUND, &body_json(unknown_theme).await);
 
-    // Settings never become public relay events.
-    assert_eq!(state.relay.retained().unwrap(), 0);
+    let changes = state
+        .relay
+        .replay_scope(&Scope::Global, 20)
+        .unwrap()
+        .into_iter()
+        .filter_map(|envelope| {
+            let frame: Value = serde_json::from_slice(&envelope.payload).ok()?;
+            serde_json::from_str::<Value>(frame["payload"].as_str()?).ok()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        changes,
+        vec![
+            json!({ "type": "changed", "entity": "system", "changes": ["config-changed"] }),
+            json!({ "type": "changed", "entity": "system", "changes": ["config-changed"] }),
+            json!({ "type": "changed", "entity": "system", "changes": ["config-changed"] }),
+            json!({ "type": "changed", "entity": "system", "changes": ["config-changed"] }),
+            json!({ "type": "changed", "entity": "system", "changes": ["ui-preferences-changed"] }),
+            json!({ "type": "changed", "entity": "system", "changes": ["ui-preferences-changed"] }),
+        ]
+    );
     state.shutdown();
 }
 

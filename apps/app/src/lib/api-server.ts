@@ -197,18 +197,42 @@ export const apiClient = {
       files: { content: route("projects.fileContent") },
     },
   },
+  preferences: {
+    ui: {
+      ...route("system.uiPreferences"),
+      ":key": {
+        ...route("system.updateUiPreference"),
+        ...route("system.resetUiPreference"),
+      },
+    },
+  },
   system: {
     config: route("system.config"),
     "voice-transcription": route("system.voiceTranscription"),
   },
   threads: {
     ":id": {
+      "default-execution-options": route("threads.defaultExecutionOptions"),
       "host-files": { content: route("threads.hostFileContent") },
+      interactions: {
+        ...route("threads.interactions"),
+        ":interactionId": {
+          ...route("threads.interaction"),
+          cancel: route("threads.cancelInteraction"),
+          resolve: route("threads.resolveInteraction"),
+        },
+      },
       "thread-storage": {
         content: route("threads.storageContent"),
         files: { ":filePath{.+}": route("threads.storageFile") },
       },
       files: { raw: route("threads.rawFile") },
+      read: route("threads.read"),
+      tabs: {
+        ...route("threads.tabs"),
+        ...route("threads.updateTabs"),
+      },
+      unread: route("threads.unread"),
       worktree: { files: { ":filePath{.+}": route("threads.worktreeFile") } },
     },
   },

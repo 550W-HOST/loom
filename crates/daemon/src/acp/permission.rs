@@ -396,12 +396,14 @@ fn tool_kind_name(kind: agent_client_protocol_schema::v1::ToolKind) -> &'static 
 
 /// The ACP response for a decision the client made.
 ///
-/// An `allow` picks the agent's own allowing option, preferring the
-/// once-variant: a client that answered the typed `allow_once` must not have
-/// granted a session-wide permission. A `deny` picks a rejecting option; when
-/// the agent offered none, `Cancelled` is the only truthful reply, because
-/// "there was a rejecting option and the user picked it" and "the request was
-/// withdrawn" are not the same fact and ACP has no third word.
+/// An `allow` picks the agent's own option with matching scope. A once-decision
+/// never widens to session scope; a session decision prefers `AllowAlways` and
+/// falls back to `AllowOnce` only when the agent did not expose a durable
+/// option. The host permission ceiling may explicitly downgrade session scope
+/// before this mapping. A `deny` picks a rejecting option; when the agent
+/// offered none, `Cancelled` is the only truthful reply, because "there was a
+/// rejecting option and the user picked it" and "the request was withdrawn"
+/// are not the same fact and ACP has no third word.
 fn answer_to_response(
     answer: InteractionAnswer,
     request: &RequestPermissionRequest,
@@ -419,8 +421,8 @@ fn answer_to_response(
             let wanted: &[PermissionOptionKind] = match decision {
                 PermissionDecision::AllowOnce => &[PermissionOptionKind::AllowOnce],
                 PermissionDecision::AllowForSession => &[
-                    PermissionOptionKind::AllowOnce,
                     PermissionOptionKind::AllowAlways,
+                    PermissionOptionKind::AllowOnce,
                 ],
                 PermissionDecision::Deny => &[
                     PermissionOptionKind::RejectOnce,
@@ -581,6 +583,35 @@ mod tests {
         assert_eq!(
             handle.await.unwrap().outcome,
             RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new("allow-once"))
+        );
+    }
+
+    #[tokio::test]
+    async fn an_allow_for_session_prefers_the_session_wide_option() {
+        let (broker, mut outbound) = broker(Duration::from_secs(5));
+        let pending = broker.pending.clone();
+        let options = vec![
+            PermissionOption::new("allow-once", "Allow once", PermissionOptionKind::AllowOnce),
+            PermissionOption::new(
+                "allow-session",
+                "Allow for session",
+                PermissionOptionKind::AllowAlways,
+            ),
+        ];
+        let handle = tokio::spawn(async move { broker.ask(request(options)).await });
+        let frame = outbound.recv().await.unwrap();
+        pending
+            .resolve(
+                &frame.request_id,
+                InteractionAnswer::Decision {
+                    decision: PermissionDecision::AllowForSession,
+                },
+            )
+            .await;
+
+        assert_eq!(
+            handle.await.unwrap().outcome,
+            RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new("allow-session"))
         );
     }
 

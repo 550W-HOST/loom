@@ -25,7 +25,10 @@ import { Icon } from "@bb/shared-ui/icon";
 import { MarkdownPreview } from "@/components/ui/markdown-preview.js";
 import { getDetailScrollMaxHeightClass } from "@/components/ui/detail-scroll-size.js";
 import { UserQuestionAnswerForm } from "@/components/thread/user-questions/UserQuestionInteractionContent.js";
-import { useResolveThreadPendingInteraction } from "@/hooks/mutations/thread-interaction-mutations";
+import {
+  useCancelThreadPendingInteraction,
+  useResolveThreadPendingInteraction,
+} from "@/hooks/mutations/thread-interaction-mutations";
 import { PluginPendingInteractionComposer } from "@/components/plugin/PluginPendingInteractionComposer";
 import {
   classifyInteractionRequest,
@@ -246,6 +249,7 @@ function ApprovalPendingInteractionBanner({
   threadId,
 }: ApprovalPendingInteractionBannerProps) {
   const resolvePendingInteraction = useResolveThreadPendingInteraction();
+  const cancelPendingInteraction = useCancelThreadPendingInteraction();
   const isResolving = interaction.status === "resolving";
   const submittedDecision = approvalResolutionDecision(interaction.resolution);
   const view = useMemo(
@@ -258,8 +262,16 @@ function ApprovalPendingInteractionBanner({
         fallbackMessage: "Failed to resolve pending interaction",
         lifecycleOperation: "resolve_interaction",
       })
-    : null;
-  const submitDisabled = resolvePendingInteraction.isPending || isResolving;
+    : cancelPendingInteraction.error
+      ? getMutationErrorMessage({
+          error: cancelPendingInteraction.error,
+          fallbackMessage: "Failed to cancel pending interaction",
+        })
+      : null;
+  const submitDisabled =
+    resolvePendingInteraction.isPending ||
+    cancelPendingInteraction.isPending ||
+    isResolving;
 
   const submitDecision = (
     decision: PendingInteractionApprovalDecision,
@@ -273,6 +285,15 @@ function ApprovalPendingInteractionBanner({
         threadId,
         interactionId: interaction.id,
         resolution,
+      })
+      .catch(() => {});
+  };
+
+  const cancelInteraction = (): void => {
+    void cancelPendingInteraction
+      .mutateAsync({
+        threadId,
+        interactionId: interaction.id,
       })
       .catch(() => {});
   };
@@ -291,6 +312,8 @@ function ApprovalPendingInteractionBanner({
           disabled={submitDisabled}
           loadingDecision={isResolving ? submittedDecision : null}
           onDecide={submitDecision}
+          onCancel={cancelInteraction}
+          cancelLoading={cancelPendingInteraction.isPending}
           subjectKind={subject.kind}
         />
       }
@@ -330,17 +353,21 @@ function ThreadUserQuestionPendingInteractionBanner({
 }
 
 interface ApprovalDecisionButtonsProps {
+  cancelLoading?: boolean;
   decisions: readonly PendingInteractionApprovalDecision[];
   disabled: boolean;
   loadingDecision: PendingInteractionApprovalDecision | null;
+  onCancel?: () => void;
   onDecide: (decision: PendingInteractionApprovalDecision) => void;
   subjectKind: PendingInteractionApprovalSubject["kind"];
 }
 
 function ApprovalDecisionButtons({
+  cancelLoading = false,
   decisions,
   disabled,
   loadingDecision,
+  onCancel,
   onDecide,
   subjectKind,
 }: ApprovalDecisionButtonsProps) {
@@ -348,17 +375,37 @@ function ApprovalDecisionButtons({
     (left, right) =>
       APPROVAL_DECISION_ORDER[left] - APPROVAL_DECISION_ORDER[right],
   );
-  return denyFirst.map((decision, index) => (
-    <ApprovalDecisionButton
-      key={decision}
-      decision={decision}
-      disabled={disabled}
-      isLoading={loadingDecision === decision}
-      onClick={() => onDecide(decision)}
-      subjectKind={subjectKind}
-      className={index === 0 && decision === "deny" ? "mr-auto" : undefined}
-    />
-  ));
+  return (
+    <>
+      {denyFirst.map((decision, index) => (
+        <ApprovalDecisionButton
+          key={decision}
+          decision={decision}
+          disabled={disabled}
+          isLoading={loadingDecision === decision}
+          onClick={() => onDecide(decision)}
+          subjectKind={subjectKind}
+          className={
+            index === 0 && decision === "deny" ? "mr-auto" : undefined
+          }
+        />
+      ))}
+      {onCancel ? (
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          disabled={disabled}
+          onClick={onCancel}
+        >
+          {cancelLoading ? (
+            <Icon name="Spinner" className="size-3 animate-spin" />
+          ) : null}
+          Cancel
+        </Button>
+      ) : null}
+    </>
+  );
 }
 
 interface ApprovalDecisionButtonProps {

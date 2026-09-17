@@ -22,12 +22,25 @@ import type {
   ThreadFilesRawQuery,
   ThreadGetQuery,
   ThreadHostFileContentQuery,
+  ResolvePendingInteractionRequest,
   ThreadResponse,
+  ThreadPendingInteractionsResponse,
   ThreadStorageContentQuery,
+  ThreadTabsResponse,
   ThreadTimelineQuery,
   ThreadTimelineResponse,
+  UiPreferenceResponse,
+  UiPreferencesResponse,
+  UpdateThreadTabsRequest,
+  UpdateUiPreferenceRequest,
 } from "@bb/server-contract";
-import type { Environment, Host, ProjectExecutionDefaults } from "@bb/domain";
+import type {
+  Environment,
+  Host,
+  PendingInteraction,
+  ProjectExecutionDefaults,
+  ResolvedThreadExecutionOptions,
+} from "@bb/domain";
 
 /**
  * The request shape of every allowlisted route, derived from the exported
@@ -112,6 +125,12 @@ export const LOOM_API_REQUEST_SPECS = {
   },
   "system.version": { source: "query", query: {} as SystemVersionQuery },
   "system.config": { source: "none" },
+  "system.uiPreferences": { source: "none" },
+  "system.updateUiPreference": {
+    source: "json",
+    json: {} as UpdateUiPreferenceRequest,
+  },
+  "system.resetUiPreference": { source: "none" },
   // The contract declares `source: "form"` with a null schema. The transport
   // accepts the browser's wire-level FormData object rather than pretending a
   // plain record is FormData at the fetch boundary.
@@ -120,19 +139,34 @@ export const LOOM_API_REQUEST_SPECS = {
     form: {} as FormData,
   },
   "threads.create": { source: "json", json: {} as CreateThreadRequest },
+  "threads.defaultExecutionOptions": { source: "none" },
   "threads.get": { source: "query", query: {} as ThreadGetQuery },
   "threads.hostFileContent": {
     source: "query",
     query: {} as ThreadHostFileContentQuery,
   },
+  "threads.interaction": { source: "none" },
+  "threads.interactions": { source: "none" },
   "threads.rawFile": { source: "query", query: {} as ThreadFilesRawQuery },
+  "threads.read": { source: "none" },
+  "threads.resolveInteraction": {
+    source: "json",
+    json: {} as ResolvePendingInteractionRequest,
+  },
+  "threads.cancelInteraction": { source: "none" },
   "threads.send": { source: "json", json: {} as SendMessageRequest },
   "threads.storageContent": {
     source: "query",
     query: {} as ThreadStorageContentQuery,
   },
   "threads.storageFile": { source: "none" },
+  "threads.tabs": { source: "none" },
   "threads.timeline": { source: "query", query: {} as ThreadTimelineQuery },
+  "threads.unread": { source: "none" },
+  "threads.updateTabs": {
+    source: "json",
+    json: {} as UpdateThreadTabsRequest,
+  },
   "threads.worktreeFile": { source: "none" },
 } as const satisfies Record<string, LoomApiRequestSpec>;
 
@@ -164,14 +198,26 @@ export interface LoomApiResponseSpecs {
   "system.providerStates": SystemProviderStatesResponse;
   "system.version": SystemVersionResponse;
   "system.config": SystemConfigResponse;
+  "system.uiPreferences": UiPreferencesResponse;
+  "system.updateUiPreference": UiPreferenceResponse;
+  "system.resetUiPreference": UiPreferenceResponse;
   "system.voiceTranscription": { text: string };
   "threads.create": ThreadResponse;
+  "threads.defaultExecutionOptions": ResolvedThreadExecutionOptions | null;
   "threads.get": ThreadResponse;
   "threads.hostFileContent": unknown;
+  "threads.interaction": PendingInteraction;
+  "threads.interactions": ThreadPendingInteractionsResponse;
   "threads.rawFile": unknown;
+  "threads.read": ThreadResponse;
+  "threads.resolveInteraction": PendingInteraction;
+  "threads.cancelInteraction": PendingInteraction;
   "threads.send": SendMessageResponse;
   "threads.storageContent": unknown;
   "threads.storageFile": unknown;
+  "threads.tabs": ThreadTabsResponse;
   "threads.timeline": ThreadTimelineResponse;
+  "threads.unread": ThreadResponse;
+  "threads.updateTabs": ThreadTabsResponse;
   "threads.worktreeFile": unknown;
 }

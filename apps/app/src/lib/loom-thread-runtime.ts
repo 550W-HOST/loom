@@ -4,6 +4,7 @@ import {
   type Environment,
   type Host,
   type ProjectExecutionDefaults,
+  type ResolvedThreadExecutionOptions,
 } from "@bb/domain";
 import type {
   CreateThreadRequest,
@@ -14,8 +15,10 @@ import type {
   SystemEnvironmentProvidersQuery,
   ThreadGetQuery,
   ThreadResponse,
+  ThreadTabsResponse,
   ThreadTimelineQuery,
   ThreadTimelineResponse,
+  UpdateThreadTabsRequest,
 } from "@bb/server-contract";
 import { appSurfaceRequestInit } from "@/lib/app-surface";
 import {
@@ -383,14 +386,20 @@ export async function loomSendThreadMessage(
   });
 }
 
+function normalizeThreadProjectWithSidebar(
+  thread: ThreadResponse,
+  sidebar: SidebarBootstrapResponse,
+): ThreadResponse {
+  return thread.projectId === sidebar.personalProject.id
+    ? { ...thread, projectId: PERSONAL_PROJECT_ID }
+    : thread;
+}
+
 async function normalizeThreadProject(
   thread: ThreadResponse,
   signal?: AbortSignal,
 ): Promise<ThreadResponse> {
-  const sidebar = await readSidebar(signal);
-  return thread.projectId === sidebar.personalProject.id
-    ? { ...thread, projectId: PERSONAL_PROJECT_ID }
-    : thread;
+  return normalizeThreadProjectWithSidebar(thread, await readSidebar(signal));
 }
 
 export async function loomGetThread(request: {
@@ -414,6 +423,58 @@ export async function loomGetThreadTimeline(
     param: { id: threadId },
     query,
     signal,
+  });
+}
+
+export function loomThreadDefaultExecutionOptions(request: {
+  signal?: AbortSignal;
+  threadId: string;
+}): Promise<ResolvedThreadExecutionOptions | null> {
+  return loomApiJson("threads.defaultExecutionOptions", {
+    param: { id: request.threadId },
+    signal: request.signal,
+  });
+}
+
+export async function loomMarkThreadRead(request: {
+  threadId: string;
+}): Promise<ThreadResponse> {
+  // Resolve the personal-project identity before the mutating request. A
+  // sidebar failure must not make a successful read-state write look failed.
+  const sidebar = await readSidebar();
+  const thread = await loomApiJson("threads.read", {
+    param: { id: request.threadId },
+  });
+  return normalizeThreadProjectWithSidebar(thread, sidebar);
+}
+
+export async function loomMarkThreadUnread(request: {
+  threadId: string;
+}): Promise<ThreadResponse> {
+  const sidebar = await readSidebar();
+  const thread = await loomApiJson("threads.unread", {
+    param: { id: request.threadId },
+  });
+  return normalizeThreadProjectWithSidebar(thread, sidebar);
+}
+
+export function loomGetThreadTabs(request: {
+  signal?: AbortSignal;
+  threadId: string;
+}): Promise<ThreadTabsResponse> {
+  return loomApiJson("threads.tabs", {
+    param: { id: request.threadId },
+    signal: request.signal,
+  });
+}
+
+export function loomUpdateThreadTabs(
+  request: UpdateThreadTabsRequest & { threadId: string },
+): Promise<ThreadTabsResponse> {
+  const { threadId, ...json } = request;
+  return loomApiJson("threads.updateTabs", {
+    param: { id: threadId },
+    json,
   });
 }
 
