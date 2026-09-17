@@ -508,6 +508,10 @@ ${extraList}
 ${markdownCode("/api/v1/version")} 与契约的 ${markdownCode("/api/v1/system/version")} 路径不同；其余是当前
 域模型的早期端点。它们保持“契约外”是显式记录，不将其静默折算进 bb 覆盖率。
 
+${markdownCode("/api/v1/automations")}、${markdownCode("/api/v1/projects/{id}/automations")} 及其 pause/resume/run/runs 子路由是
+**loom-native 的 Automations 产品路由**，不是遗漏：bb 契约没有 automations 条目，
+契约来源是 W-610 导入的 ${markdownCode("ui/packages/automations/src/rpc-types.ts")}，见 ${markdownCode("docs/automations.md")}。
+
 ## 逐条清单
 
 状态含义：

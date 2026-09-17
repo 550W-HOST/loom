@@ -45,6 +45,7 @@ DomainSnapshot
   runs           in-flight RunRecord list
   settings       SettingsSnapshot { appearance, experiments, general,
                                     keyboard, ui_preferences }
+  automations    AutomationState { version, automations, runs, thread_marks }
 ```
 
 One atomic write covers both the entity view and its watermark, which is the
@@ -69,6 +70,16 @@ snapshot format. UI preference writes use one mutex-protected
 `expectedRevision` check and increment, then synchronously update the same
 snapshot file. They are not relay events and never belong to a thread or
 provider session.
+
+`automations` is additive in the same way, and for the same reason: an
+automation describes a schedule and a target, not a thread or a run in the log,
+so replaying the log over it would be meaningless. The payload carries its own
+version; its rows are stored as data and decoded per row, so a row written by
+another build is reported (`invalid-stored-data`) rather than failing the
+restore, and a snapshot from a build that predates the field restores exactly
+as that build would have described the workspace. Automations are written
+synchronously after each mutation, the way a settings write is. See
+[`automations.md`](automations.md).
 
 Both sets are stored **in every status**, not only the open ones. A sent queued
 message and a resolved interaction are part of what a client renders (a retry
@@ -195,3 +206,11 @@ then stale, never wrong, and a fresh snapshot re-establishes the baseline.
   environments and hosts with unchanged ids; an in-flight run is failed and the
   last status change on the wire agrees with the restored status; a log without a
   snapshot is rebuilt from it; a corrupt snapshot falls back to the log.
+- `automations::tests` — a row round-trips through its stored form, a row
+  missing an additive field still reads, a row whose stored discriminator
+  contradicts its JSON (or that parses at all) is reported as a read problem, a
+  newer payload version is left alone, a versionless one is upgraded in place,
+  and duplicate ids collapse deterministically.
+- `tests/automations_conformance.rs` — automations survive a durable restart,
+  a snapshot written before the field existed still loads, and a hand-damaged
+  payload is listed as problems rather than dropping rows.

@@ -363,6 +363,36 @@ pub fn router(state: AppState) -> Router {
             post(destroy_environment),
         )
         .route("/api/v1/runs", get(list_runs))
+        // Automations are loom-native: bb's contract has no route for them, so
+        // these are declared, and documented, as contract-external. The scope
+        // is project + automation id, which is what the contract's inputs name.
+        .route("/api/v1/automations", get(crate::automations::overview))
+        .route(
+            "/api/v1/projects/{id}/automations",
+            get(crate::automations::list).post(crate::automations::create),
+        )
+        .route(
+            "/api/v1/projects/{id}/automations/{automationId}",
+            get(crate::automations::get)
+                .patch(crate::automations::update)
+                .delete(crate::automations::delete),
+        )
+        .route(
+            "/api/v1/projects/{id}/automations/{automationId}/pause",
+            post(crate::automations::pause),
+        )
+        .route(
+            "/api/v1/projects/{id}/automations/{automationId}/resume",
+            post(crate::automations::resume),
+        )
+        .route(
+            "/api/v1/projects/{id}/automations/{automationId}/run",
+            post(crate::automations::run),
+        )
+        .route(
+            "/api/v1/projects/{id}/automations/{automationId}/runs",
+            get(crate::automations::runs),
+        )
         .route("/api/v1/hosts", get(list_hosts).post(register_host))
         .route(
             "/api/v1/hosts/join-codes",

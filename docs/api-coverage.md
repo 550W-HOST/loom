@@ -18,7 +18,7 @@
 
 - 契约快照：`fa1f44ebe9e5676004b669e48c99b3c7606466b6`，共 **167 条**路由。
 - 已决策不实现：**18 条**（desktopBrowsers 11 条，skill/CLI skill 7 条）。
-- 当前源码包含 **146 个 `.route` 声明、167 个 HTTP 方法入口**；其中只有 149 个匹配 bb 契约，另有 18 个契约外入口。契约当前没有 plugin/marketplace 路由条目。
+- 当前源码包含 **153 个 `.route` 声明、177 个 HTTP 方法入口**；其中只有 149 个匹配 bb 契约，另有 28 个契约外入口。契约当前没有 plugin/marketplace 路由条目。
 - 有效总数：**149 条**；当前已实现 **149 条**，待实现 **0 条**。
 - 当前有效覆盖率：**149/149（100.0%）**。
 - B0 是现有实现基线；B1-B10 是建议的后续交付批次，每批 14、14、14、14、10、14、14、14、17、13 条，均在 10-20 条范围内。
@@ -87,6 +87,16 @@ bb UI 用契约格式发起写请求时会 422，而 CI 与一致性测试全绿
 - `POST /api/v1/environments/{id}/provision`
 - `POST /api/v1/environments/{id}/destroy`
 - `GET /api/v1/runs`
+- `GET /api/v1/automations`
+- `GET /api/v1/projects/{id}/automations`
+- `POST /api/v1/projects/{id}/automations`
+- `GET /api/v1/projects/{id}/automations/{automationId}`
+- `PATCH /api/v1/projects/{id}/automations/{automationId}`
+- `DELETE /api/v1/projects/{id}/automations/{automationId}`
+- `POST /api/v1/projects/{id}/automations/{automationId}/pause`
+- `POST /api/v1/projects/{id}/automations/{automationId}/resume`
+- `POST /api/v1/projects/{id}/automations/{automationId}/run`
+- `GET /api/v1/projects/{id}/automations/{automationId}/runs`
 - `POST /api/v1/hosts`
 - `GET /api/v1/hosts/primary`
 - `POST /api/v1/hosts/{id}/heartbeat`
@@ -99,6 +109,10 @@ bb UI 用契约格式发起写请求时会 422，而 CI 与一致性测试全绿
 其中 `/health`, `/ws`, `/internal/ws`, `/api/v1/publish` 和 `/api/v1/replay` 属于 loom relay/control 面；
 `/api/v1/version` 与契约的 `/api/v1/system/version` 路径不同；其余是当前
 域模型的早期端点。它们保持“契约外”是显式记录，不将其静默折算进 bb 覆盖率。
+
+`/api/v1/automations`、`/api/v1/projects/{id}/automations` 及其 pause/resume/run/runs 子路由是
+**loom-native 的 Automations 产品路由**，不是遗漏：bb 契约没有 automations 条目，
+契约来源是 W-610 导入的 `ui/packages/automations/src/rpc-types.ts`，见 `docs/automations.md`。
 
 ## 逐条清单
 
