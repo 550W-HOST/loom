@@ -216,6 +216,25 @@
         "apps/app/vite.dev.config.ts",
         "apps/app/vitest.loom.config.ts"
       ]
+    },
+    {
+      "issue": "W-585",
+      "owner": "PuQing",
+      "reason": "Connect the product app to durable ACP permission interactions through typed list, get, resolve, and cancel operations.",
+      "baselineCommit": "24ef770",
+      "paths": [
+        "apps/app/src/components/thread/pending-interactions/ThreadPendingInteractionBanner.test.tsx",
+        "apps/app/src/hooks/mutations/thread-interaction-mutations.test.tsx",
+        "apps/app/src/hooks/queries/thread-queries.test.tsx",
+        "apps/app/src/hooks/queries/thread-queries.ts",
+        "apps/app/src/lib/api-server.ts",
+        "apps/app/src/lib/api-server.type-tests.ts",
+        "apps/app/src/lib/loom-api-request-spec.ts",
+        "apps/app/src/lib/loom-api-routes.ts",
+        "apps/app/src/lib/loom-interactions.ts",
+        "apps/app/src/lib/sdk.ts",
+        "apps/app/src/loom/loom-interactions.test.ts"
+      ]
     }
   ]
 }
