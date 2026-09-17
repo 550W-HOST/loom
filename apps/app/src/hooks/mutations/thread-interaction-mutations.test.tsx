@@ -6,14 +6,22 @@ import type { ResolvePendingInteractionRequest } from "@bb/server-contract";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createQueryClientTestHarness } from "@/test/queryClientTestHarness";
 import { threadPendingInteractionsQueryKey } from "../queries/query-keys";
-import { useResolveThreadPendingInteraction } from "./thread-interaction-mutations";
+import {
+  useCancelThreadPendingInteraction,
+  useResolveThreadPendingInteraction,
+} from "./thread-interaction-mutations";
 
 const mocks = vi.hoisted(() => ({
+  cancel: vi.fn(),
   resolve: vi.fn(),
 }));
 
 vi.mock("@/lib/sdk", () => ({
-  sdk: { threads: { interactions: { resolve: mocks.resolve } } },
+  sdk: {
+    threads: {
+      interactions: { cancel: mocks.cancel, resolve: mocks.resolve },
+    },
+  },
 }));
 
 function interaction(status: PendingInteraction["status"]): PendingInteraction {
@@ -80,6 +88,33 @@ describe("thread interaction mutations", () => {
     expect(mocks.resolve).toHaveBeenCalledWith({
       interactionId: "pint_1",
       resolution,
+      threadId: "thr_1",
+    });
+    expect(invalidateQueries).toHaveBeenCalledWith(
+      expect.objectContaining({
+        queryKey: threadPendingInteractionsQueryKey("thr_1"),
+      }),
+    );
+  });
+
+  it("cancels through the typed cancel operation and invalidates the interaction-owned views", async () => {
+    const cancelled = interaction("interrupted");
+    mocks.cancel.mockResolvedValue(cancelled);
+    const { queryClient, wrapper } = createQueryClientTestHarness();
+    const invalidateQueries = vi.spyOn(queryClient, "invalidateQueries");
+    const { result } = renderHook(() => useCancelThreadPendingInteraction(), {
+      wrapper,
+    });
+
+    await act(async () => {
+      await result.current.mutateAsync({
+        interactionId: "pint_1",
+        threadId: "thr_1",
+      });
+    });
+
+    expect(mocks.cancel).toHaveBeenCalledWith({
+      interactionId: "pint_1",
       threadId: "thr_1",
     });
     expect(invalidateQueries).toHaveBeenCalledWith(

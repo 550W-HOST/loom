@@ -48,6 +48,11 @@ vi.mock("@/hooks/mutations/thread-runtime-mutations", () => ({
 }));
 
 vi.mock("@/hooks/mutations/thread-interaction-mutations", () => ({
+  useCancelThreadPendingInteraction: () => ({
+    mutateAsync: vi.fn(async () => ({})),
+    isPending: false,
+    error: null,
+  }),
   useResolveThreadPendingInteraction: () => ({
     mutateAsync: vi.fn(async () => ({})),
     isPending: false,

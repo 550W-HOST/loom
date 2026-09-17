@@ -19,6 +19,7 @@ import { ThreadPendingInteractionBanner } from "./ThreadPendingInteractionBanner
 import { makePluginRegistrationSet as registrationSet } from "@/test/fixtures/plugins";
 
 const mocks = vi.hoisted(() => ({
+  cancelMutateAsync: vi.fn(async () => ({})),
   resolveMutateAsync: vi.fn(async () => ({})),
   stopMutateAsync: vi.fn(async () => undefined),
 }));
@@ -38,6 +39,11 @@ vi.mock(
 );
 
 vi.mock("@/hooks/mutations/thread-interaction-mutations", () => ({
+  useCancelThreadPendingInteraction: () => ({
+    mutateAsync: mocks.cancelMutateAsync,
+    isPending: false,
+    error: null,
+  }),
   useResolveThreadPendingInteraction: () => ({
     mutateAsync: mocks.resolveMutateAsync,
     isPending: false,
@@ -179,6 +185,7 @@ afterEach(() => {
   resetPluginSlotStoreForTest();
   resetPluginLogoStoreForTest();
   resetAllCrashedPluginSlotsForTest();
+  mocks.cancelMutateAsync.mockClear();
   mocks.resolveMutateAsync.mockClear();
   mocks.stopMutateAsync.mockClear();
 });
@@ -229,6 +236,12 @@ describe("ThreadPendingInteractionBanner tool-use approval", () => {
       screen.getByRole("button", { name: "Allow for session" }),
     ).toBeTruthy();
     expect(screen.getByRole("button", { name: "Deny" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(mocks.cancelMutateAsync).toHaveBeenLastCalledWith({
+      interactionId: "pint_permission_grant",
+      threadId: "thr_1",
+    });
     fireEvent.click(screen.getByRole("button", { name: "Deny" }));
     expect(mocks.resolveMutateAsync).toHaveBeenLastCalledWith(
       expect.objectContaining({
