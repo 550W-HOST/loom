@@ -1,27 +1,27 @@
 {
   "format": "loom.app-port-plan-summary/v2",
   "plan": "ui/app-port-plan.json",
-  "planBytes": 1959209,
+  "planBytes": 1959832,
   "source": {
     "root": "apps/app/src",
     "trackedFiles": 1375,
     "disposition": "source-port",
     "baselineGitTree": "8ba6eb6f3d2f67f8ba2703f1fd0c123f788c6d52",
-    "localGitTree": "32b28a564d7389ed14f0b56a7075146636e1660b"
+    "localGitTree": "94e08aab0b39096adbd186d9329e2673c75e2aed"
   },
   "summary": {
     "nodes": 1375,
-    "runtimeReachable": 682,
-    "runtimeCompileReachable": 694,
-    "runtimeEmittedReachable": 682,
+    "runtimeReachable": 687,
+    "runtimeCompileReachable": 699,
+    "runtimeEmittedReachable": 687,
     "dispositions": {
-      "retain-verbatim": 643,
+      "retain-verbatim": 648,
       "adapt-boundary": 27,
       "delete-unsupported": 0,
-      "verification-only": 677,
+      "verification-only": 672,
       "asset-build": 28
     },
-    "edges": 8226,
+    "edges": 8228,
     "blockers": {
       "runtime": 3,
       "test": 222,
@@ -31,10 +31,10 @@
     "workspacePackages": 124
   },
   "dispositions": {
-    "retain-verbatim": 643,
+    "retain-verbatim": 648,
     "adapt-boundary": 27,
     "delete-unsupported": 0,
-    "verification-only": 677,
+    "verification-only": 672,
     "asset-build": 28
   },
   "exceptions": {
@@ -2358,11 +2358,6 @@
         "reasonCode": "test-or-story-root"
       },
       {
-        "path": "src/hooks/buffered-environment-invalidator.ts",
-        "disposition": "verification-only",
-        "reasonCode": "test-only-reachable"
-      },
-      {
         "path": "src/hooks/cache-effect-types.ts",
         "disposition": "retain-verbatim",
         "reasonCode": "runtime-graph-node"
@@ -2381,16 +2376,6 @@
         "path": "src/hooks/cache-owners/query-cache.test.ts",
         "disposition": "verification-only",
         "reasonCode": "test-or-story-root"
-      },
-      {
-        "path": "src/hooks/cache-owners/realtime-cache-registry.ts",
-        "disposition": "verification-only",
-        "reasonCode": "test-only-reachable"
-      },
-      {
-        "path": "src/hooks/cache-owners/resource-route-owner.ts",
-        "disposition": "verification-only",
-        "reasonCode": "unreachable-source-review"
       },
       {
         "path": "src/hooks/cache-owners/sidebar-thread-placeholder.test.ts",
@@ -2556,11 +2541,6 @@
         "path": "src/hooks/realtime-cache-effects.test.ts",
         "disposition": "verification-only",
         "reasonCode": "test-or-story-root"
-      },
-      {
-        "path": "src/hooks/realtime-cache-effects.ts",
-        "disposition": "verification-only",
-        "reasonCode": "test-only-reachable"
       },
       {
         "path": "src/hooks/resolvePermissionModeSelection.test.ts",
@@ -2731,11 +2711,6 @@
         "path": "src/hooks/useUpdateInventory.test.ts",
         "disposition": "verification-only",
         "reasonCode": "test-or-story-root"
-      },
-      {
-        "path": "src/hooks/useWebSocket.ts",
-        "disposition": "verification-only",
-        "reasonCode": "unreachable-source-review"
       },
       {
         "path": "src/hooks/voice-input-support.test.ts",
@@ -3728,13 +3703,13 @@
     }
   },
   "compilerConsistency": {
-    "compilerSpecifiers": 8286,
-    "graphSpecifiers": 8286,
+    "compilerSpecifiers": 8288,
+    "graphSpecifiers": 8288,
     "missing": [],
     "extra": [],
     "preProcessFileParity": {
-      "compilerLiteralSpecifiers": 8285,
-      "preProcessFileSpecifiers": 8285,
+      "compilerLiteralSpecifiers": 8287,
+      "preProcessFileSpecifiers": 8287,
       "missing": [],
       "extra": []
     }
@@ -3742,8 +3717,8 @@
   "parsers": {
     "typescript": {
       "files": 1368,
-      "specifiers": 8286,
-      "preProcessFileSpecifiers": 8285
+      "specifiers": 8288,
+      "preProcessFileSpecifiers": 8287
     },
     "css": {
       "files": 4,
@@ -3759,14 +3734,14 @@
     "assigned": 1375,
     "missing": [],
     "duplicates": [],
-    "crossStageEdges": 2955,
+    "crossStageEdges": 2954,
     "missingCrossStageEdges": 0,
-    "crossChunkEdges": 2955,
-    "crossChunkOccurrences": 2968,
-    "crossIssueEdges": 1346,
-    "crossIssueOccurrences": 1353,
-    "crossIssueLogicalEdges": 1337,
-    "crossIssueLogicalOccurrences": 1344,
+    "crossChunkEdges": 2954,
+    "crossChunkOccurrences": 2967,
+    "crossIssueEdges": 1339,
+    "crossIssueOccurrences": 1346,
+    "crossIssueLogicalEdges": 1330,
+    "crossIssueLogicalOccurrences": 1337,
     "missingCrossIssueBatchDependencies": 0
   },
   "batchPlan": {
@@ -3774,7 +3749,7 @@
     "executable": false,
     "schedulingUnits": "issueStagesWithSCCConflicts",
     "atomicStageCount": 2,
-    "sccCount": 4,
+    "sccCount": 6,
     "atomicStages": [
       {
         "issue": "W-603",
@@ -3801,10 +3776,10 @@
         "cyclic": true
       }
     ],
-    "crossIssueEdges": 1346,
-    "crossIssueLogicalEdges": 1337,
-    "crossIssueOccurrences": 1353,
-    "crossIssueLogicalOccurrences": 1344,
+    "crossIssueEdges": 1339,
+    "crossIssueLogicalEdges": 1330,
+    "crossIssueOccurrences": 1346,
+    "crossIssueLogicalOccurrences": 1337,
     "crossIssueCycles": 0,
     "crossStageConflict": true
   },
@@ -3898,7 +3873,6 @@
         "W-603-04",
         "W-603-05",
         "W-603-06",
-        "W-604-04",
         "W-604-06"
       ],
       "W-604-06": [
@@ -3927,12 +3901,9 @@
       {
         "component": 1,
         "batchIds": [
-          "W-604-01",
-          "W-604-04",
-          "W-604-05",
-          "W-604-06"
+          "W-604-01"
         ],
-        "cyclic": true
+        "cyclic": false
       },
       {
         "component": 2,
@@ -3947,12 +3918,29 @@
           "W-604-03"
         ],
         "cyclic": false
+      },
+      {
+        "component": 4,
+        "batchIds": [
+          "W-604-04"
+        ],
+        "cyclic": false
+      },
+      {
+        "component": 5,
+        "batchIds": [
+          "W-604-05",
+          "W-604-06"
+        ],
+        "cyclic": true
       }
     ],
     "dependencyOrder": [
       0,
+      5,
       1,
       3,
+      4,
       2
     ]
   },
@@ -4059,11 +4047,10 @@
         "executable": false,
         "fileCount": 120,
         "dispositions": [
-          "adapt-boundary",
           "asset-build",
           "retain-verbatim"
         ],
-        "dependencyCount": 141,
+        "dependencyCount": 144,
         "dependsOnBatchIds": [
           "W-603-01",
           "W-603-02",
@@ -4072,7 +4059,7 @@
           "W-603-06"
         ],
         "cutPoints": [
-          "src/hooks/useBrowserDimmingModal.ts"
+          "preserve-product-composition"
         ],
         "verificationCommands": [
           "pnpm run port-plan:check",
@@ -4089,7 +4076,7 @@
           "adapt-boundary",
           "retain-verbatim"
         ],
-        "dependencyCount": 85,
+        "dependencyCount": 89,
         "dependsOnBatchIds": [
           "W-603-01",
           "W-603-02",
@@ -4098,6 +4085,7 @@
           "W-603-06"
         ],
         "cutPoints": [
+          "src/hooks/useBrowserDimmingModal.ts",
           "src/lib/browser-storage.ts",
           "src/lib/browser-url.ts",
           "src/lib/browser-view-bounds-sync.ts",
@@ -4116,12 +4104,12 @@
         "id": "W-603-06",
         "kind": "reviewChunk",
         "executable": false,
-        "fileCount": 98,
+        "fileCount": 103,
         "dispositions": [
           "adapt-boundary",
           "retain-verbatim"
         ],
-        "dependencyCount": 255,
+        "dependencyCount": 254,
         "dependsOnBatchIds": [
           "W-603-01",
           "W-603-02",
@@ -4252,7 +4240,7 @@
         "dispositions": [
           "verification-only"
         ],
-        "dependencyCount": 207,
+        "dependencyCount": 206,
         "dependsOnBatchIds": [
           "W-603-01",
           "W-603-02",
@@ -4281,14 +4269,13 @@
         "dispositions": [
           "verification-only"
         ],
-        "dependencyCount": 186,
+        "dependencyCount": 185,
         "dependsOnBatchIds": [
           "W-603-01",
           "W-603-03",
           "W-603-04",
           "W-603-05",
           "W-603-06",
-          "W-604-04",
           "W-604-06"
         ],
         "cutPoints": [
@@ -4305,11 +4292,11 @@
         "id": "W-604-06",
         "kind": "reviewChunk",
         "executable": false,
-        "fileCount": 77,
+        "fileCount": 72,
         "dispositions": [
           "verification-only"
         ],
-        "dependencyCount": 154,
+        "dependencyCount": 151,
         "dependsOnBatchIds": [
           "W-603-01",
           "W-603-02",
@@ -4386,9 +4373,9 @@
     {
       "name": "@bb/domain",
       "declaredAs": "dependencies",
-      "actualImports": 363,
-      "runtimeImports": 196,
-      "runtimeValueImports": 67,
+      "actualImports": 364,
+      "runtimeImports": 197,
+      "runtimeValueImports": 68,
       "runtimeTypeImports": 129,
       "verificationValueImports": 50,
       "verificationTypeImports": 112,

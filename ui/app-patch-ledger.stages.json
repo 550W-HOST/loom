@@ -202,6 +202,20 @@
         "apps/app/src/lib/loom-thread-runtime.ts",
         "apps/app/src/loom/loom-thread-runtime.test.ts"
       ]
+    },
+    {
+      "issue": "W-587",
+      "owner": "PuQing",
+      "reason": "Wire the product and SDK to loom's typed public realtime protocol while preserving the versioned daemon boundary.",
+      "baselineCommit": "1f4ef9c",
+      "paths": [
+        "apps/app/src/lib/ws.test.ts",
+        "apps/app/src/lib/ws.ts",
+        "apps/app/src/loom/loom-native-boundaries.test.ts",
+        "apps/app/src/main.tsx",
+        "apps/app/vite.dev.config.ts",
+        "apps/app/vitest.loom.config.ts"
+      ]
     }
   ]
 }

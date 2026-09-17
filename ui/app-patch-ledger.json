@@ -282,12 +282,12 @@
       },
       "local": {
         "path": "apps/app/src/loom/loom-native-boundaries.test.ts",
-        "sha256": "eab83b1fb94f41d3bcc9fbd18e5c426e099a033fa11d3df90c8c8ad44810c6f4",
+        "sha256": "3a20c9a6248d021dda1d1f59f50eb5633b871296b0c10b088d13935e82cdc9cf",
         "mode": "100644"
       },
-      "issue": "W-593",
+      "issue": "W-593+W-587",
       "owner": "PuQing",
-      "reason": "Add the loom-native same-origin HTTP client, typed request spec, query/cache/router boundary, or shell verification that W-593 owns."
+      "reason": "Add the loom-native same-origin HTTP client, typed request spec, query/cache/router boundary, or shell verification that W-593 owns. W-587 additionally wires typed public realtime and its product-level verification."
     },
     {
       "kind": "add",
@@ -458,12 +458,12 @@
       },
       "local": {
         "path": "apps/app/vitest.loom.config.ts",
-        "sha256": "47b8abba5431d4c1db97ce1c080b88ab42a34f03b5dbf48bfd4797ce296009f2",
+        "sha256": "17baa389ce08b794f0eea095b44b5f174c8a580f9fcfb33add2f804679b50258",
         "mode": "100644"
       },
-      "issue": "W-604+W-593",
+      "issue": "W-604+W-593+W-587",
       "owner": "PuQing",
-      "reason": "W-604 introduced this path in the source port; W-593 changed it again for the same-origin typed HTTP boundary (api-server seam, product composition, or the collected app test set). Both stages are recorded here so neither audit trail is lost."
+      "reason": "W-604 introduced this path in the source port; W-593 changed it again for the same-origin typed HTTP boundary (api-server seam, product composition, or the collected app test set). Both stages are recorded here so neither audit trail is lost. W-587 additionally wires typed public realtime and its product-level verification."
     },
     {
       "kind": "delete",
@@ -3348,18 +3348,50 @@
     {
       "kind": "modify",
       "upstream": {
+        "path": "apps/app/src/lib/ws.test.ts",
+        "sha256": "d2dacd6e444435b7b29dfbbded4f071349c56f8c0a9f3350f764e9b2e7c896ad",
+        "mode": "100644"
+      },
+      "local": {
+        "path": "apps/app/src/lib/ws.test.ts",
+        "sha256": "3fa5f85da12aa0b5e6e3386e4ed5bc4f24ac66155dc72ea9e2371df858ea453f",
+        "mode": "100644"
+      },
+      "issue": "W-587",
+      "owner": "PuQing",
+      "reason": "Negotiate and verify loom's typed public realtime protocol in the product app."
+    },
+    {
+      "kind": "modify",
+      "upstream": {
+        "path": "apps/app/src/lib/ws.ts",
+        "sha256": "d54d90917a98648f693f842202dfae2c7492f47da06a55f70f42ee3f402dfd6a",
+        "mode": "100644"
+      },
+      "local": {
+        "path": "apps/app/src/lib/ws.ts",
+        "sha256": "afa43ecdbc17e03c2cdf9b3a1043fc08d51f42df52fb4fe4cf50108f6572bec8",
+        "mode": "100644"
+      },
+      "issue": "W-587",
+      "owner": "PuQing",
+      "reason": "Negotiate and verify loom's typed public realtime protocol in the product app."
+    },
+    {
+      "kind": "modify",
+      "upstream": {
         "path": "apps/app/src/main.tsx",
         "sha256": "f0d24345c49680dae06baea5c96ed91710ba2d0235e47e6b3a717e3f4c0afb8d",
         "mode": "100644"
       },
       "local": {
         "path": "apps/app/src/main.tsx",
-        "sha256": "59689827082a73853db50daa123894365fb42ab1f39cebeddaf9798e22a30cf7",
+        "sha256": "f9cb738a91501ef4e688f904f7efa4a75571cd48980598440afbfc3b98d1fe25",
         "mode": "100644"
       },
-      "issue": "W-593",
+      "issue": "W-593+W-587",
       "owner": "PuQing",
-      "reason": "Add the loom-native same-origin HTTP client, typed request spec, query/cache/router boundary, or shell verification that W-593 owns."
+      "reason": "Add the loom-native same-origin HTTP client, typed request spec, query/cache/router boundary, or shell verification that W-593 owns. W-587 additionally wires typed public realtime and its product-level verification."
     },
     {
       "kind": "modify",
@@ -3504,6 +3536,22 @@
       "issue": "W-604",
       "owner": "PuQing",
       "reason": "Adapt pinned bb source to loom's browser-safe composition while preserving the composer-first shell, thread workspace, and Automations."
+    },
+    {
+      "kind": "modify",
+      "upstream": {
+        "path": "apps/app/vite.dev.config.ts",
+        "sha256": "c1dea3a9c23518b31a3a3a6fb3311f754e4e6e7b3ed4f133bc9fab2695f9cb74",
+        "mode": "100644"
+      },
+      "local": {
+        "path": "apps/app/vite.dev.config.ts",
+        "sha256": "7c887a610161cdd5d8f687d54c9b96b704a3d5648d8a9dd544e5c433c5e0a5c1",
+        "mode": "100644"
+      },
+      "issue": "W-587",
+      "owner": "PuQing",
+      "reason": "Negotiate and verify loom's typed public realtime protocol in the product app."
     }
   ]
 }
