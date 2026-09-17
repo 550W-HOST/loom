@@ -18,7 +18,7 @@ use loom_relay::{now_ms, Relay, Result as RelayResult, Scope};
 use tokio::sync::broadcast;
 
 use crate::artifacts::Artifacts;
-use crate::automations::AutomationsRegistry;
+use crate::automations::{self, AutomationsRegistry};
 use crate::domain_state::DomainRegistry;
 use crate::file_previews::FilePreviewRegistry;
 use crate::host_files::HostFileBroker;
@@ -83,6 +83,11 @@ pub struct AppConfig {
     /// disables the background sweep, which is what unit tests want when they
     /// drive reconciliation explicitly.
     pub reconcile_interval: Duration,
+    /// How often the automation scheduler looks for due windows.
+    ///
+    /// `Duration::ZERO` disables it, which is what a test wants when it drives
+    /// the sweep itself. The default matches the reference sweep's cadence.
+    pub schedule_interval: Duration,
     /// How often a domain snapshot is written to disk.
     ///
     /// Only meaningful when [`AppConfig::backend_path`] names a data
@@ -122,6 +127,7 @@ impl Default for AppConfig {
             run_timeout: Duration::from_secs(30 * 60),
             host_stale_after: Duration::from_secs(60),
             reconcile_interval: Duration::from_secs(5),
+            schedule_interval: Duration::from_secs(10),
             snapshot_interval: Duration::from_secs(30),
             provider_spec: ProviderSpec::pi(),
             ui_dir: None,
@@ -194,6 +200,7 @@ pub struct AppState {
     provider_spec: ProviderSpec,
     reconcile_stop: Arc<AtomicBool>,
     snapshot_stop: Arc<AtomicBool>,
+    schedule_stop: Arc<AtomicBool>,
     snapshot_lock: Arc<Mutex<()>>,
     snapshot_root: Option<PathBuf>,
     started_at: Instant,
@@ -292,6 +299,7 @@ impl AppState {
             provider_spec: config.provider_spec,
             reconcile_stop: Arc::new(AtomicBool::new(false)),
             snapshot_stop: Arc::new(AtomicBool::new(false)),
+            schedule_stop: Arc::new(AtomicBool::new(false)),
             snapshot_lock: Arc::new(Mutex::new(())),
             snapshot_root,
             started_at: Instant::now(),
@@ -310,6 +318,11 @@ impl AppState {
         }
         if !config.snapshot_interval.is_zero() && state.snapshot_root.is_some() {
             state.spawn_snapshotter(config.snapshot_interval);
+        }
+        // The scheduler is what actually fires automations. Tests disable it and
+        // call `sweep_automations` themselves.
+        if !config.schedule_interval.is_zero() {
+            state.spawn_scheduler(config.schedule_interval);
         }
 
         Ok(state)
@@ -333,6 +346,45 @@ impl AppState {
                 state.reconcile_runs(now_ms());
             }
         });
+    }
+
+    /// Starts the automation scheduler.
+    fn spawn_scheduler(&self, interval: Duration) {
+        let state = self.clone();
+        let stop = Arc::clone(&self.schedule_stop);
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(interval);
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            // The first tick fires immediately, and it should: unlike the
+            // reconciler this one has real work to do on a freshly built
+            // server, namely a window that arrived while the process was down.
+            loop {
+                ticker.tick().await;
+                if stop.load(Ordering::Relaxed) {
+                    return;
+                }
+                state.sweep_automations(now_ms());
+            }
+        });
+    }
+
+    /// One automation sweep, persisted when it changed anything.
+    ///
+    /// The write is synchronous and conditional for the same reason a settings
+    /// write is: the claim that queues a run must be on disk before the run can
+    /// be observed, or a restart would find the window due again and fire it
+    /// twice.
+    pub fn sweep_automations(&self, now_ms: u64) -> automations::SweepReport {
+        let report = self.automations.sweep_due(now_ms);
+        if report.changed() {
+            if let Err(error) = self.snapshot() {
+                eprintln!("loom-server: persisting scheduled automation runs failed: {error}");
+            }
+        }
+        if let Some(diagnostic) = report.diagnostic() {
+            eprintln!("loom-server: {diagnostic}");
+        }
+        report
     }
 
     /// Starts the periodic domain-snapshot writer.
@@ -472,6 +524,14 @@ impl AppState {
                 }
                 if let Some(automations) = snapshot.automations {
                     self.automations.restore(automations);
+                }
+                let interrupted = self.automations.fail_interrupted_runs(now);
+                if !interrupted.is_empty() {
+                    eprintln!(
+                        "loom-server: failed {} automation run(s) that were in flight when the \
+                         server stopped",
+                        interrupted.len()
+                    );
                 }
                 let replayed = self.replay_domain_events(watermark);
                 let failed = self.fail_in_flight_runs(runs, now);
@@ -772,6 +832,7 @@ impl AppState {
     pub fn shutdown(&self) {
         self.reconcile_stop.store(true, Ordering::Relaxed);
         self.snapshot_stop.store(true, Ordering::Relaxed);
+        self.schedule_stop.store(true, Ordering::Relaxed);
         if let Err(error) = self.snapshot() {
             eprintln!("loom-server: writing the domain snapshot on shutdown failed: {error}");
         }

@@ -11,20 +11,22 @@
 //! # Scope of this type today
 //!
 //! The types here are the whole **contract** for automations — the shapes the
-//! HTTP surface projects — but they deliberately say nothing about *when* a
-//! trigger fires or *how* an execution is carried out. Those are the
-//! scheduler's and the execution plane's jobs; this module owns invariants
-//! only:
+//! HTTP surface projects — and they own when a trigger is *due*, without
+//! owning how a run is carried out:
 //!
 //! * [`AutomationTrigger::next_run_at_after`] answers "when is this due next"
-//!   for a `once` trigger, and returns `None` for a `schedule` because
-//!   evaluating a cron expression in a timezone needs a scheduler that does
-//!   not exist yet. A schedule's `nextRunAt` stays `null` until then rather
-//!   than being filled with a time the server would not honour.
-//! * [`Automation::start_manual_run`] creates the history row a manual trigger
-//!   produces and returns it, without starting anything: execution is the next
-//!   stage's, and a run this server created stays `running` until the execution
-//!   plane reports a terminal state for it.
+//!   for both kinds of trigger. A `once` trigger is its own answer; a
+//!   `schedule` is evaluated by [`crate::schedule`], in the timezone the caller
+//!   resolved — the domain never reads a file, so the zone is passed in. The
+//!   answer is `None` when nothing is armed: a paused automation, a schedule
+//!   that can never match, or one whose zone the caller could not resolve (a
+//!   server with no timezone database).
+//! * [`Automation::claim_scheduled_run`] is what a due window does to its
+//!   automation — a run queued, the counters advanced, and the schedule moved
+//!   past the window — and [`Automation::record_run_outcome`] is what the end
+//!   of a run does to it, including the retry and the third-failure pause.
+//!   Neither is execution: a run this server queues stays in flight until the
+//!   execution plane starts it and reports a terminal state.
 //!
 //! # Validation
 //!
@@ -42,6 +44,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::DomainError;
 use crate::id::{AutomationId, AutomationRunId, EnvironmentId, HostId, ProjectId, ThreadId};
 use crate::queue::ServiceTier;
+use crate::schedule::{self, Schedule};
 use crate::thread::ReasoningLevel;
 
 /// Longest accepted automation name (`AUTOMATION_NAME_MAX_LENGTH`).
@@ -64,6 +67,21 @@ pub const AUTOMATION_SCRIPT_TIMEOUT_MAX_MS: u64 = 900_000;
 pub const AUTOMATION_RUNS_LIMIT_DEFAULT: u32 = 50;
 /// Largest run-list page size (`AUTOMATION_RUNS_LIMIT_MAX`).
 pub const AUTOMATION_RUNS_LIMIT_MAX: u32 = 200;
+/// How many runs of one automation may fail in a row before it pauses itself.
+pub const AUTOMATION_MAX_CONSECUTIVE_FAILURES: u32 = 3;
+/// The first retry delay after a scheduled run fails.
+pub const AUTOMATION_RETRY_BASE_MS: u64 = 30_000;
+
+/// How long to wait before retrying a scheduled run that has failed `failures`
+/// times in a row: the base delay doubled once per consecutive failure.
+///
+/// A retry is a *shortened* wait for the next attempt, not a replacement for
+/// the schedule: the next scheduled window is computed independently when the
+/// retry is claimed, so a burst of retries cannot shift the cadence.
+pub fn automation_retry_delay_ms(failures: u32) -> u64 {
+    let exponent = failures.saturating_sub(1).min(16);
+    AUTOMATION_RETRY_BASE_MS.saturating_mul(1u64 << exponent)
+}
 
 /// The permission policy an automation's agent run requests.
 ///
@@ -128,6 +146,79 @@ pub enum AutomationRunStatus {
     Failed,
     /// Deliberately not executed, with a [`AutomationRun::skip_reason`].
     Skipped,
+}
+
+/// The run lifecycle this server actually stores, which is wider than the four
+/// states the contract names.
+///
+/// Two of them have no contract spelling:
+///
+/// * **`Pending`** — an execution intent that has been recorded and not yet
+///   claimed. From a client's point of view it is in flight, so it projects as
+///   `running`; the distinction matters to the execution plane and to
+///   single-flight, not to a reader of the history.
+/// * **`Cancelled`** — abandoned before it started, with a reason (pausing an
+///   automation cancels what it had queued). It is not a failure and must not
+///   feed the retry policy, so it projects as `skipped` with that reason.
+///
+/// [`AutomationRunState::status`] is the only place that mapping lives.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AutomationRunState {
+    /// Queued: nothing has started it yet.
+    Pending,
+    /// Claimed by the execution plane.
+    Running,
+    /// Finished successfully.
+    Succeeded,
+    /// Finished with an error.
+    Failed,
+    /// Deliberately not executed.
+    Skipped,
+    /// Abandoned before it started.
+    Cancelled,
+}
+
+impl AutomationRunState {
+    /// The contract state this one is reported as.
+    pub const fn status(self) -> AutomationRunStatus {
+        match self {
+            Self::Pending | Self::Running => AutomationRunStatus::Running,
+            Self::Succeeded => AutomationRunStatus::Succeeded,
+            Self::Failed => AutomationRunStatus::Failed,
+            Self::Skipped | Self::Cancelled => AutomationRunStatus::Skipped,
+        }
+    }
+
+    /// Whether a run in this state still counts as work in flight.
+    pub const fn is_in_flight(self) -> bool {
+        matches!(self, Self::Pending | Self::Running)
+    }
+
+    /// The token the stored row carries.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Running => "running",
+            Self::Succeeded => "succeeded",
+            Self::Failed => "failed",
+            Self::Skipped => "skipped",
+            Self::Cancelled => "cancelled",
+        }
+    }
+
+    /// Reads back a stored token.
+    pub fn from_token(token: &str) -> Option<Self> {
+        match token {
+            "pending" => Some(Self::Pending),
+            "running" => Some(Self::Running),
+            "succeeded" => Some(Self::Succeeded),
+            "failed" => Some(Self::Failed),
+            "skipped" => Some(Self::Skipped),
+            "cancelled" => Some(Self::Cancelled),
+            _ => None,
+        }
+    }
 }
 
 /// What asked for the run.
@@ -212,14 +303,21 @@ impl AutomationTrigger {
 
     /// The instant this trigger is next due at, once `enabled` is applied.
     ///
-    /// `None` means "not scheduled", which covers both a paused automation and
-    /// a cron schedule this build cannot evaluate: the field is the scheduler's
-    /// answer and a guess would be indistinguishable from a real one. A `once`
-    /// trigger is its own answer, so it is reported exactly.
-    pub fn next_run_at_after(&self, enabled: bool, _now_ms: u64) -> Option<u64> {
+    /// `None` means "not scheduled", which covers a paused or disabled
+    /// automation and a schedule that has no next occurrence at all
+    /// (`0 0 30 2 *` names a date that never arrives). A schedule is read in the
+    /// zone it names, so the answer is that zone's wall clock, not the
+    /// server's.
+    pub fn next_run_at_after(&self, enabled: bool, now_ms: u64) -> Option<u64> {
+        if !enabled {
+            return None;
+        }
         match self {
-            Self::Schedule { .. } => None,
-            Self::Once { run_at } => enabled.then_some(*run_at),
+            Self::Schedule { cron, timezone } => {
+                let schedule = Schedule::parse(cron, timezone).ok()?;
+                schedule.next_after(now_ms)
+            }
+            Self::Once { run_at } => Some(*run_at),
         }
     }
 }
@@ -663,8 +761,8 @@ pub struct Automation {
     pub run_count: u64,
     /// How many runs failed in a row.
     pub consecutive_failures: u32,
-    /// The status of the last finished run.
-    pub last_run_status: Option<AutomationRunStatus>,
+    /// The state of the last run that was claimed.
+    pub last_run_status: Option<AutomationRunState>,
     /// The thread the last run produced or was sent to.
     pub last_run_thread_id: Option<ThreadId>,
     /// Why the last run failed, when it did.
@@ -677,6 +775,7 @@ pub struct Automation {
 
 impl Automation {
     /// Validates and creates an automation.
+    ///
     pub fn create(
         id: AutomationId,
         project_id: ProjectId,
@@ -807,6 +906,10 @@ impl Automation {
 
     /// A resume re-arms the trigger and clears the failure state the pause was
     /// asked after.
+    ///
+    /// Re-arming recomputes from *now*: windows that passed while the
+    /// automation was paused are not replayed, which is what makes a pause a
+    /// pause rather than a delay.
     pub fn resume(&mut self, now_ms: u64) -> Result<(), DomainError> {
         self.trigger.validate(now_ms)?;
         self.enabled = true;
@@ -823,6 +926,112 @@ impl Automation {
         self.execution.is_missing_prompt()
     }
 
+    /// Records that a due window was claimed and queued as a run.
+    ///
+    /// `next_run_at` is the instant the *schedule* is next due at, which the
+    /// caller computed from the claim time — never from the missed window, so a
+    /// server that was down for a week fires once and resumes its cadence
+    /// instead of replaying a week of history. A `once` trigger is spent by the
+    /// claim: the automation disables itself rather than firing again.
+    pub fn claim_scheduled_run(&mut self, next_run_at: Option<u64>, now_ms: u64) {
+        self.last_run_at = Some(now_ms);
+        self.run_count = self.run_count.saturating_add(1);
+        self.last_run_status = Some(AutomationRunState::Pending);
+        self.updated_at_ms = now_ms;
+        match self.trigger {
+            AutomationTrigger::Once { .. } => {
+                self.enabled = false;
+                self.next_run_at = None;
+            }
+            AutomationTrigger::Schedule { .. } => self.next_run_at = next_run_at,
+        }
+    }
+
+    /// Arms an enabled schedule that has no next instant.
+    ///
+    /// A row written before the scheduler existed has no `nextRunAt` and would
+    /// otherwise sit inert forever, so the sweep arms one it finds. Returns
+    /// whether anything changed.
+    pub fn arm_next_run(&mut self, now_ms: u64) -> bool {
+        if !self.enabled || self.next_run_at.is_some() {
+            return false;
+        }
+        let Some(next) = self.trigger.next_run_at_after(true, now_ms) else {
+            return false;
+        };
+        self.next_run_at = Some(next);
+        self.updated_at_ms = now_ms;
+        true
+    }
+
+    /// Applies the outcome of one of this automation's runs.
+    ///
+    /// Failures are the interesting half. A *scheduled* failure retries sooner
+    /// than the next window (30 s, then 60 s, then 120 s), and the third
+    /// consecutive failure pauses the automation outright with the reason
+    /// appended to `lastError` — a schedule that keeps failing is a broken
+    /// automation, not a busy one. A manual failure never retries: nobody
+    /// scheduled it, so there is nothing to retry. Success, a skip and a
+    /// cancellation clear neither more nor less than the failing counter's
+    /// opposite: any non-failure resets it.
+    pub fn record_run_outcome(
+        &mut self,
+        outcome: &AutomationRunOutcome,
+        trigger: AutomationRunTrigger,
+        now_ms: u64,
+    ) {
+        match outcome {
+            AutomationRunOutcome::Succeeded { thread_id, .. } => {
+                self.settle(thread_id.as_ref(), AutomationRunState::Succeeded, now_ms);
+                self.last_error = None;
+            }
+            AutomationRunOutcome::Skipped { .. } => {
+                // A skip is a decision not to run, not a failure: it must not
+                // consume the retry budget either.
+                self.last_run_status = Some(AutomationRunState::Skipped);
+                self.consecutive_failures = 0;
+                self.updated_at_ms = now_ms;
+            }
+            AutomationRunOutcome::Cancelled { .. } => {
+                self.last_run_status = Some(AutomationRunState::Cancelled);
+                self.updated_at_ms = now_ms;
+            }
+            AutomationRunOutcome::Failed {
+                error, thread_id, ..
+            } => {
+                let failures = self.consecutive_failures.saturating_add(1);
+                self.consecutive_failures = failures;
+                if let Some(thread_id) = thread_id {
+                    self.last_run_thread_id = Some(thread_id.clone());
+                }
+                self.last_run_status = Some(AutomationRunState::Failed);
+                self.updated_at_ms = now_ms;
+                if failures >= AUTOMATION_MAX_CONSECUTIVE_FAILURES {
+                    self.enabled = false;
+                    self.next_run_at = None;
+                    self.last_error = Some(format!(
+                        "{error} (automation paused after {failures} consecutive failures)"
+                    ));
+                    return;
+                }
+                self.last_error = Some(error.clone());
+                if trigger == AutomationRunTrigger::Schedule && self.enabled {
+                    self.next_run_at =
+                        Some(now_ms.saturating_add(automation_retry_delay_ms(failures)));
+                }
+            }
+        }
+    }
+
+    fn settle(&mut self, thread_id: Option<&ThreadId>, state: AutomationRunState, now_ms: u64) {
+        if let Some(thread_id) = thread_id {
+            self.last_run_thread_id = Some(thread_id.clone());
+        }
+        self.last_run_status = Some(state);
+        self.consecutive_failures = 0;
+        self.updated_at_ms = now_ms;
+    }
+
     /// The response projection.
     pub fn response(&self) -> AutomationResponse {
         AutomationResponse {
@@ -837,7 +1046,7 @@ impl Automation {
             next_run_at: self.next_run_at,
             last_run_at: self.last_run_at,
             run_count: self.run_count,
-            last_run_status: self.last_run_status,
+            last_run_status: self.last_run_status.map(AutomationRunState::status),
             last_run_thread_id: self.last_run_thread_id.as_ref().map(ToString::to_string),
             last_error: self.last_error.clone(),
             created_at: self.created_at_ms,
@@ -858,7 +1067,7 @@ pub struct AutomationRun {
     /// The thread it produced or was sent to, once there is one.
     pub thread_id: Option<ThreadId>,
     /// Where it is in its lifecycle.
-    pub status: AutomationRunStatus,
+    pub state: AutomationRunState,
     /// What asked for it.
     pub trigger: AutomationRunTrigger,
     /// Why it was skipped, when it was.
@@ -877,46 +1086,167 @@ pub struct AutomationRun {
     /// The instant the run was due at. For a manual run that is when it was
     /// asked for.
     pub scheduled_for: u64,
-    /// When it started.
+    /// When the run entered the history — the sweep tick that queued a
+    /// scheduled run, or the request that queued a manual one.
+    ///
+    /// The contract has one "in flight since" instant and no separate queue
+    /// time, so this is what `startedAt` projects; `scheduledFor` carries the
+    /// window the run belongs to.
     pub started_at: u64,
-    /// When it reached a terminal status.
+    /// When it reached a terminal state.
     pub finished_at: Option<u64>,
 }
 
 impl AutomationRun {
-    /// The row a manual `run` creates.
+    /// The row a manual `run` queues.
     ///
-    /// It is `running` from the moment it exists: this stage records that a run
-    /// was asked for, and the execution plane is what moves it to a terminal
-    /// status.
-    pub fn start_manual(
+    /// It is a *pending* execution intent: nothing has started, and the
+    /// execution plane is what moves it to `running` and later to a terminal
+    /// state. The contract has no `pending`, so the wire calls this one
+    /// `running` — it has been accepted and is in flight from a client's point
+    /// of view.
+    pub fn queue_manual(
         id: AutomationRunId,
         automation_id: AutomationId,
         run_mode: AutomationRunMode,
         idempotency_key: Option<String>,
         now_ms: u64,
     ) -> Self {
+        Self::queued(
+            id,
+            automation_id,
+            run_mode,
+            AutomationRunTrigger::Manual,
+            now_ms,
+            now_ms,
+            idempotency_key,
+        )
+    }
+
+    /// The row a due window queues.
+    pub fn queue_scheduled(
+        id: AutomationRunId,
+        automation_id: AutomationId,
+        run_mode: AutomationRunMode,
+        scheduled_for: u64,
+        now_ms: u64,
+    ) -> Self {
+        Self::queued(
+            id,
+            automation_id,
+            run_mode,
+            AutomationRunTrigger::Schedule,
+            scheduled_for,
+            now_ms,
+            None,
+        )
+    }
+
+    fn queued(
+        id: AutomationRunId,
+        automation_id: AutomationId,
+        run_mode: AutomationRunMode,
+        trigger: AutomationRunTrigger,
+        scheduled_for: u64,
+        now_ms: u64,
+        idempotency_key: Option<String>,
+    ) -> Self {
         Self {
             id,
             automation_id,
             run_mode,
             thread_id: None,
-            status: AutomationRunStatus::Running,
-            trigger: AutomationRunTrigger::Manual,
+            state: AutomationRunState::Pending,
+            trigger,
             skip_reason: None,
             error: None,
             output: None,
             exit_code: None,
             idempotency_key,
-            scheduled_for: now_ms,
+            scheduled_for,
             started_at: now_ms,
             finished_at: None,
         }
     }
 
     /// Whether the run is still in flight.
-    pub fn is_running(&self) -> bool {
-        self.status == AutomationRunStatus::Running
+    ///
+    /// This is the single-flight question: a pending run and a running one both
+    /// mean the automation already has work it has not finished.
+    pub fn is_in_flight(&self) -> bool {
+        self.state.is_in_flight()
+    }
+
+    /// Moves a pending run to `running`, as the execution plane does when it
+    /// claims it.
+    pub fn start(&mut self, now_ms: u64) -> Result<(), DomainError> {
+        if self.state != AutomationRunState::Pending {
+            return Err(DomainError::IllegalAutomationRunTransition {
+                from: self.state,
+                to: AutomationRunState::Running,
+            });
+        }
+        self.state = AutomationRunState::Running;
+        self.started_at = now_ms;
+        Ok(())
+    }
+
+    /// Ends an in-flight run.
+    ///
+    /// A terminal state is terminal: a second outcome for the same run is the
+    /// claim race the caller has to see rather than a silent overwrite.
+    pub fn finish(
+        &mut self,
+        outcome: &AutomationRunOutcome,
+        now_ms: u64,
+    ) -> Result<(), DomainError> {
+        let next_state = outcome.state();
+        if !self.is_in_flight() {
+            return Err(DomainError::IllegalAutomationRunTransition {
+                from: self.state,
+                to: next_state,
+            });
+        }
+        self.state = next_state;
+        self.finished_at = Some(now_ms);
+        match outcome {
+            AutomationRunOutcome::Succeeded {
+                thread_id,
+                output,
+                exit_code,
+            } => {
+                self.apply_result(thread_id, output, *exit_code);
+            }
+            AutomationRunOutcome::Failed {
+                error,
+                thread_id,
+                output,
+                exit_code,
+            } => {
+                self.apply_result(thread_id, output, *exit_code);
+                self.error = Some(error.clone());
+            }
+            AutomationRunOutcome::Skipped { reason } => {
+                self.skip_reason = Some(reason.clone());
+            }
+            AutomationRunOutcome::Cancelled { reason } => {
+                self.skip_reason = Some(reason.clone());
+            }
+        }
+        Ok(())
+    }
+
+    fn apply_result(
+        &mut self,
+        thread_id: &Option<ThreadId>,
+        output: &Option<String>,
+        exit_code: Option<i32>,
+    ) {
+        if let Some(thread_id) = thread_id {
+            self.thread_id = Some(thread_id.clone());
+        }
+        self.output = output.clone();
+        self.exit_code = exit_code;
     }
 
     /// The response projection.
@@ -926,7 +1256,7 @@ impl AutomationRun {
             automation_id: self.automation_id.to_string(),
             run_mode: self.run_mode,
             thread_id: self.thread_id.as_ref().map(ToString::to_string),
-            status: self.status,
+            status: self.state.status(),
             trigger: self.trigger,
             skip_reason: self.skip_reason.clone(),
             error: self.error.clone(),
@@ -935,6 +1265,54 @@ impl AutomationRun {
             scheduled_for: self.scheduled_for,
             started_at: self.started_at,
             finished_at: self.finished_at,
+        }
+    }
+}
+
+/// What ends a run.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AutomationRunOutcome {
+    /// The run did what it was asked to.
+    Succeeded {
+        /// The thread it produced or was sent to.
+        thread_id: Option<ThreadId>,
+        /// What a script printed.
+        output: Option<String>,
+        /// What a script exited with.
+        exit_code: Option<i32>,
+    },
+    /// The run tried and did not succeed: this is what feeds the retry policy.
+    Failed {
+        /// Why it failed.
+        error: String,
+        /// The thread it produced or was sent to, when there is one.
+        thread_id: Option<ThreadId>,
+        /// What a script printed before failing.
+        output: Option<String>,
+        /// What a script exited with.
+        exit_code: Option<i32>,
+    },
+    /// The run was deliberately not executed, with a reason.
+    Skipped {
+        /// Why it did not run.
+        reason: String,
+    },
+    /// The run was abandoned before it started: it is not a failure, and it is
+    /// not skipped by the run's own logic either.
+    Cancelled {
+        /// What abandoned it.
+        reason: String,
+    },
+}
+
+impl AutomationRunOutcome {
+    /// The state this outcome moves a run to.
+    pub const fn state(&self) -> AutomationRunState {
+        match self {
+            Self::Succeeded { .. } => AutomationRunState::Succeeded,
+            Self::Failed { .. } => AutomationRunState::Failed,
+            Self::Skipped { .. } => AutomationRunState::Skipped,
+            Self::Cancelled { .. } => AutomationRunState::Cancelled,
         }
     }
 }
@@ -1139,172 +1517,28 @@ pub fn validate_runs_limit(limit: u32) -> Result<(), DomainError> {
     Ok(())
 }
 
-/// Rejects a cron expression this server cannot commit to evaluating.
+/// Rejects a cron expression the scheduler could not commit to.
 ///
-/// The grammar is the five-field form — `minute hour day-of-month month
-/// day-of-week` — with `*`, `?` (day fields), lists, ranges, steps and the
-/// three-letter month and day names. The whole expression is validated here,
-/// including which numbers each field admits, because a stored expression the
-/// scheduler later refuses would be a schedule that silently never fires.
+/// The grammar and the field bounds live in [`crate::schedule::CronSchedule`],
+/// so an expression the writer accepts is one the scheduler can always
+/// evaluate; this wrapper only adds the contract's length bound and maps the
+/// rejection onto the field the caller named.
 pub fn validate_cron(expression: &str) -> Result<(), DomainError> {
-    if expression.is_empty() {
-        return Err(invalid("trigger.cron", "must not be empty"));
-    }
     if expression.chars().count() > SCHEDULE_CRON_MAX_LENGTH {
         return Err(invalid(
             "trigger.cron",
             format!("must be at most {SCHEDULE_CRON_MAX_LENGTH} characters"),
         ));
     }
-    let fields: Vec<&str> = expression.split_whitespace().collect();
-    if fields.len() != 5 {
-        return Err(invalid(
-            "trigger.cron",
-            "must have exactly 5 fields (minute hour day-of-month month day-of-week)",
-        ));
-    }
-    for (index, field) in fields.iter().enumerate() {
-        validate_cron_field(field, index).map_err(|reason| invalid("trigger.cron", reason))?;
-    }
-    Ok(())
+    schedule::validate_expression(expression)
+        .map_err(|error| invalid("trigger.cron", error.to_string()))
 }
 
-/// Validates one cron field against its own bounds.
-fn validate_cron_field(field: &str, index: usize) -> Result<(), String> {
-    let bounds = CronFieldBounds::at(index);
-    for term in field.split(',') {
-        if term.is_empty() {
-            return Err(format!("empty list entry in {:?}", field));
-        }
-        let (range, step) = match term.split_once('/') {
-            Some((range, step)) => (range, Some(step)),
-            None => (term, None),
-        };
-        if let Some(step) = step {
-            let step: u32 = step
-                .parse()
-                .map_err(|_| format!("step {step:?} is not a number"))?;
-            if step == 0 {
-                return Err(format!("step in {term:?} must be at least 1"));
-            }
-        }
-        match range {
-            "*" => {}
-            "?" if bounds.question_mark => {}
-            value => {
-                let (start, end) = match value.split_once('-') {
-                    Some((start, end)) => (start, end),
-                    None => (value, value),
-                };
-                let start = bounds
-                    .parse(start)
-                    .ok_or_else(|| bounds.out_of_range(value))?;
-                let end = bounds
-                    .parse(end)
-                    .ok_or_else(|| bounds.out_of_range(value))?;
-                if start > end {
-                    return Err(format!("range {value:?} runs backwards"));
-                }
-            }
-        }
-    }
-    Ok(())
-}
-
-/// One cron field's admissible values.
-struct CronFieldBounds {
-    /// Lowest value.
-    min: u32,
-    /// Highest value.
-    max: u32,
-    /// Three-letter aliases, when the field has them.
-    names: &'static [&'static str],
-    /// Whether `?` is accepted as `*`, which only the day fields allow.
-    question_mark: bool,
-    /// The field's name, for error messages.
-    label: &'static str,
-}
-
-impl CronFieldBounds {
-    fn at(index: usize) -> Self {
-        match index {
-            0 => Self {
-                min: 0,
-                max: 59,
-                names: &[],
-                question_mark: false,
-                label: "minute",
-            },
-            1 => Self {
-                min: 0,
-                max: 23,
-                names: &[],
-                question_mark: false,
-                label: "hour",
-            },
-            2 => Self {
-                min: 1,
-                max: 31,
-                names: &[],
-                question_mark: true,
-                label: "day-of-month",
-            },
-            3 => Self {
-                min: 1,
-                max: 12,
-                names: &[
-                    "JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV",
-                    "DEC",
-                ],
-                question_mark: false,
-                label: "month",
-            },
-            _ => Self {
-                min: 0,
-                max: 7,
-                names: &["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"],
-                question_mark: true,
-                label: "day-of-week",
-            },
-        }
-    }
-
-    fn parse(&self, value: &str) -> Option<u32> {
-        if value.is_empty() {
-            return None;
-        }
-        if !self.names.is_empty() {
-            let upper = value.to_ascii_uppercase();
-            if let Some(position) = self.names.iter().position(|name| *name == upper) {
-                // Months are 1-based, weekdays 0-based; both alias tables start
-                // at their first value.
-                return Some(if self.min == 1 {
-                    position as u32 + 1
-                } else {
-                    position as u32
-                });
-            }
-        }
-        let number: u32 = value.parse().ok()?;
-        (number >= self.min && number <= self.max).then_some(number)
-    }
-
-    fn out_of_range(&self, value: &str) -> String {
-        format!(
-            "{value:?} is not a valid {} value ({}–{})",
-            self.label, self.min, self.max
-        )
-    }
-}
-
-/// Rejects a timezone name that is not shaped like an IANA zone.
+/// Rejects a timezone name the scheduler cannot resolve.
 ///
-/// Only the name's shape is checked. Resolving it to an offset — which is what
-/// a scheduler needs — requires a timezone database, and adding one before
-/// there is a scheduler would turn a syntax check into a claim this build
-/// cannot keep. An unknown name that is *shaped* correctly is therefore
-/// accepted here and will be rejected by the scheduler phase, which is where
-/// the database lives.
+/// `chrono-tz` carries the IANA database, so this is a lookup and not a shape
+/// check: a name that is not a zone is refused when the trigger is written,
+/// rather than being stored as a schedule that would never fire.
 pub fn validate_timezone(timezone: &str) -> Result<(), DomainError> {
     if timezone.is_empty() {
         return Err(invalid("trigger.timezone", "must not be empty"));
@@ -1315,25 +1549,9 @@ pub fn validate_timezone(timezone: &str) -> Result<(), DomainError> {
             format!("must be at most {SCHEDULE_TIMEZONE_MAX_LENGTH} characters"),
         ));
     }
-    let components: Vec<&str> = timezone.split('/').collect();
-    if components.len() > 3 {
-        return Err(invalid("trigger.timezone", "has too many path segments"));
-    }
-    for component in components {
-        if component.is_empty() {
-            return Err(invalid("trigger.timezone", "has an empty path segment"));
-        }
-        let shaped = component.chars().all(|character| {
-            character.is_ascii_alphanumeric() || matches!(character, '_' | '-' | '+')
-        });
-        if !shaped {
-            return Err(invalid(
-                "trigger.timezone",
-                format!("{component:?} is not a valid timezone component"),
-            ));
-        }
-    }
-    Ok(())
+    schedule::resolve_zone(timezone)
+        .map(|_| ())
+        .map_err(|error| invalid("trigger.timezone", error.to_string()))
 }
 
 fn validate_non_empty(field: &'static str, value: &str) -> Result<(), DomainError> {
@@ -1405,10 +1623,39 @@ mod tests {
     }
 
     #[test]
-    fn a_schedule_does_not_claim_a_next_run_this_build_cannot_compute() {
+    fn a_schedule_is_armed_in_the_zone_it_names_not_in_utc() {
+        // `0 9 * * 1-5` in Europe/Paris: the next weekday 09:00 local is what
+        // `nextRunAt` holds, so the instant is the local wall clock rather than
+        // the server's.
         let automation = automation(schedule());
-        assert_eq!(automation.next_run_at, None);
         assert_eq!(automation.trigger.kind(), "schedule");
+        let next = automation.next_run_at.expect("a schedule is armed");
+        let paris = schedule::resolve_zone("Europe/Paris").expect("a known zone");
+        let local = chrono::DateTime::from_timestamp_millis(next as i64)
+            .expect("a real instant")
+            .with_timezone(&paris);
+        assert_eq!(
+            (
+                chrono::Timelike::hour(&local),
+                chrono::Timelike::minute(&local)
+            ),
+            (9, 0)
+        );
+
+        // A row that cannot be evaluated is a `409` rather than a silent
+        // forever-inert schedule, which is what the write paths enforce.
+        let mut unreadable = new_automation(schedule());
+        unreadable.trigger = AutomationTrigger::Schedule {
+            cron: "0 9 * * *".into(),
+            timezone: "Mars/Olympus".into(),
+        };
+        assert!(matches!(
+            Automation::create(AutomationId::mint(), project(), unreadable, now()),
+            Err(DomainError::InvalidField {
+                field: "trigger.timezone",
+                ..
+            })
+        ));
     }
 
     #[test]
@@ -1451,7 +1698,7 @@ mod tests {
             "*/15 0-23/2 1,15 * MON-FRI",
             "0 0 1 JAN *",
             "30 6 ? * 7",
-            "5/15 * * * *",
+            "5-59/15 * * * *",
         ] {
             assert!(
                 validate_cron(expression).is_ok(),
@@ -1469,9 +1716,11 @@ mod tests {
             "* * * * 8",
             "*/0 * * * *",
             "5-1 * * * *",
-            "1,,2 * * * *",
             "* * * FOO *",
-            "* * L * *",
+            // The dialect is croner's: a bare `N/S` step has no meaning there
+            // and is refused with its own message, so a schedule is either
+            // `*/S` or a range step.
+            "5/15 * * * *",
         ] {
             assert!(
                 validate_cron(expression).is_err(),
@@ -1845,22 +2094,25 @@ mod tests {
 
     #[test]
     fn a_manual_run_is_running_and_carries_no_result() {
-        let run = AutomationRun::start_manual(
+        let run = AutomationRun::queue_manual(
             AutomationRunId::mint(),
             AutomationId::mint(),
             AutomationRunMode::Agent,
             Some("key".into()),
             now(),
         );
-        assert_eq!(run.status, AutomationRunStatus::Running);
+        assert_eq!(run.state, AutomationRunState::Pending);
         assert_eq!(run.trigger, AutomationRunTrigger::Manual);
         assert_eq!(run.scheduled_for, now());
         assert_eq!(run.started_at, now());
         assert_eq!(run.finished_at, None);
-        assert!(run.is_running());
+        assert!(run.is_in_flight());
         let value = serde_json::to_value(run.response()).expect("serializable");
         assert!(value.get("idempotencyKey").is_none());
-        assert_eq!(value["status"], "running");
+        assert_eq!(
+            value["status"], "running",
+            "a queued run reads as in flight"
+        );
         assert_eq!(value["trigger"], "manual");
     }
 
@@ -1872,7 +2124,10 @@ mod tests {
         assert_eq!(value["projectId"], automation.project_id.to_string());
         assert_eq!(value["createdAt"], now());
         assert_eq!(value["updatedAt"], now());
-        assert_eq!(value["nextRunAt"], serde_json::Value::Null);
+        assert!(
+            value["nextRunAt"].as_u64().is_some(),
+            "an enabled schedule reports when it is next due"
+        );
         assert_eq!(value["trigger"]["triggerType"], "schedule");
         assert_eq!(value["trigger"]["cron"], "0 9 * * 1-5");
         assert_eq!(value["execution"]["mode"], "agent");

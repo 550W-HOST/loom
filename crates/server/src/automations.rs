@@ -26,14 +26,19 @@
 //! written synchronously after each mutation, with its own version so additive
 //! changes need no outer-format bump.
 //!
-//! # What this stage does not do
+//! # What is here, and what is not
 //!
-//! No scheduler, no execution, no realtime invalidation and no UI. `run`
-//! records that a run was asked for and returns it; the row stays `running`
-//! until the execution stage reports a terminal status for it. A cron
-//! schedule's `nextRunAt` stays `null` for the same reason: computing it needs
-//! the timezone-aware scheduler that stage brings, and a number this server
-//! would not honour is worse than an absent one.
+//! The scheduler is here: [`AutomationsRegistry::sweep_due`] arms schedules,
+//! claims the windows that have arrived, queues a run for each of them and
+//! moves the schedule past the window it claimed — so a restart cannot replay
+//! one. The run lifecycle is here too ([`AutomationsRegistry::start_run`],
+//! [`AutomationsRegistry::close_run`], the failure policy that retries a
+//! scheduled failure and pauses the automation after three).
+//!
+//! Execution is not: nothing in this server produces a thread or runs a script.
+//! A queued run waits for the execution plane, and pausing abandons the ones
+//! that never started. Realtime invalidation and the UI are the stages after
+//! that.
 
 #![allow(clippy::result_large_err)]
 
@@ -47,21 +52,28 @@ use serde_json::{json, Value};
 use loom_domain::automation::{
     validate_idempotency_key, validate_runs_limit, Automation, AutomationExecution,
     AutomationOrigin, AutomationReadProblem, AutomationReadResult, AutomationRun,
-    AutomationRunMode, AutomationRunStatus, AutomationRunTrigger, AutomationThreadMark,
-    AutomationTrigger, AutomationUpdate, MissingPromptAutomation, NewAutomation,
-    UnreadableAutomation,
+    AutomationRunMode, AutomationRunOutcome, AutomationRunState, AutomationRunTrigger,
+    AutomationThreadMark, AutomationTrigger, AutomationUpdate, MissingPromptAutomation,
+    NewAutomation, UnreadableAutomation,
 };
+use loom_domain::schedule::Schedule;
 use loom_domain::{AutomationId, AutomationRunId, ProjectId, ThreadId};
 
 use crate::state::AppState;
 
 /// The current automation payload version.
 ///
-/// Version 0 is a payload written before the field existed: it loads with the
-/// same additive defaults (`#[serde(default)]` on every row field) a version-1
-/// payload gets for a field added later. A *newer* version is not interpreted
-/// at all — see [`AutomationsRegistry::restore`].
-pub const AUTOMATIONS_VERSION: u32 = 1;
+/// * **Version 1** is a payload from before the scheduler: run rows were only
+///   ever `running` (nothing could claim them) and automations had no
+///   `nextRunAt` for a cron schedule. Restoring one rewrites those rows to
+///   `pending` — a queue entry nothing had picked up — and the sweep arms the
+///   schedules it can evaluate. See [`migrate_payload`].
+/// * **Version 0** is a payload written before the field existed: it loads with
+///   the same additive defaults (`#[serde(default)]` on every row field) a
+///   version-1 payload gets for a field added later.
+/// * A *newer* version is not interpreted at all — see
+///   [`AutomationsRegistry::restore`].
+pub const AUTOMATIONS_VERSION: u32 = 2;
 
 /* ------------------------------------------------------------------ */
 /* Stored rows                                                         */
@@ -250,11 +262,7 @@ fn decode(row: &StoredAutomation) -> Result<Automation, ()> {
     }
     let last_run_status = match row.last_run_status.as_deref() {
         None | Some("") => None,
-        Some("running") => Some(AutomationRunStatus::Running),
-        Some("succeeded") => Some(AutomationRunStatus::Succeeded),
-        Some("failed") => Some(AutomationRunStatus::Failed),
-        Some("skipped") => Some(AutomationRunStatus::Skipped),
-        _ => return Err(()),
+        Some(token) => Some(AutomationRunState::from_token(token).ok_or(())?),
     };
     Ok(Automation {
         id,
@@ -292,16 +300,6 @@ fn run_mode_token(mode: AutomationRunMode) -> &'static str {
     }
 }
 
-/// The stored token for a run status.
-fn run_status_token(status: AutomationRunStatus) -> &'static str {
-    match status {
-        AutomationRunStatus::Running => "running",
-        AutomationRunStatus::Succeeded => "succeeded",
-        AutomationRunStatus::Failed => "failed",
-        AutomationRunStatus::Skipped => "skipped",
-    }
-}
-
 /// The stored token for a run trigger.
 fn run_trigger_token(trigger: AutomationRunTrigger) -> &'static str {
     match trigger {
@@ -332,7 +330,7 @@ fn encode(automation: &Automation) -> StoredAutomation {
         consecutive_failures: automation.consecutive_failures,
         last_run_status: automation
             .last_run_status
-            .map(|status| run_status_token(status).to_owned()),
+            .map(|state| state.as_str().to_owned()),
         last_run_thread_id: automation
             .last_run_thread_id
             .as_ref()
@@ -366,13 +364,7 @@ fn decode_run(row: &StoredAutomationRun) -> Option<AutomationRun> {
         "script" => AutomationRunMode::Script,
         _ => return None,
     };
-    let status = match row.status.as_str() {
-        "running" => AutomationRunStatus::Running,
-        "succeeded" => AutomationRunStatus::Succeeded,
-        "failed" => AutomationRunStatus::Failed,
-        "skipped" => AutomationRunStatus::Skipped,
-        _ => return None,
-    };
+    let state = AutomationRunState::from_token(&row.status)?;
     let trigger = match row.trigger.as_str() {
         "schedule" => AutomationRunTrigger::Schedule,
         "manual" => AutomationRunTrigger::Manual,
@@ -387,7 +379,7 @@ fn decode_run(row: &StoredAutomationRun) -> Option<AutomationRun> {
         automation_id,
         run_mode,
         thread_id,
-        status,
+        state,
         trigger,
         skip_reason: row.skip_reason.clone(),
         error: row.error.clone(),
@@ -407,7 +399,7 @@ fn encode_run(run: &AutomationRun) -> StoredAutomationRun {
         automation_id: run.automation_id.to_string(),
         run_mode: run_mode_token(run.run_mode).to_owned(),
         thread_id: run.thread_id.as_ref().map(ToString::to_string),
-        status: run_status_token(run.status).to_owned(),
+        status: run.state.as_str().to_owned(),
         trigger: run_trigger_token(run.trigger).to_owned(),
         skip_reason: run.skip_reason.clone(),
         error: run.error.clone(),
@@ -507,6 +499,128 @@ impl AutomationState {
     }
 }
 
+/// Upgrades a payload to this build's version, in place.
+///
+/// The only step so far is version 1 → 2, the scheduler release. In version 1
+/// nothing could claim a run, so a row stored as `running` was a queued
+/// execution intent and becomes `pending` — which is what it always was.
+/// Schedules written then have no `nextRunAt`; they are armed by the sweep
+/// rather than here, because arming needs the clock and the zone database and
+/// this runs before the server is serving.
+fn migrate_payload(state: &mut AutomationState) {
+    if state.version < 2 {
+        for row in &mut state.runs {
+            if row.status == "running" {
+                row.status = AutomationRunState::Pending.as_str().to_owned();
+            }
+        }
+    }
+    state.version = AUTOMATIONS_VERSION;
+}
+
+/// What one sweep found and did, for the log line and for the tests.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SweepReport {
+    /// Enabled automations whose window had arrived.
+    pub due: usize,
+    /// Runs queued by this sweep.
+    pub claimed: usize,
+    /// Enabled schedules that had no next instant and now have one.
+    pub armed: usize,
+    /// Due automations that already had work in flight and were left alone.
+    pub in_flight: usize,
+    /// Enabled schedules nothing could evaluate (bad expression or zone).
+    pub unevaluable: usize,
+    /// Rows this build cannot read at all.
+    pub unreadable: usize,
+    /// Schedules that fired their last possible window and disabled themselves.
+    pub exhausted: usize,
+}
+
+impl SweepReport {
+    /// Whether the sweep changed anything that has to be persisted.
+    pub fn changed(&self) -> bool {
+        self.claimed > 0 || self.armed > 0 || self.exhausted > 0
+    }
+
+    /// One line for the operator log, or `None` when there is nothing to say.
+    ///
+    /// The counters that mean "an automation is waiting on something" are
+    /// reported even when nothing changed: a schedule that is due and blocked
+    /// behind a run in flight, or one this build cannot evaluate, is the answer
+    /// to "why did my automation not fire".
+    pub fn diagnostic(&self) -> Option<String> {
+        if !self.changed()
+            && self.in_flight == 0
+            && self.unevaluable == 0
+            && self.unreadable == 0
+            && self.due == 0
+        {
+            return None;
+        }
+        Some(format!(
+            "automation sweep: {} due, {} queued, {} armed, {} waiting on a run in flight, {} \
+             unevaluable, {} unreadable, {} exhausted",
+            self.due,
+            self.claimed,
+            self.armed,
+            self.in_flight,
+            self.unevaluable,
+            self.unreadable,
+            self.exhausted
+        ))
+    }
+}
+
+/// Abandons the runs of one automation that have not started.
+///
+/// Only a pending run can be cancelled: a run the execution plane has already
+/// started is not something this layer can interrupt, so it is left to finish
+/// (or to be failed by the reconciler that owns in-flight work).
+fn cancel_pending_runs(
+    state: &mut AutomationState,
+    automation_id: &str,
+    reason: &str,
+    now_ms: u64,
+) -> Vec<AutomationRun> {
+    let mut cancelled = Vec::new();
+    for position in 0..state.runs.len() {
+        if state.runs[position].automation_id != automation_id {
+            continue;
+        }
+        let Some(mut run) = decode_run(&state.runs[position]) else {
+            continue;
+        };
+        if run.state != AutomationRunState::Pending {
+            continue;
+        }
+        let outcome = AutomationRunOutcome::Cancelled {
+            reason: reason.to_owned(),
+        };
+        if run.finish(&outcome, now_ms).is_err() {
+            continue;
+        }
+        state.runs[position] = encode_run(&run);
+        cancelled.push(run);
+    }
+    cancelled
+}
+
+/// The run an automation already has in flight, oldest first.
+fn in_flight_run(state: &AutomationState, automation_id: &str) -> Option<AutomationRun> {
+    state
+        .runs
+        .iter()
+        .filter(|row| row.automation_id == automation_id)
+        .filter_map(decode_run)
+        .filter(AutomationRun::is_in_flight)
+        .min_by(|left, right| {
+            left.started_at
+                .cmp(&right.started_at)
+                .then_with(|| left.id.to_string().cmp(&right.id.to_string()))
+        })
+}
+
 /// The in-memory automation rows behind one mutex.
 ///
 /// The durable snapshot is written by the HTTP layer after each successful
@@ -538,9 +652,8 @@ impl AutomationsRegistry {
 
     /// Restores a payload, applying the version policy.
     ///
-    /// * version 0 (written before the field existed) is upgraded in place: the
-    ///   rows keep whatever they have and gain this build's defaults, which is
-    ///   the same treatment an older build's additive fields get.
+    /// * version 0 (written before the field existed) and version 1 (written
+    ///   before the scheduler) are upgraded in place by [`migrate_payload`].
     /// * a newer version is **not interpreted**. The workspace starts with no
     ///   automations rather than reading another build's representation as if
     ///   it were its own — the same choice the settings payload makes, and the
@@ -548,9 +661,6 @@ impl AutomationsRegistry {
     ///   snapshot write replaces the payload, which is what running an older
     ///   binary against a newer snapshot means.
     pub fn restore(&self, mut state: AutomationState) {
-        if state.version == 0 {
-            state.version = AUTOMATIONS_VERSION;
-        }
         if state.version > AUTOMATIONS_VERSION {
             eprintln!(
                 "loom-server: automation payload version {} is newer than this build's {}; \
@@ -560,8 +670,21 @@ impl AutomationsRegistry {
             *self.lock() = AutomationState::current();
             return;
         }
+        let migrating = state.version < AUTOMATIONS_VERSION;
+        migrate_payload(&mut state);
         state.deduplicate();
+        let pending = state
+            .runs
+            .iter()
+            .filter(|row| row.status == AutomationRunState::Pending.as_str())
+            .count();
         *self.lock() = state;
+        if migrating {
+            eprintln!(
+                "loom-server: migrated the automation payload to version {AUTOMATIONS_VERSION} \
+                 ({pending} queued runs kept)"
+            );
+        }
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, AutomationState> {
@@ -660,35 +783,61 @@ impl AutomationsRegistry {
     }
 
     /// Pauses or resumes an automation.
+    ///
+    /// A pause also abandons what the automation had queued: leaving a queued
+    /// run behind would let it run once more after the user stopped it, which
+    /// is the opposite of what pausing promises. Resuming re-arms from *now*,
+    /// so the windows that passed while it was paused are not replayed.
     pub fn set_enabled(
         &self,
         project_id: &str,
         automation_id: &str,
         enabled: bool,
         now_ms: u64,
-    ) -> Result<Automation, AutomationError> {
+    ) -> Result<(Automation, Vec<AutomationRun>), AutomationError> {
         let mut state = self.lock();
         let position = position_of(&state, project_id, automation_id)?;
         let mut automation = require_readable(
             &state.automations[position],
             if enabled { "resumed" } else { "paused" },
         )?;
-        if enabled {
+        let cancelled = if enabled {
             automation.resume(now_ms)?;
+            Vec::new()
         } else {
             automation.pause(now_ms);
-        }
+            let cancelled = cancel_pending_runs(
+                &mut state,
+                automation_id,
+                "cancelled: the automation was paused",
+                now_ms,
+            );
+            if let Ok(mut stored) = decode(&state.automations[position]) {
+                if let Some(last) = cancelled.last() {
+                    stored.record_run_outcome(
+                        &AutomationRunOutcome::Cancelled {
+                            reason: last.skip_reason.clone().unwrap_or_default(),
+                        },
+                        last.trigger,
+                        now_ms,
+                    );
+                }
+                state.automations[position] = encode(&stored);
+            }
+            cancelled
+        };
         state.automations[position] = encode(&automation);
-        Ok(automation)
+        Ok((automation, cancelled))
     }
 
-    /// Creates the run row a manual trigger produces.
+    /// Queues the run a manual trigger asks for.
     ///
     /// Two requests cannot produce two runs of one automation: a repeated
-    /// idempotency key returns the run it created, and a run that is still
-    /// running is returned instead of starting a second one. Both are recorded
-    /// the same way upstream does it — as a lookup over the run rows.
-    pub fn start_manual_run(
+    /// idempotency key returns the run it created, and a run that is already in
+    /// flight is returned instead of queueing a second one — the same rule the
+    /// sweep obeys, so a manual trigger and a due window can never run side by
+    /// side.
+    pub fn queue_manual_run(
         &self,
         project_id: &str,
         automation_id: &str,
@@ -710,16 +859,10 @@ impl AutomationsRegistry {
                 return Ok((existing, true));
             }
         }
-        if let Some(running) = state
-            .runs
-            .iter()
-            .filter(|row| row.automation_id == automation_id)
-            .filter_map(decode_run)
-            .find(|run| run.is_running())
-        {
-            return Ok((running, true));
+        if let Some(in_flight) = in_flight_run(&state, automation_id) {
+            return Ok((in_flight, true));
         }
-        let run = AutomationRun::start_manual(
+        let run = AutomationRun::queue_manual(
             AutomationRunId::mint(),
             automation.id,
             automation.execution.run_mode(),
@@ -728,6 +871,209 @@ impl AutomationsRegistry {
         );
         state.runs.push(encode_run(&run));
         Ok((run, false))
+    }
+
+    /// Claims every window that is due, and arms the schedules that need it.
+    ///
+    /// The order is the whole single-flight argument, and it is one lock:
+    ///
+    /// 1. an enabled automation with no `nextRunAt` is armed — the state a row
+    ///    from before the scheduler is in;
+    /// 2. an automation whose window has arrived is claimed only when it has
+    ///    nothing in flight, so a slow run delays the next one instead of
+    ///    stacking on top of it;
+    /// 3. the claim queues a run and immediately moves the schedule to its next
+    ///    occurrence *after now*, which is what makes a restart harmless: the
+    ///    window that was claimed is behind the automation's `nextRunAt` before
+    ///    the snapshot is written, so a second sweep cannot see it as due
+    ///    again. A window missed while the server was down is skipped, not
+    ///    replayed, because "next" is computed from the claim instant.
+    ///
+    /// A trigger this build cannot evaluate (an expression or zone that does
+    /// not resolve) is left alone with its `nextRunAt` intact and counted in
+    /// the report; it is not a reason to delete an automation or to skip the
+    /// rest of the sweep.
+    pub fn sweep_due(&self, now_ms: u64) -> SweepReport {
+        let mut report = SweepReport::default();
+        let mut state = self.lock();
+        // The stored `enabled` flag is the cheap filter; whether the row
+        // decodes at all is what the loop reports.
+        let mut positions: Vec<usize> = (0..state.automations.len())
+            .filter(|position| state.automations[*position].enabled)
+            .collect();
+        // Oldest window first, then oldest row: the order the reference sweep
+        // uses, so a bounded batch is the oldest work rather than an arbitrary
+        // subset.
+        positions.sort_by_key(|position| {
+            let row = &state.automations[*position];
+            (
+                row.next_run_at.unwrap_or(u64::MAX),
+                row.created_at,
+                row.id.clone(),
+            )
+        });
+
+        for position in positions {
+            let row = state.automations[position].clone();
+            let Ok(mut automation) = decode(&row) else {
+                report.unreadable += 1;
+                continue;
+            };
+            if !automation.enabled {
+                continue;
+            }
+            let automation_id = automation.id.to_string();
+
+            if automation.next_run_at.is_none() {
+                if automation.arm_next_run(now_ms) {
+                    state.automations[position] = encode(&automation);
+                    report.armed += 1;
+                } else if matches!(automation.trigger, AutomationTrigger::Schedule { .. }) {
+                    report.unevaluable += 1;
+                }
+                continue;
+            }
+            if automation.next_run_at.is_some_and(|next| next > now_ms) {
+                continue;
+            }
+            report.due += 1;
+            if in_flight_run(&state, &automation_id).is_some() {
+                report.in_flight += 1;
+                continue;
+            }
+            // The next occurrence is computed from *now*, so a window that
+            // passed while nobody was looking does not drag a queue of past
+            // windows behind it.
+            let next_run_at = match &automation.trigger {
+                // A one-shot trigger is spent by its claim.
+                AutomationTrigger::Once { .. } => None,
+                AutomationTrigger::Schedule { cron, timezone } => {
+                    let Ok(schedule) = Schedule::parse(cron, timezone) else {
+                        // Nothing can be said about when this fires, so it is
+                        // left exactly as it is rather than fired or disabled.
+                        report.unevaluable += 1;
+                        continue;
+                    };
+                    schedule.next_after(now_ms)
+                }
+            };
+            let run = AutomationRun::queue_scheduled(
+                AutomationRunId::mint(),
+                automation.id.clone(),
+                automation.execution.run_mode(),
+                automation.next_run_at.unwrap_or(now_ms),
+                now_ms,
+            );
+            automation.claim_scheduled_run(next_run_at, now_ms);
+            if next_run_at.is_none()
+                && matches!(automation.trigger, AutomationTrigger::Schedule { .. })
+            {
+                // An evaluable schedule with no remaining occurrence can never
+                // fire again (`0 0 30 2 *`): disable it rather than leaving a
+                // promise the scheduler cannot keep.
+                automation.enabled = false;
+                report.exhausted += 1;
+            }
+            state.runs.push(encode_run(&run));
+            state.automations[position] = encode(&automation);
+            report.claimed += 1;
+        }
+        report
+    }
+
+    /// Moves a queued run to `running`, as the execution plane does when it
+    /// claims it.
+    pub fn start_run(
+        &self,
+        run_id: &AutomationRunId,
+        now_ms: u64,
+    ) -> Result<AutomationRun, AutomationError> {
+        let mut state = self.lock();
+        let position = state
+            .runs
+            .iter()
+            .position(|row| row.id == run_id.to_string())
+            .ok_or_else(|| AutomationError::NotFound(format!("run {run_id} is not known")))?;
+        let mut run = decode_run(&state.runs[position]).ok_or_else(|| {
+            AutomationError::Conflict(format!("run {run_id} has invalid stored data"))
+        })?;
+        run.start(now_ms)?;
+        state.runs[position] = encode_run(&run);
+        Ok(run)
+    }
+
+    /// Ends a run and applies the outcome to its automation.
+    ///
+    /// The two writes are one critical section on purpose: a failure that
+    /// increments the counter without moving the retry instant, or a success
+    /// that clears the counter without clearing the error, would be a state no
+    /// single run produced. The run's `state` decides the retry — a failed
+    /// *scheduled* run retries sooner and a third consecutive failure pauses
+    /// the automation — see [`Automation::record_run_outcome`].
+    pub fn close_run(
+        &self,
+        run_id: &AutomationRunId,
+        outcome: &AutomationRunOutcome,
+        now_ms: u64,
+    ) -> Result<AutomationRun, AutomationError> {
+        let mut state = self.lock();
+        let position = state
+            .runs
+            .iter()
+            .position(|row| row.id == run_id.to_string())
+            .ok_or_else(|| AutomationError::NotFound(format!("run {run_id} is not known")))?;
+        let mut run = decode_run(&state.runs[position]).ok_or_else(|| {
+            AutomationError::Conflict(format!("run {run_id} has invalid stored data"))
+        })?;
+        let automation_id = run.automation_id.to_string();
+        let trigger = run.trigger;
+        run.finish(outcome, now_ms)?;
+        let automation_position = state
+            .automations
+            .iter()
+            .position(|row| row.id == automation_id);
+        if let Some(automation_position) = automation_position {
+            if let Ok(mut automation) = decode(&state.automations[automation_position]) {
+                automation.record_run_outcome(outcome, trigger, now_ms);
+                state.automations[automation_position] = encode(&automation);
+            }
+        }
+        state.runs[position] = encode_run(&run);
+        Ok(run)
+    }
+
+    /// Fails every run that was in flight when the process stopped.
+    ///
+    /// A pending run is *not* touched: it is durable work that has not started,
+    /// and the sweep will simply not claim a second one while it waits. A
+    /// `running` run is the one the execution plane can no longer speak for, so
+    /// it is failed the same way the provider-run reconciler fails a dispatched
+    /// run — the alternative is an automation that single-flight blocks
+    /// forever behind a run nobody will ever finish. Returns the ids closed.
+    pub fn fail_interrupted_runs(&self, now_ms: u64) -> Vec<AutomationRunId> {
+        let running: Vec<AutomationRunId> = {
+            let state = self.lock();
+            state
+                .runs
+                .iter()
+                .filter_map(decode_run)
+                .filter(|run| run.state == AutomationRunState::Running)
+                .map(|run| run.id)
+                .collect()
+        };
+        let mut failed = Vec::new();
+        for run_id in &running {
+            let outcome = AutomationRunOutcome::Failed {
+                error: "the server restarted while this run was in flight".to_owned(),
+                thread_id: None,
+                output: None,
+                exit_code: None,
+            };
+            if self.close_run(run_id, &outcome, now_ms).is_ok() {
+                failed.push(run_id.clone());
+            }
+        }
+        failed
     }
 
     /// One page of an automation's run history, newest first.
@@ -1217,13 +1563,20 @@ async fn set_enabled(
         return response;
     }
     let now = loom_relay::now_ms();
-    let automation = match state
-        .automations
-        .set_enabled(&project_id, &automation_id, enabled, now)
-    {
-        Ok(automation) => automation,
-        Err(error) => return error_response(error),
-    };
+    let (automation, cancelled) =
+        match state
+            .automations
+            .set_enabled(&project_id, &automation_id, enabled, now)
+        {
+            Ok(outcome) => outcome,
+            Err(error) => return error_response(error),
+        };
+    if !cancelled.is_empty() {
+        eprintln!(
+            "loom-server: pausing automation {automation_id} cancelled {} queued run(s)",
+            cancelled.len()
+        );
+    }
     if let Err(response) = persist(&state) {
         return response;
     }
@@ -1253,7 +1606,7 @@ pub async fn run(
     }
     let request = body.map(|Json(request)| request).unwrap_or_default();
     let now = loom_relay::now_ms();
-    let (run, deduped) = match state.automations.start_manual_run(
+    let (run, deduped) = match state.automations.queue_manual_run(
         &project_id,
         &automation_id,
         request.idempotency_key,
@@ -1662,7 +2015,7 @@ mod tests {
         let automation_id = created.id.to_string();
         let project = project.to_string();
         registry
-            .start_manual_run(&project, &automation_id, None, now())
+            .queue_manual_run(&project, &automation_id, None, now())
             .expect("starts");
         let run = registry
             .runs(&project, &automation_id, 10, None)
@@ -1697,17 +2050,17 @@ mod tests {
             .to_string();
 
         let (first, deduped) = registry
-            .start_manual_run(&project, &automation_id, Some("key-1".into()), now())
+            .queue_manual_run(&project, &automation_id, Some("key-1".into()), now())
             .expect("starts");
         assert!(!deduped);
         let (second, deduped) = registry
-            .start_manual_run(&project, &automation_id, Some("key-1".into()), now() + 1)
+            .queue_manual_run(&project, &automation_id, Some("key-1".into()), now() + 1)
             .expect("dedupes");
         assert!(deduped);
         assert_eq!(second.id, first.id);
         // A different key does not start a second run while one is in flight.
         let (third, deduped) = registry
-            .start_manual_run(&project, &automation_id, Some("key-2".into()), now() + 2)
+            .queue_manual_run(&project, &automation_id, Some("key-2".into()), now() + 2)
             .expect("single flight");
         assert!(deduped);
         assert_eq!(third.id, first.id);
@@ -1729,7 +2082,7 @@ mod tests {
             .to_string();
         let key = "k".repeat(loom_domain::automation::AUTOMATION_IDEMPOTENCY_KEY_MAX_LENGTH + 1);
         assert!(matches!(
-            registry.start_manual_run(&project, &automation_id, Some(key), now()),
+            registry.queue_manual_run(&project, &automation_id, Some(key), now()),
             Err(AutomationError::Invalid {
                 field: "idempotencyKey",
                 ..
@@ -1789,14 +2142,14 @@ mod tests {
         {
             let mut state = registry.lock();
             for index in 0..3u64 {
-                let mut run = AutomationRun::start_manual(
+                let mut run = AutomationRun::queue_manual(
                     AutomationRunId::mint(),
                     created.id.clone(),
                     AutomationRunMode::Agent,
                     None,
                     now() + index,
                 );
-                run.status = AutomationRunStatus::Succeeded;
+                run.state = AutomationRunState::Succeeded;
                 run.finished_at = Some(now() + index + 1);
                 state.runs.push(encode_run(&run));
             }
@@ -1900,6 +2253,595 @@ mod tests {
         assert_eq!(row.execution["timeoutMs"], 120_000);
         let decoded = decode(&row).expect("decodes");
         assert_eq!(decoded.execution.run_mode(), AutomationRunMode::Script);
+    }
+
+    /// Moves an automation's next window into the past: the state a server that
+    /// was not running when the window arrived restores into.
+    fn make_due(registry: &AutomationsRegistry, automation_id: &AutomationId, window: u64) {
+        let mut state = registry.lock();
+        let position = state
+            .automations
+            .iter()
+            .position(|row| row.id == automation_id.to_string())
+            .expect("the automation is stored");
+        state.automations[position].next_run_at = Some(window);
+    }
+
+    /// The decoded automation, as a reader would see it.
+    fn decoded(
+        registry: &AutomationsRegistry,
+        project: &ProjectId,
+        id: &AutomationId,
+    ) -> Automation {
+        let row = registry
+            .get(&project.to_string(), &id.to_string())
+            .expect("the automation is stored");
+        decode(&row).expect("the row decodes")
+    }
+
+    /// Every run of an automation, newest first.
+    fn runs_of(
+        registry: &AutomationsRegistry,
+        project: &ProjectId,
+        id: &AutomationId,
+    ) -> Vec<AutomationRun> {
+        registry
+            .runs(&project.to_string(), &id.to_string(), 50, None)
+            .expect("the run list reads")
+            .0
+    }
+
+    fn succeeded() -> AutomationRunOutcome {
+        AutomationRunOutcome::Succeeded {
+            thread_id: None,
+            output: None,
+            exit_code: None,
+        }
+    }
+
+    fn failed(error: &str) -> AutomationRunOutcome {
+        AutomationRunOutcome::Failed {
+            error: error.to_owned(),
+            thread_id: None,
+            output: None,
+            exit_code: None,
+        }
+    }
+
+    #[test]
+    fn a_due_window_is_claimed_once_and_the_schedule_moves_past_now() {
+        let registry = AutomationsRegistry::new();
+        let project = project_id();
+        let created = registry
+            .create(project.clone(), new_automation("nightly"), now())
+            .expect("creates");
+        assert!(
+            created.next_run_at.is_some_and(|next| next > now()),
+            "an enabled schedule is armed at creation"
+        );
+        let window = now() - 60_000;
+        make_due(&registry, &created.id, window);
+
+        let report = registry.sweep_due(now());
+        assert_eq!(report.due, 1);
+        assert_eq!(report.claimed, 1);
+        assert_eq!(report.in_flight, 0);
+        assert!(report.changed());
+
+        let automation = decoded(&registry, &project, &created.id);
+        assert_eq!(automation.run_count, 1);
+        assert_eq!(automation.last_run_at, Some(now()));
+        assert_eq!(
+            automation.last_run_status,
+            Some(AutomationRunState::Pending)
+        );
+        assert!(
+            automation.next_run_at.is_some_and(|next| next > now()),
+            "the next window is in the future, not the one just claimed"
+        );
+
+        let runs = runs_of(&registry, &project, &created.id);
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].trigger, AutomationRunTrigger::Schedule);
+        assert_eq!(runs[0].scheduled_for, window);
+        assert_eq!(runs[0].state, AutomationRunState::Pending);
+        assert_eq!(
+            runs[0].response().status,
+            AutomationRunStatus::Running,
+            "a queued run reads as in flight"
+        );
+    }
+
+    #[test]
+    fn a_second_sweep_does_not_claim_the_window_again() {
+        let registry = AutomationsRegistry::new();
+        let project = project_id();
+        let created = registry
+            .create(project.clone(), new_automation("nightly"), now())
+            .expect("creates");
+        make_due(&registry, &created.id, now() - 1);
+        assert_eq!(registry.sweep_due(now()).claimed, 1);
+
+        let second = registry.sweep_due(now() + 1);
+        assert_eq!(second.due, 0, "the window is behind nextRunAt now");
+        assert_eq!(second.claimed, 0);
+        assert_eq!(runs_of(&registry, &project, &created.id).len(), 1);
+    }
+
+    #[test]
+    fn a_run_in_flight_holds_the_next_window_back() {
+        let registry = AutomationsRegistry::new();
+        let project = project_id();
+        let created = registry
+            .create(project.clone(), new_automation("nightly"), now())
+            .expect("creates");
+        let project_key = project.to_string();
+        let automation_key = created.id.to_string();
+        registry
+            .queue_manual_run(&project_key, &automation_key, None, now())
+            .expect("queues");
+        make_due(&registry, &created.id, now() - 1_000);
+
+        let report = registry.sweep_due(now());
+        assert_eq!(report.due, 1);
+        assert_eq!(report.claimed, 0);
+        assert_eq!(report.in_flight, 1);
+        assert_eq!(
+            decoded(&registry, &project, &created.id).next_run_at,
+            Some(now() - 1_000),
+            "the window waits for the run in flight instead of being dropped"
+        );
+        assert_eq!(runs_of(&registry, &project, &created.id).len(), 1);
+
+        // Once the run is finished, the same window is claimable.
+        let run_id = runs_of(&registry, &project, &created.id)[0].id.clone();
+        registry
+            .close_run(&run_id, &succeeded(), now() + 1)
+            .expect("closes");
+        assert_eq!(registry.sweep_due(now() + 2).claimed, 1);
+        assert_eq!(runs_of(&registry, &project, &created.id).len(), 2);
+    }
+
+    #[test]
+    fn a_scheduled_run_blocks_a_manual_one_through_the_same_single_flight() {
+        let registry = AutomationsRegistry::new();
+        let project = project_id();
+        let created = registry
+            .create(project.clone(), new_automation("nightly"), now())
+            .expect("creates");
+        make_due(&registry, &created.id, now() - 1);
+        assert_eq!(registry.sweep_due(now()).claimed, 1);
+
+        let (run, deduped) = registry
+            .queue_manual_run(
+                &project.to_string(),
+                &created.id.to_string(),
+                None,
+                now() + 1,
+            )
+            .expect("queues");
+        assert!(
+            deduped,
+            "the queued scheduled run is what the request resolves to"
+        );
+        assert_eq!(run.trigger, AutomationRunTrigger::Schedule);
+        assert_eq!(runs_of(&registry, &project, &created.id).len(), 1);
+    }
+
+    #[test]
+    fn a_once_trigger_is_spent_by_its_claim() {
+        let registry = AutomationsRegistry::new();
+        let project = project_id();
+        let mut new = new_automation("one shot");
+        new.trigger = AutomationTrigger::Once {
+            run_at: now() + 60_000,
+        };
+        let created = registry
+            .create(project.clone(), new, now())
+            .expect("creates");
+        make_due(&registry, &created.id, now() - 1);
+
+        let report = registry.sweep_due(now());
+        assert_eq!(report.claimed, 1);
+        let automation = decoded(&registry, &project, &created.id);
+        assert!(
+            !automation.enabled,
+            "a one-shot automation does not fire twice"
+        );
+        assert_eq!(automation.next_run_at, None);
+        assert_eq!(registry.sweep_due(now() + 1).claimed, 0);
+        assert_eq!(runs_of(&registry, &project, &created.id).len(), 1);
+    }
+
+    #[test]
+    fn a_spent_schedule_stops_instead_of_claiming_windows_forever() {
+        let registry = AutomationsRegistry::new();
+        let project = project_id();
+        let mut new = new_automation("never");
+        // A date that never arrives — the claim can only happen once.
+        new.trigger = AutomationTrigger::Schedule {
+            cron: "0 0 30 2 *".into(),
+            timezone: "UTC".into(),
+        };
+        let created = registry
+            .create(project.clone(), new, now())
+            .expect("creates");
+        assert_eq!(
+            created.next_run_at, None,
+            "a schedule with no next occurrence is not armed"
+        );
+        make_due(&registry, &created.id, now() - 1);
+
+        let report = registry.sweep_due(now());
+        assert_eq!(report.claimed, 1);
+        assert_eq!(report.exhausted, 1);
+        let automation = decoded(&registry, &project, &created.id);
+        assert!(!automation.enabled);
+        assert_eq!(automation.next_run_at, None);
+        assert_eq!(registry.sweep_due(now() + 1).claimed, 0);
+    }
+
+    #[test]
+    fn a_schedule_this_build_cannot_evaluate_does_not_fire_blindly() {
+        let registry = AutomationsRegistry::new();
+        let project = project_id();
+        let created = registry
+            .create(project.clone(), new_automation("nightly"), now())
+            .expect("creates");
+        {
+            let mut state = registry.lock();
+            // A zone the database does not know: it parses as a string and is
+            // refused by every attempt to evaluate it.
+            state.automations[0].trigger = json!({ "triggerType": "schedule", "cron": "0 9 * * *", "timezone": "Mars/Olympus" });
+            state.automations[0].next_run_at = Some(now() - 1);
+        }
+
+        let report = registry.sweep_due(now());
+        assert_eq!(report.claimed, 0);
+        assert_eq!(report.unevaluable, 1);
+        assert_eq!(
+            decoded(&registry, &project, &created.id).next_run_at,
+            Some(now() - 1),
+            "the row is left exactly as it was"
+        );
+        assert!(runs_of(&registry, &project, &created.id).is_empty());
+    }
+
+    #[test]
+    fn pausing_cancels_queued_runs_and_resuming_does_not_replay_the_window() {
+        let registry = AutomationsRegistry::new();
+        let project = project_id();
+        let created = registry
+            .create(project.clone(), new_automation("nightly"), now())
+            .expect("creates");
+        let project_key = project.to_string();
+        let automation_key = created.id.to_string();
+        registry
+            .queue_manual_run(&project_key, &automation_key, None, now())
+            .expect("queues");
+        make_due(&registry, &created.id, now() - 60_000);
+
+        let (paused, cancelled) = registry
+            .set_enabled(&project_key, &automation_key, false, now() + 1)
+            .expect("pauses");
+        assert!(!paused.enabled);
+        assert_eq!(paused.next_run_at, None);
+        assert_eq!(cancelled.len(), 1, "the queued run is abandoned");
+
+        let runs = runs_of(&registry, &project, &created.id);
+        assert_eq!(runs[0].state, AutomationRunState::Cancelled);
+        assert_eq!(runs[0].response().status, AutomationRunStatus::Skipped);
+        assert!(runs[0]
+            .skip_reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("paused")));
+
+        // Nothing fires while it is paused, and the missed window is not
+        // replayed on resume.
+        assert_eq!(registry.sweep_due(now() + 2).claimed, 0);
+        let (resumed, cancelled) = registry
+            .set_enabled(&project_key, &automation_key, true, now() + 3)
+            .expect("resumes");
+        assert!(cancelled.is_empty());
+        assert!(resumed.enabled);
+        assert!(
+            resumed.next_run_at.is_some_and(|next| next > now() + 3),
+            "the schedule re-arms from now"
+        );
+    }
+
+    #[test]
+    fn the_run_state_machine_moves_pending_to_running_to_terminal() {
+        let registry = AutomationsRegistry::new();
+        let project = project_id();
+        let created = registry
+            .create(project.clone(), new_automation("nightly"), now())
+            .expect("creates");
+        let (run, _) = registry
+            .queue_manual_run(&project.to_string(), &created.id.to_string(), None, now())
+            .expect("queues");
+        assert_eq!(run.state, AutomationRunState::Pending);
+
+        let started = registry.start_run(&run.id, now() + 1).expect("starts");
+        assert_eq!(started.state, AutomationRunState::Running);
+        assert_eq!(started.started_at, now() + 1);
+
+        let closed = registry
+            .close_run(&run.id, &succeeded(), now() + 2)
+            .expect("closes");
+        assert_eq!(closed.state, AutomationRunState::Succeeded);
+        assert_eq!(closed.finished_at, Some(now() + 2));
+
+        // Terminal is terminal, and a run starts once.
+        assert!(registry
+            .close_run(&run.id, &succeeded(), now() + 3)
+            .is_err());
+        assert!(registry.start_run(&run.id, now() + 4).is_err());
+    }
+
+    #[test]
+    fn a_failure_schedules_a_retry_and_the_third_one_pauses_the_automation() {
+        let registry = AutomationsRegistry::new();
+        let project = project_id();
+        let created = registry
+            .create(project.clone(), new_automation("nightly"), now())
+            .expect("creates");
+
+        let mut failure_at = now();
+        for attempt in 1..=3u32 {
+            make_due(&registry, &created.id, failure_at - 1_000);
+            assert_eq!(
+                registry.sweep_due(failure_at).claimed,
+                1,
+                "attempt {attempt}"
+            );
+            let run_id = runs_of(&registry, &project, &created.id)[0].id.clone();
+            registry
+                .close_run(&run_id, &failed("provider exploded"), failure_at + 1)
+                .expect("closes");
+
+            let automation = decoded(&registry, &project, &created.id);
+            assert_eq!(automation.consecutive_failures, attempt);
+            assert_eq!(automation.last_run_status, Some(AutomationRunState::Failed));
+            if attempt < 3 {
+                let expected =
+                    failure_at + 1 + loom_domain::automation::automation_retry_delay_ms(attempt);
+                assert_eq!(
+                    automation.next_run_at,
+                    Some(expected),
+                    "attempt {attempt} retries sooner than the next window"
+                );
+                assert!(automation.enabled);
+            } else {
+                assert!(!automation.enabled, "three failures pause the automation");
+                assert_eq!(automation.next_run_at, None);
+                assert!(automation
+                    .last_error
+                    .as_deref()
+                    .is_some_and(|error| error.contains("paused after 3 consecutive failures")));
+            }
+            failure_at += 10_000;
+        }
+    }
+
+    #[test]
+    fn a_manual_failure_does_not_schedule_a_retry() {
+        let registry = AutomationsRegistry::new();
+        let project = project_id();
+        let created = registry
+            .create(project.clone(), new_automation("nightly"), now())
+            .expect("creates");
+        let armed = created.next_run_at.expect("armed");
+        let (run, _) = registry
+            .queue_manual_run(&project.to_string(), &created.id.to_string(), None, now())
+            .expect("queues");
+        registry
+            .close_run(&run.id, &failed("nobody asked for this twice"), now() + 1)
+            .expect("closes");
+
+        let automation = decoded(&registry, &project, &created.id);
+        assert_eq!(automation.consecutive_failures, 1);
+        assert_eq!(
+            automation.next_run_at,
+            Some(armed),
+            "a manual failure leaves the schedule where it was"
+        );
+        assert_eq!(
+            automation.last_error.as_deref(),
+            Some("nobody asked for this twice")
+        );
+    }
+
+    #[test]
+    fn a_success_clears_the_failure_state_and_records_the_thread() {
+        let registry = AutomationsRegistry::new();
+        let project = project_id();
+        let created = registry
+            .create(project.clone(), new_automation("nightly"), now())
+            .expect("creates");
+        let (run, _) = registry
+            .queue_manual_run(&project.to_string(), &created.id.to_string(), None, now())
+            .expect("queues");
+        registry
+            .close_run(&run.id, &failed("first try"), now() + 1)
+            .expect("closes");
+        let thread_id = ThreadId::mint();
+        let (second, _) = registry
+            .queue_manual_run(
+                &project.to_string(),
+                &created.id.to_string(),
+                Some("second".into()),
+                now() + 2,
+            )
+            .expect("queues");
+        let outcome = AutomationRunOutcome::Succeeded {
+            thread_id: Some(thread_id.clone()),
+            output: Some("done".into()),
+            exit_code: Some(0),
+        };
+        let closed = registry
+            .close_run(&second.id, &outcome, now() + 3)
+            .expect("closes");
+        assert_eq!(closed.thread_id, Some(thread_id.clone()));
+        assert_eq!(closed.output.as_deref(), Some("done"));
+        assert_eq!(closed.exit_code, Some(0));
+
+        let automation = decoded(&registry, &project, &created.id);
+        assert_eq!(automation.consecutive_failures, 0);
+        assert_eq!(automation.last_error, None);
+        assert_eq!(
+            automation.last_run_status,
+            Some(AutomationRunState::Succeeded)
+        );
+        assert_eq!(automation.last_run_thread_id, Some(thread_id));
+    }
+
+    #[test]
+    fn a_restart_fails_runs_in_flight_and_keeps_queued_ones() {
+        let registry = AutomationsRegistry::new();
+        let project = project_id();
+        let created = registry
+            .create(project.clone(), new_automation("nightly"), now())
+            .expect("creates");
+        let running_id = {
+            let mut state = registry.lock();
+            let mut running = AutomationRun::queue_manual(
+                AutomationRunId::mint(),
+                created.id.clone(),
+                AutomationRunMode::Agent,
+                None,
+                now(),
+            );
+            running.start(now()).expect("starts");
+            let queued = AutomationRun::queue_manual(
+                AutomationRunId::mint(),
+                created.id.clone(),
+                AutomationRunMode::Agent,
+                Some("queued".into()),
+                now(),
+            );
+            state.runs.push(encode_run(&running));
+            state.runs.push(encode_run(&queued));
+            running.id
+        };
+
+        let failed = registry.fail_interrupted_runs(now() + 1);
+        assert_eq!(failed, vec![running_id.clone()]);
+
+        let runs = runs_of(&registry, &project, &created.id);
+        assert_eq!(
+            runs.iter()
+                .filter(|run| run.state == AutomationRunState::Running)
+                .count(),
+            0
+        );
+        assert_eq!(
+            runs.iter()
+                .filter(|run| run.state == AutomationRunState::Pending)
+                .count(),
+            1,
+            "a queued run is durable work and survives the restart"
+        );
+        let interrupted = runs
+            .iter()
+            .find(|run| run.id == running_id)
+            .expect("the interrupted run is there");
+        assert_eq!(interrupted.state, AutomationRunState::Failed);
+        assert!(interrupted
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("restarted")));
+        // The failure is recorded on the automation, exactly as any other one.
+        assert_eq!(
+            decoded(&registry, &project, &created.id).consecutive_failures,
+            1
+        );
+    }
+
+    #[test]
+    fn a_payload_from_before_the_scheduler_migrates_and_is_armed_by_the_sweep() {
+        let registry = AutomationsRegistry::new();
+        let project = project_id();
+        let created = registry
+            .create(project.clone(), new_automation("nightly"), now())
+            .expect("creates");
+        let mut payload = registry.export();
+        payload.version = 1;
+        payload.automations[0].next_run_at = None;
+        // Version 1 could not claim a run, so what it stored as `running` was
+        // a queue entry nothing had picked up.
+        payload.runs.push(StoredAutomationRun {
+            id: AutomationRunId::mint().to_string(),
+            automation_id: created.id.to_string(),
+            run_mode: "agent".into(),
+            status: "running".into(),
+            trigger: "manual".into(),
+            scheduled_for: now(),
+            started_at: now(),
+            ..StoredAutomationRun::default()
+        });
+        registry.restore(payload);
+
+        assert_eq!(registry.export().version, AUTOMATIONS_VERSION);
+        let runs = runs_of(&registry, &project, &created.id);
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].state, AutomationRunState::Pending);
+
+        let report = registry.sweep_due(now());
+        assert_eq!(report.armed, 1, "the schedule is armed by the sweep");
+        assert!(decoded(&registry, &project, &created.id)
+            .next_run_at
+            .is_some_and(|next| next > now()));
+    }
+
+    #[test]
+    fn a_row_this_build_cannot_read_does_not_stop_the_sweep() {
+        let registry = AutomationsRegistry::new();
+        let project = project_id();
+        let created = registry
+            .create(project.clone(), new_automation("nightly"), now())
+            .expect("creates");
+        make_due(&registry, &created.id, now() - 1);
+        {
+            let mut state = registry.lock();
+            state.automations.push(StoredAutomation {
+                enabled: true,
+                ..StoredAutomation::default()
+            });
+        }
+
+        let report = registry.sweep_due(now());
+        assert_eq!(report.unreadable, 1);
+        assert_eq!(report.claimed, 1, "the readable row is still claimed");
+    }
+
+    #[test]
+    fn the_manual_run_request_is_idempotent_by_key() {
+        let registry = AutomationsRegistry::new();
+        let project = project_id();
+        let created = registry
+            .create(project.clone(), new_automation("nightly"), now())
+            .expect("creates");
+        let project_key = project.to_string();
+        let automation_key = created.id.to_string();
+        let (first, deduped) = registry
+            .queue_manual_run(&project_key, &automation_key, Some("key-1".into()), now())
+            .expect("queues");
+        assert!(!deduped);
+        registry
+            .close_run(&first.id, &succeeded(), now() + 1)
+            .expect("closes");
+        let (second, deduped) = registry
+            .queue_manual_run(
+                &project_key,
+                &automation_key,
+                Some("key-1".into()),
+                now() + 2,
+            )
+            .expect("dedupes");
+        assert!(deduped);
+        assert_eq!(second.id, first.id);
+        assert_eq!(runs_of(&registry, &project, &created.id).len(), 1);
     }
 
     #[test]

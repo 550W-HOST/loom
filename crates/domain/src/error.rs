@@ -77,6 +77,17 @@ pub enum DomainError {
         /// The status that was requested.
         to: InteractionStatus,
     },
+    /// An automation run cannot make the requested transition.
+    ///
+    /// Raised when a run that already ended is ended again, or when one that
+    /// was never queued is started: both are claims about work in flight, and a
+    /// silent no-op would hide the race.
+    IllegalAutomationRunTransition {
+        /// The state the run was in.
+        from: crate::automation::AutomationRunState,
+        /// The state that was requested.
+        to: crate::automation::AutomationRunState,
+    },
 }
 
 impl fmt::Display for DomainError {
@@ -102,6 +113,14 @@ impl fmt::Display for DomainError {
             }
             DomainError::IllegalInteractionTransition { from, to } => {
                 write!(f, "an interaction in status {from} cannot move to {to}")
+            }
+            DomainError::IllegalAutomationRunTransition { from, to } => {
+                write!(
+                    f,
+                    "an automation run in state {} cannot move to {}",
+                    from.as_str(),
+                    to.as_str()
+                )
             }
         }
     }

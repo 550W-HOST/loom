@@ -29,6 +29,11 @@ sha2 = "0.10"
 tokio = { workspace = true, features = ["fs", "io-util", "signal"] }
 
 [dev-dependencies]
+# The automation tests assert that a schedule is read in its zone — `nextRunAt`
+# is 09:00 in Paris, not 09:00 UTC — so they read the instant back the way a
+# client would.
+chrono.workspace = true
+chrono-tz.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
 tokio-tungstenite.workspace = true
 tower = { version = "0.5", features = ["util"] }
