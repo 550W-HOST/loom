@@ -95,6 +95,18 @@ keys ≤ 200, script timeouts 1–900 000 ms (default 120 000), run pages 1–20
 into an immediate run: "fire now" is what the manual operation is for. A script
 execution must name exactly one of `script` and `scriptFile`.
 
+**A host environment's `unmanaged` workspace always writes `path`.** The
+contract spells that key as `z.string().min(1).nullable()` inside a `.strict()`
+object, so the key is required and only its *value* may be null. The response
+projection originally omitted the key whenever no path was set, which made an
+automation created with an `unmanaged` workspace fail the contract's own
+validation (`automationResponseSchema` → `workspaceArgsSchema` →
+`$.execution` matches 0 `oneOf` branches). The key is now always written, as
+`null` when there is no path. The gap survived the first conformance suite
+because no test exercised a `host` environment; both projection shapes are now
+asserted, in `crates/domain/src/automation.rs` and over HTTP in
+`crates/server/tests/automations_conformance.rs`.
+
 **Timezone validation is a shape check.** Resolving a zone to an offset needs a
 timezone database, and there is no scheduler to consume the answer yet; an
 unknown-but-well-shaped name is therefore accepted here and will be rejected by
@@ -191,4 +203,6 @@ reference implementation uses (marks, plus the run history).
   with request bodies validated against loom-authored schemas before they are
   sent and response bodies after they are read (through the same validator the
   bb contract routes use), plus a durable restart, a snapshot written before
-  the field existed, and a hand-damaged payload.
+  the field existed, a hand-damaged payload, and both `unmanaged` workspace
+  projections (the `host` environment whose dropped `path` key the contract
+  refuses).
