@@ -570,6 +570,29 @@ async fn handle_command(
             state.host_files.resolve(report);
             None
         }
+        ClientCommand::ScriptReport { report } => {
+            // A script run is reported by the machine that ran it, so the same
+            // ownership rule as every other host-scoped frame applies: one
+            // machine must not end another's run.
+            let Some(host_id) = enrolled_host.clone() else {
+                return Some(ServerMessage::Error {
+                    message: "script reports require an enrolled host".into(),
+                });
+            };
+            if host_id != report.host_id {
+                return Some(ServerMessage::Error {
+                    message: "report names a different host than this connection enrolled as"
+                        .into(),
+                });
+            }
+            // A run the server already settled — because the user paused the
+            // automation, or because the host went quiet and the reaper failed
+            // it — is not an error to report: the kill the user asked for and
+            // the report that follows are racing, and losing that race is the
+            // normal outcome.
+            let _ = state.apply_script_run_report(&host_id, report);
+            None
+        }
         ClientCommand::HostRpcReport { report } => {
             let Some(host_id) = enrolled_host.clone() else {
                 return Some(ServerMessage::Error {

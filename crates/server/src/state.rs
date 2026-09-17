@@ -344,6 +344,10 @@ impl AppState {
                     return;
                 }
                 state.reconcile_runs(now_ms());
+                // A script runs on a machine, so it is reaped by the same tick
+                // that reaps provider runs: a host that went away cannot report
+                // one, and a run left in flight holds its single-flight slot.
+                state.reconcile_script_runs(now_ms());
             }
         });
     }

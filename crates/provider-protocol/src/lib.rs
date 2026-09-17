@@ -34,7 +34,8 @@
 //! [`RunEvent`]: loom_domain::RunEvent
 
 use loom_domain::{
-    EnvironmentId, HostId, HostPermissionMode, ProjectId, RunEvent, RunId, ThreadId,
+    AutomationId, AutomationRunId, EnvironmentId, HostId, HostPermissionMode, ProjectId, RunEvent,
+    RunId, ScriptInterpreter, ThreadId,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -1288,6 +1289,155 @@ pub struct TerminalReport {
     pub request_id: String,
     /// What happened.
     pub outcome: TerminalOutcome,
+}
+
+// ---------------------------------------------------------------------------
+// Automation scripts
+// ---------------------------------------------------------------------------
+//
+// A script automation's script is a **process on the machine that owns the
+// workspace**, so the control plane never runs one: it publishes a request to
+// the host and turns the host's report into the run's result. The shape is the
+// terminal channel's — a request through the relay, a report up the daemon's
+// own socket, and a correlation id — with one difference: this is a
+// fire-and-forget job rather than a conversation, so the correlation id is the
+// automation run itself and there is a cancel frame for it.
+//
+// ```text
+//   server ── ScriptRunDispatch ──▶ relay host:{id} ──▶ daemon
+//   server ◀── ScriptRunReport ──── daemon socket
+//   server ── ScriptRunCancel ────▶ relay host:{id} ──▶ daemon
+// ```
+//
+// `run_id` is both the correlation token and the idempotency key: a redelivered
+// dispatch of a run the daemon already started is dropped, and a report for a
+// run this connection does not own is refused — the same guarantees the
+// provider path has.
+
+/// A request to run one automation script on the host that owns its workspace.
+///
+/// Everything the host needs to run in isolation is here: the workspace to run
+/// in, exactly one source for the script, the interpreter, the environment the
+/// automation declared, and the timeout. The host never calls back for context.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScriptRunDispatch {
+    /// The automation run this executes. The idempotency key and the
+    /// correlation id for the report.
+    pub run_id: AutomationRunId,
+    /// The automation it belongs to.
+    pub automation_id: AutomationId,
+    /// Its project, carried so a report needs no lookup.
+    pub project_id: ProjectId,
+    /// The host expected to run it.
+    pub host_id: HostId,
+    /// The workspace the script runs in: the environment the automation
+    /// resolved to.
+    pub cwd: String,
+    /// The script body, inline. Exactly one of `script` and `script_file` is
+    /// set; the host writes an inline body to its own data directory, which is
+    /// why the report carries the path it used.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub script: Option<String>,
+    /// A path to the script, resolved *inside* `cwd`. The host re-checks
+    /// containment against the real filesystem, so a symlink that leaves the
+    /// workspace is refused there even if the control plane could not see it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub script_file: Option<String>,
+    /// The interpreter to run it with. Absent means "the one the file's
+    /// extension names, or `bash`".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interpreter: Option<ScriptInterpreter>,
+    /// Environment variables the automation declared.
+    ///
+    /// This is the whole of what the script inherits from its owner: the host
+    /// runs it with a cleared environment plus `PATH`, these, and the
+    /// `LOOM_*` identity variables it adds itself. A script therefore cannot
+    /// read the daemon's own environment by accident.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub env: std::collections::BTreeMap<String, String>,
+    /// How long the process may run.
+    pub timeout_ms: u64,
+    /// Wall-clock milliseconds by which the control plane expects a report.
+    pub deadline_ms: u64,
+    /// When the control plane minted the dispatch.
+    pub created_at_ms: u64,
+}
+
+/// What a host did with a [`ScriptRunDispatch`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "outcome", rename_all = "snake_case")]
+pub enum ScriptRunOutcome {
+    /// The process ran, or was killed by its timeout.
+    Exited {
+        /// What the process exited with. `None` means it was killed by a
+        /// signal rather than exiting.
+        exit_code: Option<i32>,
+        /// The captured output, `stdout` then `stderr`, already truncated to
+        /// the host's cap.
+        output: String,
+        /// Whether the cap cut the output short. Truncation is reported, never
+        /// silent, and never a failure.
+        output_truncated: bool,
+        /// Whether the timeout killed it.
+        timed_out: bool,
+        /// The file the host ran, for an inline script it wrote itself.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        script_path: Option<String>,
+    },
+    /// The host refused to run it: no such file, a path outside the workspace,
+    /// or no such interpreter. The run fails with this text.
+    Refused {
+        /// Why, verbatim, so it can be shown to a user.
+        error: String,
+    },
+    /// The host killed it because the control plane asked.
+    Cancelled {
+        /// The output captured before the kill.
+        output: String,
+        /// Whether the cap cut that output short.
+        output_truncated: bool,
+    },
+}
+
+/// A host's report about one script run.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScriptRunReport {
+    /// The host making the report.
+    pub host_id: HostId,
+    /// The automation run being reported on, echoed verbatim.
+    pub run_id: AutomationRunId,
+    /// What happened.
+    pub outcome: ScriptRunOutcome,
+}
+
+/// A request to stop a running script on its host.
+///
+/// Published to the host's scope exactly like the dispatch, so a cancel for a
+/// daemon that is reconnecting is delivered on replay. The daemon kills the
+/// process and reports [`ScriptRunOutcome::Cancelled`]; the control plane has
+/// already settled the run, so a report that arrives afterwards is an
+/// idempotent no-op.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScriptRunCancel {
+    /// The run to stop.
+    pub run_id: AutomationRunId,
+    /// The host expected to be running it.
+    pub host_id: HostId,
+    /// Why, for the daemon's log.
+    pub reason: String,
+    /// When the control plane published it.
+    pub created_at_ms: u64,
+}
+
+/// Where a host writes the script of an automation run it was dispatched.
+///
+/// The sibling of [`thread_storage_root`], for the same reason: the layout
+/// belongs to the daemon and the control plane can only name it from the data
+/// directory the host reported. It lives here so the path a report carries can
+/// be understood by the side that stored it.
+pub fn automation_script_root(data_dir: &str, automation_id: &str) -> String {
+    let trimmed = data_dir.trim_end_matches(['/', '\\']);
+    format!("{trimmed}/automation-scripts/{automation_id}")
 }
 
 /// Where a thread's storage directory lives under a host's data directory.

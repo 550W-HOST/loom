@@ -1317,11 +1317,11 @@ async fn a_schedule_is_armed_in_its_zone_and_a_due_window_becomes_a_queued_run()
 }
 
 #[tokio::test]
-async fn pausing_cancels_a_queued_run_over_http() {
+async fn a_script_run_without_a_machine_fails_and_pausing_still_holds() {
     let (state, app, project, _environment) = server().await;
-    // A *script* automation: the executor deliberately leaves its queued runs
-    // alone (the script executor is a later stage), so this is a run that is
-    // genuinely still waiting when the user pauses.
+    // A *script* automation on a workspace where no machine is enrolled: the
+    // run cannot be handed to anyone, so it fails with a reason a user can act
+    // on rather than waiting forever.
     let mut body = create_body("queued", &loom_domain::EnvironmentId::mint());
     body["execution"] = json!({
         "mode": "script",
@@ -1352,7 +1352,14 @@ async fn pausing_cancels_a_queued_run_over_http() {
         .await,
     )
     .await;
-    assert_eq!(run["run"]["status"], "running");
+    assert_eq!(run["run"]["status"], "failed", "{run}");
+    assert!(
+        run["run"]["error"]
+            .as_str()
+            .is_some_and(|error| error.contains("machine") || error.contains("data directory")),
+        "the failure should say why the script reached no machine: {run}"
+    );
+    assert_eq!(run["run"]["runMode"], "script");
 
     let paused = body_json(
         post(
@@ -1387,10 +1394,7 @@ async fn pausing_cancels_a_queued_run_over_http() {
         &runs,
         "runs response",
     );
-    assert_eq!(runs["runs"][0]["status"], "skipped");
-    assert!(runs["runs"][0]["skipReason"]
-        .as_str()
-        .is_some_and(|reason| reason.contains("paused")));
+    assert_eq!(runs["runs"][0]["status"], "failed");
     assert!(runs["runs"][0]["finishedAt"].is_u64());
 
     // And nothing fires while it is paused, even with a window in the past.

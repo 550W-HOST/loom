@@ -46,8 +46,8 @@
 //! conversation, and the run row carries the thread id.
 
 use loom_domain::automation::{
-    AgentEnvironment, AgentExecution, Automation, AutomationRun, AutomationRunOutcome,
-    WorkspaceKind,
+    AgentEnvironment, AgentExecution, Automation, AutomationExecution, AutomationRun,
+    AutomationRunOutcome, AutomationRunState, WorkspaceKind,
 };
 use loom_domain::{EnvironmentId, EnvironmentKind, MessageRole, ThreadId, ThreadStatus};
 use loom_relay::now_ms;
@@ -61,6 +61,56 @@ use crate::state::AppState;
 /// resolution and dispatch; the next tick takes the rest.
 const DISPATCH_BATCH: usize = 16;
 
+/// What a script run's report did.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ScriptReportOutcome {
+    /// The run was settled from the report.
+    Applied,
+    /// The run is not in flight: already settled by a cancel or a reap, or
+    /// never dispatched. Normal under redelivery, and under a cancel race.
+    Stale,
+    /// The report named a run this connection does not own, or one this host
+    /// was not sent.
+    Mismatch(String),
+    /// No automation run has that id.
+    Unknown,
+}
+
+/// Whether a script's output says nothing.
+///
+/// The reference implementation's rule: a script that printed only whitespace
+/// is `skipped`, not `succeeded`, because the run's meaning was its output.
+fn output_is_empty(output: &Option<String>) -> bool {
+    output.as_deref().map(str::trim).is_none_or(str::is_empty)
+}
+
+/// Whether a script's last non-empty output line is a `{"wakeAgent": false}`
+/// object.
+///
+/// Also the reference implementation's rule, and kept for the same reason: the
+/// run's recorded status is part of the wire. bb's scripts could ask not to
+/// wake the agent that reads their output; loom's script runs wake nothing, but
+/// such a script is still recorded as skipped rather than succeeded, so a
+/// migrated automation's history reads the way it did.
+fn suppresses_wake_agent(output: &str) -> bool {
+    let Some(last) = output
+        .lines()
+        .map(str::trim)
+        .rev()
+        .find(|line| !line.is_empty())
+    else {
+        return false;
+    };
+    serde_json::from_str::<serde_json::Value>(last)
+        .ok()
+        .is_some_and(|parsed| {
+            matches!(
+                parsed.get("wakeAgent"),
+                Some(serde_json::Value::Bool(false))
+            )
+        })
+}
+
 /// What one execution pass did, for the log line and for the tests.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct AutomationExecutionReport {
@@ -70,8 +120,6 @@ pub struct AutomationExecutionReport {
     pub dispatched: usize,
     /// Runs that failed before a dispatch, with the reason recorded.
     pub failed: usize,
-    /// Script runs left queued: the script executor is the next stage.
-    pub skipped_script: usize,
 }
 
 impl AutomationExecutionReport {
@@ -87,20 +135,22 @@ impl AutomationExecutionReport {
         }
         Some(format!(
             "automation execution: {} queued run(s) considered, {} dispatched, {} failed before \
-             dispatch, {} waiting on a script executor",
-            self.considered, self.dispatched, self.failed, self.skipped_script
+             dispatch",
+            self.considered, self.dispatched, self.failed
         ))
     }
 }
 
 impl AppState {
-    /// Dispatches the queued agent runs of every automation, oldest first.
+    /// Dispatches the queued runs of every automation, oldest first.
     ///
     /// This is the second half of the automation loop: the sweep decides *when*
-    /// a run is owed, this decides *where* it runs. A run that cannot be
-    /// dispatched is failed with its reason rather than left queued — a queued
-    /// run holds its automation's single-flight slot, so a stuck queue entry
-    /// would stop the automation from ever running again.
+    /// a run is owed, this decides *where* it runs. An agent run becomes a turn
+    /// through the thread path; a script run becomes a request to the machine
+    /// that owns the workspace. A run that cannot be dispatched is failed with
+    /// its reason rather than left queued — a queued run holds its automation's
+    /// single-flight slot, so a stuck queue entry would stop the automation
+    /// from ever running again.
     pub fn execute_pending_automation_runs(&self, now: u64) -> AutomationExecutionReport {
         let mut report = AutomationExecutionReport::default();
         for run in self.automations.pending_runs(DISPATCH_BATCH) {
@@ -114,13 +164,15 @@ impl AppState {
                 );
                 continue;
             };
-            let Some(execution) = automation.execution.agent().cloned() else {
-                // A script run waits for the script executor. Nothing is wrong
-                // with it, so it is not failed: it is not this stage's work.
-                report.skipped_script += 1;
-                continue;
+            let dispatched = match &automation.execution {
+                AutomationExecution::Agent(execution) => {
+                    self.dispatch_automation_run(&automation, execution, &run, now)
+                }
+                AutomationExecution::Script(execution) => {
+                    self.dispatch_script_run(&automation, execution, &run, now)
+                }
             };
-            match self.dispatch_automation_run(&automation, &execution, &run, now) {
+            match dispatched {
                 Ok(()) => report.dispatched += 1,
                 Err(reason) => {
                     report.failed += 1;
@@ -371,6 +423,324 @@ impl AppState {
                 automation.id, execution.provider_id, configured
             );
         }
+    }
+
+    /// One script run: resolve where it runs, then hand it to that machine.
+    ///
+    /// Nothing here executes anything. The request travels through the relay to
+    /// the host's scope — so a daemon that was reconnecting still receives it
+    /// on replay — and the host's report is what ends the run.
+    ///
+    /// A script has no environment in the contract, so what "the owning daemon"
+    /// means is not a project's workspace but the machine the server already
+    /// prefers for work it cannot place (the primary host, which on a
+    /// single-machine deployment is the enrolled local machine). The workspace
+    /// is that machine's own automation-script directory: the reference
+    /// implementation ran scripts from its plugin directory for the same
+    /// reason, and the host is the only side that can name a path in it.
+    fn dispatch_script_run(
+        &self,
+        automation: &Automation,
+        execution: &loom_domain::automation::ScriptExecution,
+        run: &AutomationRun,
+        now: u64,
+    ) -> Result<(), String> {
+        let host = self
+            .registry
+            .primary_host(self.local_host_id())
+            .ok_or_else(|| {
+                "no connected machine can run this automation's script; start a daemon on the \
+                 machine that owns it"
+                    .to_owned()
+            })?;
+        if host.status != loom_domain::HostStatus::Connected {
+            return Err(format!(
+                "host {} is the machine that owns this automation's script but is not connected",
+                host.id
+            ));
+        }
+        let Some(data_dir) = host.data_dir.clone() else {
+            return Err(format!(
+                "host {} has not reported a data directory, so its script directory cannot be \
+                 named",
+                host.id
+            ));
+        };
+        let cwd =
+            loom_provider_protocol::automation_script_root(&data_dir, &automation.id.to_string());
+        let dispatch = loom_provider_protocol::ScriptRunDispatch {
+            run_id: run.id.clone(),
+            automation_id: automation.id.clone(),
+            project_id: automation.project_id.clone(),
+            host_id: host.id.clone(),
+            cwd,
+            script: execution.script.clone(),
+            script_file: execution.script_file.clone(),
+            interpreter: execution.interpreter,
+            env: execution.env.clone().unwrap_or_default(),
+            timeout_ms: execution.timeout_ms,
+            deadline_ms: now
+                .saturating_add(execution.timeout_ms)
+                .saturating_add(loom_domain::automation::AUTOMATION_SCRIPT_TIMEOUT_DEFAULT_MS),
+            created_at_ms: now,
+        };
+        let payload =
+            serde_json::to_vec(&dispatch).expect("a ScriptRunDispatch always serializes to JSON");
+        if let Err(error) = self.publish(loom_relay::Scope::Host(host.id.to_string()), payload) {
+            return Err(format!(
+                "the script run could not be published to host {}: {error}",
+                host.id
+            ));
+        }
+        // The host is recorded before the run is `running`: a cancel and the
+        // reaper both need it, and a running script with no host is a run
+        // nothing can reach.
+        self.automations
+            .attach_script_dispatch(&run.id, &host.id, now)
+            .map_err(|error| error.to_string())?;
+        Ok(())
+    }
+
+    /// Applies a script run's report.
+    ///
+    /// The run's own state decides what happens: a report for a run the server
+    /// already settled (a cancel, a reap, a duplicated frame) is `Stale`, which
+    /// is what makes a cancel race harmless. A host that is not the one the
+    /// dispatch went to is refused, so one machine cannot end another's run.
+    pub fn apply_script_run_report(
+        &self,
+        host_id: &loom_domain::HostId,
+        report: loom_provider_protocol::ScriptRunReport,
+    ) -> ScriptReportOutcome {
+        let now = now_ms();
+        let Some(run) = self.automations.run(&report.run_id) else {
+            return ScriptReportOutcome::Unknown;
+        };
+        if &report.host_id != host_id {
+            return ScriptReportOutcome::Mismatch(
+                "report names a different host than this connection enrolled as".to_owned(),
+            );
+        }
+        if run.host_id.as_ref() != Some(host_id) {
+            return ScriptReportOutcome::Mismatch(format!(
+                "run {} was not dispatched to host {host_id}",
+                report.run_id
+            ));
+        }
+        if run.state != AutomationRunState::Running {
+            return ScriptReportOutcome::Stale;
+        }
+        let outcome = match report.outcome {
+            loom_provider_protocol::ScriptRunOutcome::Refused { error } => {
+                AutomationRunOutcome::Failed {
+                    error,
+                    thread_id: None,
+                    output: None,
+                    exit_code: None,
+                }
+            }
+            loom_provider_protocol::ScriptRunOutcome::Cancelled { output, .. } => {
+                AutomationRunOutcome::Cancelled {
+                    reason: format!("the host stopped the script: {output}"),
+                }
+            }
+            loom_provider_protocol::ScriptRunOutcome::Exited {
+                exit_code,
+                output,
+                output_truncated,
+                timed_out,
+                script_path,
+            } => {
+                let output = (!output.is_empty()).then(|| {
+                    if output_truncated {
+                        // The record says the output is a prefix of what the
+                        // script printed, so nobody reads a cut log as a whole
+                        // one.
+                        format!("{output}\n[output truncated]")
+                    } else {
+                        output
+                    }
+                });
+                if let Some(path) = script_path {
+                    // The host wrote an inline script somewhere only it knows;
+                    // recording the path is what lets a client show where the
+                    // code that ran lives.
+                    self.automations
+                        .record_stored_script_path(&report.run_id, &path, now);
+                }
+                match (timed_out, exit_code) {
+                    (true, _) => AutomationRunOutcome::Failed {
+                        error: "Script timed out".to_owned(),
+                        thread_id: None,
+                        output,
+                        exit_code: None,
+                    },
+                    (false, Some(0)) if output_is_empty(&output) => {
+                        // Upstream's rule, kept: a script that printed nothing
+                        // has not failed, it has nothing to say.
+                        AutomationRunOutcome::Skipped {
+                            reason: "empty output".to_owned(),
+                            exit_code: Some(0),
+                        }
+                    }
+                    (false, Some(0)) if output.as_deref().is_some_and(suppresses_wake_agent) => {
+                        AutomationRunOutcome::Skipped {
+                            reason: "wakeAgent false".to_owned(),
+                            exit_code: Some(0),
+                        }
+                    }
+                    (false, Some(0)) => AutomationRunOutcome::Succeeded {
+                        thread_id: None,
+                        output,
+                        exit_code: Some(0),
+                    },
+                    (false, Some(code)) => AutomationRunOutcome::Failed {
+                        error: format!("Script exited with code {code}"),
+                        thread_id: None,
+                        output,
+                        exit_code: Some(code),
+                    },
+                    (false, None) => AutomationRunOutcome::Failed {
+                        error: "Script was terminated before it exited".to_owned(),
+                        thread_id: None,
+                        output,
+                        exit_code: None,
+                    },
+                }
+            }
+        };
+        match self.automations.close_run(&report.run_id, &outcome, now) {
+            Ok(closed) => {
+                eprintln!(
+                    "loom-server: automation run {} ({}) {} after a script report",
+                    closed.id,
+                    closed.automation_id,
+                    closed.state.as_str()
+                );
+                ScriptReportOutcome::Applied
+            }
+            Err(error) => {
+                eprintln!(
+                    "loom-server: could not close automation run {}: {error}",
+                    report.run_id
+                );
+                ScriptReportOutcome::Stale
+            }
+        }
+    }
+
+    /// Stops the script runs of one automation and settles them as cancelled.
+    ///
+    /// This is what pausing and deleting reach: an agent run cannot be
+    /// interrupted (the provider protocol has no cancel frame), but a script is
+    /// a process on a known host, so the host is told to kill it. The run is
+    /// settled here rather than waiting for the host: the user asked for it to
+    /// stop, and the report that follows finds nothing in flight — which is
+    /// exactly how a cancel race stays harmless.
+    pub fn cancel_script_runs(
+        &self,
+        automation_id: &str,
+        reason: &str,
+        now: u64,
+    ) -> Vec<AutomationRun> {
+        let mut cancelled = Vec::new();
+        for run in self.automations.running_script_runs() {
+            if run.automation_id.to_string() != automation_id {
+                continue;
+            }
+            let Some(host_id) = run.host_id.clone() else {
+                continue;
+            };
+            let cancel = loom_provider_protocol::ScriptRunCancel {
+                run_id: run.id.clone(),
+                host_id: host_id.clone(),
+                reason: reason.to_owned(),
+                created_at_ms: now,
+            };
+            let payload = serde_json::to_vec(&cancel).expect("a cancel always serializes");
+            if let Err(error) = self.publish(loom_relay::Scope::Host(host_id.to_string()), payload)
+            {
+                eprintln!(
+                    "loom-server: the cancel for automation run {} could not be published: {error}",
+                    run.id
+                );
+            }
+            let outcome = AutomationRunOutcome::Cancelled {
+                reason: reason.to_owned(),
+            };
+            match self.automations.close_run(&run.id, &outcome, now) {
+                Ok(closed) => cancelled.push(closed),
+                Err(error) => eprintln!(
+                    "loom-server: could not settle cancelled automation run {}: {error}",
+                    run.id
+                ),
+            }
+        }
+        cancelled
+    }
+
+    /// Fails script runs whose host can no longer be trusted to report.
+    ///
+    /// A script run is a process on a machine. If that machine is no longer
+    /// connected, or if it never reported within its own timeout plus a
+    /// generous transit margin, the run is not going to end by itself — and a
+    /// run left in flight holds its automation's single-flight slot forever.
+    /// Failing it is the same argument the provider reaper makes.
+    pub fn reconcile_script_runs(&self, now: u64) -> usize {
+        let mut failed = 0;
+        for run in self.automations.running_script_runs() {
+            let reason = match run.host_id.clone() {
+                None => Some("the script run has no host to report it".to_owned()),
+                Some(host_id) => match self.registry.host(&host_id) {
+                    None => Some(format!("host {host_id} is no longer enrolled")),
+                    Some(host) if host.status != loom_domain::HostStatus::Connected => {
+                        Some(format!(
+                        "host {host_id} is no longer connected, so its script run cannot report"
+                    ))
+                    }
+                    Some(_) => {
+                        let timeout = self
+                            .automations
+                            .automation(&run.automation_id)
+                            .and_then(|automation| match automation.execution {
+                                AutomationExecution::Script(script) => Some(script.timeout_ms),
+                                AutomationExecution::Agent(_) => None,
+                            })
+                            .unwrap_or(loom_domain::automation::AUTOMATION_SCRIPT_TIMEOUT_MAX_MS);
+                        let deadline = run
+                            .started_at
+                            .saturating_add(timeout)
+                            // Transit and reporting margin: the host enforces
+                            // the timeout itself, so this only catches a report
+                            // that never came.
+                            .saturating_add(
+                                loom_domain::automation::AUTOMATION_SCRIPT_TIMEOUT_DEFAULT_MS,
+                            );
+                        (now > deadline).then(|| {
+                            format!(
+                                "the host did not report the script run within {}ms of its \
+                                 timeout",
+                                timeout
+                            )
+                        })
+                    }
+                },
+            };
+            let Some(reason) = reason else {
+                continue;
+            };
+            let outcome = AutomationRunOutcome::Failed {
+                error: reason.clone(),
+                thread_id: None,
+                output: None,
+                exit_code: None,
+            };
+            if self.automations.close_run(&run.id, &outcome, now).is_ok() {
+                eprintln!("loom-server: automation run {} failed: {reason}", run.id);
+                failed += 1;
+            }
+        }
+        failed
     }
 
     /// Fails a queued run with a reason, applying the automation's policy.
@@ -1039,13 +1409,11 @@ mod tests {
         state.shutdown();
     }
 
-    #[tokio::test]
-    async fn a_script_run_waits_for_the_next_stage_instead_of_failing() {
-        let state = state();
-        let project = state.registry.personal_project_id();
+    /// A script automation in `project`.
+    fn script_automation(state: &AppState, project: &ProjectId, name: &str) -> Automation {
         use loom_domain::automation::{AutomationExecution, ScriptExecution, ScriptInterpreter};
         let new = NewAutomation {
-            name: "backup".into(),
+            name: name.into(),
             enabled: true,
             trigger: AutomationTrigger::Schedule {
                 cron: "0 3 * * *".into(),
@@ -1057,14 +1425,22 @@ mod tests {
                 interpreter: Some(ScriptInterpreter::Bash),
                 timeout_ms: loom_domain::automation::AUTOMATION_SCRIPT_TIMEOUT_DEFAULT_MS,
                 env: None,
+                stored_script_path: None,
             }),
             origin: AutomationOrigin::Human,
             created_by_thread_id: None,
         };
-        let automation = state
+        state
             .automations
             .create(project.clone(), new, now_ms())
-            .expect("creates");
+            .expect("creates")
+    }
+
+    #[tokio::test]
+    async fn a_script_run_with_no_machine_fails_with_the_reason() {
+        let state = state();
+        let project = state.registry.personal_project_id();
+        let automation = script_automation(&state, &project, "backup");
         let (queued, _) = state
             .automations
             .queue_manual_run(
@@ -1076,12 +1452,118 @@ mod tests {
             .expect("queues");
 
         let report = state.execute_pending_automation_runs(now_ms());
-        assert_eq!(report.skipped_script, 1, "{report:?}");
-        assert_eq!(report.failed, 0);
+        assert_eq!(report.failed, 1, "{report:?}");
+        let run = state.automations.run(&queued.id).expect("stored");
+        assert_eq!(run.state, AutomationRunState::Failed);
+        assert!(run
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("no connected machine")));
+        state.shutdown();
+    }
+
+    #[tokio::test]
+    async fn a_script_run_on_a_machine_without_a_reported_data_directory_fails() {
+        let state = state();
+        // The workspace of a script lives under the machine's data directory,
+        // which the machine reports when it enrolls. A machine that never
+        // reported one cannot be handed a script, and the run says so.
+        let (_host, events) = state
+            .registry
+            .enroll_host(None, "worker".into(), now_ms())
+            .expect("enrolls");
+        for event in &events {
+            state.publish_domain_event(event).expect("publishes");
+        }
+        let project = state.registry.personal_project_id();
+        let automation = script_automation(&state, &project, "backup");
+        let (queued, _) = state
+            .automations
+            .queue_manual_run(
+                &project.to_string(),
+                &automation.id.to_string(),
+                None,
+                now_ms(),
+            )
+            .expect("queues");
+
+        let report = state.execute_pending_automation_runs(now_ms());
+        assert_eq!(report.failed, 1, "{report:?}");
+        let run = state.automations.run(&queued.id).expect("stored");
+        assert_eq!(run.state, AutomationRunState::Failed);
+        assert!(
+            run.error
+                .as_deref()
+                .is_some_and(|error| error.contains("has not reported a data directory")),
+            "{:?}",
+            run.error
+        );
+        assert!(run.host_id.is_none());
+        state.shutdown();
+    }
+
+    #[tokio::test]
+    async fn a_script_run_is_dispatched_to_the_machine_that_owns_it() {
+        let state = state();
+        // A script runs in the machine's own script directory, so the machine
+        // has to have reported where that is.
+        let (host, events) = state
+            .registry
+            .enroll_host_with_data_dir(
+                None,
+                "worker".into(),
+                Some("/var/lib/loom".into()),
+                now_ms(),
+            )
+            .expect("enrolls");
+        for event in &events {
+            state.publish_domain_event(event).expect("publishes");
+        }
+        let host_id = host.id;
+        let project = state.registry.personal_project_id();
+        let automation = script_automation(&state, &project, "backup");
+        let (queued, _) = state
+            .automations
+            .queue_manual_run(
+                &project.to_string(),
+                &automation.id.to_string(),
+                None,
+                now_ms(),
+            )
+            .expect("queues");
+
+        let report = state.execute_pending_automation_runs(now_ms());
+        assert_eq!(report.dispatched, 1, "{report:?}");
+        let run = state.automations.run(&queued.id).expect("stored");
+        assert_eq!(run.state, AutomationRunState::Running);
+        assert_eq!(run.host_id, Some(host_id.clone()));
+        assert!(run.thread_id.is_none(), "a script run has no thread");
+
+        // What the machine receives is the script, its interpreter, its
+        // workspace and the timeout — everything it needs without calling back.
+        let frames = state
+            .relay
+            .replay_scope(&Scope::Host(host_id.to_string()), 50)
+            .expect("replays");
+        let dispatch = frames
+            .iter()
+            .filter_map(|frame| {
+                let value: serde_json::Value = serde_json::from_slice(&frame.payload).ok()?;
+                let payload = value["payload"].as_str()?;
+                serde_json::from_str::<loom_provider_protocol::ScriptRunDispatch>(payload).ok()
+            })
+            .next()
+            .expect("the dispatch reached the host scope");
+        assert_eq!(dispatch.run_id, queued.id);
+        assert_eq!(dispatch.script.as_deref(), Some("echo hi"));
         assert_eq!(
-            state.automations.run(&queued.id).expect("stored").state,
-            AutomationRunState::Pending,
-            "the run is still queued, not failed"
+            dispatch.cwd,
+            format!("/var/lib/loom/automation-scripts/{}", automation.id),
+            "the workspace is the machine's own script directory"
+        );
+        assert_eq!(
+            dispatch.timeout_ms,
+            loom_domain::automation::AUTOMATION_SCRIPT_TIMEOUT_DEFAULT_MS
         );
         state.shutdown();
     }
@@ -1141,6 +1623,199 @@ mod tests {
             created_by_thread_id: Some(thread_id),
         };
         assert!(state.automations.create(project, nested, now_ms()).is_err());
+        state.shutdown();
+    }
+
+    /// Dispatches one script run to an enrolled host and returns the run.
+    async fn dispatched_script_run(
+        state: &AppState,
+        name: &str,
+    ) -> (loom_domain::HostId, AutomationRun) {
+        let (host, events) = state
+            .registry
+            .enroll_host_with_data_dir(
+                None,
+                "worker".into(),
+                Some("/var/lib/loom".into()),
+                now_ms(),
+            )
+            .expect("enrolls");
+        for event in &events {
+            state.publish_domain_event(event).expect("publishes");
+        }
+        let project = state.registry.personal_project_id();
+        let automation = script_automation(state, &project, name);
+        let (queued, _) = state
+            .automations
+            .queue_manual_run(
+                &project.to_string(),
+                &automation.id.to_string(),
+                None,
+                now_ms(),
+            )
+            .expect("queues");
+        let report = state.execute_pending_automation_runs(now_ms());
+        assert_eq!(report.dispatched, 1, "{report:?}");
+        (host.id, state.automations.run(&queued.id).expect("stored"))
+    }
+
+    /// Applies one exit report the way the daemon's socket would.
+    fn report_exited(
+        state: &AppState,
+        host: &loom_domain::HostId,
+        run: &AutomationRun,
+        exit_code: Option<i32>,
+        output: &str,
+        timed_out: bool,
+    ) -> ScriptReportOutcome {
+        state.apply_script_run_report(
+            host,
+            loom_provider_protocol::ScriptRunReport {
+                host_id: host.clone(),
+                run_id: run.id.clone(),
+                outcome: loom_provider_protocol::ScriptRunOutcome::Exited {
+                    exit_code,
+                    output: output.to_owned(),
+                    output_truncated: false,
+                    timed_out,
+                    script_path: None,
+                },
+            },
+        )
+    }
+
+    #[tokio::test]
+    async fn a_script_report_is_the_run_result_and_a_repeat_is_stale() {
+        let state = state();
+
+        // A script that printed something succeeded and kept its output.
+        let (host, run) = dispatched_script_run(&state, "printed").await;
+        assert_eq!(
+            report_exited(&state, &host, &run, Some(0), "hello\n", false),
+            ScriptReportOutcome::Applied
+        );
+        let settled = state.automations.run(&run.id).expect("stored");
+        assert_eq!(settled.state, AutomationRunState::Succeeded);
+        assert_eq!(settled.output.as_deref(), Some("hello\n"));
+        assert_eq!(settled.exit_code, Some(0));
+
+        // The same report again — a redelivery — changes nothing.
+        assert_eq!(
+            report_exited(&state, &host, &run, Some(0), "hello\n", false),
+            ScriptReportOutcome::Stale
+        );
+
+        // A non-zero exit failed the run and kept what it printed.
+        let (host, run) = dispatched_script_run(&state, "failed").await;
+        assert_eq!(
+            report_exited(&state, &host, &run, Some(2), "bad\n", false),
+            ScriptReportOutcome::Applied
+        );
+        let settled = state.automations.run(&run.id).expect("stored");
+        assert_eq!(settled.state, AutomationRunState::Failed);
+        assert_eq!(settled.error.as_deref(), Some("Script exited with code 2"));
+        assert_eq!(settled.output.as_deref(), Some("bad\n"));
+        assert_eq!(settled.exit_code, Some(2));
+
+        // A timeout is a failure with its own words.
+        let (host, run) = dispatched_script_run(&state, "timeout").await;
+        assert_eq!(
+            report_exited(&state, &host, &run, None, "", true),
+            ScriptReportOutcome::Applied
+        );
+        let settled = state.automations.run(&run.id).expect("stored");
+        assert_eq!(settled.state, AutomationRunState::Failed);
+        assert_eq!(settled.error.as_deref(), Some("Script timed out"));
+        state.shutdown();
+    }
+
+    #[tokio::test]
+    async fn a_silent_script_is_skipped_the_way_the_reference_records_it() {
+        let state = state();
+
+        // Whitespace only: the run had nothing to say, so it is skipped rather
+        // than succeeded — with the exit code it did have.
+        let (host, run) = dispatched_script_run(&state, "silent").await;
+        assert_eq!(
+            report_exited(&state, &host, &run, Some(0), "  \n\n", false),
+            ScriptReportOutcome::Applied
+        );
+        let settled = state.automations.run(&run.id).expect("stored");
+        assert_eq!(settled.state, AutomationRunState::Skipped);
+        assert_eq!(settled.skip_reason.as_deref(), Some("empty output"));
+        assert_eq!(settled.exit_code, Some(0));
+        assert!(settled.output.is_none());
+
+        // A trailing `{"wakeAgent": false}` reads as the same "nothing to do"
+        // even though the script printed something.
+        let (host, run) = dispatched_script_run(&state, "quiet").await;
+        assert_eq!(
+            report_exited(
+                &state,
+                &host,
+                &run,
+                Some(0),
+                "worked\n{\"wakeAgent\": false}\n",
+                false
+            ),
+            ScriptReportOutcome::Applied
+        );
+        let settled = state.automations.run(&run.id).expect("stored");
+        assert_eq!(settled.state, AutomationRunState::Skipped);
+        assert_eq!(settled.skip_reason.as_deref(), Some("wakeAgent false"));
+
+        // `true` is not a suppression: the run succeeded and kept the output.
+        let (host, run) = dispatched_script_run(&state, "loud").await;
+        assert_eq!(
+            report_exited(
+                &state,
+                &host,
+                &run,
+                Some(0),
+                "worked\n{\"wakeAgent\": true}\n",
+                false
+            ),
+            ScriptReportOutcome::Applied
+        );
+        let settled = state.automations.run(&run.id).expect("stored");
+        assert_eq!(settled.state, AutomationRunState::Succeeded);
+        state.shutdown();
+    }
+
+    #[tokio::test]
+    async fn a_script_report_from_another_host_is_refused() {
+        let state = state();
+        let (host, run) = dispatched_script_run(&state, "owned").await;
+        let (other, events) = state
+            .registry
+            .enroll_host(None, "intruder".into(), now_ms())
+            .expect("enrolls");
+        for event in &events {
+            state.publish_domain_event(event).expect("publishes");
+        }
+
+        let outcome = state.apply_script_run_report(
+            &other.id,
+            loom_provider_protocol::ScriptRunReport {
+                host_id: other.id.clone(),
+                run_id: run.id.clone(),
+                outcome: loom_provider_protocol::ScriptRunOutcome::Exited {
+                    exit_code: Some(0),
+                    output: "not mine".into(),
+                    output_truncated: false,
+                    timed_out: false,
+                    script_path: None,
+                },
+            },
+        );
+        assert!(
+            matches!(outcome, ScriptReportOutcome::Mismatch(_)),
+            "{outcome:?}"
+        );
+        // The run the dispatch went to is untouched and still in flight.
+        let stored = state.automations.run(&run.id).expect("stored");
+        assert_eq!(stored.state, AutomationRunState::Running);
+        assert_eq!(stored.host_id, Some(host));
         state.shutdown();
     }
 }

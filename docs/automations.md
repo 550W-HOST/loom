@@ -6,9 +6,10 @@ instant, and runs either an agent turn or a script on the machine that owns the
 workspace. Every attempt is a **run** row in the automation's history.
 
 This page documents the delivery so far: the entities, their durable storage,
-the typed HTTP surface (ten operations), the scheduler that fires them and the
-agent execution that runs them. Script execution and realtime invalidation are
-the stages that follow; what is *not* here yet is listed at the end, in as much
+the typed HTTP surface (ten operations), the scheduler that fires them, the
+agent execution that dispatches a turn, and the script execution that runs a
+process on the machine that owns the automation. Realtime invalidation is the
+stage that follows; what is *not* here yet is listed at the end, in as much
 detail as what is.
 
 ## Where the shape comes from
@@ -28,7 +29,7 @@ the plugin loader, its RPC transport and its marketplace stay gone.
 | --- | --- |
 | `Automation` | id, project, name, `enabled`, trigger, execution, origin, `createdByThreadId` and the run bookkeeping (`nextRunAt`, `lastRunAt`, `runCount`, `lastRunStatus`, `lastRunThreadId`, `lastError`) |
 | `AutomationTrigger` | `schedule { cron, timezone }` or `once { runAt }` |
-| `AutomationExecution` | `agent { prompt, providerId, model, reasoningLevel, serviceTier, permissionMode, environment, targetThreadId }` or `script { script \| scriptFile, interpreter, timeoutMs, env }` |
+| `AutomationExecution` | `agent { prompt, providerId, model, reasoningLevel, serviceTier, permissionMode, environment, targetThreadId }` or `script { script \| scriptFile, interpreter, timeoutMs, env, storedScriptPath }` |
 | `AutomationRun` | id, automation, run mode, thread, state, trigger, `skipReason`, `error`, `output`, `exitCode`, `scheduledFor`, `startedAt`, `finishedAt` |
 | `AutomationRunState` | `pending` → `running` → `succeeded` / `failed` / `skipped` / `cancelled`: the state this server stores, which is wider than the four the contract names |
 | `AutomationThreadMark` | thread → (automation, run): the durable half of "which thread did an automation produce" |
@@ -335,8 +336,63 @@ That mapping is also what makes a run's history navigable — the run response's
   dispatched with the configured one. That is the same treatment a thread's
   recorded `model` gets, and for the same reason: the provider protocol carries
   no per-run model.
-- **A script run is left queued.** The executor skips it rather than failing it,
-  because nothing is wrong with it: the script executor is the next stage.
+
+## Script execution
+
+An agent run happens inside a provider; a script run happens **on a machine**.
+The control plane never executes one: it names the owning host, hands the host
+everything the process needs in one frame, and reads the report that comes back.
+The transport is the same host-scoped relay room the host file and host RPC
+channels use — `script.run` and `script.report` in `loom-provider-protocol` —
+so there is no second delivery path to keep alive.
+
+- **Which machine.** The primary host of the workspace the execution names. A
+  script runs where the workspace *is*, so a project with no host of its own
+  falls back to the personal host, and a workspace with none connected fails the
+  run with "no connected machine holds automation …" rather than waiting.
+- **Where the script lives.** In the script directory of that machine:
+  `<data_dir>/automation-scripts/<automationId>/`. The control plane composes
+  the path from the data directory the machine itself *reported* when it
+  enrolled, and the daemon creates the directory before running anything, so the
+  layout stays the host's. An inline `script` is written there once, at first
+  dispatch, and the automation then carries `storedScriptPath` — the file that
+  actually ran, findable by a user. A `scriptFile` is resolved inside the same
+  directory.
+- **Path containment.** Two layers, both reused from the workspace rules: a
+  lexical check that refuses an absolute path or any `..`, and a canonical one
+  that resolves symlinks and refuses a target outside the directory. The refusal
+  names the path and is what the run records.
+- **What the process gets.** `cwd` is the script directory, stdin is null,
+  stdout and stderr are captured, and the environment is *cleared* and rebuilt
+  from `PATH`, whatever the automation declared in `env`, and the run's own
+  identity (`LOOM_SERVER_URL`, `LOOM_PROJECT_ID`, `LOOM_AUTOMATION_ID`,
+  `LOOM_AUTOMATION_RUN_ID`). Nothing else from the daemon's environment reaches
+  it — a script is a run of the automation, not of the daemon.
+- **Time.** `timeoutMs` (default 120 000, at most 900 000) is enforced on the
+  machine. A script that outlives it is killed and the run fails with "Script
+  timed out". Output collection is bounded by the same kind of budget: past it
+  the run keeps draining the pipes — a process is never blocked on a full one —
+  but stops collecting, and the run says so with a truncation marker instead of
+  failing.
+- **Output and exit.** A finished process closes the run: exit code 0 succeeds
+  and keeps the output, any other code fails with "Script exited with code N",
+  and anything the script wrote on stderr is appended to the output rather than
+  hidden. Two cases from the reference are recorded as `skipped` rather than
+  `succeeded`, because the run's meaning was its output: a script that printed
+  only whitespace, and one whose last line is a `{"wakeAgent": false}` object.
+  loom's script runs wake nothing — a script run has no thread — but such a
+  script's history reads the way it did in bb, `exitCode` 0 and all.
+- **Cancelling.** A running script is a process on a known machine, so pausing
+  or deleting its automation stops it: the control plane publishes `script.cancel`
+  to the host's room and settles the run in the same breath, because the user
+  asked for it to stop and the host's report that arrives afterwards finds
+  nothing in flight. The run's state is `cancelled` with the reason; the contract
+  has one "not run" status, so the wire reports `skipped` with a `skipReason`.
+  An agent run cannot be cancelled this way — the provider protocol has no frame
+  for it — which is the difference the pause path encodes.
+- **A machine that stops reporting.** A script run whose host disconnects is
+  failed rather than left open: its process cannot be observed any more, and
+  leaving the row in flight would block the automation's single-flight forever.
 
 ## Restart behaviour
 
@@ -358,9 +414,16 @@ The scheduler's state is the payload, so a restart is a resume:
 
 ## Not here yet
 
-- **No script execution.** An agent run now executes; a script run stays queued
-  until the script executor lands, so `storedScriptPath` is never emitted and an
-  inline script is stored as it was given.
+- **Only two hosts have ever been exercised.** Script execution is verified
+  against one server and one daemon over real sockets — including a second
+  daemon identity that enrolls and is *not* chosen — but not against two
+  machines at once, and not with a workspace whose primary host differs from the
+  host that reported the data directory. The address of the script is derived
+  per run from the workspace's primary host, so the gap is in coverage rather
+  than in a known wrong path.
+- **No script output on the wire while it runs.** Output is recorded on the run
+  when the process ends; nothing streams it, and no relay event is written when
+  a run settles (see realtime, below).
 - **No on-demand environment provisioning.** A `managed-worktree`, `personal` or
   `project-default` execution fails rather than provisioning a workspace per
   run; bind a ready environment with `reuse` or name a host and an explicit
@@ -392,16 +455,30 @@ The scheduler's state is the payload, so a restart is a resume:
   terminal event closes the automation run behind it, a run whose environment or
   host is missing fails with the reason *and* leaves the W-584 timeline on the
   thread, a target thread is reused and checked, an unmanaged workspace is
-  created once, a script run stays queued.
-- `crates/daemon/tests/provider_e2e.rs` — the same path over real sockets and a
-  real provider process: a scheduled run and a manual run each become a turn
-  whose thread carries the stub's output, and the run record agrees with the
-  thread about which conversation it was.
+  created once, a script run with no machine or with a machine that never
+  reported a data directory fails with the reason, a script run is dispatched to
+  the machine that owns it carrying its script, workspace and timeout.
+- `crates/daemon/src/scripts.rs` — the runner in isolation: the interpreter an
+  extension implies, names that cannot escape the directory, an inline script
+  whose output and exit are reported, a non-zero exit reported verbatim, a
+  script that outlives its timeout killed and said so, a cancel that kills the
+  process, the daemon's own environment excluded while a declared variable is
+  visible, output over the budget truncated rather than failed, and both a
+  traversal and a symlink out of the script directory refused.
+- `crates/daemon/tests/provider_e2e.rs` — the same paths over real sockets: a
+  scheduled run and a manual run each become a turn whose thread carries the
+  stub's output, the run record agrees with the thread about which conversation
+  it was, a script automation runs on the daemon and records its output, path and
+  exit code, a non-zero exit fails the run with its code, a script that outlives
+  its timeout is killed and reported, pausing the automation stops a running
+  script and the run settles as cancelled, and a script path that leaves the
+  script directory is refused by the host with the reason on the run.
 - `crates/server/tests/automations_conformance.rs` — every operation over HTTP,
   with request bodies validated against loom-authored schemas before they are
   sent and response bodies after they are read (through the same validator the
   bb contract routes use), plus the zone a schedule is armed in, a due window
-  becoming a queued run, pause cancelling one, a durable restart that neither
+  becoming a queued run, a script run with no machine failing with the reason
+  while a pause still holds, a durable restart that neither
   replays a window nor loses a queued run, a payload from before the scheduler,
   a snapshot written before the field existed, a hand-damaged payload, and both
   `unmanaged` workspace projections (the `host` environment whose dropped `path`

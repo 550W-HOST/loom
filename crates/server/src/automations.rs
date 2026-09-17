@@ -194,6 +194,10 @@ pub struct StoredAutomationRun {
     /// The provider run this one became, once it was dispatched.
     #[serde(default)]
     pub provider_run_id: Option<String>,
+    /// The machine a script run was dispatched to, so a cancel can reach it
+    /// and a run whose host is gone can be reaped.
+    #[serde(default)]
+    pub host_id: Option<String>,
     /// When the run was due.
     #[serde(default)]
     pub scheduled_for: u64,
@@ -390,6 +394,7 @@ fn decode_run(row: &StoredAutomationRun) -> Option<AutomationRun> {
         exit_code: row.exit_code,
         idempotency_key: row.idempotency_key.clone(),
         provider_run_id: row.provider_run_id.clone(),
+        host_id: row.host_id.as_deref().and_then(|raw| raw.parse().ok()),
         scheduled_for: row.scheduled_for,
         started_at: row.started_at,
         finished_at: row.finished_at,
@@ -411,6 +416,7 @@ fn encode_run(run: &AutomationRun) -> StoredAutomationRun {
         exit_code: run.exit_code,
         idempotency_key: run.idempotency_key.clone(),
         provider_run_id: run.provider_run_id.clone(),
+        host_id: run.host_id.as_ref().map(ToString::to_string),
         scheduled_for: run.scheduled_for,
         started_at: run.started_at,
         finished_at: run.finished_at,
@@ -1161,6 +1167,90 @@ impl AutomationsRegistry {
         Ok(run)
     }
 
+    /// Records the host a script run was dispatched to, and moves it to
+    /// `running`.
+    ///
+    /// The state change and the host are one write on purpose: a run that is
+    /// `running` with no host is a run nothing can cancel and nothing can reap,
+    /// which is the one state a script run must never reach.
+    pub fn attach_script_dispatch(
+        &self,
+        run_id: &AutomationRunId,
+        host_id: &loom_domain::HostId,
+        now_ms: u64,
+    ) -> Result<AutomationRun, AutomationError> {
+        let mut state = self.lock();
+        let position = state
+            .runs
+            .iter()
+            .position(|row| row.id == run_id.to_string())
+            .ok_or_else(|| AutomationError::NotFound(format!("run {run_id} is not known")))?;
+        let mut run = decode_run(&state.runs[position]).ok_or_else(|| {
+            AutomationError::Conflict(format!("run {run_id} has invalid stored data"))
+        })?;
+        run.attach_script_dispatch(host_id.clone());
+        run.start(now_ms)?;
+        state.runs[position] = encode_run(&run);
+        Ok(run)
+    }
+
+    /// Records where the host wrote an automation's inline script.
+    ///
+    /// The path belongs to the machine that ran it, so it arrives with a
+    /// report rather than being composed by the control plane. A run whose
+    /// automation cannot be read is a no-op: nothing about the run's result
+    /// depends on this.
+    pub fn record_stored_script_path(&self, run_id: &AutomationRunId, path: &str, now_ms: u64) {
+        let mut state = self.lock();
+        let Some(automation_id) = state
+            .runs
+            .iter()
+            .find(|row| row.id == run_id.to_string())
+            .map(|row| row.automation_id.clone())
+        else {
+            return;
+        };
+        let Some(position) = state
+            .automations
+            .iter()
+            .position(|row| row.id == automation_id)
+        else {
+            return;
+        };
+        let Ok(mut automation) = decode(&state.automations[position]) else {
+            return;
+        };
+        match &mut automation.execution {
+            AutomationExecution::Script(execution) => {
+                if execution.stored_script_path.as_deref() == Some(path) {
+                    return;
+                }
+                execution.stored_script_path = Some(path.to_owned());
+            }
+            AutomationExecution::Agent(_) => return,
+        }
+        automation.updated_at_ms = now_ms;
+        state.automations[position] = encode(&automation);
+    }
+
+    /// Every script run that is executing right now.
+    pub fn running_script_runs(&self) -> Vec<AutomationRun> {
+        let state = self.lock();
+        let mut runs: Vec<AutomationRun> = state
+            .runs
+            .iter()
+            .filter_map(decode_run)
+            .filter(|run| run.state == AutomationRunState::Running)
+            .filter(|run| run.run_mode == AutomationRunMode::Script)
+            .collect();
+        runs.sort_by(|left, right| {
+            left.started_at
+                .cmp(&right.started_at)
+                .then_with(|| left.id.to_string().cmp(&right.id.to_string()))
+        });
+        runs
+    }
+
     /// Closes the automation run that became `provider_run_id`.
     ///
     /// The execution plane reports on provider runs; an automation run is a
@@ -1655,6 +1745,20 @@ pub async fn delete(
     if let Err(response) = require_automation_id(&automation_id) {
         return response;
     }
+    // Stop a script that is still running before its rows disappear: the
+    // process belongs to the machine, and a deleted automation must not leave
+    // one behind that nothing can name any more.
+    let stopped = state.cancel_script_runs(
+        &automation_id,
+        "cancelled: the automation was deleted",
+        loom_relay::now_ms(),
+    );
+    if !stopped.is_empty() {
+        eprintln!(
+            "loom-server: deleting automation {automation_id} stopped {} running script run(s)",
+            stopped.len()
+        );
+    }
     if let Err(error) = state.automations.delete(&project_id, &automation_id) {
         return error_response(error);
     }
@@ -1706,6 +1810,20 @@ async fn set_enabled(
             "loom-server: pausing automation {automation_id} cancelled {} queued run(s)",
             cancelled.len()
         );
+    }
+    // A script that is already executing is a process on a known machine, so a
+    // pause can stop it — unlike an agent run, whose provider protocol has no
+    // cancel frame. The run is settled here and the host's report that follows
+    // finds nothing in flight.
+    if !enabled {
+        let stopped =
+            state.cancel_script_runs(&automation_id, "cancelled: the automation was paused", now);
+        if !stopped.is_empty() {
+            eprintln!(
+                "loom-server: pausing automation {automation_id} stopped {} running script run(s)",
+                stopped.len()
+            );
+        }
     }
     if let Err(response) = persist(&state) {
         return response;
@@ -2385,6 +2503,7 @@ mod tests {
             interpreter: Some(ScriptInterpreter::Bash),
             timeout_ms: loom_domain::automation::AUTOMATION_SCRIPT_TIMEOUT_DEFAULT_MS,
             env: None,
+            stored_script_path: None,
         });
         let created = registry
             .create(project.clone(), new, now())

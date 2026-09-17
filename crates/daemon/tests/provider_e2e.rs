@@ -9,6 +9,7 @@
 //! disappears.
 
 use std::path::Path;
+use std::path::PathBuf;
 use std::time::Duration;
 
 use loom_daemon::{Daemon, DaemonConfig};
@@ -88,11 +89,15 @@ done
 /// Connects and enrolls a daemon, then drives it on a background task.
 async fn enroll_daemon(
     url: &str,
+    data_dir: Option<PathBuf>,
     host_id: Option<HostId>,
     provider: Option<ProviderSpec>,
     run_timeout: Duration,
 ) -> (HostId, tokio::task::JoinHandle<()>) {
     let mut config = DaemonConfig::new(url, "test-daemon");
+    if let Some(data_dir) = data_dir {
+        config.data_dir = data_dir;
+    }
     config.host_id = host_id;
     config.provider = provider;
     config.run_timeout = run_timeout;
@@ -301,7 +306,7 @@ printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":
     })
     .await;
     let (host_id, daemon) =
-        enroll_daemon(&url, None, Some(provider), Duration::from_secs(10)).await;
+        enroll_daemon(&url, None, None, Some(provider), Duration::from_secs(10)).await;
     assert!(
         eventually(|| state
             .registry
@@ -375,7 +380,7 @@ printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":
     })
     .await;
     let (_host_id, daemon) =
-        enroll_daemon(&url, None, Some(provider), Duration::from_secs(10)).await;
+        enroll_daemon(&url, None, None, Some(provider), Duration::from_secs(10)).await;
     assert!(
         eventually(|| state
             .registry
@@ -440,7 +445,7 @@ async fn a_provider_runs_in_the_environment_workspace() {
     })
     .await;
     let (host_id, daemon) =
-        enroll_daemon(&url, None, Some(provider), Duration::from_secs(10)).await;
+        enroll_daemon(&url, None, None, Some(provider), Duration::from_secs(10)).await;
     assert!(
         eventually(|| state
             .registry
@@ -485,7 +490,7 @@ async fn a_dispatch_to_a_missing_workspace_fails_with_a_clear_reason() {
     })
     .await;
     let (host_id, daemon) =
-        enroll_daemon(&url, None, Some(provider), Duration::from_secs(10)).await;
+        enroll_daemon(&url, None, None, Some(provider), Duration::from_secs(10)).await;
     assert!(
         eventually(|| state
             .registry
@@ -541,7 +546,7 @@ exit 7
     })
     .await;
     let (host_id, daemon) =
-        enroll_daemon(&url, None, Some(provider), Duration::from_secs(10)).await;
+        enroll_daemon(&url, None, None, Some(provider), Duration::from_secs(10)).await;
     assert!(
         eventually(|| state
             .registry
@@ -594,7 +599,7 @@ async fn a_hanging_provider_is_killed_and_reported_as_timed_out() {
     })
     .await;
     let (host_id, daemon) =
-        enroll_daemon(&url, None, Some(provider), Duration::from_millis(200)).await;
+        enroll_daemon(&url, None, None, Some(provider), Duration::from_millis(200)).await;
     assert!(
         eventually(|| state
             .registry
@@ -659,6 +664,7 @@ async fn a_dispatch_missed_while_disconnected_is_replayed_on_reconnect() {
     // dispatch it missed is delivered late and executed.
     let (reconnected, daemon) = enroll_daemon(
         &url,
+        None,
         Some(host_id.clone()),
         Some(provider),
         Duration::from_secs(10),
@@ -847,7 +853,7 @@ async fn the_real_pi_process_streams_through_the_bridge() {
     let (url, state) = spawn_server(AppConfig::default()).await;
     // 20s is long enough to see Pi's startup frames and short enough that a
     // model-less environment still ends the turn.
-    let (host_id, daemon) = enroll_daemon(&url, None, None, Duration::from_secs(20)).await;
+    let (host_id, daemon) = enroll_daemon(&url, None, None, None, Duration::from_secs(20)).await;
     assert!(
         eventually(|| state
             .registry
@@ -1050,7 +1056,7 @@ async fn a_permission_request_is_answered_through_the_interaction_routes() {
     })
     .await;
     let (host_id, daemon) =
-        enroll_daemon(&url, None, Some(provider), Duration::from_secs(30)).await;
+        enroll_daemon(&url, None, None, Some(provider), Duration::from_secs(30)).await;
     assert!(
         eventually(|| state
             .registry
@@ -1157,7 +1163,7 @@ async fn a_denied_permission_selects_the_agents_rejecting_option() {
     })
     .await;
     let (host_id, daemon) =
-        enroll_daemon(&url, None, Some(provider), Duration::from_secs(30)).await;
+        enroll_daemon(&url, None, None, Some(provider), Duration::from_secs(30)).await;
     assert!(
         eventually(|| state
             .registry
@@ -1228,7 +1234,7 @@ async fn a_client_cancelled_permission_unblocks_the_agent() {
     })
     .await;
     let (host_id, daemon) =
-        enroll_daemon(&url, None, Some(provider), Duration::from_secs(30)).await;
+        enroll_daemon(&url, None, None, Some(provider), Duration::from_secs(30)).await;
     assert!(
         eventually(|| state
             .registry
@@ -1312,7 +1318,7 @@ async fn an_unanswered_permission_is_cancelled_when_the_run_ends() {
     })
     .await;
     let (host_id, daemon) =
-        enroll_daemon(&url, None, Some(provider), Duration::from_millis(150)).await;
+        enroll_daemon(&url, None, None, Some(provider), Duration::from_millis(150)).await;
     assert!(
         eventually(|| state
             .registry
@@ -1485,7 +1491,7 @@ async fn a_scheduled_automation_run_becomes_a_real_turn() {
     })
     .await;
     let (host_id, daemon) =
-        enroll_daemon(&url, None, Some(provider), Duration::from_secs(10)).await;
+        enroll_daemon(&url, None, None, Some(provider), Duration::from_secs(10)).await;
     assert!(
         eventually(|| state
             .registry
@@ -1583,7 +1589,7 @@ async fn a_manual_automation_run_dispatches_and_closes_with_its_thread() {
     })
     .await;
     let (host_id, daemon) =
-        enroll_daemon(&url, None, Some(provider), Duration::from_secs(10)).await;
+        enroll_daemon(&url, None, None, Some(provider), Duration::from_secs(10)).await;
     assert!(
         eventually(|| state
             .registry
@@ -1646,6 +1652,388 @@ async fn a_manual_automation_run_dispatches_and_closes_with_its_thread() {
     let events = thread_events(&state, &thread_id);
     assert_eq!(terminal_outcome(&events), Some("completed".into()));
     assert_eq!(output_texts(&events), vec!["manual run complete"]);
+
+    daemon.abort();
+    state.shutdown();
+}
+
+/* ------------------------------------------------------------------ */
+/* Automation scripts                                                  */
+/* ------------------------------------------------------------------ */
+
+/// Creates a script automation over the HTTP surface and returns its id.
+///
+/// Scripts need no environment — the machine that owns the automation provides
+/// the workspace — so this is the whole fixture: one POST.
+async fn script_automation(
+    addr: &str,
+    script: &str,
+    script_file: Option<&str>,
+    timeout_ms: u64,
+) -> String {
+    let mut execution = serde_json::json!({
+        "mode": "script",
+        "interpreter": "bash",
+        "timeoutMs": timeout_ms,
+    });
+    match script_file {
+        Some(path) => execution["scriptFile"] = serde_json::json!(path),
+        None => execution["script"] = serde_json::json!(script),
+    }
+    let (status, created) = http(
+        addr,
+        "POST",
+        &format!("/api/v1/projects/{}/automations", state_project(addr).await),
+        Some(&serde_json::json!({
+            "name": "script run",
+            "trigger": { "triggerType": "schedule", "cron": "0 3 * * *", "timezone": "UTC" },
+            "execution": execution,
+            "origin": "human"
+        })),
+    )
+    .await;
+    assert_eq!(status, 201, "{created}");
+    created["id"].as_str().unwrap().to_owned()
+}
+
+/// The personal project's id, which every fixture automation belongs to.
+async fn state_project(addr: &str) -> String {
+    let (status, projects) = http(addr, "GET", "/api/v1/projects", None).await;
+    assert_eq!(status, 200, "{projects}");
+    projects[0]["id"].as_str().unwrap().to_owned()
+}
+
+/// Waits for an automation run to reach a terminal state, over HTTP.
+async fn wait_for_automation_run_over_http(addr: &str, project: &str, run_id: &str) -> Value {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    loop {
+        let (status, runs) = http(
+            addr,
+            "GET",
+            &format!("/api/v1/projects/{project}/automations"),
+            None,
+        )
+        .await;
+        assert_eq!(status, 200);
+        let automation = &runs[0];
+        if automation["lastRunStatus"].is_string() || automation["lastError"].is_string() {
+            // The history is the authority on the run the client asked for.
+            let (status, history) = http(
+                addr,
+                "GET",
+                &format!(
+                    "/api/v1/projects/{project}/automations/{}/runs",
+                    automation["id"].as_str().unwrap()
+                ),
+                None,
+            )
+            .await;
+            assert_eq!(status, 200);
+            if let Some(run) = history["runs"]
+                .as_array()
+                .and_then(|runs| runs.iter().find(|run| run["id"] == run_id))
+            {
+                if run["status"] != "running" {
+                    return run.clone();
+                }
+            }
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the automation run never settled"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+#[tokio::test]
+async fn a_script_automation_runs_on_the_daemon_and_records_its_output() {
+    let dir = tempfile::tempdir().unwrap();
+    let (url, state) = spawn_server(AppConfig {
+        schedule_interval: Duration::ZERO,
+        ..AppConfig::default()
+    })
+    .await;
+    let (host_id, daemon) = enroll_daemon(
+        &url,
+        Some(dir.path().join("data")),
+        None,
+        None,
+        Duration::from_secs(10),
+    )
+    .await;
+    assert!(
+        eventually(|| state
+            .registry
+            .host(&host_id)
+            .map(|host| host.status == HostStatus::Connected)
+            .unwrap_or(false))
+        .await
+    );
+
+    let addr = url.trim_start_matches("http://").to_string();
+    let project = state_project(&addr).await;
+    let automation = script_automation(&addr, "echo script-ran; exit 0", None, 5_000).await;
+    let (status, queued) = http(
+        &addr,
+        "POST",
+        &format!("/api/v1/projects/{project}/automations/{automation}/run"),
+        Some(&serde_json::json!({ "idempotencyKey": "script-1" })),
+    )
+    .await;
+    assert_eq!(status, 201, "{queued}");
+    let run_id = queued["run"]["id"].as_str().unwrap().to_owned();
+
+    let run = wait_for_automation_run_over_http(&addr, &project, &run_id).await;
+    assert_eq!(run["status"], "succeeded", "{run}");
+    assert_eq!(run["runMode"], "script");
+    assert_eq!(run["exitCode"], 0);
+    assert!(
+        run["output"]
+            .as_str()
+            .is_some_and(|output| output.contains("script-ran")),
+        "{run}"
+    );
+
+    // The host wrote the inline script somewhere only it knows, and the
+    // automation says where, so a user can find the code that ran.
+    let (status, stored) = http(
+        &addr,
+        "GET",
+        &format!("/api/v1/projects/{project}/automations/{automation}"),
+        None,
+    )
+    .await;
+    assert_eq!(status, 200);
+    let stored_path = stored["execution"]["storedScriptPath"]
+        .as_str()
+        .unwrap_or_else(|| panic!("the script path should be recorded: {stored}"));
+    assert!(stored_path.ends_with(".sh"), "{stored_path}");
+    assert!(std::path::Path::new(stored_path).exists());
+    // …and it is on the daemon's machine, under the daemon's data directory.
+    assert!(
+        stored_path.contains("/automation-scripts/"),
+        "{stored_path}"
+    );
+
+    daemon.abort();
+    state.shutdown();
+}
+
+#[tokio::test]
+async fn a_non_zero_script_exit_fails_the_run_with_its_code() {
+    let dir = tempfile::tempdir().unwrap();
+    let (url, state) = spawn_server(AppConfig {
+        schedule_interval: Duration::ZERO,
+        ..AppConfig::default()
+    })
+    .await;
+    let (host_id, daemon) = enroll_daemon(
+        &url,
+        Some(dir.path().join("data")),
+        None,
+        None,
+        Duration::from_secs(10),
+    )
+    .await;
+    assert!(
+        eventually(|| state
+            .registry
+            .host(&host_id)
+            .map(|host| host.status == HostStatus::Connected)
+            .unwrap_or(false))
+        .await
+    );
+
+    let addr = url.trim_start_matches("http://").to_string();
+    let project = state_project(&addr).await;
+    let automation = script_automation(&addr, "echo failing 1>&2; exit 3", None, 5_000).await;
+    let (_, queued) = http(
+        &addr,
+        "POST",
+        &format!("/api/v1/projects/{project}/automations/{automation}/run"),
+        Some(&serde_json::json!({})),
+    )
+    .await;
+    let run_id = queued["run"]["id"].as_str().unwrap().to_owned();
+
+    let run = wait_for_automation_run_over_http(&addr, &project, &run_id).await;
+    assert_eq!(run["status"], "failed", "{run}");
+    assert_eq!(run["exitCode"], 3);
+    assert_eq!(run["error"], "Script exited with code 3");
+    assert!(run["output"]
+        .as_str()
+        .is_some_and(|o| o.contains("failing")));
+
+    daemon.abort();
+    state.shutdown();
+}
+
+#[tokio::test]
+async fn a_script_that_outlives_its_timeout_is_killed_and_reported() {
+    let dir = tempfile::tempdir().unwrap();
+    let (url, state) = spawn_server(AppConfig {
+        schedule_interval: Duration::ZERO,
+        ..AppConfig::default()
+    })
+    .await;
+    let (host_id, daemon) = enroll_daemon(
+        &url,
+        Some(dir.path().join("data")),
+        None,
+        None,
+        Duration::from_secs(10),
+    )
+    .await;
+    assert!(
+        eventually(|| state
+            .registry
+            .host(&host_id)
+            .map(|host| host.status == HostStatus::Connected)
+            .unwrap_or(false))
+        .await
+    );
+
+    let addr = url.trim_start_matches("http://").to_string();
+    let project = state_project(&addr).await;
+    let automation = script_automation(&addr, "sleep 30", None, 500).await;
+    let (_, queued) = http(
+        &addr,
+        "POST",
+        &format!("/api/v1/projects/{project}/automations/{automation}/run"),
+        Some(&serde_json::json!({})),
+    )
+    .await;
+    let run_id = queued["run"]["id"].as_str().unwrap().to_owned();
+
+    let run = wait_for_automation_run_over_http(&addr, &project, &run_id).await;
+    assert_eq!(run["status"], "failed", "{run}");
+    assert_eq!(run["error"], "Script timed out");
+    assert!(run["finishedAt"].is_u64());
+
+    daemon.abort();
+    state.shutdown();
+}
+
+#[tokio::test]
+async fn pausing_an_automation_stops_its_running_script() {
+    let dir = tempfile::tempdir().unwrap();
+    let (url, state) = spawn_server(AppConfig {
+        schedule_interval: Duration::ZERO,
+        ..AppConfig::default()
+    })
+    .await;
+    let (host_id, daemon) = enroll_daemon(
+        &url,
+        Some(dir.path().join("data")),
+        None,
+        None,
+        Duration::from_secs(10),
+    )
+    .await;
+    assert!(
+        eventually(|| state
+            .registry
+            .host(&host_id)
+            .map(|host| host.status == HostStatus::Connected)
+            .unwrap_or(false))
+        .await
+    );
+
+    let addr = url.trim_start_matches("http://").to_string();
+    let project = state_project(&addr).await;
+    let automation = script_automation(&addr, "sleep 30", None, 30_000).await;
+    let (_, queued) = http(
+        &addr,
+        "POST",
+        &format!("/api/v1/projects/{project}/automations/{automation}/run"),
+        Some(&serde_json::json!({})),
+    )
+    .await;
+    let run_id = queued["run"]["id"].as_str().unwrap().to_owned();
+
+    // Wait until the machine is actually running it, then pause the automation.
+    assert!(
+        eventually(|| state.automations.running_script_runs().len() == 1).await,
+        "the script should reach the running state"
+    );
+    let (status, paused) = http(
+        &addr,
+        "POST",
+        &format!("/api/v1/projects/{project}/automations/{automation}/pause"),
+        None,
+    )
+    .await;
+    assert_eq!(status, 200, "{paused}");
+
+    let run = wait_for_automation_run_over_http(&addr, &project, &run_id).await;
+    // The contract has one "not run" status, so a cancel surfaces as `skipped`
+    // with the reason; the run's own state is the cancelled one.
+    assert_eq!(run["status"], "skipped", "{run}");
+    assert!(run["skipReason"]
+        .as_str()
+        .is_some_and(|reason| reason.contains("paused")));
+    assert!(run["finishedAt"].is_u64());
+    let stored = state
+        .automations
+        .run(&run_id.parse().unwrap())
+        .expect("stored");
+    assert_eq!(
+        stored.state,
+        loom_domain::automation::AutomationRunState::Cancelled
+    );
+
+    daemon.abort();
+    state.shutdown();
+}
+
+#[tokio::test]
+async fn a_script_path_outside_the_workspace_is_refused_by_the_host() {
+    let dir = tempfile::tempdir().unwrap();
+    let (url, state) = spawn_server(AppConfig {
+        schedule_interval: Duration::ZERO,
+        ..AppConfig::default()
+    })
+    .await;
+    let (host_id, daemon) = enroll_daemon(
+        &url,
+        Some(dir.path().join("data")),
+        None,
+        None,
+        Duration::from_secs(10),
+    )
+    .await;
+    assert!(
+        eventually(|| state
+            .registry
+            .host(&host_id)
+            .map(|host| host.status == HostStatus::Connected)
+            .unwrap_or(false))
+        .await
+    );
+
+    let addr = url.trim_start_matches("http://").to_string();
+    let project = state_project(&addr).await;
+    // A traversal out of the script directory: the host refuses it and the run
+    // carries the reason.
+    let automation = script_automation(&addr, "", Some("../../etc/passwd"), 5_000).await;
+    let (_, queued) = http(
+        &addr,
+        "POST",
+        &format!("/api/v1/projects/{project}/automations/{automation}/run"),
+        Some(&serde_json::json!({})),
+    )
+    .await;
+    let run_id = queued["run"]["id"].as_str().unwrap().to_owned();
+
+    let run = wait_for_automation_run_over_http(&addr, &project, &run_id).await;
+    assert_eq!(run["status"], "failed", "{run}");
+    assert!(
+        run["error"]
+            .as_str()
+            .is_some_and(|error| error.contains("invalid relative path")),
+        "{run}"
+    );
 
     daemon.abort();
     state.shutdown();
