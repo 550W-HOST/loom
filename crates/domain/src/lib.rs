@@ -54,6 +54,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod automation;
 pub mod environment;
 pub mod error;
 pub mod event;
@@ -68,15 +69,25 @@ pub mod scope;
 pub mod section;
 pub mod thread;
 
+pub use automation::{
+    AgentEnvironment, AgentExecution, AgentExecutionTarget, AgentExecutionUpdate, Automation,
+    AutomationExecution, AutomationOrigin, AutomationOverviewEntry, AutomationProjectSummary,
+    AutomationReadProblem, AutomationReadResult, AutomationResponse, AutomationRun,
+    AutomationRunMode, AutomationRunResponse, AutomationRunStatus, AutomationRunTrigger,
+    AutomationThreadMark, AutomationTrigger, AutomationUpdate, ManagedBaseBranch,
+    MissingPromptAutomation, NewAutomation, PermissionMode, ScriptExecution, ScriptInterpreter,
+    UnmanagedBranchSpec, UnreadableAutomation, WorkspaceKind,
+};
 pub use environment::{Environment, EnvironmentKind, EnvironmentStatus};
 pub use error::DomainError;
 pub use event::DomainEvent;
 pub use host::{select_primary_host, Host, HostKind, HostPermissionMode, HostStatus};
 pub use id::{
-    is_turn_request_id, mint_turn_request_id, AttachmentId, AttachmentTag, Entity, EnvironmentId,
-    EnvironmentTag, HostId, HostTag, Id, InteractionId, InteractionTag, MessageId, MessageTag,
-    ProjectId, ProjectSourceId, ProjectSourceTag, ProjectTag, QueuedMessageId, QueuedMessageTag,
-    RunId, RunTag, ThreadId, ThreadSectionId, ThreadSectionTag, ThreadTag, UserId, UserTag,
+    is_turn_request_id, mint_turn_request_id, AttachmentId, AttachmentTag, AutomationId,
+    AutomationRunId, AutomationRunTag, AutomationTag, Entity, EnvironmentId, EnvironmentTag,
+    HostId, HostTag, Id, InteractionId, InteractionTag, MessageId, MessageTag, ProjectId,
+    ProjectSourceId, ProjectSourceTag, ProjectTag, QueuedMessageId, QueuedMessageTag, RunId,
+    RunTag, ThreadId, ThreadSectionId, ThreadSectionTag, ThreadTag, UserId, UserTag,
 };
 pub use interaction::{
     Interaction, InteractionKind, InteractionOrigin, InteractionPayload, InteractionStatus,

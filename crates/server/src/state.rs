@@ -18,6 +18,7 @@ use loom_relay::{now_ms, Relay, Result as RelayResult, Scope};
 use tokio::sync::broadcast;
 
 use crate::artifacts::Artifacts;
+use crate::automations::AutomationsRegistry;
 use crate::domain_state::DomainRegistry;
 use crate::file_previews::FilePreviewRegistry;
 use crate::host_files::HostFileBroker;
@@ -169,6 +170,8 @@ pub struct AppState {
     pub runs: Arc<RunRegistry>,
     /// Server-local settings and UI preferences.
     pub settings: Arc<SettingsRegistry>,
+    /// Automations and their run history.
+    pub automations: Arc<AutomationsRegistry>,
     /// The static UI source the fallback route serves.
     pub ui: Ui,
     /// The daemon binaries this server hosts for self-update.
@@ -271,6 +274,7 @@ impl AppState {
             registry: Arc::new(DomainRegistry::new(started_at_ms)),
             runs: Arc::new(RunRegistry::new()),
             settings: Arc::new(SettingsRegistry::new(&provider_id)),
+            automations: Arc::new(AutomationsRegistry::new()),
             ui,
             artifacts,
             file_previews: Arc::new(FilePreviewRegistry::new()),
@@ -465,6 +469,9 @@ impl AppState {
                 self.registry.restore(snapshot.registry);
                 if let Some(settings) = snapshot.settings {
                     self.settings.restore(settings, &self.provider_spec.name);
+                }
+                if let Some(automations) = snapshot.automations {
+                    self.automations.restore(automations);
                 }
                 let replayed = self.replay_domain_events(watermark);
                 let failed = self.fail_in_flight_runs(runs, now);
@@ -752,6 +759,7 @@ impl AppState {
             registry: self.registry.export(),
             runs: self.runs.all(),
             settings: Some(self.settings.export()),
+            automations: Some(self.automations.export()),
         };
         persistence::write_snapshot(root, &snapshot)
     }

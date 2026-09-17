@@ -111,6 +111,18 @@ entity_marker!(
     "attachment",
     "Marker type for project-attachment identifiers."
 );
+entity_marker!(
+    AutomationTag,
+    "auto",
+    "automation",
+    "Marker type for automation identifiers."
+);
+entity_marker!(
+    AutomationRunTag,
+    "arun",
+    "automation run",
+    "Marker type for automation-run identifiers."
+);
 
 /// A project id, `proj_…`.
 pub type ProjectId = Id<ProjectTag>;
@@ -142,6 +154,13 @@ pub type InteractionId = Id<InteractionTag>;
 pub type ThreadSectionId = Id<ThreadSectionTag>;
 /// A project-attachment id, `att_…`.
 pub type AttachmentId = Id<AttachmentTag>;
+/// An automation id, `auto_…`.
+pub type AutomationId = Id<AutomationTag>;
+/// An automation-run id, `arun_…`.
+///
+/// Distinct from [`RunId`] (`run_…`): that one identifies a provider run the
+/// control plane dispatches, this one a row in an automation's history.
+pub type AutomationRunId = Id<AutomationRunTag>;
 
 /// A prefixed identifier for entity kind `T`.
 ///

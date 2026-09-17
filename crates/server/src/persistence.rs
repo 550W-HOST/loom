@@ -35,6 +35,7 @@ use std::path::{Path, PathBuf};
 use loom_relay::event_id::EventId;
 use serde::{Deserialize, Serialize};
 
+use crate::automations::AutomationState;
 use crate::domain_state::RegistrySnapshot;
 use crate::runs::RunRecord;
 use crate::settings::SettingsSnapshot;
@@ -73,6 +74,15 @@ pub struct DomainSnapshot {
     /// the current settings defaults.
     #[serde(default)]
     pub settings: Option<SettingsSnapshot>,
+    /// Automations and their run history.
+    ///
+    /// `#[serde(default)]` is the migration path for every snapshot written
+    /// before automations existed: the rest of the snapshot restores unchanged
+    /// and the workspace simply has no automations. The payload carries its own
+    /// version for the same reason settings do — an additive change to one of
+    /// them must not force the other to be discarded.
+    #[serde(default)]
+    pub automations: Option<AutomationState>,
 }
 
 /// Why a snapshot could not be read or written.
@@ -220,6 +230,7 @@ mod tests {
             registry: registry.export(),
             runs: Vec::new(),
             settings: Some(SettingsSnapshot::default()),
+            automations: Some(crate::automations::AutomationState::current()),
         }
     }
 
