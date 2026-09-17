@@ -45,14 +45,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Ok(raw) if !raw.trim().is_empty() => Some(raw.parse::<HostId>()?),
         _ => None,
     };
-    // The UI is served from the same origin as the API. By default that is the
-    // reference client compiled into this binary; LOOM_UI_DIR points at a built
-    // bundle (production) and LOOM_UI_PROXY at a dev server (development).
+    // The UI is served from the same origin as the API, and it is always the
+    // product app: LOOM_UI_DIR points at a built bundle (production) and
+    // LOOM_UI_PROXY at a frontend dev server (development). A server with
+    // neither cannot serve a client at all, so it refuses to start rather than
+    // fall back to something else.
     let ui_dir = std::env::var_os("LOOM_UI_DIR").map(std::path::PathBuf::from);
     let ui_proxy = match std::env::var("LOOM_UI_PROXY") {
         Ok(url) if !url.trim().is_empty() => Some(url),
         _ => None,
     };
+    if ui_dir.is_none() && ui_proxy.is_none() {
+        return Err(
+            "no UI source is configured: set LOOM_UI_DIR to a built product bundle \
+             (build it with `pnpm --filter @bb/app run build`; deploy/install.sh installs it \
+             under <prefix>/share/loom/ui), or LOOM_UI_PROXY to a frontend dev server"
+                .into(),
+        );
+    }
     // Where the daemon binaries this server hosts live. Unset (the default)
     // falls back to the directory holding this executable, which is exactly
     // where `deploy/install.sh` puts the matching `loom-daemon`, so a default

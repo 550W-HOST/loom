@@ -10,9 +10,10 @@ machine-readable export under `contracts/bb/` and the decision it encodes.
 There are two protocol surfaces in loom, and they have different rules.
 
 **1. UI-facing surface — adopt bb's contract wholesale (subset, no additions).**
-The plan is to serve bb's UI bundle unchanged (`LOOM_UI_DIR`), and bb's client
-code is the consumer. A UI cannot negotiate a dialect, so anything the UI can
-see must be byte-compatible with bb. That covers:
+The UI is the product app built from bb's client source and served from
+`LOOM_UI_DIR`, and bb's client code is the consumer. A UI cannot negotiate a
+dialect, so anything the UI can see must be byte-compatible with bb. That
+covers:
 
 - `/api/v1/*` HTTP routes, shapes and error bodies,
 - `/ws` client messages (`subscribe`/`unsubscribe`/`ping` -> `changed`/`pong`),
@@ -318,9 +319,11 @@ one, falling back to loom's thread id only when it does not.
 
 loom has no goal entity. A goal is a projection of the thread's own run log: the
 contract's `thread/goal/updated` and `thread/goal/cleared` events are the only
-record, exactly as the reference client's `extractThreadTimelineGoal` treats
-them. `threads.clearGoal` therefore publishes `thread/goal/cleared` and is
-idempotent — the next `threads.timeline` read reports `goal: null`. Nothing was
+record, exactly as the `@bb/thread-view` projection the app renders timelines
+with treats them (`extractThreadTimelineGoal` in
+`ui/packages/thread-view/src/goal-snapshot-extraction.ts`). `threads.clearGoal`
+therefore publishes `thread/goal/cleared` and is idempotent — the next
+`threads.timeline` read reports `goal: null`. Nothing was
 added to the entity view, because a stored goal would be a second source of
 truth that could disagree with the log.
 

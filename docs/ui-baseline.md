@@ -14,10 +14,10 @@ UI package 追溯；不能改用 bb `main`、版本错位的 npm 包或 opaque b
 - pinned checkout 中 `apps/app` 的 tree、`package.json` bytes/SHA-256、完整
   dependency snapshot/digest，以及 7 个 upstream package tree/package.json
   dependency digest；
-- loom 中 reference app 与 adapted package 的独立 tree/package.json/digest、
+- loom 中 product app 与 adapted package 的独立 tree/package.json/digest、
   workspace/runtime/development dependency 闭包；
-- 当前生成的 `ui/app.js` 的 bytes/SHA-256，以及每个导入项的本地路径、上游
-  路径和 disposition；
+- 本地 product app（`apps/app`）的完整文件集合、逐文件 bytes/SHA-256，以及每个
+  导入项的本地路径、上游路径和 disposition；
 - `contracts/bb/manifest.json` 的 hash、五份 JSON Schema artifact 的 hash，
   以及 contract exporter 使用的 source package 清单。
 
@@ -44,9 +44,12 @@ ancestor symlink 仍会失败。设置 `BB_SRC` 或传入 `--upstream` 后，检
 
 ## App 闭包
 
-当前已将 bb 的 `apps/app` 以 pinned commit 的精确源码快照导入 `loom/apps/app`，但
-没有把它作为 bundle source，也没有启用 workspace、默认 build 或 runtime。`ui/src`
-仍是 loom-native 的 reference client，`ui/app.js` 是其可重建的服务产物。
+`loom/apps/app` 现在是 bb `apps/app` 的 ledger 管控 source port
+（`registry.app.disposition = source-port`）：它在 pnpm workspace 内，
+`pnpm --filter @bb/app run build` 产出 `apps/app/dist`，服务器从 `LOOM_UI_DIR`
+提供该目录，它是本仓库唯一的 UI。buildless 的 `ui/` reference client 已删除
+（`ui/src`、`ui/app.js`、`ui/index.html`、`ui/style.css` 及其 esbuild 构建脚本）；
+`ui/` 下保留的 `ui/packages/*` 是 app 构建所依赖的 pinned bb package。
 `ui/provenance.json` 现在同时保存 upstream 的 commit/tree、完整 app 文件集合及
 逐文件 bytes/SHA-256，以及本地 product-app 快照；校验器会把两者逐项比较。初始
 初始无修改状态由 `ui/app-patch-ledger.json` 记录。ledger v2 只接受逐文件
@@ -63,7 +66,7 @@ RPC。首次 app adaptation 必须把 app 状态从 `exact-snapshot` 切换为
 
 | 层 | 当前路径 | 依赖/边界 | 决策 |
 | --- | --- | --- | --- |
-| App shell | `ui/src` | `@bb/domain`、`@bb/thread-view`，server 由同源 relay client 访问 | 保留 loom-native 替代 |
+| App shell | `apps/app` | `ui/packages/*`（domain、thread-view、server-contract…）；HTTP 与 `/ws` 由 `loom-http`/`ws.ts` 访问同源 server | 本仓库唯一 UI；source port，由 `ui/app-patch-ledger.json` 逐文件管控 |
 | Domain | `ui/packages/domain` | `zod` | 保留 source；作为类型和事件解码基础 |
 | Server contract | `ui/packages/server-contract` | `@bb/domain`、`zod` | 保留 source；HTTP contract 仍由 `contracts/bb` 校验 |
 | Thread view | `ui/packages/thread-view` | domain、server-contract、`zod` | 保留 source；纯 event-to-timeline projection |
@@ -79,7 +82,7 @@ RPC。首次 app adaptation 必须把 app 状态从 `exact-snapshot` 切换为
 | Browser SDK | `ui/packages/sdk` | core-ui | compile-only method surface；调用统一 typed unavailable，W-593 替换为 loom contract mapping |
 | Automations UI | `ui/packages/automations` | domain、shared-ui、React、zod | 原 overview/detail/editor + 10-operation typed client；无 generic plugin runtime，W-599 接后端 |
 | Static product inputs | root changelog/metadata/logo，`ui/vitest.shared.ts` | pinned blobs | 精确内容与 mode；不引入平台 runtime |
-| `apps/app` assembly | `apps/app`（精确快照） | pinned bb source；当前不在 pnpm workspace，不进入默认 build/runtime | 已导入；后续独立 source port |
+| `apps/app` assembly | `apps/app`（source port） | pinned bb source；在 pnpm workspace 内，`pnpm --filter @bb/app run build` 产出服务 bundle | 本仓库唯一 UI；adaptation 由 ledger 记录，源码不在 workspace 外另存 |
 | bb plugin runtime | 不存在 | 任意 JS plugin host、发现和生命周期 | 移除；禁止加入闭包 |
 
 十一个 adapted package、三个 exact source package 及其传递 workspace 依赖，以及
@@ -134,17 +137,18 @@ action registry 中删除，不能留下 dead navigation。
    的负例，再运行
    `node scripts/check-ui-provenance.mjs --write`，审阅 hash、imports 和
    disposition；source pin 变化必须和 package/contract 变化在同一 PR 说明。
-6. 运行 UI typecheck、test、build 以及 Rust contract/API coverage 检查。
+6. 运行 UI typecheck、test、build、`check:bundle` 以及 Rust contract/API
+   coverage 检查。
 
-7. **W-604 composition status.** `apps/app` is now a ledger-controlled
+7. **W-604 composition status.** `apps/app` is a ledger-controlled
    `source-port`: the composer-first shell, thread workspace, first-party
    Settings, and direct Automations routes compile and build without the generic
    plugin SDK/runtime. Plugin marketplace, Skills, and desktop-browser surfaces
    are removed or fail closed, and stale persisted plugin/browser panes are
-   pruned. The product app is still a candidate build: W-593 owns real loom
-   HTTP/realtime contract mapping, W-599 owns the Automations backend, and the
-   reference client remains the served fallback until final browser/release
-   acceptance.
+   pruned. The loom transport is in place — `loom-http.ts` over the route table,
+   `ws.ts` on the public `/ws` socket ([`ui.md`](ui.md)) — and the app is the only
+   UI the server serves, from its build output (`apps/app/dist`) via
+   `LOOM_UI_DIR`.
 
 本仓库是 hard fork，没有 upstream remote，也不维护 bb patch series；同步是
 精确 source snapshot 加本仓库内可审计的适配提交，不是外部 patch series。

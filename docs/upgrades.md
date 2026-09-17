@@ -1,14 +1,23 @@
 # Upgrading
 
 loom ships three coordinated artifacts. The server and daemon negotiate one
-internal protocol number; the bundled UI uses the separately exported bb public
+internal protocol number; the UI bundle uses the separately exported bb public
 schema and WebSocket subprotocol:
 
 | Artifact | What it is | Where it runs |
 | --- | --- | --- |
 | **server** | `loom-server` binary | one machine |
 | **daemon** | `loom-daemon` binary | every execution machine |
-| **package** | the built UI bundle (the ported bb app served by `LOOM_UI_DIR`) | served by the server to every client |
+| **package** | the built UI bundle — the product app from `apps/app` | the server's `LOOM_UI_DIR` (`/usr/local/share/loom/ui`), served to every client |
+
+The package is a directory on the server's disk, not something compiled into
+either binary: the release archive carries it as `ui/`
+([`releasing.md`](releasing.md)), the server image copies it to
+`/usr/local/share/loom/ui`, and `deploy/install.sh` puts it at
+`<prefix>/share/loom/ui`. A server with no bundle — and no development-only
+`LOOM_UI_PROXY` — refuses to start rather than serving nothing
+([`ui.md`](ui.md)), which is why upgrading the server means upgrading its bundle
+in the same step.
 
 This page defines what "agree" means, how the daemon follows a server upgrade on
 its own, and how to roll back. The guiding lesson is bb #3143: when a self-update

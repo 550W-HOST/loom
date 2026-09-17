@@ -25,9 +25,9 @@ cannot be labelled with a version its own files do not report.
 
 | Job | Runs | What it proves |
 | --- | --- | --- |
-| `ui` | `pnpm install --frozen-lockfile`, `typecheck`, `test`, then rebuild the bundle and require the tree to be unchanged | the bundle compiled into both binaries is the one `ui/src` produces |
+| `ui` | `pnpm install --frozen-lockfile`, `typecheck`, `test`, `pnpm --filter @bb/app run build`, `pnpm run check:bundle`, then the provenance and port-plan checks | the bundle the archive stages is built from the tag's own source, holds its budget, and the app tree still matches its manifest |
 | `build` (matrix: x86_64, aarch64) | `cargo build --release --locked --target <triple>` | the binaries compile from the tag with the pinned lockfile |
-| `build` → verify | `scripts/verify-release-binaries.sh` | the x86_64 pair runs, answers `/health`, serves its UI, hosts its own `loom-daemon` with a matching digest and a `304` for a conditional request, creates a project and enrols a daemon; the aarch64 pair is a self-contained aarch64 artifact carrying the tag's commit |
+| `build` → verify | `scripts/verify-release-binaries.sh` | the x86_64 pair runs, answers `/health`, serves the staged UI bundle from `LOOM_UI_DIR`, hosts its own `loom-daemon` with a matching digest and a `304` for a conditional request, creates a project and enrols a daemon; the aarch64 pair is a self-contained aarch64 artifact carrying the tag's commit |
 | `build` → package | `scripts/package-release.sh` | the release page's files exist, with the layout `deploy/install.sh` expects |
 | `assemble` | `sha256sum`, version and tag check, `RELEASE_NOTES.md` | one checksum file covering both targets, notes that name the protocol version, and no mislabelled tag |
 | `images` | `docker buildx create --driver docker-container`, `scripts/build-container-images.sh` | both container images build from the checksummed files, are pushed as one manifest list each, and the `linux/amd64` halves run and report the version above |
@@ -37,30 +37,25 @@ cannot be labelled with a version its own files do not report.
 needs `packages: write`, and `release` the only job that is skipped on a manual
 run.
 
-## Why the bundle is rebuilt before Rust is compiled
+## Why the app is built before the binaries are packaged
 
-`crates/server/src/ui.rs` embeds the UI at compile time:
-
-```rust
-const INDEX_HTML: &[u8] = include_bytes!("../../../ui/index.html");
-const APP_JS: &[u8] = include_bytes!("../../../ui/app.js");
-const STYLE_CSS: &[u8] = include_bytes!("../../../ui/style.css");
-```
-
-So a `cargo build` compiles whichever `ui/app.js` is in the tree, and a bundle
-that drifted from `ui/src` produces a server that is wrong only in a browser —
-the failure [`ci.md`](ci.md#the-ui-job) describes at length. The release
-workflow therefore runs the same `ui` job as CI and gates every build behind it,
-rather than trusting that the tag passed CI:
+The UI is no longer inside the server binary. It is the product app's build
+output, staged into the archive as `ui/` and pointed at with `LOOM_UI_DIR`
+([`ui.md`](ui.md)), and a server started without it does not serve a fallback —
+it refuses to start. Nothing in a `cargo build` produces it, so the release
+workflow builds the app itself and gates every Rust job behind that, rather than
+trusting that the tag passed CI:
 
 ```bash
-pnpm --filter @loom/ui run build
-git diff --exit-code -- ui/
-test -z "$(git status --porcelain -- ui/)"
+pnpm --filter @bb/app run build     # → apps/app/dist
+pnpm run check:bundle
 ```
 
-Both halves are needed for the same reason they are in CI: `git diff` catches a
-modified `ui/app.js` and `git status` catches one the build added or removed.
+A tag that skipped this would publish an archive whose server cannot serve a UI
+at all — a defect visible only in a browser, and only after an operator had
+already deployed it. The budget check is the same ratchet CI applies
+([`ci.md`](ci.md#the-bundle-budget)), repeated here because a release is the one
+build nobody gets to re-run before it is used.
 
 ## Targets, and how aarch64 links
 
@@ -105,10 +100,10 @@ dynamic section.
 
 | Asset | Contents |
 | --- | --- |
-| `loom-<version>-<target>.tar.gz` | the two binaries, `deploy/`, `README.md` |
+| `loom-<version>-<target>.tar.gz` | the two binaries, `deploy/`, `README.md`, and the UI bundle at `ui/` |
 | `loom-server-<target>` | the control plane alone |
 | `loom-daemon-<target>` | the execution daemon alone |
-| `SHA256SUMS` | checksums for everything above, with relative names |
+| `SHA256SUMS` | checksums for every file above, with relative names |
 
 The archive's top directory holds the binaries *unnamed* —
 `loom-0.1.0-x86_64-unknown-linux-musl/loom-server`, not `…/loom-server-x86_64-…`
@@ -121,6 +116,26 @@ tar xzf loom-0.1.0-x86_64-unknown-linux-musl.tar.gz
 cd loom-0.1.0-x86_64-unknown-linux-musl
 sudo LOOM_BIN_SOURCE=. ./deploy/install.sh server
 ```
+
+`ui/` beside the binaries is the product app's build output (`apps/app/dist`) —
+`index.html`, `assets/**` with content-hashed names, and the PWA manifest and
+icons. It is not listed in `SHA256SUMS` line by line: that file names
+`loom-server-*`, `loom-daemon-*` and `*.tar.gz`, so the bundle is covered through
+the archive's own digest, and verifying the tarball verifies everything inside
+it.
+
+`deploy/install.sh server` copies the bundle to `<prefix>/share/loom/ui` —
+`/usr/local/share/loom/ui` under the default prefix — and makes sure
+`LOOM_UI_DIR` in `/etc/loom/loom-server.env` names that path. It takes the
+bundle from `--ui-dir` if given, otherwise from a checkout's `apps/app/dist`,
+otherwise from the archive's own `ui/`, and it replaces the target rather than
+merging into it so an upgrade does not accumulate the previous release's
+content-hashed files. A freshly created environment file gets `LOOM_UI_DIR`
+filled in; an existing one without an uncommented `LOOM_UI_DIR=` line fails the
+install with the value to add, rather than being rewritten. A missing bundle
+fails with the command that produces one. The server itself is the last word on
+this: with no `LOOM_UI_DIR` and no development-only `LOOM_UI_PROXY` it exits at
+startup instead of serving nothing ([`ui.md`](ui.md)).
 
 `SHA256SUMS` names its files without a directory prefix, so `sha256sum -c
 SHA256SUMS` works in whatever directory a downloader put them in.
@@ -167,6 +182,18 @@ follows it, naming the host that daemon enrolled as — `projects.create` takes 
 source — so the claim is that the pair works together, not that each half works
 alone. And the binaries are asked about themselves rather than read from the
 source tree, so what is checked is the file that will be downloaded.
+
+The two asset lines in that block are **historical**: `/app.js` and `/style.css`
+are the buildless reference client, which no longer exists, and the run predates
+the app bundle. What the script checks now is the staged bundle instead: it takes
+`--ui-dir DIR` (default `<bin-dir>/ui`, which is the archive's own `ui/` beside
+the binaries, or `apps/app/dist` from a checkout), starts the server with
+`LOOM_UI_DIR` — required, there is no embedded fallback — and then asserts that
+the served `index.html` names its `/assets/*.js` and `/assets/*.css`, that those
+two paths answer `200` with their own content types, that a deep client route
+answers the same bytes as the shell (so history routing works through the real
+static server), and that an unknown `/api/v1` route is a JSON `404` rather than
+the shell.
 
 R3 added three lines to that output. They were recorded on a **local rehearsal**
 from a checkout rather than by a tag run, which is why the digests and the
@@ -221,11 +248,11 @@ Every step the pipeline runs, run by hand from the repository root. The same
 commands, in the same order:
 
 ```bash
-# 1. the bundle that will be compiled in must be the committed one
+# 1. the bundle the archive will carry
 pnpm install --frozen-lockfile
 pnpm run typecheck && pnpm run test
-pnpm --filter @loom/ui run build
-git diff --exit-code -- ui/ && test -z "$(git status --porcelain -- ui/)"
+pnpm --filter @bb/app run build
+pnpm run check:bundle
 
 # 2. both targets, into target/<triple>/release
 cargo build --release --locked --target x86_64-unknown-linux-musl
@@ -233,11 +260,12 @@ cargo build --release --locked --target aarch64-unknown-linux-musl
 
 # 3. run the one this machine can run; check the other is what it claims
 scripts/verify-release-binaries.sh target/x86_64-unknown-linux-musl/release \
+  --ui-dir apps/app/dist \
   --expect-commit "$(git rev-parse HEAD)" --expect-target x86_64-unknown-linux-musl
 scripts/verify-release-binaries.sh target/aarch64-unknown-linux-musl/release --elf-only \
   --expect-target aarch64-unknown-linux-musl --expect-commit "$(git rev-parse HEAD)"
 
-# 4. dist/: the two bare binaries and the archive, per target
+# 4. dist/: the two bare binaries and the archive, per target, with ui/ inside it
 scripts/package-release.sh x86_64-unknown-linux-musl
 scripts/package-release.sh aarch64-unknown-linux-musl
 
@@ -298,15 +326,20 @@ on a fresh runner they are not.
 | Step | Cold |
 | --- | --- |
 | `pnpm install --frozen-lockfile` | 7.9 s |
-| `pnpm run typecheck` (8 projects) | 27.1 s |
-| `pnpm run test` (18 tests) | 19.1 s |
-| rebuild the bundle + the committed-bundle check | 5.3 s |
+| `pnpm run typecheck` | 27.1 s |
+| `pnpm run test` | 19.1 s |
+| `rebuild the reference bundle + the committed-bundle check` | 5.3 s |
 | `cargo build --release --locked --target x86_64-unknown-linux-musl` | 26.7 s |
 | `cargo build --release --locked --target aarch64-unknown-linux-musl` | 27.6 s |
 | `verify-release-binaries.sh` (x86_64, executed) | 0.5 s (0.8 s with the install-route checks) |
 | `verify-release-binaries.sh --elf-only` (aarch64) | 0.2 s |
 | `package-release.sh` (one target) | 0.8 s |
 | `SHA256SUMS` + `RELEASE_NOTES.md` (the `assemble` job) | 0.5 s |
+
+The bundle row measured the reference client's esbuild step and its
+committed-bytes check; the job now runs the app's Vite build and its budget
+check, which is not what those 5.3 s measured. Everything else in the table is
+unchanged work.
 
 | | |
 | --- | --- |

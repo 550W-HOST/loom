@@ -8581,50 +8581,16 @@
     ]
   },
   "local": {
-    "referenceApp": {
-      "upstreamPath": "apps/app",
-      "upstreamDisposition": "defer-source-port",
-      "localSourcePath": "ui/src",
-      "localSourceDisposition": "loom-native-reference-client",
-      "sourceTree": {
-        "files": 7,
-        "sha256": "b07d302687956d584507c47fd56a05f374a21ae7bc90d65f26b34b26a9c4db3d"
-      },
-      "packageJson": {
-        "bytes": 507,
-        "sha256": "df0f2e26511045a756e20f8a9abf6e7bc833ae6d63a844db2185b7519c40542d"
-      },
-      "dependencies": {
-        "dependencies": {
-          "@bb/domain": "workspace:*",
-          "@bb/thread-view": "workspace:*"
-        },
-        "devDependencies": {
-          "@types/node": "^22.0.0",
-          "esbuild": "^0.28.2",
-          "typescript": "^5.7.3",
-          "vitest": "^3.2.4"
-        },
-        "peerDependencies": {},
-        "optionalDependencies": {}
-      },
-      "dependencyDigest": "d4fe9eceba8c40e09ab7f77258786956a027269ac7d032bd212e245baaed5776",
-      "bundlePath": "ui/app.js",
-      "bundle": {
-        "bytes": 1233757,
-        "sha256": "9f06e0abcf678e520ea5e127799aac6ec6b514622d19ff9262a855e95de1390e"
-      }
-    },
     "productApp": {
       "upstreamPath": "apps/app",
       "localPath": "apps/app",
       "disposition": "source-port",
-      "gitTree": "cde203869a57a62794cfc54bc1ba1257096fc87e",
+      "gitTree": "f0a671512b99d000389627889c12060031711b24",
       "snapshot": {
         "path": "apps/app",
         "tree": {
-          "files": 1474,
-          "sha256": "c04a73d5c0e669073a4d010a5fa5b958e602299d1c09af025a8038cfb54571c7"
+          "files": 1475,
+          "sha256": "cc7e79bdccc709f89983d9f5ce2a1b1810689442abb7f157c5eba7bb3b46179f"
         },
         "files": [
           {
@@ -8704,8 +8670,8 @@
           },
           {
             "path": "package.json",
-            "bytes": 5247,
-            "sha256": "9e0695480785f4fcd0a5055a136af5b146c160661b8db1ce097729587604d43c"
+            "bytes": 5348,
+            "sha256": "fc17d962743e90544cac2d19a1a3dbcb0850be0b976d268156b34ae172909215"
           },
           {
             "path": "public/apple-touch-icon-blue.png",
@@ -9026,6 +8992,11 @@
             "path": "scripts/generate-pwa-icons.mjs",
             "bytes": 5376,
             "sha256": "d2744c487234929687a64a8171e3600ae2bc2b289a3a3e927b9247c037f7913f"
+          },
+          {
+            "path": "scripts/precompress-app-dist.mjs",
+            "bytes": 2966,
+            "sha256": "45a84a493126a4643c17e9398bae2cf4d3baa5bea2002c679722f00d79cbedd0"
           },
           {
             "path": "scripts/why-eager.mjs",
@@ -16672,12 +16643,5 @@
       }
     },
     "disposition": "retain-generated-contract"
-  },
-  "forbiddenReferenceAppImports": [
-    "apps/app",
-    "plugins/",
-    "marketplace",
-    "desktopBrowsers",
-    "cli-skills"
-  ]
+  }
 }

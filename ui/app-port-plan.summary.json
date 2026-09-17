@@ -1,13 +1,13 @@
 {
   "format": "loom.app-port-plan-summary/v2",
   "plan": "ui/app-port-plan.json",
-  "planBytes": 1967159,
+  "planBytes": 1967492,
   "source": {
     "root": "apps/app/src",
     "trackedFiles": 1383,
     "disposition": "source-port",
     "baselineGitTree": "8ba6eb6f3d2f67f8ba2703f1fd0c123f788c6d52",
-    "localGitTree": "cde203869a57a62794cfc54bc1ba1257096fc87e"
+    "localGitTree": "f0a671512b99d000389627889c12060031711b24"
   },
   "summary": {
     "nodes": 1383,
@@ -21,7 +21,7 @@
       "verification-only": 677,
       "asset-build": 28
     },
-    "edges": 8260,
+    "edges": 8264,
     "blockers": {
       "runtime": 3,
       "test": 221,
@@ -3728,22 +3728,22 @@
     }
   },
   "compilerConsistency": {
-    "compilerSpecifiers": 8320,
-    "graphSpecifiers": 8320,
+    "compilerSpecifiers": 8324,
+    "graphSpecifiers": 8324,
     "missing": [],
     "extra": [],
     "preProcessFileParity": {
-      "compilerLiteralSpecifiers": 8319,
-      "preProcessFileSpecifiers": 8319,
+      "compilerLiteralSpecifiers": 8323,
+      "preProcessFileSpecifiers": 8323,
       "missing": [],
       "extra": []
     }
   },
   "parsers": {
     "typescript": {
-      "files": 1376,
-      "specifiers": 8320,
-      "preProcessFileSpecifiers": 8319
+      "files": 1377,
+      "specifiers": 8324,
+      "preProcessFileSpecifiers": 8323
     },
     "css": {
       "files": 4,
@@ -4008,7 +4008,7 @@
         "verificationCommands": [
           "pnpm run port-plan:check",
           "pnpm run provenance:check",
-          "pnpm --filter @loom/ui run typecheck"
+          "pnpm --filter @bb/app run typecheck"
         ]
       },
       {
@@ -4036,7 +4036,7 @@
         "verificationCommands": [
           "pnpm run port-plan:check",
           "pnpm run provenance:check",
-          "pnpm --filter @loom/ui run typecheck"
+          "pnpm --filter @bb/app run typecheck"
         ]
       },
       {
@@ -4063,7 +4063,7 @@
         "verificationCommands": [
           "pnpm run port-plan:check",
           "pnpm run provenance:check",
-          "pnpm --filter @loom/ui run typecheck"
+          "pnpm --filter @bb/app run typecheck"
         ]
       },
       {
@@ -4089,7 +4089,7 @@
         "verificationCommands": [
           "pnpm run port-plan:check",
           "pnpm run provenance:check",
-          "pnpm --filter @loom/ui run typecheck"
+          "pnpm --filter @bb/app run typecheck"
         ]
       },
       {
@@ -4122,7 +4122,7 @@
         "verificationCommands": [
           "pnpm run port-plan:check",
           "pnpm run provenance:check",
-          "pnpm --filter @loom/ui run typecheck"
+          "pnpm --filter @bb/app run typecheck"
         ]
       },
       {
@@ -4148,7 +4148,7 @@
         "verificationCommands": [
           "pnpm run port-plan:check",
           "pnpm run provenance:check",
-          "pnpm --filter @loom/ui run typecheck"
+          "pnpm --filter @bb/app run typecheck"
         ]
       }
     ],
@@ -4198,7 +4198,7 @@
         "verificationCommands": [
           "pnpm run port-plan:check",
           "pnpm run provenance:check",
-          "pnpm --filter @loom/ui run typecheck"
+          "pnpm --filter @bb/app run typecheck"
         ]
       },
       {
@@ -4226,7 +4226,7 @@
         "verificationCommands": [
           "pnpm run port-plan:check",
           "pnpm run provenance:check",
-          "pnpm --filter @loom/ui run typecheck"
+          "pnpm --filter @bb/app run typecheck"
         ]
       },
       {
@@ -4254,7 +4254,7 @@
         "verificationCommands": [
           "pnpm run port-plan:check",
           "pnpm run provenance:check",
-          "pnpm --filter @loom/ui run typecheck"
+          "pnpm --filter @bb/app run typecheck"
         ]
       },
       {
@@ -4283,7 +4283,7 @@
         "verificationCommands": [
           "pnpm run port-plan:check",
           "pnpm run provenance:check",
-          "pnpm --filter @loom/ui run typecheck"
+          "pnpm --filter @bb/app run typecheck"
         ]
       },
       {
@@ -4310,7 +4310,7 @@
         "verificationCommands": [
           "pnpm run port-plan:check",
           "pnpm run provenance:check",
-          "pnpm --filter @loom/ui run typecheck"
+          "pnpm --filter @bb/app run typecheck"
         ]
       },
       {
@@ -4337,7 +4337,7 @@
         "verificationCommands": [
           "pnpm run port-plan:check",
           "pnpm run provenance:check",
-          "pnpm --filter @loom/ui run typecheck"
+          "pnpm --filter @bb/app run typecheck"
         ]
       }
     ]

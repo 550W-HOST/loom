@@ -7,7 +7,7 @@
     "generate:pwa-icons": "node scripts/generate-pwa-icons.mjs",
     "generate:pwa-icons:check": "node scripts/generate-pwa-icons.mjs --check",
     "dev": "node scripts/generate-pwa-icons.mjs && vite --config vite.dev.config.ts --configLoader runner",
-    "build": "vite build --logLevel warn",
+    "build": "vite build --logLevel warn && node scripts/precompress-app-dist.mjs",
     "preview": "vite preview",
     "check:bundle": "node scripts/check-bundle-budget.mjs",
     "clean": "rimraf dist bundle-stats.json",
@@ -15,7 +15,8 @@
     "storybook:build": "ladle build",
     "lint": "oxlint src vite.config.ts vite.dev.config.ts vite-bundle-stats.ts vite-font-preload.ts vite-shared-ui-seam.ts",
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.type-tests.json && tsc --noEmit -p tsconfig.node.json",
-    "test": "vitest run --config vitest.loom.config.ts"
+    "test": "vitest run --config vitest.loom.config.ts",
+    "precompress": "node scripts/precompress-app-dist.mjs"
   },
   "dependencies": {
     "@bb/client-core": "workspace:*",

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Verify a set of release binaries, before anyone downloads them.
 #
-# A release makes three claims that only running the artifact can settle, and
-# the third is why this is a file rather than a build step:
+# A release makes four claims that only running the artifact can settle, and the
+# two that need a live server are why this is a file rather than a build step:
 #
 #   1. the binary runs on the machine it targets at all — a static musl build is
 #      where a glibc assumption surfaces, and it surfaces at run time
@@ -10,6 +10,9 @@
 #      handshake a mismatched pair of artifacts would refuse
 #   3. the two together accept a contract-shaped write: the server creates a
 #      project on the enrolled host and reads it back from the list
+#   4. the server serves the UI bundle the release ships: `/` is the app's index
+#      document, the assets that document names are present, a client route falls
+#      back to it, and an unknown `/api` path is a JSON 404 rather than the shell
 #
 # The pipeline runs this on the x86_64 artifacts, and a maintainer can run it
 # against a downloaded release. The aarch64 artifacts cannot be executed on an
@@ -24,12 +27,16 @@
 #   <bin-dir>                directory holding `loom-server` and `loom-daemon`
 #   --expect-commit SHA      require that commit, the one the tag names
 #   --expect-target TRIPLE   require that target triple
+#   --ui-dir DIR             the built product app the server serves
+#                            default <bin-dir>/ui
 #   --elf-only               do not execute the binaries (foreign architecture)
 #   -h, --help               this text
 #
 # Needs curl, jq, file, readelf, and coreutils (`mktemp`, `shuf`, `seq`).
 # Nothing here reads the source tree: the binaries are asked, never the
-# checkout.
+# checkout. The UI is not compiled into them any more, so it is asked for what a
+# deployment gives it — a bundle on disk — and the default is the `ui/` an
+# extracted release archive carries beside its binaries.
 
 set -euo pipefail
 
@@ -40,6 +47,7 @@ note() { printf '  %s\n' "$*"; }
 bin_dir=""
 expect_commit=""
 expect_target=""
+ui_dir=""
 elf_only=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -57,6 +65,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --expect-target)
       expect_target="${2:-}"
+      shift 2
+      ;;
+    --ui-dir)
+      ui_dir="${2:-}"
       shift 2
       ;;
     -*)
@@ -222,6 +234,9 @@ trap cleanup EXIT
 
 # A random high port, retried: this checks a binary, not port allocation, and a
 # taken port must not be reported as a broken release.
+[[ -n "$ui_dir" ]] || ui_dir="$bin_dir/ui"
+[[ -f "$ui_dir/index.html" ]] ||
+  die "no UI bundle at $ui_dir; extract the release archive so its ui/ sits beside the binaries, or pass --ui-dir"
 base=""
 for _ in 1 2 3; do
   port="$(shuf -i 20000-44000 -n 1)"
@@ -229,9 +244,10 @@ for _ in 1 2 3; do
   # Cleared first: a failed attempt must not be read as the next one's answer.
   rm -f "$tmp/health.json"
   # The durable backend, not the in-process one: a release is deployed as a
-  # service with a data directory, so that is the shape to start.
+  # service with a data directory, so that is the shape to start. LOOM_UI_DIR is
+  # not optional — the server has no client of its own to fall back to.
   LOOM_BIND="127.0.0.1:$port" LOOM_DATA_DIR="$tmp/server" LOOM_NODE_ID="release-verification" \
-    "$server" >"$tmp/server.log" 2>&1 &
+    LOOM_UI_DIR="$ui_dir" "$server" >"$tmp/server.log" 2>&1 &
   server_pid=$!
   for _ in $(seq 1 100); do
     curl -fsS --max-time 1 "$base/health" >"$tmp/health.json" 2>/dev/null && break
@@ -255,15 +271,20 @@ health_protocol="$(jq -r '.protocol_version' "$tmp/health.json")"
   die "/health reports protocol $health_protocol, but --version reports $release_protocol"
 note "/health ok (protocol $health_protocol, node $(jq -r .node_id "$tmp/health.json"))"
 
-# The UI is embedded at compile time and served from the API's origin. `/` is a
-# client route, so a 200 here also proves the SPA fallback survived the release
-# profile, and the asset bodies prove the bundle reached the binary rather than
-# being an empty placeholder.
+# The bundle the release ships is served from LOOM_UI_DIR, which is the only UI
+# source the server has: `/` is a client route, so a 200 here also proves the SPA
+# fallback works, and the asset bodies prove the bundle on disk is the app rather
+# than an index.html pointing at nothing.
 curl -fsS -o "$tmp/index.html" -w '%{http_code}' "$base/" >"$tmp/index.code" ||
   die "GET / failed"
 [[ "$(cat "$tmp/index.code")" == "200" ]] || die "GET / did not answer 200"
-grep -q 'src="/app.js"' "$tmp/index.html" || die "the served index.html does not reference /app.js"
-note "GET / -> 200 text/html, $(wc -c <"$tmp/index.html" | tr -d '[:space:]') bytes"
+entry="$(sed -n 's/.*<script[^>]*src="\(\/assets\/[^"]*\.js\)".*/\1/p' "$tmp/index.html" | head -n 1)"
+[[ -n "$entry" ]] ||
+  die "the served index.html has no <script src=\"/assets/...js\"> entry point"
+style="$(sed -n 's/.*<link[^>]*href="\(\/assets\/[^"]*\.css\)".*/\1/p' "$tmp/index.html" | head -n 1)"
+[[ -n "$style" ]] ||
+  die "the served index.html has no <link href=\"/assets/...css\"> stylesheet"
+note "GET / -> 200 text/html, $(wc -c <"$tmp/index.html" | tr -d '[:space:]') bytes (entry $entry)"
 
 asset() {
   local path="$1" expected_type="$2" result code type size
@@ -276,8 +297,33 @@ asset() {
   note "GET $path -> 200 $type, $size bytes"
 }
 
-asset "/app.js" "text/javascript; charset=utf-8"
-asset "/style.css" "text/css; charset=utf-8"
+# The entry point and the stylesheet, named by the bundle itself: a build's asset
+# names are hashed, so the index is the only place that knows them.
+asset "$entry" "text/javascript; charset=utf-8"
+asset "$style" "text/css; charset=utf-8"
+
+# A route the client owns but the server has no file for is the SPA's, so a deep
+# link works. Compared against the index just fetched rather than merely accepted
+# with a 200: a placeholder page answers 200 too.
+curl -fsS -o "$tmp/fallback.html" -w '%{http_code}' "$base/deep/link/into/the/app" >"$tmp/fallback.code" ||
+  die "GET /deep/link/into/the/app failed"
+[[ "$(cat "$tmp/fallback.code")" == "200" ]] ||
+  die "an unknown client route answered $(cat "$tmp/fallback.code"), but the SPA fallback is what a deep link needs"
+cmp -s "$tmp/index.html" "$tmp/fallback.html" ||
+  die "an unknown client route did not fall back to the bundle's index.html"
+note "GET /deep/link/into/the/app -> 200 index.html"
+
+# ...but an unknown API path must not fall back: a JSON 404 is what tells a
+# client it asked for something that does not exist instead of quietly handing it
+# the shell with a 200.
+api_miss="$(curl -sS -o "$tmp/api-miss.json" -w '%{http_code}\t%{content_type}' \
+  "$base/api/v1/definitely-not-a-route")" ||
+  die "GET /api/v1/definitely-not-a-route could not be reached"
+IFS=$'\t' read -r miss_code miss_type <<<"$api_miss"
+[[ "$miss_code" == "404" ]] || die "an unknown API path answered $miss_code, expected 404"
+[[ "$miss_type" == "application/json" ]] ||
+  die "an unknown API path answered content-type $miss_type, expected application/json"
+note "GET /api/v1/definitely-not-a-route -> 404 application/json"
 
 # A JSON response is captured in a file before it is parsed, and the body is
 # printed when the request fails. `curl -f` alone throws the body away, and on

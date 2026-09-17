@@ -389,28 +389,6 @@ importers:
         specifier: ^8.0.12
         version: 8.3.0(@types/node@22.20.2)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.13)
 
-  ui:
-    dependencies:
-      '@bb/domain':
-        specifier: workspace:*
-        version: link:packages/domain
-      '@bb/thread-view':
-        specifier: workspace:*
-        version: link:packages/thread-view
-    devDependencies:
-      '@types/node':
-        specifier: ^22.0.0
-        version: 22.20.2
-      esbuild:
-        specifier: ^0.28.2
-        version: 0.28.2
-      typescript:
-        specifier: ^5.7.3
-        version: 5.9.3
-      vitest:
-        specifier: ^3.2.4
-        version: 3.2.7(@types/debug@4.1.13)(@types/node@22.20.2)(jiti@2.7.0)(jsdom@29.1.1)(lightningcss@1.33.0)(msw@2.15.0(@types/node@22.20.2)(typescript@5.9.3))(tsx@4.23.13)
-
   ui/packages/automations:
     dependencies:
       '@bb/domain':

@@ -1,13 +1,13 @@
 #!/usr/bin/env node
 /**
  * Boots the stack the browser acceptance run drives: a real `loom-server`, a
- * real `loom-daemon` with an ACP stub provider, and the product app's dev
- * server.
+ * real `loom-daemon` with an ACP stub provider, and the product app built as a
+ * static bundle.
  *
- * The browser talks to **the server's origin**: `loom-server` reverse-proxies
- * the client half to the dev server (`LOOM_UI_PROXY`), so the app runs
- * same-origin against a real API and a real socket — the same boundary it ships
- * with — while the source still hot-reloads. Nothing is mocked.
+ * The browser talks to **the server's origin**, serving the same bundle a
+ * release ships (`LOOM_UI_DIR`) — not a dev server, so the acceptance run
+ * exercises the production shape. Build the bundle first:
+ * `pnpm --filter @bb/app run build`. Nothing is mocked.
  *
  * Why a script and not a test: the repo has no browser runner, and this is the
  * acceptance evidence W-599.5 asks for — a human (or an agent driving a
@@ -40,10 +40,10 @@ const keep = process.argv.includes("--keep");
 const reuseRoot = process.env.LOOM_E2E_DATA_DIR;
 
 const serverPort = Number(process.env.LOOM_E2E_SERVER_PORT ?? 38941);
-const appPort = Number(process.env.LOOM_E2E_APP_PORT ?? 5273);
 const apiOrigin = `http://127.0.0.1:${serverPort}`;
-// Same origin for the view and the API: the server proxies the client half.
+// Same origin for the view and the API: the server serves the bundle.
 const appUrl = `${apiOrigin}/automations`;
+const uiDir = process.env.LOOM_E2E_UI_DIR ?? join(repoRoot, "apps", "app", "dist");
 
 const root = reuseRoot ?? mkdtempSync(join(tmpdir(), "loom-e2e-"));
 const serverDataDir = join(root, "server");
@@ -130,11 +130,17 @@ for (const binary of ["loom-server", "loom-daemon"]) {
     process.exit(1);
   }
 }
+if (!existsSync(join(uiDir, "index.html"))) {
+  process.stderr.write(
+    `[e2e] no UI bundle at ${uiDir}: run \`pnpm --filter @bb/app run build\` first\n`,
+  );
+  process.exit(1);
+}
 
 start("server", join(repoRoot, "target", "debug", "loom-server"), [], {
   LOOM_BIND: `127.0.0.1:${serverPort}`,
   LOOM_DATA_DIR: serverDataDir,
-  LOOM_UI_PROXY: `http://127.0.0.1:${appPort}`,
+  LOOM_UI_DIR: uiDir,
 });
 
 start(
@@ -147,11 +153,6 @@ start(
     LOOM_PROVIDER_ARGS: "",
   },
 );
-
-start("app", "pnpm", ["--filter", "@bb/app", "run", "dev"], {
-  BB_DEV_APP_PORT: String(appPort),
-  BB_SERVER_PORT: String(serverPort),
-});
 
 // Readiness: the app answers, the API answers, and a host is enrolled (the
 // last is what makes a script or agent run actually execute rather than fail

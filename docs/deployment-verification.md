@@ -21,6 +21,7 @@ claims in [`upgrades.md`](upgrades.md).
 | Toolchain | `rustc 1.98.0`, build profile `release` (`cargo build --release`) |
 | Binaries | `target/release/loom-server`, `target/release/loom-daemon` |
 | Server bind | `127.0.0.1:38899` (a test port; the unit default is `38886`) |
+| UI source | the reference client embedded in the binary — **superseded**, see § 1 |
 | Relay backend | `LOOM_DATA_DIR` (durable disk) |
 | Provider | a stub ACP agent speaking JSON-RPC, because the built-in Pi adapter is not needed for this socket-path check |
 
@@ -110,13 +111,28 @@ What this proves, item by item:
   host appears `connected`; primary-host resolution returns `source: "remote"`
   even though the daemon is on the same host, because the server declared no
   local host — the server-only degradation path.
-- The UI and `/app.js` are served by the server from the API's origin.
+- The UI and `/app.js` were served by the server from the API's origin. This
+  line is **historical**, see the note below.
 - Posting a message moved the thread to `working` and dispatched a run; the
   provider's output arrived as `thread_run_event` frames on `thread:{id}`,
   **through the relay**, and the run reached exactly one terminal event
   (`finished`, `completed`). The thread then left `working`.
 - `GET /api/v1/runs` is empty after the terminal event: the run was reaped, not
   left in flight.
+
+> **Superseded: how the UI is served.** Step 3 above ran against the buildless
+> reference client, which was compiled into the binary with `include_bytes!` and
+> was the default UI. Neither the client nor those sources exist any more: the
+> UI is the product app's bundle on disk, served from `LOOM_UI_DIR`
+> (`/usr/local/share/loom/ui`; the archive stages it as `ui/`), and a server
+> started without `LOOM_UI_DIR` — or the development-only `LOOM_UI_PROXY` —
+> exits at startup instead of serving anything. So the recorded command in this
+> step would now fail before it reached `GET /`: a rerun starts the server with
+> `LOOM_UI_DIR` set and checks the served shell and its `/assets/*.js` and
+> `/assets/*.css` rather than `/app.js` and `/style.css`
+> ([`ui.md`](ui.md), [`releasing.md`](releasing.md)). Everything else this run
+> recorded — server-only startup, enrollment, dispatch, relay replay and the
+> restart claims in § 2 — is unaffected by that change.
 
 ## 2. Restart: replay window and host identity
 

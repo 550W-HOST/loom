@@ -17,7 +17,7 @@ Concretely:
 - it is returned by `GET /api/v1/projects` like any other project;
 - it can be renamed, given sources, and archived;
 - **`kind` is provenance, not privilege.** Nothing in the command API behaves
-  differently for it. A client renders it however it likes — the reference UI
+  differently for it. A client renders it however it likes — the product app
   simply lists it with the rest;
 - a thread and an environment must **name** their project. The thread route
   takes the contract's `projectId` (absent is a `422` from the request

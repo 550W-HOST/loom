@@ -336,11 +336,15 @@ That makes these three genuinely the same client, which is why the native
 mobile app is not maintained here.
 
 This is implemented. `loom-server` serves the UI from the same origin as the
-API; by default that is a buildless reference client compiled into the binary,
-and `LOOM_UI_DIR` points at a built bundle (where the ported bb UI will live)
-while `LOOM_UI_PROXY` reverse-proxies to a dev server. The client contract —
-subscribe on the socket first, then replay the backlog `since` the last event
-id, merging by `event_id` — is in [`ui.md`](ui.md).
+API. The UI is the product app in `apps/app`, built with
+`pnpm --filter @bb/app run build` and served from disk by `LOOM_UI_DIR` —
+`/usr/local/share/loom/ui` for an installed deployment;
+`LOOM_UI_PROXY` reverse-proxies to a dev server instead, and is development
+only. There is no embedded fallback: a server started with neither variable
+refuses to start, because a UI is a deployment input rather than bytes compiled
+into a binary. The client contract — typed `/api/v1` routes, the public `/ws`
+subprotocol with bb targets answered by `changed`/`pong`, and a reconnect that
+invalidates and reloads rather than replaying — is in [`ui.md`](ui.md).
 
 ### Optional local daemon
 

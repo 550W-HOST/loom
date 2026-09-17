@@ -28,8 +28,8 @@ on it and it can be validated on its own.
 - [x] `loom-provider-protocol` — the server↔daemon ACP execution contract, replayable run events, and a terminal-state guarantee
 - [x] The event model aligned with bb's `ThreadEvent` contract (35 provider event types) — see [`docs/event-model.md`](docs/event-model.md)
 - [ ] Persist domain entities (the domain registry is in-process and lost on restart)
-- [x] `loom-server` hosts the UI from its own origin; a client subscribes to `thread:{id}` through the relay and reconnects by subscribe-then-replay (`docs/ui.md`)
-- [ ] Check in the bb web UI (`apps/app`) and serve its built bundle unchanged via `LOOM_UI_DIR`
+- [x] `loom-server` hosts the UI from its own origin: the product app in `apps/app` is built to a static bundle and served from `LOOM_UI_DIR`, with no embedded fallback (`docs/ui.md`)
+- [x] The ported bb app (`apps/app`) is the only UI — same-origin typed `/api/v1` routes, the public `/ws` realtime contract, and machine-checked provenance against the pinned bb commit (`docs/ui-baseline.md`)
 - [ ] Check in the Node execution plane (`apps/host-daemon`) against the daemon contract
   (`loom-daemon` is the reference implementation and exercises the whole contract today)
 - [x] Automations: domain, durable storage, typed HTTP surface, a cron/timezone scheduler and agent execution through the existing thread/run/ACP path (`docs/automations.md`)
@@ -50,7 +50,13 @@ crates/
   contract/     loom-contract   bb's exported contract as a conformance target
 contracts/bb/                   generated JSON Schema from bb's contract packages
 tools/contract-export/          the exporter that produces contracts/bb
-ui/             the reference UI client: buildless, served by loom-server
+apps/app/                       the product app: the only UI, built to a static
+                                bundle and served by loom-server from LOOM_UI_DIR
+ui/packages/*                   the pinned bb packages the product app builds
+                                against (domain, contract, thread-view, …)
+        ui/provenance.json, ui/app-patch-ledger.json, ui/app-port-plan.json
+                                the app's pin, per-file adaptation record and
+                                route-level port plan, all machine-checked
 deploy/         systemd units, environment templates, install/uninstall scripts,
                 the container images and a compose example
 docs/
@@ -78,19 +84,16 @@ docs/
   deployment-verification.md
 ```
 
-`apps/app` is now checked in as the exact source snapshot from the pinned bb
-commit. It is intentionally outside the current pnpm workspace and is not
-included in the default build or server runtime; source-level adaptation is a
-later stage. The baseline, dependency closure and product-surface decisions are
-recorded in [`docs/ui-baseline.md`](docs/ui-baseline.md). The manifest-driven
-machine-checkable registry, hashes and import list live in
-[`ui/provenance.json`](ui/provenance.json), and
-the zero-diff starting point is recorded in
-[`ui/app-patch-ledger.json`](ui/app-patch-ledger.json). The projection package
+`apps/app` is the product app: bb's application source with loom's transport,
+loom's routes and the unsupported surfaces removed, in the pnpm workspace and
+built by the same `pnpm build` as everything else. It is the only UI this
+repository serves. The baseline, dependency closure and product-surface
+decisions are recorded in [`docs/ui-baseline.md`](docs/ui-baseline.md). The
+manifest-driven machine-checkable registry, hashes and import list live in
+[`ui/provenance.json`](ui/provenance.json), the per-file adaptation record in
+[`ui/app-patch-ledger.json`](ui/app-patch-ledger.json), and the route-level port
+plan in [`ui/app-port-plan.json`](ui/app-port-plan.json). The projection package
 sync policy remains in [`docs/ui-package-sync.md`](docs/ui-package-sync.md).
-
-The product app snapshot sits alongside the Rust workspace and the reference
-client remains the default served UI until a later integration stage.
 
 ## Build and test
 
@@ -100,17 +103,23 @@ cargo clippy --workspace --all-targets
 cargo fmt --all
 
 pnpm install
-pnpm build
+pnpm build            # ui/packages/*, then the product app → apps/app/dist
 pnpm test
 pnpm provenance:check
-pnpm example
+pnpm port-plan:check
+pnpm check:bundle     # the app's boot and lazy-route budget, after the build
 ```
 
 The ported `thread-view`, `client-core`, `core-ui`, `shared-ui`, and contract
-packages live under `ui/packages/`. Their source pin and deliberate hard-fork
-synchronization policy are recorded in
+packages live under `ui/packages/` and are what the app builds against. Their
+source pin and deliberate hard-fork synchronization policy are recorded in
 [`docs/ui-package-sync.md`](docs/ui-package-sync.md); the full app baseline and
 migration boundary are in [`docs/ui-baseline.md`](docs/ui-baseline.md).
+
+`pnpm build` produces the UI bundle at `apps/app/dist`; the server does not build
+it, it serves it. Point `LOOM_UI_DIR` at that directory (an installed deployment
+uses `/usr/local/share/loom/ui`) or the server refuses to start — the full
+contract is [`docs/ui.md`](docs/ui.md).
 
 CI runs the check forms of these on every push and PR, plus the declared MSRV
 and the contract-reproducibility check; [`docs/ci.md`](docs/ci.md) lists the
@@ -188,12 +197,14 @@ Connect a raw relay/daemon client on `ws://127.0.0.1:38886/internal/ws`, send
 `{"type":"subscribe","scope":{"kind":"thread","id":"thr_1"}}`, and the
 published frame arrives.
 
-The UI is served from the same origin: open `http://127.0.0.1:38886/`. With no
-configuration that is the reference client compiled into the binary; point
-`LOOM_UI_DIR` at a built bundle (the ported bb UI) or `LOOM_UI_PROXY` at a
-frontend dev server. The client derives its server from its own origin and
-reconnects with subscribe-then-replay — the contract is in
-[`docs/ui.md`](docs/ui.md).
+The UI is served from the same origin: open `http://127.0.0.1:38886/`. It is the
+product app, built with `pnpm --filter @bb/app run build` and pointed at with
+`LOOM_UI_DIR` — an installed deployment uses `/usr/local/share/loom/ui`, and a
+checkout is `LOOM_UI_DIR=$PWD/apps/app/dist`. There is no embedded fallback: with
+neither `LOOM_UI_DIR` nor the development-only `LOOM_UI_PROXY` set, the server
+refuses to start. The client derives its server from its own origin, talks typed
+`/api/v1` routes and the public `/ws` protocol, and recovers from a reconnect by
+invalidating and reloading — the contract is in [`docs/ui.md`](docs/ui.md).
 
 The provider contract — ACP dispatch through the relay, the report path and the
 guarantee that a run always ends — is specified in

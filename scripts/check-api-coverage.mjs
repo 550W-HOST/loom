@@ -463,10 +463,10 @@ function generateDocument(classified, sourceRoutes, assignments, manifest) {
 结论是 **遗漏**，不是有意分歧。项目契约决策是让 UI 面向 bb 的公共 API；契约声明
 的是 ${markdownCode("POST /api/v1/threads/:id/send")}（${markdownCode("threads.send")}），因此它必须进入兼容实现，已列入 **B1**。
 
-当前 loom 的 ${markdownCode("POST /api/v1/threads/{id}/messages")} 是契约外的旧版参考 UI
-写入端点，${markdownCode("ui/src/main.ts")} 仍在使用它。它不能替代 ${markdownCode("threads.send")}，也不计入覆盖率；
-${markdownCode("threads.send")} 已接入同一线程发送/发布路径。后续再决定是否移除或保留参考 UI
-的兼容端点，不修改 bb UI 的契约调用。
+当前 loom 的 ${markdownCode("POST /api/v1/threads/{id}/messages")} 是契约外的早期写入端点，
+已无第一方客户端使用（产品应用走 ${markdownCode("threads.send")}），仅为兼容与测试保留。
+它不能替代 ${markdownCode("threads.send")}，也不计入覆盖率；${markdownCode("threads.send")} 已接入同一
+线程发送/发布路径。
 
 ## 请求体兼容性决策（W-554）
 
@@ -483,8 +483,8 @@ bb UI 用契约格式发起写请求时会 422，而 CI 与一致性测试全绿
   loom 方言隐藏在兼容层下，而这正是本 issue 要根除的问题。
 - 双形状会让“请求是否符合契约”这个可证伪的断言变成一个模糊集合，回归测试也就抓
   不住新的偏离。
-- 代价可控：参考 UI ${markdownCode("ui/src/main.ts")} 只有两个写调用（创建 thread、发消息），
-  已同步改为契约形状并重建 ${markdownCode("ui/app.js")}。
+- 代价可控：产品应用 ${markdownCode("apps/app")} 用契约形状发起全部写请求，参考 UI 已随
+  W-586/W-588 删除，没有第二套调用面需要同步。
 
 契约外路由（${markdownCode("/api/v1/threads/{id}/messages")}、${markdownCode("/api/v1/publish")}、环境/主机早期端点）不受
 此决策约束：它们不在 bb 契约里，中间件对其不生效，保持各自的 handler 校验。
