@@ -11,13 +11,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use loom_domain::{
-    DomainEvent, DomainScope, HostId, ProjectId, RunEvent, RunId, ThreadId, ThreadStatus,
-    ThreadTrigger,
-};
+use loom_domain::{DomainEvent, DomainScope, HostId, RunId, RunOutcome, ThreadId, ThreadStatus};
 use loom_provider_protocol::ProviderSpec;
 use loom_relay::retention::Retention;
-use loom_relay::{now_ms, Relay, Result as RelayResult};
+use loom_relay::{now_ms, Relay, Result as RelayResult, Scope};
 
 use crate::artifacts::Artifacts;
 use crate::domain_state::DomainRegistry;
@@ -208,10 +205,6 @@ impl AppState {
             });
         }
 
-        let ui = Ui::from_config(config.ui_dir.clone(), config.ui_proxy.clone())
-            .map_err(|message| BuildStateError { message })?;
-        let artifacts = Arc::new(Artifacts::from_config(config.artifact_dir.clone()));
-
         let backend: loom_relay::SharedBackend = match (&config.backend_redis, &config.backend_path)
         {
             // Shared backend: every node attaches to the same window, so a
@@ -231,6 +224,24 @@ impl AppState {
             )),
             (Some(_), Some(_)) => unreachable!("guarded above"),
         };
+        Self::build_from_backend(config, backend)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn build_for_test(
+        config: AppConfig,
+        backend: loom_relay::SharedBackend,
+    ) -> Result<Self, BuildStateError> {
+        Self::build_from_backend(config, backend)
+    }
+
+    fn build_from_backend(
+        config: AppConfig,
+        backend: loom_relay::SharedBackend,
+    ) -> Result<Self, BuildStateError> {
+        let ui = Ui::from_config(config.ui_dir.clone(), config.ui_proxy.clone())
+            .map_err(|message| BuildStateError { message })?;
+        let artifacts = Arc::new(Artifacts::from_config(config.artifact_dir.clone()));
         let relay = Relay::new(backend, config.retention, config.node_id.clone())?;
         let (hub, _actor) = HubHandle::spawn(config.hub_queue_capacity);
         let pump = Arc::new(Pump::spawn(relay.clone(), hub.clone(), config.pump));
@@ -508,9 +519,29 @@ impl AppState {
     /// idempotent no-op (`ReportOutcome::Unknown`). Returns how many runs were
     /// failed.
     fn fail_in_flight_runs(&self, records: Vec<RunRecord>, now: u64) -> usize {
+        let mut restored = Vec::new();
+        for mut record in records {
+            let terminal = self.recover_run_flags(&mut record);
+            let Some(thread) = self.registry.thread(&record.thread_id) else {
+                continue;
+            };
+            if terminal.is_none()
+                && !matches!(thread.status, ThreadStatus::Working | ThreadStatus::Waiting)
+            {
+                continue;
+            }
+            restored.push((record, terminal));
+        }
+        self.runs
+            .restore(restored.iter().map(|(record, _)| record.clone()));
+
         let mut failed = 0;
-        for record in &records {
-            if self.fail_recovered_run(&record.run_id, &record.thread_id, &record.project_id, now) {
+        for (record, terminal) in &restored {
+            let settled = match terminal {
+                Some(outcome) => self.recover_published_terminal(record, *outcome, now),
+                None => self.fail_run_after_restart(record, now),
+            };
+            if settled {
                 failed += 1;
             }
         }
@@ -521,50 +552,148 @@ impl AppState {
             if !matches!(thread.status, ThreadStatus::Working | ThreadStatus::Waiting) {
                 continue;
             }
-            let run_id = thread.active_run_id.clone().unwrap_or_else(RunId::mint);
-            if self.fail_recovered_run(&run_id, &thread.id, &thread.project_id, now) {
+            let (record, terminal) = self.runs.for_thread(&thread.id).map_or_else(
+                || {
+                    let run_id = thread
+                        .active_run_id
+                        .clone()
+                        .or_else(|| self.latest_active_run_id(&thread.id))
+                        .unwrap_or_else(RunId::mint);
+                    let mut record = RunRecord {
+                        run_id,
+                        thread_id: thread.id.clone(),
+                        project_id: thread.project_id.clone(),
+                        host_id: HostId::mint(),
+                        cwd: String::new(),
+                        started_at_ms: now,
+                        deadline_ms: now,
+                        turn_started: false,
+                        provider_thread_id: None,
+                        provider_error_reported: false,
+                        failure_reason: None,
+                        terminal_published: false,
+                        terminal_outcome: None,
+                        pending_status_event: None,
+                    };
+                    let terminal = self.recover_run_flags(&mut record);
+                    self.runs.insert(record.clone());
+                    (record, terminal)
+                },
+                |record| {
+                    let mut record = record;
+                    let terminal = self.recover_run_flags(&mut record);
+                    (record, terminal)
+                },
+            );
+            let settled = match terminal {
+                Some(outcome) => self.recover_published_terminal(&record, outcome, now),
+                None => self.fail_run_after_restart(&record, now),
+            };
+            if settled {
                 failed += 1;
             }
         }
         failed
     }
 
-    /// Fails one recovered run, returning whether the thread was moved.
+    /// Finds the last run event after the current thread entered `working`.
     ///
-    /// Idempotent: a thread already out of `working` is left alone, so the
-    /// snapshot's run list and the thread sweep cannot double-report.
-    fn fail_recovered_run(
-        &self,
-        run_id: &RunId,
-        thread_id: &ThreadId,
-        project_id: &ProjectId,
-        now: u64,
-    ) -> bool {
-        let Some(thread) = self.registry.thread(thread_id) else {
-            return false;
+    /// A terminal run event clears `Thread::active_run_id` while replaying, so
+    /// a thread can still be `working` with no run record or active id when a
+    /// snapshot was taken before the terminal append. The status transition is
+    /// the durable boundary that lets recovery distinguish that terminal from
+    /// a previous turn's terminal event.
+    fn latest_active_run_id(&self, thread_id: &ThreadId) -> Option<RunId> {
+        let scope = Scope::Thread(thread_id.to_string());
+        let Ok(envelopes) = self.relay.replay_scope(&scope, usize::MAX) else {
+            return None;
         };
-        if !matches!(thread.status, ThreadStatus::Working | ThreadStatus::Waiting) {
-            return false;
+        let mut active = false;
+        let mut run_id = None;
+        for envelope in envelopes {
+            let Some(event) = domain_event_from_envelope(&envelope) else {
+                continue;
+            };
+            match event {
+                DomainEvent::ThreadStatusChanged {
+                    to: ThreadStatus::Working,
+                    ..
+                } => {
+                    active = true;
+                    run_id = None;
+                }
+                DomainEvent::ThreadStatusChanged {
+                    to: ThreadStatus::Idle | ThreadStatus::Error | ThreadStatus::Archived,
+                    ..
+                } => {
+                    active = false;
+                    run_id = None;
+                }
+                DomainEvent::ThreadRunEvent { run } if active => {
+                    run_id = Some(run.run_id.clone());
+                }
+                _ => {}
+            }
         }
-        let event = DomainEvent::ThreadRunEvent {
-            run: Box::new(RunEvent::failed(
-                thread_id.clone(),
-                project_id.clone(),
-                run_id.clone(),
-                now,
-                loom_domain::RunOutcome::Failed.turn_status(),
-                "server restarted while the run was in flight",
-            )),
+        run_id
+    }
+
+    /// Reconciles lifecycle progress for a run in an older or concurrently
+    /// captured snapshot with the retained relay log. Returns the terminal
+    /// outcome when that terminal has already been committed.
+    fn recover_run_flags(&self, record: &mut RunRecord) -> Option<RunOutcome> {
+        let scope = Scope::Thread(record.thread_id.to_string());
+        let Ok(envelopes) = self.relay.replay_scope(&scope, usize::MAX) else {
+            return record.terminal_outcome;
         };
-        let _ = self.publish_domain_event(&event);
-        let _ = self.registry.clear_thread_run(thread_id, now);
-        if let Ok(Some(change)) =
-            self.registry
-                .transition_thread(thread_id, ThreadTrigger::RunFailed, now)
-        {
-            let _ = self.publish_domain_event(&change);
+        let mut terminal = None;
+        let pending_status_event = record.pending_status_event.clone();
+        let mut pending_status_published = false;
+        for envelope in envelopes {
+            let Some(event) = domain_event_from_envelope(&envelope) else {
+                continue;
+            };
+            match event {
+                DomainEvent::ThreadStatusChanged { .. } => {
+                    if pending_status_event
+                        .as_ref()
+                        .is_some_and(|pending| pending.matches_event(&event))
+                    {
+                        pending_status_published = true;
+                    }
+                }
+                DomainEvent::ThreadRunEvent { run }
+                    if run.run_id == record.run_id && run.thread_id == record.thread_id =>
+                {
+                    match run.kind() {
+                        "turn/started" => {
+                            record.turn_started = true;
+                            record.provider_thread_id = run.provider_thread_id().map(str::to_owned);
+                        }
+                        "provider/error" => {
+                            record.provider_error_reported = true;
+                            if record.provider_thread_id.is_none() {
+                                record.provider_thread_id =
+                                    run.provider_thread_id().map(str::to_owned);
+                            }
+                        }
+                        "turn/completed" if terminal.is_none() => {
+                            terminal = Some(run.terminal_outcome().unwrap_or(RunOutcome::Failed));
+                        }
+                        _ => {}
+                    }
+                }
+                _ => {}
+            }
         }
-        true
+        if pending_status_published {
+            record.pending_status_event = None;
+        }
+        if let Some(outcome) = terminal {
+            record.terminal_published = true;
+            record.terminal_outcome = Some(outcome);
+        }
+        terminal.or(record.terminal_outcome)
     }
 
     /// Writes a domain snapshot to the data directory, if one is configured.
@@ -579,6 +708,7 @@ impl AppState {
         let Some(root) = &self.snapshot_root else {
             return Ok(());
         };
+        let _run_lifecycle_guard = self.runs.lifecycle_lock();
         let _snapshot_guard = self
             .snapshot_lock
             .lock()
@@ -653,6 +783,7 @@ impl std::fmt::Debug for AppState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use loom_domain::ThreadId;
     use loom_relay::Scope;
     use tempfile::TempDir;
 
@@ -938,6 +1069,249 @@ mod tests {
             thread_status_changes(&state, &thread_id).last().unwrap(),
             "error"
         );
+        let run_events = state
+            .relay
+            .replay_scope(&Scope::Thread(thread_id.to_string()), 100)
+            .unwrap()
+            .into_iter()
+            .filter_map(|envelope| domain_event_from_envelope(&envelope))
+            .filter_map(|event| match event {
+                DomainEvent::ThreadRunEvent { run } => Some(run),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            run_events.iter().map(|run| run.kind()).collect::<Vec<_>>(),
+            vec!["turn/started", "provider/error", "turn/completed"]
+        );
+        let run_id = run_events[0].run_id.clone();
+        assert!(run_events.iter().all(|run| {
+            run.run_id == run_id && run.event.scope.turn_id() == Some(run_id.to_string()).as_deref()
+        }));
+        assert_eq!(
+            run_events[1].event.body,
+            loom_domain::ProviderEvent::ProviderError {
+                provider_thread_id: loom_domain::RunEvent::synthetic_provider_thread_id(&run_id),
+                message: "server restarted while the run was in flight".into(),
+                detail: None,
+                error_info: None,
+                will_retry: Some(false),
+            }
+        );
+        assert_eq!(
+            run_events[2].terminal_error(),
+            Some("server restarted while the run was in flight")
+        );
+        state.shutdown();
+    }
+
+    #[tokio::test]
+    async fn a_committed_terminal_is_not_published_again_during_recovery() {
+        use loom_domain::{EnvironmentKind, MessageRole, RunEvent};
+
+        let dir = TempDir::new().unwrap();
+        let thread_id;
+        let run_id;
+        {
+            let state = AppState::build(durable_config(&dir)).unwrap();
+            let (host, host_event) = state
+                .registry
+                .enroll_host(None, "laptop".into(), now_ms())
+                .unwrap();
+            for event in &host_event {
+                state.publish_domain_event(event).unwrap();
+            }
+            let (environment, environment_event) = state
+                .registry
+                .create_environment(
+                    Some(state.registry.personal_project_id()),
+                    host.id,
+                    EnvironmentKind::Unmanaged,
+                    Some("/srv/loom".into()),
+                    now_ms(),
+                )
+                .unwrap();
+            for event in &environment_event {
+                state.publish_domain_event(event).unwrap();
+            }
+            let (thread, thread_event) = state
+                .registry
+                .create_thread(
+                    Some(state.registry.personal_project_id()),
+                    Some("terminal already committed".into()),
+                    Some(environment.id),
+                    now_ms(),
+                )
+                .unwrap();
+            thread_id = thread.id.clone();
+            state.publish_domain_event(&thread_event).unwrap();
+            for event in state
+                .registry
+                .post_message(&thread_id, MessageRole::User, "hi".into(), now_ms())
+                .unwrap()
+            {
+                state.publish_domain_event(&event).unwrap();
+            }
+            let thread = state.registry.thread(&thread_id).unwrap();
+            let run = match state.dispatch_thread(&thread, "hi") {
+                crate::runs::DispatchOutcome::Dispatched(run) => run,
+                other => panic!("expected a dispatch, got {other:?}"),
+            };
+            run_id = run.run_id.clone();
+
+            // Simulate the crash window after the run path appended its start
+            // and terminal events but before it removed the registry record or
+            // published the thread's final status.
+            state
+                .publish_domain_event(&DomainEvent::ThreadRunEvent {
+                    run: Box::new(RunEvent::started(
+                        thread.id.clone(),
+                        thread.project_id.clone(),
+                        run.run_id.clone(),
+                        now_ms(),
+                        "provider-1",
+                    )),
+                })
+                .unwrap();
+            state
+                .publish_domain_event(&DomainEvent::ThreadRunEvent {
+                    run: Box::new(RunEvent::completed(
+                        thread.id,
+                        thread.project_id,
+                        run.run_id,
+                        now_ms(),
+                        Some("provider-1".into()),
+                    )),
+                })
+                .unwrap();
+            state.shutdown();
+        }
+
+        let state = AppState::build(durable_config(&dir)).unwrap();
+        assert_eq!(
+            state.registry.thread(&thread_id).unwrap().status,
+            ThreadStatus::Idle
+        );
+        assert!(state.runs.is_empty());
+        let run_events = state
+            .relay
+            .replay_scope(&Scope::Thread(thread_id.to_string()), 100)
+            .unwrap()
+            .into_iter()
+            .filter_map(|envelope| domain_event_from_envelope(&envelope))
+            .filter_map(|event| match event {
+                DomainEvent::ThreadRunEvent { run } => Some(run),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            run_events.iter().map(|run| run.kind()).collect::<Vec<_>>(),
+            vec!["turn/started", "turn/completed"]
+        );
+        assert!(run_events.iter().all(|run| run.run_id == run_id));
+        state.shutdown();
+    }
+
+    #[tokio::test]
+    async fn a_terminal_in_the_log_is_recovered_without_a_run_snapshot() {
+        use loom_domain::{EnvironmentKind, MessageRole, RunEvent};
+
+        let dir = TempDir::new().unwrap();
+        let thread_id;
+        let run_id;
+        {
+            let state = AppState::build(durable_config(&dir)).unwrap();
+            let (host, host_event) = state
+                .registry
+                .enroll_host(None, "laptop".into(), now_ms())
+                .unwrap();
+            for event in &host_event {
+                state.publish_domain_event(event).unwrap();
+            }
+            let (environment, environment_event) = state
+                .registry
+                .create_environment(
+                    Some(state.registry.personal_project_id()),
+                    host.id,
+                    EnvironmentKind::Unmanaged,
+                    Some("/srv/loom".into()),
+                    now_ms(),
+                )
+                .unwrap();
+            for event in &environment_event {
+                state.publish_domain_event(event).unwrap();
+            }
+            let (thread, thread_event) = state
+                .registry
+                .create_thread(
+                    Some(state.registry.personal_project_id()),
+                    Some("terminal without snapshot".into()),
+                    Some(environment.id),
+                    now_ms(),
+                )
+                .unwrap();
+            thread_id = thread.id.clone();
+            state.publish_domain_event(&thread_event).unwrap();
+            for event in state
+                .registry
+                .post_message(&thread_id, MessageRole::User, "hi".into(), now_ms())
+                .unwrap()
+            {
+                state.publish_domain_event(&event).unwrap();
+            }
+            let thread = state.registry.thread(&thread_id).unwrap();
+            let run = match state.dispatch_thread(&thread, "hi") {
+                crate::runs::DispatchOutcome::Dispatched(run) => run,
+                other => panic!("expected a dispatch, got {other:?}"),
+            };
+            run_id = run.run_id.clone();
+            state
+                .publish_domain_event(&DomainEvent::ThreadRunEvent {
+                    run: Box::new(RunEvent::started(
+                        thread.id.clone(),
+                        thread.project_id.clone(),
+                        run.run_id.clone(),
+                        now_ms(),
+                        "provider-1",
+                    )),
+                })
+                .unwrap();
+            state
+                .publish_domain_event(&DomainEvent::ThreadRunEvent {
+                    run: Box::new(RunEvent::completed(
+                        thread.id,
+                        thread.project_id,
+                        run.run_id,
+                        now_ms(),
+                        Some("provider-1".into()),
+                    )),
+                })
+                .unwrap();
+            state.shutdown();
+        }
+
+        std::fs::remove_file(persistence::snapshot_path(dir.path())).unwrap();
+        let state = AppState::build(durable_config(&dir)).unwrap();
+        assert_eq!(
+            state.registry.thread(&thread_id).unwrap().status,
+            ThreadStatus::Idle
+        );
+        let run_events = state
+            .relay
+            .replay_scope(&Scope::Thread(thread_id.to_string()), 100)
+            .unwrap()
+            .into_iter()
+            .filter_map(|envelope| domain_event_from_envelope(&envelope))
+            .filter_map(|event| match event {
+                DomainEvent::ThreadRunEvent { run } => Some(run),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            run_events.iter().map(|run| run.kind()).collect::<Vec<_>>(),
+            vec!["turn/started", "turn/completed"]
+        );
+        assert!(run_events.iter().all(|run| run.run_id == run_id));
         state.shutdown();
     }
 

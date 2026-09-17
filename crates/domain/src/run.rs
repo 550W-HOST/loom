@@ -128,6 +128,108 @@ impl RunEvent {
         }
     }
 
+    /// Builds the synthetic provider identity used when the control plane has
+    /// to close a run before an ACP session exists.
+    ///
+    /// This value is deliberately namespaced and derived from the run. It is a
+    /// timeline identity only; callers must never persist it as a resumable
+    /// provider session id.
+    pub fn synthetic_provider_thread_id(run_id: &RunId) -> String {
+        format!("loom-preflight-{run_id}")
+    }
+
+    /// Builds the start event for a turn.
+    pub fn started(
+        thread_id: ThreadId,
+        project_id: ProjectId,
+        run_id: RunId,
+        at_ms: u64,
+        provider_thread_id: impl Into<String>,
+    ) -> Self {
+        Self::new(
+            thread_id,
+            project_id,
+            run_id,
+            at_ms,
+            ProviderEvent::TurnStarted {
+                provider_thread_id: provider_thread_id.into(),
+                parent_tool_call_id: None,
+            },
+        )
+    }
+
+    /// Builds a provider error diagnostic for a run.
+    pub fn provider_error(
+        thread_id: ThreadId,
+        project_id: ProjectId,
+        run_id: RunId,
+        at_ms: u64,
+        provider_thread_id: impl Into<String>,
+        message: impl Into<String>,
+    ) -> Self {
+        Self::new(
+            thread_id,
+            project_id,
+            run_id,
+            at_ms,
+            ProviderEvent::ProviderError {
+                provider_thread_id: provider_thread_id.into(),
+                message: message.into(),
+                detail: None,
+                error_info: None,
+                will_retry: Some(false),
+            },
+        )
+    }
+
+    /// Builds the ordered lifecycle for a server-owned failure.
+    ///
+    /// The first identity is synthetic when no provider session exists. It is
+    /// only used to satisfy the turn projection contract; the terminal event
+    /// keeps `providerThreadId` nullable and the message is copied verbatim to
+    /// both diagnostic locations.
+    pub fn failure_sequence(
+        thread_id: ThreadId,
+        project_id: ProjectId,
+        run_id: RunId,
+        at_ms: u64,
+        outcome: RunOutcome,
+        message: impl Into<String>,
+    ) -> [Self; 3] {
+        let message = message.into();
+        let provider_thread_id = Self::synthetic_provider_thread_id(&run_id);
+        [
+            Self::started(
+                thread_id.clone(),
+                project_id.clone(),
+                run_id.clone(),
+                at_ms,
+                provider_thread_id.clone(),
+            ),
+            Self::provider_error(
+                thread_id.clone(),
+                project_id.clone(),
+                run_id.clone(),
+                at_ms,
+                provider_thread_id,
+                message.clone(),
+            ),
+            Self::terminal(
+                thread_id,
+                project_id,
+                run_id,
+                at_ms,
+                outcome,
+                ProviderEvent::TurnCompleted {
+                    provider_thread_id: None,
+                    status: outcome.turn_status(),
+                    error: Some(TurnError { message }),
+                    provider_checkpoint_id: None,
+                },
+            ),
+        ]
+    }
+
     /// The stable `type` tag of the inner event, matching the serialized form.
     pub fn kind(&self) -> &'static str {
         self.event.kind()
@@ -146,6 +248,17 @@ impl RunEvent {
             ProviderEvent::TurnCompleted { status, .. } => Some(*status),
             _ => None,
         }
+    }
+
+    /// The control-plane outcome carried by a terminal event, with the
+    /// contract status as the compatibility fallback for older events.
+    pub fn terminal_outcome(&self) -> Option<RunOutcome> {
+        let status = self.terminal_status()?;
+        Some(self.outcome.unwrap_or(match status {
+            TurnStatus::Completed => RunOutcome::Completed,
+            TurnStatus::Interrupted => RunOutcome::Cancelled,
+            TurnStatus::Failed => RunOutcome::Failed,
+        }))
     }
 
     /// The failure message of a terminal event, when it carries one.
@@ -349,6 +462,44 @@ mod tests {
         assert!(failed.is_terminal());
         assert_eq!(failed.terminal_status(), Some(TurnStatus::Interrupted));
         assert_eq!(failed.terminal_error(), Some("cancelled"));
+    }
+
+    #[test]
+    fn a_server_failure_has_a_contract_valid_ordered_sequence() {
+        let (thread_id, project_id, run_id) = ids();
+        let events = RunEvent::failure_sequence(
+            thread_id.clone(),
+            project_id,
+            run_id.clone(),
+            2,
+            RunOutcome::Failed,
+            "workspace is unavailable",
+        );
+
+        assert_eq!(
+            events.iter().map(RunEvent::kind).collect::<Vec<_>>(),
+            vec!["turn/started", "provider/error", "turn/completed"]
+        );
+        let synthetic = RunEvent::synthetic_provider_thread_id(&run_id);
+        for event in &events[..2] {
+            assert_eq!(event.provider_thread_id(), Some(synthetic.as_str()));
+            assert_eq!(
+                event.event.scope.turn_id(),
+                Some(run_id.to_string()).as_deref()
+            );
+        }
+        assert_eq!(events[2].provider_thread_id(), None);
+        assert_eq!(events[2].terminal_error(), Some("workspace is unavailable"));
+        assert_eq!(events[0].event.thread_id, thread_id);
+
+        let value = serde_json::to_value(&events[2]).unwrap();
+        assert_eq!(value["event"]["type"], "turn/completed");
+        assert_eq!(value["event"]["scope"]["turnId"], run_id.to_string());
+        assert_eq!(value["event"]["providerThreadId"], serde_json::Value::Null);
+        assert_eq!(
+            value["event"]["error"]["message"],
+            "workspace is unavailable"
+        );
     }
 
     #[test]

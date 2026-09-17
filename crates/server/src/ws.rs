@@ -300,6 +300,10 @@ async fn handle_command(
                     Some("run is not in flight (already terminal)".into()),
                 ),
                 ReportOutcome::Mismatch(message) => (false, Some(message)),
+                ReportOutcome::PublishFailed { error } => (
+                    false,
+                    Some(format!("relay could not publish the run event: {error}")),
+                ),
             };
             Some(ServerMessage::RunReportAck {
                 run_id,

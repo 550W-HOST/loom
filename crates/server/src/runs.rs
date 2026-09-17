@@ -31,15 +31,15 @@ use std::sync::{Mutex, MutexGuard};
 
 use loom_domain::{
     DomainEvent, Environment, EnvironmentStatus, HostId, HostStatus, ProjectId, ProviderEvent,
-    RunEvent, RunId, RunOutcome, Thread, ThreadId, ThreadTrigger, TurnError, TurnStatus,
+    RunEvent, RunId, RunOutcome, Thread, ThreadId, ThreadStatus, ThreadTrigger, TurnError,
 };
 use loom_provider_protocol::{ProviderReport, RunDispatch};
-use loom_relay::{now_ms, Scope};
+use loom_relay::{now_ms, Result as RelayResult, Scope};
 use serde::{Deserialize, Serialize};
 
 use crate::state::AppState;
 
-/// A run the control plane has dispatched and has not seen terminate.
+/// A provider run or preflight attempt that has not reached a terminal event.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RunRecord {
     /// The run's identity, also the idempotency key for dispatch delivery.
@@ -61,17 +61,113 @@ pub struct RunRecord {
     pub started_at_ms: u64,
     /// When the run must be terminal, or the server reaps it.
     pub deadline_ms: u64,
+    /// Whether a contract `turn/started` event has been published.
+    ///
+    /// A daemon can disappear before it reports its first event. The server
+    /// uses this bit to add exactly one synthetic start before a terminal
+    /// event, while preserving a real start when one was already observed.
+    #[serde(default)]
+    pub turn_started: bool,
+    /// The provider identity carried by the run's start, when known.
+    ///
+    /// A synthetic value is kept here only as run bookkeeping. It is never
+    /// copied into `Thread::provider_session_id` and can therefore never be
+    /// used to resume an ACP session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_thread_id: Option<String>,
+    /// Whether a provider error has already been published for this run.
+    ///
+    /// This avoids adding a duplicate diagnostic while recovering a run whose
+    /// provider error was already in the log before the server restarted.
+    #[serde(default)]
+    pub provider_error_reported: bool,
+    /// The server-owned failure reason, when the attempt failed before a
+    /// provider could be dispatched. Keeping it on the record lets a retry or
+    /// restart finish the same lifecycle without replacing the root cause.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure_reason: Option<String>,
+    /// Whether the terminal run event has been published.
+    #[serde(default)]
+    pub terminal_published: bool,
+    /// The outcome of the published terminal event.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminal_outcome: Option<RunOutcome>,
+    /// The thread status event still waiting to be published, if any.
+    ///
+    /// The status mutation is applied only after this event reaches the relay,
+    /// so a failed append leaves the thread in `working` and can be retried.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_status_event: Option<PendingStatusChange>,
+}
+
+/// The durable data needed to retry one terminal thread-status append.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PendingStatusChange {
+    /// The thread whose status changes.
+    pub thread_id: ThreadId,
+    /// The project containing the thread.
+    pub project_id: ProjectId,
+    /// The status before the transition.
+    pub from: ThreadStatus,
+    /// The status after the transition.
+    pub to: ThreadStatus,
+    /// The original transition timestamp.
+    pub at_ms: u64,
+}
+
+impl PendingStatusChange {
+    /// Builds the domain event that is stored in the relay.
+    fn event(&self) -> DomainEvent {
+        DomainEvent::ThreadStatusChanged {
+            thread_id: self.thread_id.clone(),
+            project_id: self.project_id.clone(),
+            from: self.from,
+            to: self.to,
+            at_ms: self.at_ms,
+        }
+    }
+
+    /// Whether a replayed event is the pending append.
+    pub(crate) fn matches_event(&self, event: &DomainEvent) -> bool {
+        matches!(
+            event,
+            DomainEvent::ThreadStatusChanged {
+                thread_id,
+                project_id,
+                from,
+                to,
+                at_ms,
+            } if thread_id == &self.thread_id
+                && project_id == &self.project_id
+                && from == &self.from
+                && to == &self.to
+                && at_ms == &self.at_ms
+        )
+    }
 }
 
 /// Runs currently in flight, keyed by run id.
 ///
-/// In-memory, like the rest of the domain registry today: a server restart
-/// loses the table, and the runs it described are reaped by the next server's
-/// reconciliation because nothing reports for them. Persisting it is a
-/// separate concern with its own issue.
+/// In-memory during normal operation, and included in the durable domain
+/// snapshot when the disk relay backend is enabled. A restarted server restores
+/// these records only long enough to close them with a contract-valid terminal
+/// sequence; a provider report arriving after that is an idempotent no-op.
 #[derive(Debug, Default)]
 pub struct RunRegistry {
-    inner: Mutex<HashMap<RunId, RunRecord>>,
+    /// Serializes lifecycle publication with dispatch and reconciliation. The
+    /// relay append is synchronous, so holding this lock makes a start and a
+    /// terminal event one indivisible state-machine step to other callers.
+    lifecycle: Mutex<()>,
+    inner: Mutex<RunRegistryState>,
+}
+
+#[derive(Debug, Default)]
+struct RunRegistryState {
+    records: HashMap<RunId, RunRecord>,
+    /// Claims cover both records and the short preflight window before a
+    /// record can be inserted. This makes concurrent dispatches for one
+    /// thread choose one run deterministically.
+    thread_claims: HashMap<ThreadId, RunId>,
 }
 
 impl RunRegistry {
@@ -80,26 +176,135 @@ impl RunRegistry {
         Self::default()
     }
 
+    /// Locks run lifecycle transitions and event publication.
+    pub(crate) fn lifecycle_lock(&self) -> MutexGuard<'_, ()> {
+        self.lifecycle
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+    }
+
     /// Records a run. Returns the previous record if the id was reused, which
     /// cannot happen for minted ids but keeps the API total.
     pub fn insert(&self, record: RunRecord) -> Option<RunRecord> {
-        self.lock().insert(record.run_id.clone(), record)
+        let mut state = self.lock();
+        let previous = state.records.insert(record.run_id.clone(), record.clone());
+        if let Some(previous) = &previous {
+            if state.thread_claims.get(&previous.thread_id) == Some(&previous.run_id) {
+                state.thread_claims.remove(&previous.thread_id);
+            }
+        }
+        state
+            .thread_claims
+            .insert(record.thread_id.clone(), record.run_id.clone());
+        previous
+    }
+
+    /// Restores runs from a domain snapshot before recovery settles them.
+    pub(crate) fn restore(&self, records: impl IntoIterator<Item = RunRecord>) {
+        for record in records {
+            self.insert(record);
+        }
+    }
+
+    /// Claims a thread before a dispatch is resolved or published.
+    ///
+    /// The claim is also used by pre-dispatch failures, which have no
+    /// `RunRecord` because there is no provider run to reconcile.
+    pub fn claim_thread(&self, thread_id: &ThreadId, run_id: RunId) -> Result<(), RunId> {
+        let mut state = self.lock();
+        if let Some(existing) = state.thread_claims.get(thread_id) {
+            return Err(existing.clone());
+        }
+        state.thread_claims.insert(thread_id.clone(), run_id);
+        Ok(())
+    }
+
+    /// Releases a preflight claim when its terminal sequence has been emitted.
+    pub fn release_thread(&self, thread_id: &ThreadId, run_id: &RunId) -> bool {
+        let mut state = self.lock();
+        if state.thread_claims.get(thread_id) != Some(run_id) {
+            return false;
+        }
+        state.thread_claims.remove(thread_id);
+        true
     }
 
     /// A run by id.
     pub fn get(&self, run_id: &RunId) -> Option<RunRecord> {
-        self.lock().get(run_id).cloned()
+        self.lock().records.get(run_id).cloned()
     }
 
     /// Removes a run, returning it if it was in flight.
     pub fn remove(&self, run_id: &RunId) -> Option<RunRecord> {
-        self.lock().remove(run_id)
+        let mut state = self.lock();
+        let record = state.records.remove(run_id)?;
+        if state.thread_claims.get(&record.thread_id) == Some(run_id) {
+            state.thread_claims.remove(&record.thread_id);
+        }
+        Some(record)
+    }
+
+    /// Marks the first published turn event and records its provider identity.
+    ///
+    /// Returns `false` when the run is gone or was already marked. Callers do
+    /// this only after the event append succeeds so a failed append never
+    /// suppresses the synthetic start needed by a later terminal path.
+    pub fn mark_started(&self, run_id: &RunId, provider_thread_id: String) -> bool {
+        let mut state = self.lock();
+        let Some(record) = state.records.get_mut(run_id) else {
+            return false;
+        };
+        if record.turn_started {
+            return false;
+        }
+        record.turn_started = true;
+        record.provider_thread_id = Some(provider_thread_id);
+        true
+    }
+
+    /// Records that a provider error has been published for a run.
+    pub fn mark_provider_error(&self, run_id: &RunId) {
+        if let Some(record) = self.lock().records.get_mut(run_id) {
+            record.provider_error_reported = true;
+        }
+    }
+
+    /// Records that the terminal run event reached the relay.
+    pub fn mark_terminal(&self, run_id: &RunId, outcome: RunOutcome) -> bool {
+        let mut state = self.lock();
+        let Some(record) = state.records.get_mut(run_id) else {
+            return false;
+        };
+        record.terminal_published = true;
+        record.terminal_outcome = Some(outcome);
+        true
+    }
+
+    /// Keeps the status event needed to finish a terminal run.
+    pub fn set_pending_status_event(&self, run_id: &RunId, event: PendingStatusChange) -> bool {
+        let mut state = self.lock();
+        let Some(record) = state.records.get_mut(run_id) else {
+            return false;
+        };
+        record.pending_status_event = Some(event);
+        true
+    }
+
+    /// Clears a status event after its relay append succeeds.
+    pub fn clear_pending_status_event(&self, run_id: &RunId) -> bool {
+        let mut state = self.lock();
+        let Some(record) = state.records.get_mut(run_id) else {
+            return false;
+        };
+        record.pending_status_event = None;
+        true
     }
 
     /// Every in-flight run on one host.
     pub fn for_host(&self, host_id: &HostId) -> Vec<RunRecord> {
         let mut runs: Vec<RunRecord> = self
             .lock()
+            .records
             .values()
             .filter(|run| &run.host_id == host_id)
             .cloned()
@@ -110,7 +315,7 @@ impl RunRegistry {
 
     /// Every in-flight run.
     pub fn all(&self) -> Vec<RunRecord> {
-        let mut runs: Vec<RunRecord> = self.lock().values().cloned().collect();
+        let mut runs: Vec<RunRecord> = self.lock().records.values().cloned().collect();
         runs.sort_by(|left, right| left.run_id.cmp(&right.run_id));
         runs
     }
@@ -124,6 +329,7 @@ impl RunRegistry {
     pub fn for_thread(&self, thread_id: &ThreadId) -> Option<RunRecord> {
         let mut runs: Vec<RunRecord> = self
             .lock()
+            .records
             .values()
             .filter(|run| &run.thread_id == thread_id)
             .cloned()
@@ -136,6 +342,7 @@ impl RunRegistry {
     pub fn expired(&self, now_ms: u64) -> Vec<RunRecord> {
         let mut runs: Vec<RunRecord> = self
             .lock()
+            .records
             .values()
             .filter(|run| run.deadline_ms <= now_ms)
             .cloned()
@@ -146,7 +353,7 @@ impl RunRegistry {
 
     /// How many runs are in flight.
     pub fn len(&self) -> usize {
-        self.lock().len()
+        self.lock().records.len()
     }
 
     /// Whether no run is in flight.
@@ -154,7 +361,7 @@ impl RunRegistry {
         self.len() == 0
     }
 
-    fn lock(&self) -> MutexGuard<'_, HashMap<RunId, RunRecord>> {
+    fn lock(&self) -> MutexGuard<'_, RunRegistryState> {
         self.inner
             .lock()
             .unwrap_or_else(|poison| poison.into_inner())
@@ -163,9 +370,15 @@ impl RunRegistry {
 
 /// What happened when a dispatch was attempted.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[allow(clippy::large_enum_variant)]
 pub enum DispatchOutcome {
     /// The dispatch was appended to the host's scope and the run is in flight.
     Dispatched(RunRecord),
+    /// Another dispatch already owns this thread.
+    AlreadyInFlight {
+        /// The run currently claiming the thread.
+        run_id: RunId,
+    },
     /// The thread has no usable environment, so there is no workspace to run
     /// the provider in. The run was failed on the spot rather than letting a
     /// provider start in the daemon's own cwd.
@@ -182,7 +395,7 @@ pub enum DispatchOutcome {
     },
     /// The relay rejected the append; the run was failed on the spot.
     PublishFailed {
-        /// The run that never started.
+        /// The run or preflight attempt whose lifecycle could not be published.
         run_id: RunId,
         /// Why the append failed.
         error: String,
@@ -199,6 +412,26 @@ pub enum ReportOutcome {
     Unknown,
     /// The report named a run this host does not own, or a different thread.
     Mismatch(String),
+    /// The report was valid, but the relay rejected its append. The run stays
+    /// in flight when the failed append was non-terminal, so a retry can make
+    /// progress after the backend recovers.
+    PublishFailed {
+        /// Why the relay rejected the event.
+        error: String,
+    },
+}
+
+/// The result of claiming a run's terminal transition.
+#[derive(Debug, PartialEq, Eq)]
+enum FinishRunResult {
+    /// The run was claimed and its lifecycle was settled.
+    Finished,
+    /// Another caller already claimed the terminal transition.
+    AlreadyFinished,
+    /// The terminal sequence could not be appended. The run remains in flight
+    /// with progress flags advanced for events that did append, so a retry can
+    /// finish the same run without duplicating those events.
+    PublishFailed(String),
 }
 
 /// What a reconciliation pass found and repaired.
@@ -215,12 +448,18 @@ pub struct ReconcileSummary {
 }
 
 /// What a `threads.stop` request found.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum StopOutcome {
     /// A run was in flight and has been terminated.
     Stopped,
     /// The thread had no run in flight; there was nothing to terminate.
     NoRun,
+    /// The terminal lifecycle could not be published, so the run remains in
+    /// flight and a later stop or reconciliation can retry it.
+    PublishFailed {
+        /// Why the relay rejected the lifecycle event.
+        error: String,
+    },
 }
 
 impl AppState {
@@ -238,38 +477,51 @@ impl AppState {
     /// on the spot rather than silently run somewhere else. See
     /// [`AppState::dispatch_thread`] and `docs/provider-protocol.md`.
     pub fn dispatch_thread(&self, thread: &Thread, prompt: &str) -> DispatchOutcome {
+        let _lifecycle = self.runs.lifecycle_lock();
         let now = now_ms();
+        let run_id = RunId::mint();
+        if let Err(existing) = self.runs.claim_thread(&thread.id, run_id.clone()) {
+            return DispatchOutcome::AlreadyInFlight { run_id: existing };
+        }
+        // Keep the entity view aligned with the claim while the dispatcher is
+        // resolving the environment. A preflight failure clears it below.
+        let _ = self.registry.set_thread_run(&thread.id, &run_id, now);
 
         let environment = match self.resolve_environment(thread) {
             Ok(environment) => environment,
             Err(error) => {
-                return DispatchOutcome::NoEnvironment {
-                    run_id: self.fail_thread(thread, error, now),
-                }
+                return match self.fail_thread(thread, run_id.clone(), error, now) {
+                    Ok(()) => DispatchOutcome::NoEnvironment { run_id },
+                    Err(error) => DispatchOutcome::PublishFailed { run_id, error },
+                };
             }
         };
 
         // The workspace lives on exactly one machine, so the run must go to the
         // environment's host rather than to whichever host is "primary".
         let Some(host) = self.registry.host(&environment.host_id) else {
-            return DispatchOutcome::NoHost {
-                run_id: self.fail_thread(
-                    thread,
-                    format!("host {} is not known", environment.host_id),
-                    now,
-                ),
+            return match self.fail_thread(
+                thread,
+                run_id.clone(),
+                format!("host {} is not known", environment.host_id),
+                now,
+            ) {
+                Ok(()) => DispatchOutcome::NoHost { run_id },
+                Err(error) => DispatchOutcome::PublishFailed { run_id, error },
             };
         };
         if host.status != HostStatus::Connected {
-            return DispatchOutcome::NoHost {
-                run_id: self.fail_thread(
-                    thread,
-                    format!(
-                        "host {} owns this thread's workspace but is not connected",
-                        host.id
-                    ),
-                    now,
+            return match self.fail_thread(
+                thread,
+                run_id.clone(),
+                format!(
+                    "host {} owns this thread's workspace but is not connected",
+                    host.id
                 ),
+                now,
+            ) {
+                Ok(()) => DispatchOutcome::NoHost { run_id },
+                Err(error) => DispatchOutcome::PublishFailed { run_id, error },
             };
         }
 
@@ -277,17 +529,18 @@ impl AppState {
         // construction, for an unmanaged one. Treat `None` as an internal
         // inconsistency rather than dispatch a provider without a workspace.
         let Some(workspace) = environment.path.clone() else {
-            return DispatchOutcome::NoEnvironment {
-                run_id: self.fail_thread(
-                    thread,
-                    format!("environment {} has no workspace path", environment.id),
-                    now,
-                ),
+            return match self.fail_thread(
+                thread,
+                run_id.clone(),
+                format!("environment {} has no workspace path", environment.id),
+                now,
+            ) {
+                Ok(()) => DispatchOutcome::NoEnvironment { run_id },
+                Err(error) => DispatchOutcome::PublishFailed { run_id, error },
             };
         };
 
-        let run_id = RunId::mint();
-        let record = RunRecord {
+        let mut record = RunRecord {
             run_id: run_id.clone(),
             thread_id: thread.id.clone(),
             project_id: thread.project_id.clone(),
@@ -295,6 +548,13 @@ impl AppState {
             cwd: workspace.clone(),
             started_at_ms: now,
             deadline_ms: now.saturating_add(self.run_timeout_ms()),
+            turn_started: false,
+            provider_thread_id: None,
+            provider_error_reported: false,
+            failure_reason: None,
+            terminal_published: false,
+            terminal_outcome: None,
+            pending_status_event: None,
         };
         // The dispatched spec carries the working directory. The provider is
         // otherwise exactly the one this server was configured with.
@@ -311,6 +571,10 @@ impl AppState {
         let provider_session_id = thread
             .resumable_session_id(&provider.name, &workspace)
             .map(str::to_owned);
+        // This is only the identity the provider may resume. If no session is
+        // available, the run gets a synthetic identity only if it later needs
+        // a server-generated start event.
+        record.provider_thread_id = provider_session_id.clone();
         let dispatch = RunDispatch {
             run_id: run_id.clone(),
             thread_id: thread.id.clone(),
@@ -339,10 +603,17 @@ impl AppState {
                 // The run never reached the log, so the execution plane can
                 // never report it. Fail it here rather than wait for the
                 // deadline sweep.
-                self.finish_run(&record, RunOutcome::Failed, Some(error.to_string()), now);
+                let error_text = error.to_string();
+                let _ = self.finish_run_with_locked(
+                    &record,
+                    RunOutcome::Failed,
+                    Some(error_text.clone()),
+                    None,
+                    now,
+                );
                 DispatchOutcome::PublishFailed {
                     run_id,
-                    error: error.to_string(),
+                    error: error_text,
                 }
             }
         }
@@ -365,16 +636,27 @@ impl AppState {
     /// control plane and best-effort on the machine.
     pub fn stop_thread(&self, thread_id: &ThreadId) -> StopOutcome {
         let now = now_ms();
-        let Some(record) = self.runs.for_thread(thread_id) else {
-            return StopOutcome::NoRun;
+        let result = {
+            let _lifecycle = self.runs.lifecycle_lock();
+            let Some(record) = self.runs.for_thread(thread_id) else {
+                return StopOutcome::NoRun;
+            };
+            self.finish_run_with_locked(
+                &record,
+                RunOutcome::Cancelled,
+                Some("stopped by a client".to_owned()),
+                None,
+                now,
+            )
         };
-        self.finish_run(
-            &record,
-            RunOutcome::Cancelled,
-            Some("stopped by a client".to_owned()),
-            now,
-        );
-        StopOutcome::Stopped
+        match result {
+            FinishRunResult::Finished => {
+                self.drain_thread_queue(thread_id);
+                StopOutcome::Stopped
+            }
+            FinishRunResult::AlreadyFinished => StopOutcome::NoRun,
+            FinishRunResult::PublishFailed(error) => StopOutcome::PublishFailed { error },
+        }
     }
 
     /// Resolves the environment a thread must run in.
@@ -414,6 +696,7 @@ impl AppState {
     pub fn apply_run_report(&self, host_id: &HostId, report: ProviderReport) -> ReportOutcome {
         let now = now_ms();
         let run_id = report.event.run_id.clone();
+        let lifecycle = self.runs.lifecycle_lock();
         let Some(record) = self.runs.get(&run_id) else {
             return ReportOutcome::Unknown;
         };
@@ -435,18 +718,76 @@ impl AppState {
             // The daemon's own verdict travels in `outcome` when it has one;
             // for a terminal event a producer sent without it, the contract
             // status is the fallback.
-            let outcome = event.outcome.unwrap_or_else(|| {
-                match event.terminal_status().unwrap_or(TurnStatus::Failed) {
-                    TurnStatus::Completed => RunOutcome::Completed,
-                    TurnStatus::Interrupted => RunOutcome::Cancelled,
-                    TurnStatus::Failed => RunOutcome::Failed,
-                }
-            });
+            let outcome = event.terminal_outcome().unwrap_or(RunOutcome::Failed);
             let error = event.terminal_error().map(str::to_owned);
-            self.finish_run_with(&record, outcome, error, Some(event), now);
+            let result = self.finish_run_with_locked(&record, outcome, error, Some(event), now);
+            drop(lifecycle);
+            return match result {
+                FinishRunResult::Finished => {
+                    self.drain_thread_queue(&record.thread_id);
+                    ReportOutcome::Applied
+                }
+                FinishRunResult::AlreadyFinished => ReportOutcome::Unknown,
+                FinishRunResult::PublishFailed(error) => ReportOutcome::PublishFailed { error },
+            };
         } else {
-            self.learn_provider_session(&event, now);
-            self.publish_run_event(&record, event, now);
+            let event_kind = event.kind();
+            if event_kind == "turn/started" {
+                // A duplicate start is harmless but must not create a second
+                // turn anchor in the projection.
+                if record.turn_started {
+                    return ReportOutcome::Applied;
+                }
+                let provider_thread_id = event
+                    .provider_thread_id()
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| RunEvent::synthetic_provider_thread_id(&run_id));
+                if let Err(error) = self.publish_run_event(&record, event) {
+                    return ReportOutcome::PublishFailed {
+                        error: error.to_string(),
+                    };
+                }
+                self.runs.mark_started(&run_id, provider_thread_id);
+            } else {
+                // Turn-scoped reports can arrive before the daemon's start
+                // report after a reconnect. Add the anchor before forwarding
+                // the report so the client projection remains legal.
+                if !ProviderEvent::is_thread_scoped(event_kind) && !record.turn_started {
+                    let provider_thread_id = event
+                        .provider_thread_id()
+                        .map(str::to_owned)
+                        .or_else(|| record.provider_thread_id.clone())
+                        .unwrap_or_else(|| RunEvent::synthetic_provider_thread_id(&run_id));
+                    let started = RunEvent::started(
+                        record.thread_id.clone(),
+                        record.project_id.clone(),
+                        record.run_id.clone(),
+                        now,
+                        provider_thread_id,
+                    );
+                    if let Err(error) = self.publish_run_event(&record, started) {
+                        return ReportOutcome::PublishFailed {
+                            error: error.to_string(),
+                        };
+                    }
+                    let provider_thread_id = event
+                        .provider_thread_id()
+                        .map(str::to_owned)
+                        .or_else(|| record.provider_thread_id.clone())
+                        .unwrap_or_else(|| RunEvent::synthetic_provider_thread_id(&run_id));
+                    self.runs.mark_started(&run_id, provider_thread_id);
+                }
+                let event_for_learning = event.clone();
+                if let Err(error) = self.publish_run_event(&record, event) {
+                    return ReportOutcome::PublishFailed {
+                        error: error.to_string(),
+                    };
+                }
+                if event_kind == "provider/error" {
+                    self.runs.mark_provider_error(&run_id);
+                }
+                self.learn_provider_session(&event_for_learning, now);
+            }
         }
         ReportOutcome::Applied
     }
@@ -535,33 +876,54 @@ impl AppState {
         for host_id in &stale_hosts {
             summary.stale_hosts += 1;
             for record in self.runs.for_host(host_id) {
-                self.finish_run(
+                if record.terminal_published {
+                    continue;
+                }
+                if self.finish_run(
                     &record,
                     RunOutcome::HostStale,
                     Some(format!("host {host_id} stopped heartbeating")),
                     now,
-                );
-                summary.stale_runs += 1;
+                ) {
+                    summary.stale_runs += 1;
+                }
             }
         }
 
-        // 3. The server-side deadline is the backstop for a daemon that is
+        // 3. A terminal event may have committed while its thread-status
+        // append was rejected. Retry that second commit before considering
+        // deadlines, so a transient relay failure cannot strand the record.
+        for record in self.runs.all() {
+            if !record.terminal_published {
+                continue;
+            }
+            let outcome = record.terminal_outcome.unwrap_or(RunOutcome::Failed);
+            let _ = self.finish_run_with(&record, outcome, None, None, now);
+        }
+
+        // 4. The server-side deadline is the backstop for a daemon that is
         //    connected but wedged. A run whose provider never settles is failed
         //    here even though nothing reported it.
         for record in self.runs.expired(now) {
             if self.runs.get(&record.run_id).is_none() {
                 continue;
             }
-            self.finish_run(
-                &record,
-                RunOutcome::TimedOut,
-                Some("run exceeded its deadline".into()),
-                now,
-            );
-            summary.timed_out_runs += 1;
+            if record.terminal_published {
+                continue;
+            }
+            let (outcome, error) = match &record.failure_reason {
+                Some(reason) => (RunOutcome::Failed, Some(reason.clone())),
+                None => (
+                    RunOutcome::TimedOut,
+                    Some("run exceeded its deadline".into()),
+                ),
+            };
+            if self.finish_run(&record, outcome, error, now) && record.failure_reason.is_none() {
+                summary.timed_out_runs += 1;
+            }
         }
 
-        // 4. Queued messages whose time has come. A scheduled message needs no
+        // 5. Queued messages whose time has come. A scheduled message needs no
         //    other event to become due, so the sweep is what delivers it; a
         //    message left queued by a crash between a run's terminal event and
         //    its drain is picked up by the same pass.
@@ -572,8 +934,17 @@ impl AppState {
 
     /// Publishes the server's own terminal event, clears the run, and moves
     /// the thread out of `working`.
-    fn finish_run(&self, record: &RunRecord, outcome: RunOutcome, error: Option<String>, now: u64) {
-        self.finish_run_with(record, outcome, error, None, now);
+    fn finish_run(
+        &self,
+        record: &RunRecord,
+        outcome: RunOutcome,
+        error: Option<String>,
+        now: u64,
+    ) -> bool {
+        matches!(
+            self.finish_run_with(record, outcome, error, None, now),
+            FinishRunResult::Finished
+        )
     }
 
     /// Publishes a terminal event, clears the run, and moves the thread out of
@@ -589,8 +960,138 @@ impl AppState {
         error: Option<String>,
         event: Option<RunEvent>,
         now: u64,
-    ) {
-        self.runs.remove(&record.run_id);
+    ) -> FinishRunResult {
+        let result = {
+            let _lifecycle = self.runs.lifecycle_lock();
+            self.finish_run_with_locked(record, outcome, error, event, now)
+        };
+        if matches!(result, FinishRunResult::Finished) {
+            self.drain_thread_queue(&record.thread_id);
+        }
+        result
+    }
+
+    /// Publishes a terminal lifecycle while the registry lifecycle lock is
+    /// held. The record is removed only after the terminal append succeeds, so
+    /// a transient relay failure can be retried without losing the run.
+    fn finish_run_with_locked(
+        &self,
+        record: &RunRecord,
+        outcome: RunOutcome,
+        error: Option<String>,
+        event: Option<RunEvent>,
+        now: u64,
+    ) -> FinishRunResult {
+        self.finish_run_with_locked_and_drain(record, outcome, error, event, now, false)
+    }
+
+    /// The recovery variant settles the thread without draining queued work.
+    /// Recovery may have several stale runs to close, and dispatching a queued
+    /// message between those closures would make the new run look stale too.
+    pub(crate) fn fail_run_after_restart(&self, record: &RunRecord, now: u64) -> bool {
+        let _lifecycle = self.runs.lifecycle_lock();
+        let reason = record
+            .failure_reason
+            .clone()
+            .unwrap_or_else(|| "server restarted while the run was in flight".to_owned());
+        matches!(
+            self.finish_run_with_locked_and_drain(
+                record,
+                RunOutcome::Failed,
+                Some(reason),
+                None,
+                now,
+                false,
+            ),
+            FinishRunResult::Finished
+        )
+    }
+
+    /// Completes the in-memory cleanup for a terminal event that was already
+    /// appended before the previous process stopped. Re-publishing that event
+    /// would create a second terminal for the same run, so recovery only removes
+    /// the record and applies the missing thread transition.
+    pub(crate) fn recover_published_terminal(
+        &self,
+        record: &RunRecord,
+        outcome: RunOutcome,
+        now: u64,
+    ) -> bool {
+        let _lifecycle = self.runs.lifecycle_lock();
+        let Some(record) = self.runs.get(&record.run_id) else {
+            return false;
+        };
+        matches!(
+            self.settle_finished_thread(&record, outcome, now, false),
+            FinishRunResult::Finished
+        )
+    }
+
+    fn finish_run_with_locked_and_drain(
+        &self,
+        record: &RunRecord,
+        outcome: RunOutcome,
+        error: Option<String>,
+        event: Option<RunEvent>,
+        now: u64,
+        drain_queue: bool,
+    ) -> FinishRunResult {
+        let Some(record) = self.runs.get(&record.run_id) else {
+            return FinishRunResult::AlreadyFinished;
+        };
+        if record.terminal_published {
+            let outcome = record.terminal_outcome.unwrap_or(outcome);
+            return self.settle_finished_thread(&record, outcome, now, drain_queue);
+        }
+        let error = error.or_else(|| record.failure_reason.clone());
+
+        // A daemon can report a terminal event before its start after a
+        // reconnect. The start must be appended first, using the real provider
+        // identity when the terminal carried one and a synthetic timeline-only
+        // identity otherwise.
+        let provider_thread_id = event
+            .as_ref()
+            .and_then(RunEvent::provider_thread_id)
+            .map(str::to_owned)
+            .or_else(|| record.provider_thread_id.clone())
+            .unwrap_or_else(|| RunEvent::synthetic_provider_thread_id(&record.run_id));
+        if !record.turn_started {
+            let started = RunEvent::started(
+                record.thread_id.clone(),
+                record.project_id.clone(),
+                record.run_id.clone(),
+                now,
+                provider_thread_id.clone(),
+            );
+            if let Err(error) = self.publish_run_event(&record, started) {
+                return FinishRunResult::PublishFailed(error.to_string());
+            }
+            self.runs
+                .mark_started(&record.run_id, provider_thread_id.clone());
+        }
+
+        // Failures owned by the control plane get a separate diagnostic row;
+        // provider terminal reports already carry their own provider verdict.
+        let server_failure = event.is_none()
+            && matches!(
+                outcome,
+                RunOutcome::Failed | RunOutcome::TimedOut | RunOutcome::HostStale
+            );
+        if server_failure && !record.provider_error_reported {
+            let diagnostic = RunEvent::provider_error(
+                record.thread_id.clone(),
+                record.project_id.clone(),
+                record.run_id.clone(),
+                now,
+                provider_thread_id,
+                error.clone().unwrap_or_default(),
+            );
+            if let Err(error) = self.publish_run_event(&record, diagnostic) {
+                return FinishRunResult::PublishFailed(error.to_string());
+            }
+            self.runs.mark_provider_error(&record.run_id);
+        }
+
         // A reaped run has no daemon event, so the server synthesizes the
         // contract terminal from its own verdict — carrying the real outcome,
         // which is what keeps `timed_out` and `host_stale` distinguishable
@@ -613,8 +1114,32 @@ impl AppState {
                 body,
             )
         });
-        self.publish_run_event(record, terminal, now);
+        if let Err(error) = self.publish_run_event(&record, terminal) {
+            return FinishRunResult::PublishFailed(error.to_string());
+        }
 
+        // The terminal append is the first commit point. Keep the record until
+        // the follow-up thread-status append also succeeds, so a transient
+        // relay failure can retry the same lifecycle without another terminal.
+        self.runs.mark_terminal(&record.run_id, outcome);
+        let record = self
+            .runs
+            .get(&record.run_id)
+            .expect("a run remains registered until its settlement completes");
+        self.settle_finished_thread(&record, outcome, now, drain_queue)
+    }
+
+    /// Publishes the terminal thread-status event and then clears the entity-
+    /// side run. The status mutation follows its relay append; this keeps a
+    /// failed append from making a thread look idle/error before the durable log
+    /// says so.
+    fn settle_finished_thread(
+        &self,
+        record: &RunRecord,
+        outcome: RunOutcome,
+        now: u64,
+        drain_queue: bool,
+    ) -> FinishRunResult {
         let trigger = match outcome {
             RunOutcome::Completed => ThreadTrigger::RunCompleted,
             RunOutcome::Cancelled => ThreadTrigger::RunCancelled,
@@ -622,49 +1147,89 @@ impl AppState {
                 ThreadTrigger::RunFailed
             }
         };
-        let _ = self.registry.clear_thread_run(&record.thread_id, now);
-        // A thread already reconciled is not an error: the transition simply
-        // does not apply and no second status event is produced.
-        if let Ok(Some(change)) = self
-            .registry
-            .transition_thread(&record.thread_id, trigger, now)
-        {
-            let _ = self.publish_domain_event(&change);
+        let Some(record) = self.runs.get(&record.run_id) else {
+            return FinishRunResult::AlreadyFinished;
+        };
+        let pending = record.pending_status_event.clone().or_else(|| {
+            let thread = self.registry.thread(&record.thread_id)?;
+            let to = thread.status.transition(trigger)?;
+            Some(PendingStatusChange {
+                thread_id: thread.id,
+                project_id: thread.project_id,
+                from: thread.status,
+                to,
+                at_ms: now,
+            })
+        });
+        if let Some(pending) = pending {
+            // Store the exact event before appending it. If the backend rejects
+            // the append, the same event can be retried rather than rebuilt
+            // with a different timestamp or source status.
+            self.runs
+                .set_pending_status_event(&record.run_id, pending.clone());
+            let change = pending.event();
+            if let Err(error) = self.publish_domain_event(&change) {
+                return FinishRunResult::PublishFailed(error.to_string());
+            }
+            // Apply only after the relay has accepted the event. Replay sees
+            // the same mutation if the process dies between these two steps.
+            self.registry.apply_event(&change);
+            self.runs.clear_pending_status_event(&record.run_id);
         }
+        let _ = self.registry.clear_thread_run(&record.thread_id, now);
+        self.runs.remove(&record.run_id);
         // A turn that ended cannot still be waiting on an answer, and a thread
         // that just became idle is exactly when the queue is worth draining.
         // Both are ordered after the status change so the thread a subscriber
         // sees is already out of `working` when the queued turn starts.
         self.cancel_thread_interactions(&record.thread_id, now);
-        self.drain_thread_queue(&record.thread_id);
+        if drain_queue {
+            self.drain_thread_queue(&record.thread_id);
+        }
+        FinishRunResult::Finished
     }
 
-    /// Fails a thread that never got a run started.
+    /// Fails a thread before a provider dispatch exists.
     ///
-    /// Returns the synthetic run id reported in the terminal event. No record
-    /// is inserted, because there is nothing to reconcile: the run is already
-    /// terminal.
-    fn fail_thread(&self, thread: &Thread, reason: String, now: u64) -> RunId {
-        let run_id = RunId::mint();
-        self.publish_domain_event(&DomainEvent::ThreadRunEvent {
-            run: Box::new(RunEvent::failed(
-                thread.id.clone(),
-                thread.project_id.clone(),
-                run_id.clone(),
-                now,
-                RunOutcome::Failed.turn_status(),
-                reason,
-            )),
-        })
-        .ok();
-        let _ = self.registry.clear_thread_run(&thread.id, now);
-        if let Ok(Some(change)) =
-            self.registry
-                .transition_thread(&thread.id, ThreadTrigger::RunFailed, now)
-        {
-            let _ = self.publish_domain_event(&change);
+    /// The preflight attempt uses the same record and terminal commit point as
+    /// a provider run. If relay publication fails part-way through the
+    /// lifecycle, the record and the thread's `working` state remain so a later
+    /// reconciliation can append the missing events without starting another
+    /// run or leaving a start without a terminal.
+    fn fail_thread(
+        &self,
+        thread: &Thread,
+        run_id: RunId,
+        reason: String,
+        now: u64,
+    ) -> Result<(), String> {
+        let record = RunRecord {
+            run_id,
+            thread_id: thread.id.clone(),
+            project_id: thread.project_id.clone(),
+            // There is no owning execution host for a preflight attempt. The
+            // value is only needed to keep the record shape total; it is never
+            // used to dispatch or to accept a provider report.
+            host_id: HostId::mint(),
+            cwd: String::new(),
+            started_at_ms: now,
+            deadline_ms: now,
+            turn_started: false,
+            provider_thread_id: None,
+            provider_error_reported: false,
+            failure_reason: Some(reason.clone()),
+            terminal_published: false,
+            terminal_outcome: None,
+            pending_status_event: None,
+        };
+        self.runs.insert(record.clone());
+        match self.finish_run_with_locked(&record, RunOutcome::Failed, Some(reason), None, now) {
+            FinishRunResult::Finished | FinishRunResult::AlreadyFinished => Ok(()),
+            FinishRunResult::PublishFailed(error) => {
+                eprintln!("loom-server: failed to publish preflight run event: {error}");
+                Err(error)
+            }
         }
-        run_id
     }
 
     /// Publishes one run event to the thread scope.
@@ -672,21 +1237,22 @@ impl AppState {
     /// `now` is only used when the event's identity needs re-stamping; the
     /// daemon's event already carries its own timestamp, which is preserved so
     /// replay is byte-identical to what the daemon sent.
-    fn publish_run_event(&self, record: &RunRecord, event: RunEvent, now: u64) {
-        let event = if event.thread_id == record.thread_id {
-            event
-        } else {
-            RunEvent::new(
-                record.thread_id.clone(),
-                record.project_id.clone(),
-                record.run_id.clone(),
-                now,
-                event.event.body,
-            )
-        };
-        let _ = self.publish_domain_event(&DomainEvent::ThreadRunEvent {
+    fn publish_run_event(&self, record: &RunRecord, event: RunEvent) -> RelayResult<()> {
+        // Rebuild the envelope so a malformed daemon scope or outer identity
+        // cannot leak into the thread log. The provider body remains verbatim.
+        let outcome = event.outcome;
+        let mut event = RunEvent::new(
+            record.thread_id.clone(),
+            record.project_id.clone(),
+            record.run_id.clone(),
+            event.at_ms,
+            event.event.body,
+        );
+        event.outcome = outcome;
+        self.publish_domain_event(&DomainEvent::ThreadRunEvent {
             run: Box::new(event),
-        });
+        })
+        .map(|_| ())
     }
 }
 
@@ -695,7 +1261,70 @@ mod tests {
     use super::*;
     use crate::state::AppConfig;
     use loom_domain::{EnvironmentKind, MessageRole, RunId, ThreadStatus};
+    use loom_relay::backend::memory::MemoryBackend;
+    use loom_relay::backend::{LogRecord, RelayBackend};
+    use loom_relay::{EventId, RelayError, ShardId};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
     use std::time::Duration;
+
+    struct FailOnAppendBackend {
+        inner: MemoryBackend,
+        append_count: AtomicUsize,
+        fail_at: AtomicUsize,
+    }
+
+    impl FailOnAppendBackend {
+        fn new(fail_at: usize) -> Self {
+            Self {
+                inner: MemoryBackend::new(2_000),
+                append_count: AtomicUsize::new(0),
+                fail_at: AtomicUsize::new(fail_at),
+            }
+        }
+
+        fn disable_failure(&self) {
+            self.fail_at.store(0, Ordering::Release);
+        }
+
+        fn fail_on_append_after_next(&self) {
+            let after_next = self.append_count.load(Ordering::Acquire).saturating_add(2);
+            self.fail_at.store(after_next, Ordering::Release);
+        }
+    }
+
+    impl RelayBackend for FailOnAppendBackend {
+        fn shard_count(&self) -> u8 {
+            self.inner.shard_count()
+        }
+
+        fn append(&self, shard: ShardId, record: LogRecord) -> loom_relay::Result<()> {
+            let append_number = self.append_count.fetch_add(1, Ordering::AcqRel) + 1;
+            if self.fail_at.load(Ordering::Acquire) == append_number {
+                return Err(RelayError::backend(format!(
+                    "injected append failure at append {append_number}"
+                )));
+            }
+            self.inner.append(shard, record)
+        }
+
+        fn read_after(
+            &self,
+            shard: ShardId,
+            after: Option<EventId>,
+            limit: usize,
+        ) -> loom_relay::Result<Vec<LogRecord>> {
+            self.inner.read_after(shard, after, limit)
+        }
+
+        fn trim(&self, shard: ShardId, before_ms: u64) -> loom_relay::Result<u64> {
+            self.inner.trim(shard, before_ms)
+        }
+
+        fn len(&self, shard: ShardId) -> loom_relay::Result<usize> {
+            self.inner.len(shard)
+        }
+    }
 
     /// A state with reconciliation disabled, so a test drives it explicitly.
     fn state() -> AppState {
@@ -703,6 +1332,17 @@ mod tests {
             reconcile_interval: Duration::ZERO,
             ..AppConfig::default()
         })
+        .unwrap()
+    }
+
+    fn state_with_backend(backend: Arc<FailOnAppendBackend>) -> AppState {
+        AppState::build_for_test(
+            AppConfig {
+                reconcile_interval: Duration::ZERO,
+                ..AppConfig::default()
+            },
+            backend,
+        )
         .unwrap()
     }
 
@@ -744,12 +1384,34 @@ mod tests {
         (host_id, thread, path.into())
     }
 
+    fn thread_run_events(state: &AppState, thread_id: &ThreadId) -> Vec<serde_json::Value> {
+        let frames = state
+            .relay
+            .replay_scope(&Scope::Thread(thread_id.to_string()), 100)
+            .unwrap();
+        let mut run_events = Vec::new();
+        for frame in &frames {
+            let Ok(value) = serde_json::from_slice::<serde_json::Value>(&frame.payload) else {
+                continue;
+            };
+            let Some(payload) = value["payload"].as_str() else {
+                continue;
+            };
+            let Ok(event) = serde_json::from_str::<serde_json::Value>(payload) else {
+                continue;
+            };
+            if event["type"].as_str() == Some("thread_run_event") {
+                run_events.push(event);
+            }
+        }
+        run_events
+    }
+
     fn count_run_events(state: &AppState, thread_id: &ThreadId) -> (usize, usize) {
         let frames = state
             .relay
             .replay_scope(&Scope::Thread(thread_id.to_string()), 100)
             .unwrap();
-        let mut run_events = 0;
         let mut status_changes = 0;
         for frame in &frames {
             let Ok(value) = serde_json::from_slice::<serde_json::Value>(&frame.payload) else {
@@ -761,13 +1423,11 @@ mod tests {
             let Ok(event) = serde_json::from_str::<serde_json::Value>(payload) else {
                 continue;
             };
-            match event["type"].as_str() {
-                Some("thread_run_event") => run_events += 1,
-                Some("thread_status_changed") => status_changes += 1,
-                _ => {}
+            if event["type"].as_str() == Some("thread_status_changed") {
+                status_changes += 1;
             }
         }
-        (run_events, status_changes)
+        (thread_run_events(state, thread_id).len(), status_changes)
     }
 
     #[test]
@@ -781,6 +1441,13 @@ mod tests {
             cwd: "/srv/project-a".into(),
             started_at_ms: 1,
             deadline_ms: 10,
+            turn_started: false,
+            provider_thread_id: None,
+            provider_error_reported: false,
+            failure_reason: None,
+            terminal_published: false,
+            terminal_outcome: None,
+            pending_status_event: None,
         };
         registry.insert(record.clone());
         assert_eq!(registry.get(&record.run_id), Some(record.clone()));
@@ -818,7 +1485,250 @@ mod tests {
             state.registry.thread(&thread.id).unwrap().status,
             ThreadStatus::Error
         );
-        assert_eq!(count_run_events(&state, &thread.id), (1, 1));
+        assert_eq!(count_run_events(&state, &thread.id), (3, 1));
+        let events = thread_run_events(&state, &thread.id);
+        assert_eq!(
+            events
+                .iter()
+                .map(|event| event["event"]["type"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            vec!["turn/started", "provider/error", "turn/completed"]
+        );
+        let run_id = match outcome {
+            DispatchOutcome::NoEnvironment { run_id } => run_id,
+            _ => unreachable!(),
+        };
+        assert!(events.iter().all(|event| {
+            event["run_id"] == run_id.to_string()
+                && event["event"]["scope"]["turnId"] == run_id.to_string()
+        }));
+        assert_eq!(
+            events[1]["event"]["message"],
+            "thread has no environment bound; bind one before dispatching"
+        );
+        assert_eq!(
+            events[2]["event"]["error"]["message"],
+            "thread has no environment bound; bind one before dispatching"
+        );
+        state.shutdown();
+    }
+
+    #[tokio::test]
+    async fn a_partial_preflight_publish_is_retried_without_duplicate_start() {
+        let backend = Arc::new(FailOnAppendBackend::new(2));
+        let state = state_with_backend(backend.clone());
+        let (thread, _) = state
+            .registry
+            .create_thread(
+                Some(state.registry.personal_project_id()),
+                Some("partial preflight".into()),
+                None,
+                1,
+            )
+            .unwrap();
+        state
+            .registry
+            .post_message(&thread.id, MessageRole::User, "hi".into(), 2)
+            .unwrap();
+        let thread = state.registry.thread(&thread.id).unwrap();
+
+        let run_id = match state.dispatch_thread(&thread, "hi") {
+            DispatchOutcome::PublishFailed { run_id, .. } => run_id,
+            other => panic!("expected an injected publish failure, got {other:?}"),
+        };
+        assert_eq!(
+            state.registry.thread(&thread.id).unwrap().status,
+            ThreadStatus::Working
+        );
+        assert_eq!(state.runs.for_thread(&thread.id).unwrap().run_id, run_id);
+        let partial = thread_run_events(&state, &thread.id);
+        assert_eq!(partial.len(), 1);
+        assert_eq!(partial[0]["event"]["type"], "turn/started");
+
+        backend.disable_failure();
+        let summary = state.reconcile_runs(loom_relay::now_ms().saturating_add(1));
+        assert_eq!(summary.timed_out_runs, 0);
+        assert!(state.runs.is_empty());
+        assert_eq!(
+            state.registry.thread(&thread.id).unwrap().status,
+            ThreadStatus::Error
+        );
+
+        let events = thread_run_events(&state, &thread.id);
+        assert_eq!(
+            events
+                .iter()
+                .map(|event| event["event"]["type"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            vec!["turn/started", "provider/error", "turn/completed"]
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event["run_id"] == run_id.to_string())
+                .count(),
+            3
+        );
+        state.shutdown();
+    }
+
+    #[tokio::test]
+    async fn a_status_publish_failure_keeps_the_terminal_run_retryable() {
+        let backend = Arc::new(FailOnAppendBackend::new(0));
+        let state = state_with_backend(backend.clone());
+        let (host_id, thread, _) = thread_with_workspace(&state, "/srv/project-a");
+        state
+            .registry
+            .post_message(&thread.id, MessageRole::User, "hi".into(), 2)
+            .unwrap();
+        let thread = state.registry.thread(&thread.id).unwrap();
+        let run = match state.dispatch_thread(&thread, "hi") {
+            DispatchOutcome::Dispatched(run) => run,
+            other => panic!("expected a dispatch, got {other:?}"),
+        };
+
+        let start = RunEvent::started(
+            thread.id.clone(),
+            thread.project_id.clone(),
+            run.run_id.clone(),
+            3,
+            "provider-1",
+        );
+        assert_eq!(
+            state.apply_run_report(
+                &host_id,
+                ProviderReport {
+                    host_id: host_id.clone(),
+                    event: start,
+                },
+            ),
+            ReportOutcome::Applied
+        );
+
+        backend.fail_on_append_after_next();
+        let terminal = RunEvent::completed(
+            thread.id.clone(),
+            thread.project_id.clone(),
+            run.run_id.clone(),
+            4,
+            Some("provider-1".into()),
+        );
+        assert!(matches!(
+            state.apply_run_report(
+                &host_id,
+                ProviderReport {
+                    host_id: host_id.clone(),
+                    event: terminal,
+                },
+            ),
+            ReportOutcome::PublishFailed { .. }
+        ));
+        assert_eq!(state.runs.len(), 1);
+        assert_eq!(
+            state.registry.thread(&thread.id).unwrap().status,
+            ThreadStatus::Working
+        );
+
+        backend.disable_failure();
+        assert_eq!(state.reconcile_runs(5), ReconcileSummary::default());
+        assert!(state.runs.is_empty());
+        assert_eq!(
+            state.registry.thread(&thread.id).unwrap().status,
+            ThreadStatus::Idle
+        );
+        let events = thread_run_events(&state, &thread.id);
+        assert_eq!(
+            events
+                .iter()
+                .map(|event| event["event"]["type"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            vec!["turn/started", "turn/completed"]
+        );
+        assert_eq!(count_run_events(&state, &thread.id).1, 1);
+        state.shutdown();
+    }
+
+    #[tokio::test]
+    async fn an_environment_that_is_not_ready_or_has_no_path_is_failed_with_the_reason() {
+        let state = state();
+        let host_id = enroll_host(&state);
+        let (creating, _) = state
+            .registry
+            .create_environment(
+                Some(state.registry.personal_project_id()),
+                host_id.clone(),
+                EnvironmentKind::Managed,
+                None,
+                1,
+            )
+            .unwrap();
+        let (not_ready_thread, _) = state
+            .registry
+            .create_thread(
+                Some(state.registry.personal_project_id()),
+                Some("not-ready".into()),
+                Some(creating.id),
+                2,
+            )
+            .unwrap();
+        state
+            .registry
+            .post_message(&not_ready_thread.id, MessageRole::User, "hi".into(), 3)
+            .unwrap();
+        let not_ready_thread = state.registry.thread(&not_ready_thread.id).unwrap();
+        assert!(matches!(
+            state.dispatch_thread(&not_ready_thread, "hi"),
+            DispatchOutcome::NoEnvironment { .. }
+        ));
+        assert!(
+            thread_run_events(&state, &not_ready_thread.id)[1]["event"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("creating and not ready")
+        );
+
+        let (missing_path, _) = state
+            .registry
+            .create_environment(
+                Some(state.registry.personal_project_id()),
+                host_id,
+                EnvironmentKind::Managed,
+                None,
+                4,
+            )
+            .unwrap();
+        state
+            .registry
+            .set_environment_status(&missing_path.id, EnvironmentStatus::Provisioning, 5)
+            .unwrap();
+        state
+            .registry
+            .set_environment_status(&missing_path.id, EnvironmentStatus::Ready, 6)
+            .unwrap();
+        let (missing_path_thread, _) = state
+            .registry
+            .create_thread(
+                Some(state.registry.personal_project_id()),
+                Some("missing-path".into()),
+                Some(missing_path.id),
+                7,
+            )
+            .unwrap();
+        state
+            .registry
+            .post_message(&missing_path_thread.id, MessageRole::User, "hi".into(), 8)
+            .unwrap();
+        let missing_path_thread = state.registry.thread(&missing_path_thread.id).unwrap();
+        assert!(matches!(
+            state.dispatch_thread(&missing_path_thread, "hi"),
+            DispatchOutcome::NoEnvironment { .. }
+        ));
+        assert!(
+            thread_run_events(&state, &missing_path_thread.id)[1]["event"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("no workspace path")
+        );
         state.shutdown();
     }
 
@@ -841,6 +1751,108 @@ mod tests {
         assert_eq!(
             state.registry.thread(&thread.id).unwrap().status,
             ThreadStatus::Error
+        );
+        let events = thread_run_events(&state, &thread.id);
+        assert_eq!(events.len(), 3);
+        assert_eq!(
+            events[1]["event"]["message"],
+            format!("host {host_id} owns this thread's workspace but is not connected")
+        );
+        state.shutdown();
+    }
+
+    #[tokio::test]
+    async fn an_out_of_order_report_gets_one_start_and_duplicate_terminal_is_ignored() {
+        let state = state();
+        let (host_id, thread, _) = thread_with_workspace(&state, "/srv/project-a");
+        state
+            .registry
+            .post_message(&thread.id, MessageRole::User, "hi".into(), 2)
+            .unwrap();
+        let thread = state.registry.thread(&thread.id).unwrap();
+        let run = match state.dispatch_thread(&thread, "hi") {
+            DispatchOutcome::Dispatched(run) => run,
+            other => panic!("expected a dispatch, got {other:?}"),
+        };
+
+        // The provider's first useful event may arrive before its start after
+        // a reconnect. The server inserts the anchor before forwarding it.
+        let output = RunEvent::new(
+            thread.id.clone(),
+            thread.project_id.clone(),
+            run.run_id.clone(),
+            3,
+            ProviderEvent::ItemAgentMessageDelta {
+                item_id: "assistant-1".into(),
+                delta: "hello".into(),
+                provider_thread_id: "provider-1".into(),
+                parent_tool_call_id: None,
+            },
+        );
+        let report = ProviderReport {
+            host_id: host_id.clone(),
+            event: output,
+        };
+        assert_eq!(
+            state.apply_run_report(&host_id, report),
+            ReportOutcome::Applied
+        );
+        assert_eq!(thread_run_events(&state, &thread.id).len(), 2);
+
+        // A late duplicate start must not create a second projection anchor.
+        assert_eq!(
+            state.apply_run_report(
+                &host_id,
+                ProviderReport {
+                    host_id: host_id.clone(),
+                    event: RunEvent::started(
+                        thread.id.clone(),
+                        thread.project_id.clone(),
+                        run.run_id.clone(),
+                        4,
+                        "provider-1",
+                    ),
+                },
+            ),
+            ReportOutcome::Applied
+        );
+        assert_eq!(thread_run_events(&state, &thread.id).len(), 2);
+
+        let terminal = RunEvent::completed(
+            thread.id.clone(),
+            thread.project_id.clone(),
+            run.run_id.clone(),
+            5,
+            Some("provider-1".into()),
+        );
+        assert_eq!(
+            state.apply_run_report(
+                &host_id,
+                ProviderReport {
+                    host_id: host_id.clone(),
+                    event: terminal.clone(),
+                },
+            ),
+            ReportOutcome::Applied
+        );
+        assert_eq!(state.runs.len(), 0);
+        assert_eq!(
+            state.apply_run_report(
+                &host_id,
+                ProviderReport {
+                    host_id: host_id.clone(),
+                    event: terminal,
+                },
+            ),
+            ReportOutcome::Unknown
+        );
+        let events = thread_run_events(&state, &thread.id);
+        assert_eq!(
+            events
+                .iter()
+                .map(|event| event["event"]["type"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            vec!["turn/started", "item/agentMessage/delta", "turn/completed"]
         );
         state.shutdown();
     }
