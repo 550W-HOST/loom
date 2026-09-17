@@ -73,7 +73,11 @@ provider session.
 
 `automations` is additive in the same way, and for the same reason: an
 automation describes a schedule and a target, not a thread or a run in the log,
-so replaying the log over it would be meaningless. The payload carries its own
+so replaying the log over it would be meaningless. Its payload version is what
+carries the scheduler's own migration: a version-1 payload stored run rows as
+`running` because nothing could claim one, and restoring it rewrites them to
+`pending` — the queue entries they always were — while the sweep arms the
+schedules that release had no `nextRunAt` for. The payload carries its own
 version; its rows are stored as data and decoded per row, so a row written by
 another build is reported (`invalid-stored-data`) rather than failing the
 restore, and a snapshot from a build that predates the field restores exactly
@@ -87,6 +91,14 @@ row, an answered approval) and its `updatedAt`/`resolvedAt` are what a render
 sorts on, so they are entity-view rows rather than a work queue that empties.
 They are bounded by use, and a deployment that needs an age-based trim wants
 that policy explicit rather than implied by deletion.
+
+The automation scheduler writes through the same file. A sweep that queues a run
+writes the snapshot before the run can be observed, so the window it claimed is
+behind the automation's `nextRunAt` on disk as well as in memory: a restart
+cannot find that window due a second time. A run that was `running` when the
+process stopped is failed on the next start, exactly like a provider run, and
+its automation takes the failure through the ordinary retry policy (see
+[`automations.md`](automations.md)).
 
 **Not stored, on purpose:**
 
@@ -166,6 +178,14 @@ whose run was dispatched after the last snapshot (terminated using the thread's
 recorded `active_run_id`). The two passes cannot double-report — a thread
 already moved out of `working` is skipped.
 
+**The same rule covers automation runs, with one difference.** An automation run
+that was `running` when the process stopped is failed with "the server restarted
+while this run was in flight", and its automation takes that failure through the
+ordinary retry policy — otherwise single-flight would block the automation
+behind a run nobody will ever finish. A run that was still **`pending`** is not
+touched: it is durable work that has not started, so it survives and the sweep
+simply does not claim a second one while it waits.
+
 ## Configuration and operation
 
 - **Enabled** when `LOOM_DATA_DIR` (`AppConfig::backend_path`) names a data
@@ -209,8 +229,13 @@ then stale, never wrong, and a fresh snapshot re-establishes the baseline.
 - `automations::tests` — a row round-trips through its stored form, a row
   missing an additive field still reads, a row whose stored discriminator
   contradicts its JSON (or that parses at all) is reported as a read problem, a
-  newer payload version is left alone, a versionless one is upgraded in place,
-  and duplicate ids collapse deterministically.
+  newer payload version is left alone, an older one is migrated in place, and
+  duplicate ids collapse deterministically.
+- `automations::tests` (scheduler) — a due window is claimed once and the
+  schedule moves past *now*, a run in flight holds the next window back, pause
+  cancels queued runs and resume does not replay the paused window, the retry
+  policy and the third-failure pause, and a restart that fails interrupted runs
+  while keeping queued ones.
 - `tests/automations_conformance.rs` — automations survive a durable restart,
   a snapshot written before the field existed still loads, and a hand-damaged
   payload is listed as problems rather than dropping rows.

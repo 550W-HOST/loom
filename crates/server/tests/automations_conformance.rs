@@ -137,8 +137,8 @@ async fn automations_crud_overview_and_history_are_contract_shaped() {
     assert_eq!(created["runCount"], 0);
     assert!(created["lastRunAt"].is_null());
     assert!(created["lastRunStatus"].is_null());
-    // A cron schedule has no computed instant yet: the scheduler stage owns it.
-    assert!(created["nextRunAt"].is_null());
+    // An enabled schedule reports when it is next due, in its zone.
+    assert!(created["nextRunAt"].as_u64().is_some_and(|next| next > 0));
     let automation = created["id"].as_str().unwrap().to_owned();
 
     // get
@@ -1108,4 +1108,356 @@ async fn a_host_environment_response_keeps_the_contract_workspace_shape() {
         );
     }
     state.shutdown();
+}
+
+/* ------------------------------------------------------------------ */
+/* Scheduling                                                          */
+/* ------------------------------------------------------------------ */
+
+/// Moves an automation's next window into the past, the state a server that
+/// was not running when the window arrived restores into.
+fn make_due(state: &AppState, automation: &str, window: u64) {
+    let mut payload = state.automations.export();
+    let row = payload
+        .automations
+        .iter_mut()
+        .find(|row| row.id == automation)
+        .expect("the automation is stored");
+    row.next_run_at = Some(window);
+    state.automations.restore(payload);
+}
+
+#[tokio::test]
+async fn a_schedule_is_armed_in_its_zone_and_a_due_window_becomes_a_queued_run() {
+    let (state, app, project) = server().await;
+
+    // Europe/Paris, every weekday at 09:00 local: what `nextRunAt` holds is
+    // that wall clock, not the server's.
+    let mut body = create_body("paris mornings");
+    body["trigger"] = json!({
+        "triggerType": "schedule",
+        "cron": "0 9 * * 1-5",
+        "timezone": "Europe/Paris"
+    });
+    let created = body_json(
+        post(
+            &app,
+            &format!("/api/v1/projects/{project}/automations"),
+            Some(body),
+        )
+        .await,
+    )
+    .await;
+    assert_schema(&contract::response(), &created, "create response");
+    let armed = created["nextRunAt"].as_u64().expect("an armed schedule");
+    let paris = chrono_tz::Tz::Europe__Paris;
+    let local = chrono::DateTime::from_timestamp_millis(armed as i64)
+        .expect("a real instant")
+        .with_timezone(&paris);
+    assert_eq!(
+        (
+            chrono::Timelike::hour(&local),
+            chrono::Timelike::minute(&local)
+        ),
+        (9, 0),
+        "nextRunAt is 09:00 where the automation lives"
+    );
+    assert!(
+        !matches!(
+            chrono::Datelike::weekday(&local),
+            chrono::Weekday::Sat | chrono::Weekday::Sun
+        ),
+        "`0 9 * * 1-5` is a weekday morning where the automation lives"
+    );
+    let automation = created["id"].as_str().unwrap().to_owned();
+
+    // A window that arrived while the server was down is claimed once, and the
+    // schedule moves past now rather than replaying the missed window.
+    let window = armed - 86_400_000;
+    make_due(&state, &automation, window);
+    let report = state.sweep_automations(armed + 1_000);
+    assert_eq!(report.claimed, 1);
+
+    let runs = body_json(
+        get(
+            &app,
+            &format!("/api/v1/projects/{project}/automations/{automation}/runs"),
+        )
+        .await,
+    )
+    .await;
+    assert_schema(
+        &json!({
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["runs", "nextCursor"],
+            "properties": {
+                "runs": { "type": "array", "items": contract::run_response() },
+                "nextCursor": { "type": ["string", "null"] }
+            }
+        }),
+        &runs,
+        "runs response",
+    );
+    assert_eq!(runs["runs"].as_array().unwrap().len(), 1);
+    assert_eq!(runs["runs"][0]["trigger"], "schedule");
+    assert_eq!(runs["runs"][0]["status"], "running");
+    assert_eq!(runs["runs"][0]["scheduledFor"], json!(window));
+
+    let fetched = body_json(
+        get(
+            &app,
+            &format!("/api/v1/projects/{project}/automations/{automation}"),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(fetched["runCount"], 1);
+    assert_eq!(fetched["lastRunStatus"], "running");
+    assert!(
+        fetched["nextRunAt"].as_u64().unwrap() > armed + 1_000,
+        "the next window is in the future"
+    );
+
+    // Sweeping again does not fire the same window twice.
+    assert_eq!(state.sweep_automations(armed + 2_000).claimed, 0);
+    let runs = body_json(
+        get(
+            &app,
+            &format!("/api/v1/projects/{project}/automations/{automation}/runs"),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(runs["runs"].as_array().unwrap().len(), 1);
+    state.shutdown();
+}
+
+#[tokio::test]
+async fn pausing_cancels_a_queued_run_over_http() {
+    let (state, app, project) = server().await;
+    let automation = body_json(
+        post(
+            &app,
+            &format!("/api/v1/projects/{project}/automations"),
+            Some(create_body("queued")),
+        )
+        .await,
+    )
+    .await["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    let run = body_json(
+        post(
+            &app,
+            &format!("/api/v1/projects/{project}/automations/{automation}/run"),
+            Some(json!({ "idempotencyKey": "queued-1" })),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(run["run"]["status"], "running");
+
+    let paused = body_json(
+        post(
+            &app,
+            &format!("/api/v1/projects/{project}/automations/{automation}/pause"),
+            None,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(paused["enabled"], false);
+    assert!(paused["nextRunAt"].is_null());
+
+    let runs = body_json(
+        get(
+            &app,
+            &format!("/api/v1/projects/{project}/automations/{automation}/runs"),
+        )
+        .await,
+    )
+    .await;
+    assert_schema(
+        &json!({
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["runs", "nextCursor"],
+            "properties": {
+                "runs": { "type": "array", "items": contract::run_response() },
+                "nextCursor": { "type": ["string", "null"] }
+            }
+        }),
+        &runs,
+        "runs response",
+    );
+    assert_eq!(runs["runs"][0]["status"], "skipped");
+    assert!(runs["runs"][0]["skipReason"]
+        .as_str()
+        .is_some_and(|reason| reason.contains("paused")));
+    assert!(runs["runs"][0]["finishedAt"].is_u64());
+
+    // And nothing fires while it is paused, even with a window in the past.
+    make_due(&state, &automation, 1_000);
+    assert_eq!(state.sweep_automations(2_000).claimed, 0);
+    state.shutdown();
+}
+
+#[tokio::test]
+async fn a_queued_run_and_its_window_survive_a_restart_without_firing_twice() {
+    let dir = TempDir::new().unwrap();
+    let config = || AppConfig {
+        backend_path: Some(dir.path().to_path_buf()),
+        reconcile_interval: std::time::Duration::ZERO,
+        snapshot_interval: std::time::Duration::ZERO,
+        schedule_interval: std::time::Duration::ZERO,
+        ..AppConfig::default()
+    };
+    let state = AppState::build(config()).unwrap();
+    let app = router(state.clone());
+    let project = state.registry.personal_project_id().to_string();
+    let automation = body_json(
+        post(
+            &app,
+            &format!("/api/v1/projects/{project}/automations"),
+            Some(create_body("durable")),
+        )
+        .await,
+    )
+    .await["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    make_due(&state, &automation, 1_000);
+    // The queued run is what single-flight leaves in flight across the restart.
+    state.sweep_automations(2_000);
+    let runs = body_json(
+        get(
+            &app,
+            &format!("/api/v1/projects/{project}/automations/{automation}/runs"),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(runs["runs"].as_array().unwrap().len(), 1);
+    state.shutdown();
+
+    let restored = AppState::build(config()).unwrap();
+    let app = router(restored.clone());
+    let runs = body_json(
+        get(
+            &app,
+            &format!("/api/v1/projects/{project}/automations/{automation}/runs"),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(
+        runs["runs"].as_array().unwrap().len(),
+        1,
+        "the queued run is durable work, not a window to replay"
+    );
+    assert_eq!(runs["runs"][0]["status"], "running");
+
+    // The window it was queued for is behind the schedule now, so a sweep
+    // after the restart claims nothing.
+    let report = restored.sweep_automations(3_000);
+    assert_eq!(report.claimed, 0);
+    assert_eq!(report.in_flight, 0, "the window is in the future, not due");
+    let runs = body_json(
+        get(
+            &app,
+            &format!("/api/v1/projects/{project}/automations/{automation}/runs"),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(runs["runs"].as_array().unwrap().len(), 1);
+    restored.shutdown();
+}
+
+#[tokio::test]
+async fn a_payload_from_before_the_scheduler_reads_as_queued_work_after_a_restart() {
+    let dir = TempDir::new().unwrap();
+    let config = || AppConfig {
+        backend_path: Some(dir.path().to_path_buf()),
+        reconcile_interval: std::time::Duration::ZERO,
+        snapshot_interval: std::time::Duration::ZERO,
+        schedule_interval: std::time::Duration::ZERO,
+        ..AppConfig::default()
+    };
+    let state = AppState::build(config()).unwrap();
+    let app = router(state.clone());
+    let project = state.registry.personal_project_id().to_string();
+    let automation = body_json(
+        post(
+            &app,
+            &format!("/api/v1/projects/{project}/automations"),
+            Some(create_body("legacy")),
+        )
+        .await,
+    )
+    .await["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    state.shutdown();
+
+    // Rewrite the snapshot the way the release before the scheduler wrote it:
+    // version 1, no next window, and a run stored as `running` because nothing
+    // could claim one yet.
+    let path = dir.path().join("domain.snapshot");
+    let bytes = std::fs::read(&path).unwrap();
+    let header_len = 8 + 4 + 8 + 4;
+    let mut snapshot: Value = serde_json::from_slice(&bytes[header_len..]).unwrap();
+    let payload = snapshot["automations"].as_object_mut().unwrap();
+    payload.insert("version".into(), json!(1));
+    for row in payload["automations"].as_array_mut().unwrap() {
+        row["nextRunAt"] = Value::Null;
+    }
+    payload["runs"] = json!([{
+        "id": "arun_00000000000000000000000000",
+        "automationId": automation,
+        "runMode": "agent",
+        "status": "running",
+        "trigger": "manual",
+        "scheduledFor": 1_000,
+        "startedAt": 1_000
+    }]);
+    std::fs::write(&path, rewrite_snapshot(&snapshot)).unwrap();
+
+    let restored = AppState::build(config()).unwrap();
+    let app = router(restored.clone());
+    let runs = body_json(
+        get(
+            &app,
+            &format!("/api/v1/projects/{project}/automations/{automation}/runs"),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(runs["runs"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        runs["runs"][0]["status"], "running",
+        "a pre-scheduler run was a queue entry, which is what it reads as now"
+    );
+
+    // The window it never had is armed by the sweep, so the automation resumes
+    // its cadence instead of sitting inert.
+    let report = restored.sweep_automations(2_000);
+    assert_eq!(report.armed, 1);
+    let fetched = body_json(
+        get(
+            &app,
+            &format!("/api/v1/projects/{project}/automations/{automation}"),
+        )
+        .await,
+    )
+    .await;
+    assert!(fetched["nextRunAt"]
+        .as_u64()
+        .is_some_and(|next| next > 2_000));
+    restored.shutdown();
 }

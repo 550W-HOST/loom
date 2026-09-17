@@ -35,6 +35,13 @@ pi-acp = { git = "https://github.com/AndPuQing/pi-acp", rev = "b3e7e8f", feature
 agent-client-protocol-schema = { version = "=1.5.0", default-features = false, features = ["unstable_protocol_v2"] }
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio", "ws", "multipart"] }
 base64 = "0.22"
+# Scheduling: `croner` parses and evaluates the cron expression, `chrono-tz`
+# supplies the timezone database it reads the expression in. The database is
+# compiled into the binary, which is what lets the `FROM scratch` server image
+# schedule in a named zone at all.
+chrono = "0.4"
+chrono-tz = "0.10"
+croner = "4.0"
 bytes = "1.6"
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 serde = { version = "1.0", features = ["derive"] }

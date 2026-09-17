@@ -65,18 +65,21 @@ pub mod project;
 pub mod provider_event;
 pub mod queue;
 pub mod run;
+pub mod schedule;
 pub mod scope;
 pub mod section;
 pub mod thread;
 
 pub use automation::{
-    AgentEnvironment, AgentExecution, AgentExecutionTarget, AgentExecutionUpdate, Automation,
-    AutomationExecution, AutomationOrigin, AutomationOverviewEntry, AutomationProjectSummary,
-    AutomationReadProblem, AutomationReadResult, AutomationResponse, AutomationRun,
-    AutomationRunMode, AutomationRunResponse, AutomationRunStatus, AutomationRunTrigger,
+    automation_retry_delay_ms, AgentEnvironment, AgentExecution, AgentExecutionTarget,
+    AgentExecutionUpdate, Automation, AutomationExecution, AutomationOrigin,
+    AutomationOverviewEntry, AutomationProjectSummary, AutomationReadProblem, AutomationReadResult,
+    AutomationResponse, AutomationRun, AutomationRunMode, AutomationRunOutcome,
+    AutomationRunResponse, AutomationRunState, AutomationRunStatus, AutomationRunTrigger,
     AutomationThreadMark, AutomationTrigger, AutomationUpdate, ManagedBaseBranch,
     MissingPromptAutomation, NewAutomation, PermissionMode, ScriptExecution, ScriptInterpreter,
-    UnmanagedBranchSpec, UnreadableAutomation, WorkspaceKind,
+    UnmanagedBranchSpec, UnreadableAutomation, WorkspaceKind, AUTOMATION_MAX_CONSECUTIVE_FAILURES,
+    AUTOMATION_RETRY_BASE_MS,
 };
 pub use environment::{Environment, EnvironmentKind, EnvironmentStatus};
 pub use error::DomainError;

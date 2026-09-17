@@ -32,6 +32,7 @@ on it and it can be validated on its own.
 - [ ] Check in the bb web UI (`apps/app`) and serve its built bundle unchanged via `LOOM_UI_DIR`
 - [ ] Check in the Node execution plane (`apps/host-daemon`) against the daemon contract
   (`loom-daemon` is the reference implementation and exercises the whole contract today)
+- [x] Automations: domain, durable storage, typed HTTP surface and a cron/timezone scheduler that queues due windows (`docs/automations.md`)
 - [x] Redis Streams relay backend for restart-transparent upgrades (`LOOM_REDIS_URL`)
 - [x] bb's HTTP/WebSocket/daemon contract exported to JSON Schema, with a Rust conformance harness (`docs/contract.md`)
 - [x] CI on every push and PR: format, lint, the full test suite, the declared MSRV and contract reproducibility (`docs/ci.md`)
