@@ -501,6 +501,7 @@ pub fn router(state: AppState) -> Router {
         // proxy). API and socket paths are excluded inside the handler.
         .fallback(ui::serve)
         .layer(middleware::from_fn(validate_contract_request))
+        .layer(middleware::from_fn(validate_automation_request))
         .layer(middleware::from_fn(normalize_api_error))
         .with_state(state)
 }
@@ -555,6 +556,57 @@ async fn validate_contract_request(request: Request, next: Next) -> Response {
                 "request body does not match the `{}` contract: {}",
                 route.id,
                 loom_contract::describe(&violations)
+            ),
+        );
+    }
+    next.run(Request::from_parts(parts, Body::from(bytes)))
+        .await
+}
+
+/// Rejects an automations request body the contract does not describe.
+///
+/// bb's contract has no automations entries, so `validate_contract_request`
+/// above cannot see these routes; the schemas in
+/// [`crate::automations_contract`] are loom's own and this is where they run.
+/// It exists for the same reason the bb middleware does: a handler that
+/// silently accepts a key the contract does not name is a dialect no client can
+/// discover, and the contract spells every one of these objects `.strict()` —
+/// including the unions nested inside them, which serde cannot express.
+///
+/// It is a no-op for everything else: the read routes carry no body, and a
+/// malformed body is the JSON extractor's to report.
+async fn validate_automation_request(request: Request, next: Next) -> Response {
+    let Some(operation) =
+        crate::automations_contract::write_operation(request.method(), request.uri().path())
+    else {
+        return next.run(request).await;
+    };
+    let (parts, body) = request.into_parts();
+    let bytes = match body.collect().await {
+        Ok(body) => body.to_bytes(),
+        Err(error) => {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                format!("failed to read the request body: {error}"),
+            )
+        }
+    };
+    let instance: Value = match serde_json::from_slice(&bytes) {
+        Ok(instance) => instance,
+        Err(_) => {
+            return next
+                .run(Request::from_parts(parts, Body::from(bytes)))
+                .await;
+        }
+    };
+    let violations = crate::automations_contract::validate_request(operation, &instance);
+    if !violations.is_empty() {
+        return error_response_with_code(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "invalid_request",
+            format!(
+                "request body does not match the automations contract: {}",
+                crate::automations_contract::describe(&violations)
             ),
         );
     }

@@ -60,12 +60,24 @@ automations entries, so they are listed as loom-native product routes in
 [`api-coverage.md`](api-coverage.md) and are not counted in the bb coverage
 number. They are not "missing" from anything.
 
+**The write routes are strict at the edge.** bb's contract has no automations
+entries, so `validate_contract_request` cannot see them; `automations_contract`
+carries loom's own schemas — the same objects the conformance tests validate
+responses against — and a middleware runs them on the way in. A key the
+contract does not name is a `422 invalid_request`, at every level: the top-level
+object, a `trigger`, an `environment`, the `workspace` inside it, a `branch`,
+an agent `target`. That is not something serde can express on its own
+(`deny_unknown_fields` does not reach an internally tagged union's unit
+variant), and it must not be pushed into the stored row: storage stays tolerant
+of a field a newer build added, because reporting a row as invalid stored data
+is a worse outcome than reading it.
+
 Failures use the existing vocabulary and never a new shape: `400
 invalid_request` for a field the contract rejects, `404 not_found` for an
 unknown project or automation, `409 conflict` for a stored row that cannot be
-used as it is, and the framework's `422 invalid_request` when the body does not
-match the request shape at all (an unknown field, a bad enum), exactly as the
-contract routes behave.
+used as it is, and `422 invalid_request` when the body does not match the
+contract at all (an unknown field, a bad enum), exactly as the contract routes
+behave.
 
 ## What is decided, and why
 

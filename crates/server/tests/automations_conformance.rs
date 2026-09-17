@@ -22,349 +22,7 @@ use tower::ServiceExt;
 /* Contract shapes (loom-authored, from rpc-types.ts)                  */
 /* ------------------------------------------------------------------ */
 
-mod contract {
-    use serde_json::{json, Value};
-
-    fn string(min: u64) -> Value {
-        json!({ "type": "string", "minLength": min })
-    }
-
-    pub fn branch_spec() -> Value {
-        json!({
-            "oneOf": [
-                {
-                    "type": "object",
-                    "additionalProperties": false,
-                    "required": ["kind", "name"],
-                    "properties": { "kind": { "const": "existing" }, "name": string(1) }
-                },
-                {
-                    "type": "object",
-                    "additionalProperties": false,
-                    "required": ["kind", "baseBranch"],
-                    "properties": { "kind": { "const": "new" }, "baseBranch": string(1) }
-                }
-            ]
-        })
-    }
-
-    pub fn workspace() -> Value {
-        json!({
-            "oneOf": [
-                {
-                    "type": "object",
-                    "additionalProperties": false,
-                    "required": ["type", "path"],
-                    "properties": {
-                        "type": { "const": "unmanaged" },
-                        "path": { "type": ["string", "null"] },
-                        "branch": branch_spec()
-                    }
-                },
-                {
-                    "type": "object",
-                    "additionalProperties": false,
-                    "required": ["type", "baseBranch"],
-                    "properties": {
-                        "type": { "const": "managed-worktree" },
-                        "baseBranch": {
-                            "oneOf": [
-                                {
-                                    "type": "object",
-                                    "additionalProperties": false,
-                                    "required": ["kind", "name"],
-                                    "properties": { "kind": { "const": "named" }, "name": string(1) }
-                                },
-                                {
-                                    "type": "object",
-                                    "additionalProperties": false,
-                                    "required": ["kind"],
-                                    "properties": { "kind": { "const": "default" } }
-                                }
-                            ]
-                        }
-                    }
-                },
-                {
-                    "type": "object",
-                    "additionalProperties": false,
-                    "required": ["type"],
-                    "properties": { "type": { "const": "personal" } }
-                }
-            ]
-        })
-    }
-
-    pub fn environment() -> Value {
-        json!({
-            "oneOf": [
-                {
-                    "type": "object",
-                    "additionalProperties": false,
-                    "required": ["type", "environmentId"],
-                    "properties": { "type": { "const": "reuse" }, "environmentId": string(1) }
-                },
-                {
-                    "type": "object",
-                    "additionalProperties": false,
-                    "required": ["type", "workspace"],
-                    "properties": {
-                        "type": { "const": "host" },
-                        "hostId": string(1),
-                        "workspace": workspace()
-                    }
-                },
-                {
-                    "type": "object",
-                    "additionalProperties": false,
-                    "required": ["type"],
-                    "properties": { "type": { "const": "project-default" } }
-                }
-            ]
-        })
-    }
-
-    pub fn trigger() -> Value {
-        json!({
-            "oneOf": [
-                {
-                    "type": "object",
-                    "additionalProperties": false,
-                    "required": ["triggerType", "cron", "timezone"],
-                    "properties": {
-                        "triggerType": { "const": "schedule" },
-                        "cron": { "type": "string", "minLength": 1, "maxLength": 100 },
-                        "timezone": { "type": "string", "minLength": 1, "maxLength": 100 }
-                    }
-                },
-                {
-                    "type": "object",
-                    "additionalProperties": false,
-                    "required": ["triggerType", "runAt"],
-                    "properties": {
-                        "triggerType": { "const": "once" },
-                        "runAt": { "type": "integer", "minimum": 1 }
-                    }
-                }
-            ]
-        })
-    }
-
-    pub fn execution() -> Value {
-        execution_with_prompt(1)
-    }
-
-    /// The agent execution schema with a chosen prompt bound.
-    ///
-    /// The legacy `missing-agent-prompt` variant is the same shape with an
-    /// empty prompt allowed: a row that reads is still readable.
-    fn execution_with_prompt(prompt_min_length: u64) -> Value {
-        json!({
-            "oneOf": [
-                {
-                    "type": "object",
-                    "additionalProperties": false,
-                    "required": [
-                        "mode", "prompt", "providerId", "model", "reasoningLevel",
-                        "permissionMode", "environment"
-                    ],
-                    "properties": {
-                        "mode": { "const": "agent" },
-                        "prompt": { "type": "string", "minLength": prompt_min_length },
-                        "providerId": string(1),
-                        "model": string(1),
-                        "reasoningLevel": {
-                            "enum": ["none", "low", "medium", "high", "xhigh", "ultracode", "max", "ultra"]
-                        },
-                        "serviceTier": { "enum": ["default", "fast"] },
-                        "permissionMode": { "enum": ["accept-edits", "auto", "full"] },
-                        "environment": environment(),
-                        "targetThreadId": string(1)
-                    }
-                },
-                {
-                    "type": "object",
-                    "additionalProperties": false,
-                    "required": ["mode", "timeoutMs"],
-                    "properties": {
-                        "mode": { "const": "script" },
-                        "script": { "type": "string", "minLength": 1, "maxLength": 262144 },
-                        "scriptFile": { "type": "string", "minLength": 1, "maxLength": 200 },
-                        "interpreter": { "enum": ["bash", "sh", "node", "python3"] },
-                        "timeoutMs": { "type": "integer", "minimum": 1, "maximum": 900000 },
-                        "env": { "type": "object" }
-                    }
-                }
-            ]
-        })
-    }
-
-    fn nullable_string() -> Value {
-        json!({ "type": ["string", "null"] })
-    }
-
-    fn nullable_number() -> Value {
-        json!({ "type": ["integer", "null"] })
-    }
-
-    pub fn response() -> Value {
-        response_with_prompt(1)
-    }
-
-    /// The response schema with a chosen prompt bound, so the legacy empty
-    /// prompt variant can be described without duplicating the shape.
-    fn response_with_prompt(prompt_min_length: u64) -> Value {
-        json!({
-            "type": "object",
-            "additionalProperties": false,
-            "required": [
-                "id", "projectId", "name", "enabled", "trigger", "execution", "origin",
-                "createdByThreadId", "nextRunAt", "lastRunAt", "runCount", "lastRunStatus",
-                "lastRunThreadId", "lastError", "createdAt", "updatedAt"
-            ],
-            "properties": {
-                "id": string(1),
-                "projectId": string(1),
-                "name": string(1),
-                "enabled": { "type": "boolean" },
-                "trigger": trigger(),
-                "execution": execution_with_prompt(prompt_min_length),
-                "origin": { "enum": ["human", "app", "agent"] },
-                "createdByThreadId": nullable_string(),
-                "nextRunAt": nullable_number(),
-                "lastRunAt": nullable_number(),
-                "runCount": { "type": "integer", "minimum": 0 },
-                "lastRunStatus": { "type": ["string", "null"], "enum": ["running", "succeeded", "failed", "skipped", null] },
-                "lastRunThreadId": nullable_string(),
-                "lastError": nullable_string(),
-                "createdAt": { "type": "integer" },
-                "updatedAt": { "type": "integer" }
-            }
-        })
-    }
-
-    pub fn read_result() -> Value {
-        json!({
-            "anyOf": [
-                response(),
-                {
-                    "allOf": [
-                        response_with_prompt(0),
-                        {
-                            "type": "object",
-                            "required": ["problem"],
-                            "properties": { "problem": { "const": "missing-agent-prompt" } }
-                        }
-                    ]
-                },
-                {
-                    "type": "object",
-                    "additionalProperties": false,
-                    "required": ["id", "projectId", "name", "problem"],
-                    "properties": {
-                        "id": { "type": "string" },
-                        "projectId": { "type": "string" },
-                        "name": { "type": "string" },
-                        "problem": { "const": "invalid-stored-data" }
-                    }
-                }
-            ]
-        })
-    }
-
-    pub fn run_response() -> Value {
-        json!({
-            "type": "object",
-            "additionalProperties": false,
-            "required": [
-                "id", "automationId", "runMode", "threadId", "status", "trigger",
-                "skipReason", "error", "output", "exitCode", "scheduledFor", "startedAt",
-                "finishedAt"
-            ],
-            "properties": {
-                "id": string(1),
-                "automationId": string(1),
-                "runMode": { "enum": ["agent", "script"] },
-                "threadId": nullable_string(),
-                "status": { "enum": ["running", "succeeded", "failed", "skipped"] },
-                "trigger": { "enum": ["schedule", "manual"] },
-                "skipReason": nullable_string(),
-                "error": nullable_string(),
-                "output": nullable_string(),
-                "exitCode": nullable_number(),
-                "scheduledFor": { "type": "integer" },
-                "startedAt": { "type": "integer" },
-                "finishedAt": nullable_number()
-            }
-        })
-    }
-
-    pub fn create_request() -> Value {
-        json!({
-            "type": "object",
-            "additionalProperties": false,
-            "required": ["name", "trigger", "execution", "origin"],
-            "properties": {
-                "name": { "type": "string", "minLength": 1, "maxLength": 200 },
-                "enabled": { "type": "boolean" },
-                "trigger": trigger(),
-                "execution": execution(),
-                "origin": { "enum": ["human", "app", "agent"] },
-                "createdByThreadId": string(1)
-            }
-        })
-    }
-
-    pub fn update_request() -> Value {
-        json!({
-            "type": "object",
-            "additionalProperties": false,
-            "properties": {
-                "name": { "type": "string", "minLength": 1, "maxLength": 200 },
-                "trigger": trigger(),
-                "execution": execution(),
-                "agent": {
-                    "type": "object",
-                    "additionalProperties": false,
-                    "properties": {
-                        "prompt": string(1),
-                        "providerId": string(1),
-                        "model": string(1),
-                        "reasoningLevel": {
-                            "enum": ["none", "low", "medium", "high", "xhigh", "ultracode", "max", "ultra"]
-                        },
-                        "serviceTier": { "type": ["string", "null"], "enum": ["default", "fast", null] },
-                        "permissionMode": { "enum": ["accept-edits", "auto", "full"] },
-                        "target": {
-                            "oneOf": [
-                                {
-                                    "type": "object",
-                                    "additionalProperties": false,
-                                    "required": ["type", "threadId"],
-                                    "properties": { "type": { "const": "target-thread" }, "threadId": string(1) }
-                                },
-                                {
-                                    "type": "object",
-                                    "additionalProperties": false,
-                                    "required": ["type", "environment"],
-                                    "properties": { "type": { "const": "environment" }, "environment": environment() }
-                                }
-                            ]
-                        }
-                    }
-                }
-            }
-        })
-    }
-
-    pub fn run_request() -> Value {
-        json!({
-            "type": "object",
-            "additionalProperties": false,
-            "properties": { "idempotencyKey": string(1) }
-        })
-    }
-}
+use loom_server::automations_contract as contract;
 
 /* ------------------------------------------------------------------ */
 /* Helpers                                                             */
@@ -376,7 +34,7 @@ mod contract {
 /// validator itself is the contract one.
 #[track_caller]
 fn assert_schema(schema: &Value, instance: &Value, what: &str) {
-    let violations = loom_contract::validate(&json!({}), schema, instance);
+    let violations = contract::validate_response(schema, instance);
     assert!(
         violations.is_empty(),
         "{what} is not contract-shaped: {violations:?}\n{instance}"
@@ -933,6 +591,117 @@ async fn automations_are_scoped_to_their_project() {
     )
     .await;
     assert_eq!(response.status(), StatusCode::OK);
+    state.shutdown();
+}
+
+#[tokio::test]
+async fn the_write_routes_refuse_a_key_the_contract_does_not_name() {
+    let (state, app, project) = server().await;
+    let automation = body_json(
+        post(
+            &app,
+            &format!("/api/v1/projects/{project}/automations"),
+            Some(create_body("strict")),
+        )
+        .await,
+    )
+    .await["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let create_path = format!("/api/v1/projects/{project}/automations");
+    let automation_path = format!("/api/v1/projects/{project}/automations/{automation}");
+    let run_path = format!("{automation_path}/run");
+
+    // Every shape the contract spells `.strict()` rejects an extra key — the
+    // unions nested inside a body included, which is what serde cannot express
+    // and why the `automations_contract` schemas run on the way in.
+    let cases: Vec<(&str, &str, String, Value)> = vec![
+        (
+            "create",
+            "top level",
+            create_path.clone(),
+            json!({ "name": "strict", "trigger": { "triggerType": "schedule", "cron": "0 9 * * *", "timezone": "UTC" }, "execution": agent_execution(), "origin": "human", "extra": 1 }),
+        ),
+        (
+            "create",
+            "schedule trigger",
+            create_path.clone(),
+            json!({ "name": "strict", "trigger": { "triggerType": "schedule", "cron": "0 9 * * *", "timezone": "UTC", "extra": 1 }, "execution": agent_execution(), "origin": "human" }),
+        ),
+        (
+            "create",
+            "once trigger",
+            create_path.clone(),
+            json!({ "name": "strict", "trigger": { "triggerType": "once", "runAt": 4_000_000_000_000u64, "extra": 1 }, "execution": agent_execution(), "origin": "human" }),
+        ),
+        (
+            "create",
+            "project-default environment",
+            create_path.clone(),
+            json!({ "name": "strict", "trigger": { "triggerType": "schedule", "cron": "0 9 * * *", "timezone": "UTC" }, "execution": { "mode": "agent", "prompt": "p", "providerId": "pi", "model": "m", "reasoningLevel": "medium", "permissionMode": "auto", "environment": { "type": "project-default", "extra": 1 } }, "origin": "human" }),
+        ),
+        (
+            "create",
+            "host environment",
+            create_path.clone(),
+            json!({ "name": "strict", "trigger": { "triggerType": "schedule", "cron": "0 9 * * *", "timezone": "UTC" }, "execution": { "mode": "agent", "prompt": "p", "providerId": "pi", "model": "m", "reasoningLevel": "medium", "permissionMode": "auto", "environment": { "type": "host", "hostId": "host_00000000000000000000000000", "workspace": { "type": "personal" }, "extra": 1 } }, "origin": "human" }),
+        ),
+        (
+            "create",
+            "unmanaged workspace",
+            create_path.clone(),
+            json!({ "name": "strict", "trigger": { "triggerType": "schedule", "cron": "0 9 * * *", "timezone": "UTC" }, "execution": { "mode": "agent", "prompt": "p", "providerId": "pi", "model": "m", "reasoningLevel": "medium", "permissionMode": "auto", "environment": { "type": "host", "hostId": "host_00000000000000000000000000", "workspace": { "type": "unmanaged", "path": null, "extra": 1 } } }, "origin": "human" }),
+        ),
+        (
+            "create",
+            "workspace branch",
+            create_path.clone(),
+            json!({ "name": "strict", "trigger": { "triggerType": "schedule", "cron": "0 9 * * *", "timezone": "UTC" }, "execution": { "mode": "agent", "prompt": "p", "providerId": "pi", "model": "m", "reasoningLevel": "medium", "permissionMode": "auto", "environment": { "type": "host", "hostId": "host_00000000000000000000000000", "workspace": { "type": "unmanaged", "path": null, "branch": { "kind": "existing", "name": "main", "extra": 1 } } } }, "origin": "human" }),
+        ),
+        (
+            "update",
+            "agent target",
+            automation_path.clone(),
+            json!({ "agent": { "target": { "type": "environment", "environment": { "type": "project-default" }, "extra": 1 } } }),
+        ),
+        (
+            "run",
+            "top level",
+            run_path.clone(),
+            json!({ "idempotencyKey": "key", "extra": 1 }),
+        ),
+    ];
+
+    for (operation, label, path, body) in cases {
+        let response = match operation {
+            "create" => post(&app, &path, Some(body)).await,
+            "update" => patch(&app, &path, body).await,
+            _ => post(&app, &path, Some(body)).await,
+        };
+        assert_eq!(
+            response.status(),
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "{operation}: {label} was accepted"
+        );
+        let error = body_json(response).await;
+        assert_eq!(error["code"], "invalid_request");
+        assert!(
+            error["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("automations contract")),
+            "{operation}: {label} answered with {error}"
+        );
+    }
+
+    // The same shapes without the extra key are accepted, so the rejection is
+    // the extra key and not the shape.
+    let mut valid = create_body("strict again");
+    valid["trigger"] = json!({ "triggerType": "once", "runAt": 4_000_000_000_000u64 });
+    let response = post(&app, &create_path, Some(valid)).await;
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let created = body_json(response).await;
+    assert_schema(&contract::response(), &created, "create response");
     state.shutdown();
 }
 
