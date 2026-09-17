@@ -6,9 +6,10 @@ instant, and runs either an agent turn or a script on the machine that owns the
 workspace. Every attempt is a **run** row in the automation's history.
 
 This page documents the delivery so far: the entities, their durable storage,
-the typed HTTP surface (ten operations) and the scheduler that fires them. The
-execution plane and realtime invalidation are the stages that follow; what is
-*not* here yet is listed at the end, in as much detail as what is.
+the typed HTTP surface (ten operations), the scheduler that fires them and the
+agent execution that runs them. Script execution and realtime invalidation are
+the stages that follow; what is *not* here yet is listed at the end, in as much
+detail as what is.
 
 ## Where the shape comes from
 
@@ -225,7 +226,7 @@ StoredAutomation  { id, projectId, name, enabled, triggerType, trigger, runMode,
                     lastRunThreadId, lastError, createdAt, updatedAt }
 StoredAutomationRun  { id, automationId, runMode, threadId, status, trigger,
                        skipReason, error, output, exitCode, idempotencyKey,
-                       scheduledFor, startedAt, finishedAt }
+                       providerRunId, scheduledFor, startedAt, finishedAt }
 StoredAutomationThreadMark  { threadId, automationId, runId, createdAt }
 ```
 
@@ -260,11 +261,82 @@ domain snapshot synchronously, the way a settings write does.
 ## Thread mapping
 
 `AutomationThreadMark` is the durable half of "this thread was produced by that
-run of that automation". The execution stage writes marks when it spawns a
-thread; the consumer that exists today is `create`, which refuses an automation
-whose `createdByThreadId` is itself an automation-produced thread — automation
-chains that way have no bound, and the check is the same two-source lookup the
+run of that automation", written in the same critical section as the run's
+`threadId` and `providerRunId` — the three facts are only ever true together.
+Two consumers read it: the executor uses the run's own pair to open the thread
+`automations_runs` returns, and `create` refuses an automation whose
+`createdByThreadId` is itself an automation-produced thread — automation chains
+that way have no bound, and the check is the same two-source lookup the
 reference implementation uses (marks, plus the run history).
+
+## Agent execution
+
+A queued agent run becomes a turn through the **existing** path — there is no
+second execution framework. The message is appended the way a client's message
+is (which moves the thread to `working`), and `AppState::dispatch_thread`
+resolves the environment, records the provider run and publishes the dispatch
+to the owning host. The automation therefore inherits the whole lifecycle it
+would otherwise have had to reimplement: the run registry, the pre-dispatch
+failure timeline, provider reports, the thread status machine, permission
+interactions, the deadline reaper.
+
+`AppState::execute_pending_automation_runs` is the half of the loop that decides
+*where* a run happens; the sweep calls it every tick, and a manual `run` request
+calls it immediately so a client does not wait for the next tick.
+
+### Which thread a run happens in
+
+- **A declared `targetThreadId`** runs *in* that thread. It must exist, belong to
+  the automation's project, and be `idle` or `error`; a thread that is working,
+  waiting or archived fails the run with a reason (and, for a scheduled trigger,
+  the ordinary retry). An automation states what it wants rather than joining
+  someone else's queue.
+- **Without a target**, each run gets its own thread in the automation's
+  project, titled after the automation. One run, one conversation, and the run
+  row carries the thread id.
+
+### Which environment a run happens in
+
+| declared | resolved to |
+| --- | --- |
+| `reuse { environmentId }` | that environment, unchanged (the dispatch preflight decides whether it is usable) |
+| `host { workspace: unmanaged { path } }` | the project's unmanaged environment on that host with that path, created if it does not exist yet |
+| anything else | **nothing** — the run fails, with a reason naming what to do |
+
+The last row is the honest half. A `managed-worktree` or `personal` workspace has
+to be *provisioned* on its host, and the environment entity carries no branch to
+provision from, so "use the newest ready environment instead" would run the turn
+in a workspace nobody asked for. `project-default` has the same problem: loom has
+no server-side default-workspace resolution, which is exactly why a
+`project-default` thread cannot dispatch either. All three fail visibly, with a
+retryable reason.
+
+The find-or-create rule for `unmanaged` is what keeps a schedule from growing an
+environment per run: the second window finds the row the first one created.
+
+### The run ↔ thread ↔ provider-run mapping
+
+`AutomationRun` carries the thread it ran in and the provider run it became, and
+`AutomationThreadMark` records the thread as automation-produced. The provider
+run's terminal event is what ends the automation run: the hook is in
+`settle_finished_thread`, the one place every terminal path passes through (a
+report, a reaped run, a stop, a restart), so a run that timed out or whose host
+went stale closes its automation run the same way a provider failure does. The
+automation's own policy then applies: retry for a scheduled failure, pause after
+three.
+
+That mapping is also what makes a run's history navigable — the run response's
+`threadId` is the conversation, and it is the same id the provider ran in.
+
+### Around the edges
+
+- **The provider is the server's.** An automation may name a `providerId`; a
+  request for a provider this server does not run is logged and the turn is
+  dispatched with the configured one. That is the same treatment a thread's
+  recorded `model` gets, and for the same reason: the provider protocol carries
+  no per-run model.
+- **A script run is left queued.** The executor skips it rather than failing it,
+  because nothing is wrong with it: the script executor is the next stage.
 
 ## Restart behaviour
 
@@ -278,16 +350,21 @@ The scheduler's state is the payload, so a restart is a resume:
   server restarted while this run was in flight", and its automation takes the
   failure through the ordinary policy. That is the same argument the provider-run
   reconciler makes: no process can prove that in-flight work survived it, and
-  leaving the row open would block the automation's single-flight forever.
+  leaving the row open would block the automation's single-flight forever. When
+  the run had been dispatched, the failure arrives through the provider-run hook,
+  so the automation and the thread agree about what happened.
 - **A schedule from before the scheduler is armed** by the first sweep, so an
   upgrade does not leave every cron automation inert.
 
 ## Not here yet
 
-- **No execution.** The execution plane is the next stage: it claims pending
-  runs, moves them to `running`, produces the thread or the script output, and
-  closes them. `storedScriptPath` is therefore never emitted, and an inline
-  script is stored as it was given.
+- **No script execution.** An agent run now executes; a script run stays queued
+  until the script executor lands, so `storedScriptPath` is never emitted and an
+  inline script is stored as it was given.
+- **No on-demand environment provisioning.** A `managed-worktree`, `personal` or
+  `project-default` execution fails rather than provisioning a workspace per
+  run; bind a ready environment with `reuse` or name a host and an explicit
+  path.
 - **No realtime invalidation.** Mutations write no relay event, so no client is
   told to refetch; the routes are the only way to observe a change.
 - **No UI change.** The ported Automations view still talks to its typed seam;
@@ -310,6 +387,16 @@ The scheduler's state is the payload, so a restart is a resume:
   delete cascade, single-flight (both directions), idempotent runs, the run
   state machine, the retry-then-pause policy, pause cancelling queued runs,
   restart recovery, cursors, ordering and project scoping.
+- `crates/server/src/automation_execution.rs` — the executor: a queued agent
+  run becomes a dispatched turn with a recorded mapping, the provider run's
+  terminal event closes the automation run behind it, a run whose environment or
+  host is missing fails with the reason *and* leaves the W-584 timeline on the
+  thread, a target thread is reused and checked, an unmanaged workspace is
+  created once, a script run stays queued.
+- `crates/daemon/tests/provider_e2e.rs` — the same path over real sockets and a
+  real provider process: a scheduled run and a manual run each become a turn
+  whose thread carries the stub's output, and the run record agrees with the
+  thread about which conversation it was.
 - `crates/server/tests/automations_conformance.rs` — every operation over HTTP,
   with request bodies validated against loom-authored schemas before they are
   sent and response bodies after they are read (through the same validator the

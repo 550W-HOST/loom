@@ -29,6 +29,7 @@
 use std::collections::HashMap;
 use std::sync::{Mutex, MutexGuard};
 
+use loom_domain::AutomationRunOutcome;
 use loom_domain::{
     DomainEvent, Environment, EnvironmentStatus, HostId, HostStatus, ProjectId, ProviderEvent,
     RunEvent, RunId, RunOutcome, Thread, ThreadId, ThreadStatus, ThreadTrigger, TurnError,
@@ -385,6 +386,10 @@ pub enum DispatchOutcome {
     NoEnvironment {
         /// The synthetic run id reported in the terminal event.
         run_id: RunId,
+        /// Why the thread could not run: the same reason the terminal event
+        /// carries, so a caller that has to report it (an automation run) does
+        /// not have to guess from the thread's timeline.
+        reason: String,
     },
     /// No execution machine is connected. The run was failed on the spot so the
     /// thread does not sit in `working` waiting for a machine that is not
@@ -392,6 +397,8 @@ pub enum DispatchOutcome {
     NoHost {
         /// The synthetic run id reported in the terminal event.
         run_id: RunId,
+        /// Why the thread could not run, as in [`DispatchOutcome::NoEnvironment`].
+        reason: String,
     },
     /// The relay rejected the append; the run was failed on the spot.
     PublishFailed {
@@ -489,9 +496,9 @@ impl AppState {
 
         let environment = match self.resolve_environment(thread) {
             Ok(environment) => environment,
-            Err(error) => {
-                return match self.fail_thread(thread, run_id.clone(), error, now) {
-                    Ok(()) => DispatchOutcome::NoEnvironment { run_id },
+            Err(reason) => {
+                return match self.fail_thread(thread, run_id.clone(), reason.clone(), now) {
+                    Ok(()) => DispatchOutcome::NoEnvironment { run_id, reason },
                     Err(error) => DispatchOutcome::PublishFailed { run_id, error },
                 };
             }
@@ -500,27 +507,19 @@ impl AppState {
         // The workspace lives on exactly one machine, so the run must go to the
         // environment's host rather than to whichever host is "primary".
         let Some(host) = self.registry.host(&environment.host_id) else {
-            return match self.fail_thread(
-                thread,
-                run_id.clone(),
-                format!("host {} is not known", environment.host_id),
-                now,
-            ) {
-                Ok(()) => DispatchOutcome::NoHost { run_id },
+            let reason = format!("host {} is not known", environment.host_id);
+            return match self.fail_thread(thread, run_id.clone(), reason.clone(), now) {
+                Ok(()) => DispatchOutcome::NoHost { run_id, reason },
                 Err(error) => DispatchOutcome::PublishFailed { run_id, error },
             };
         };
         if host.status != HostStatus::Connected {
-            return match self.fail_thread(
-                thread,
-                run_id.clone(),
-                format!(
-                    "host {} owns this thread's workspace but is not connected",
-                    host.id
-                ),
-                now,
-            ) {
-                Ok(()) => DispatchOutcome::NoHost { run_id },
+            let reason = format!(
+                "host {} owns this thread's workspace but is not connected",
+                host.id
+            );
+            return match self.fail_thread(thread, run_id.clone(), reason.clone(), now) {
+                Ok(()) => DispatchOutcome::NoHost { run_id, reason },
                 Err(error) => DispatchOutcome::PublishFailed { run_id, error },
             };
         }
@@ -529,13 +528,9 @@ impl AppState {
         // construction, for an unmanaged one. Treat `None` as an internal
         // inconsistency rather than dispatch a provider without a workspace.
         let Some(workspace) = environment.path.clone() else {
-            return match self.fail_thread(
-                thread,
-                run_id.clone(),
-                format!("environment {} has no workspace path", environment.id),
-                now,
-            ) {
-                Ok(()) => DispatchOutcome::NoEnvironment { run_id },
+            let reason = format!("environment {} has no workspace path", environment.id);
+            return match self.fail_thread(thread, run_id.clone(), reason.clone(), now) {
+                Ok(()) => DispatchOutcome::NoEnvironment { run_id, reason },
                 Err(error) => DispatchOutcome::PublishFailed { run_id, error },
             };
         };
@@ -1026,7 +1021,7 @@ impl AppState {
             return false;
         };
         matches!(
-            self.settle_finished_thread(&record, outcome, now, false),
+            self.settle_finished_thread(&record, outcome, None, now, false),
             FinishRunResult::Finished
         )
     }
@@ -1045,7 +1040,14 @@ impl AppState {
         };
         if record.terminal_published {
             let outcome = record.terminal_outcome.unwrap_or(outcome);
-            return self.settle_finished_thread(&record, outcome, now, drain_queue);
+            let error = error.or_else(|| record.failure_reason.clone());
+            return self.settle_finished_thread(
+                &record,
+                outcome,
+                error.as_deref(),
+                now,
+                drain_queue,
+            );
         }
         let error = error.or_else(|| record.failure_reason.clone());
 
@@ -1130,17 +1132,22 @@ impl AppState {
             .runs
             .get(&record.run_id)
             .expect("a run remains registered until its settlement completes");
-        self.settle_finished_thread(&record, outcome, now, drain_queue)
+        self.settle_finished_thread(&record, outcome, error.as_deref(), now, drain_queue)
     }
 
     /// Publishes the terminal thread-status event and then clears the entity-
     /// side run. The status mutation follows its relay append; this keeps a
     /// failed append from making a thread look idle/error before the durable log
     /// says so.
+    ///
+    /// `error` is the same text the terminal event carries, and it is what an
+    /// automation run behind this provider run closes with: the automation's
+    /// history should say what went wrong, not just that something did.
     fn settle_finished_thread(
         &self,
         record: &RunRecord,
         outcome: RunOutcome,
+        error: Option<&str>,
         now: u64,
         drain_queue: bool,
     ) -> FinishRunResult {
@@ -1182,6 +1189,14 @@ impl AppState {
         }
         let _ = self.registry.clear_thread_run(&record.thread_id, now);
         self.runs.remove(&record.run_id);
+        // An automation run is a *view* of a provider run: its terminal state
+        // is what ends it, so the view is closed here, at the one place every
+        // terminal path passes through (a report, a reaped run, a stop, a
+        // restart). The automation registry has its own lock and this is called
+        // after the run is gone, so the two tables cannot deadlock; the durable
+        // write is the periodic snapshot, exactly as it is for the provider run
+        // table itself.
+        self.close_automation_run_for(&record, outcome, error, now);
         // A turn that ended cannot still be waiting on an answer, and a thread
         // that just became idle is exactly when the queue is worth draining.
         // Both are ordered after the status change so the thread a subscriber
@@ -1191,6 +1206,57 @@ impl AppState {
             self.drain_thread_queue(&record.thread_id);
         }
         FinishRunResult::Finished
+    }
+
+    /// Closes the automation run that became this provider run, if there is one.
+    ///
+    /// Most provider runs are ordinary turns and this finds nothing. When it
+    /// does find one, the automation's own policy applies: a failed scheduled
+    /// run retries sooner than its next window, three consecutive failures
+    /// pause the automation, and a success clears the failure counter. The
+    /// thread id travels with the outcome so the automation's history keeps the
+    /// `thread ↔ run` mapping a client needs to open the conversation.
+    fn close_automation_run_for(
+        &self,
+        record: &RunRecord,
+        outcome: RunOutcome,
+        error: Option<&str>,
+        now: u64,
+    ) {
+        let thread_id = Some(record.thread_id.clone());
+        let outcome = match outcome {
+            RunOutcome::Completed => AutomationRunOutcome::Succeeded {
+                thread_id,
+                output: None,
+                exit_code: None,
+            },
+            RunOutcome::Cancelled => AutomationRunOutcome::Cancelled {
+                reason: error
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| "the run was stopped before it finished".to_owned()),
+            },
+            RunOutcome::Failed | RunOutcome::TimedOut | RunOutcome::HostStale => {
+                AutomationRunOutcome::Failed {
+                    error: error
+                        .map(str::to_owned)
+                        .unwrap_or_else(|| outcome.as_str().to_owned()),
+                    thread_id,
+                    output: None,
+                    exit_code: None,
+                }
+            }
+        };
+        if let Some(closed) =
+            self.automations
+                .close_run_by_provider_run(&record.run_id.to_string(), &outcome, now)
+        {
+            eprintln!(
+                "loom-server: automation run {} ({}) closed as {}",
+                closed.id,
+                closed.automation_id,
+                closed.state.as_str()
+            );
+        }
     }
 
     /// Fails a thread before a provider dispatch exists.
@@ -1499,7 +1565,7 @@ mod tests {
             vec!["turn/started", "provider/error", "turn/completed"]
         );
         let run_id = match outcome {
-            DispatchOutcome::NoEnvironment { run_id } => run_id,
+            DispatchOutcome::NoEnvironment { run_id, .. } => run_id,
             _ => unreachable!(),
         };
         assert!(events.iter().all(|event| {

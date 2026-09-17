@@ -368,7 +368,13 @@ impl AppState {
         });
     }
 
-    /// One automation sweep, persisted when it changed anything.
+    /// One automation pass: claim the windows that are due, then dispatch the
+    /// runs that are queued, persisting when either changed anything.
+    ///
+    /// The two halves are ordered because they are the pipeline: the sweep
+    /// decides *when* a run is owed, the executor decides *where* it runs. A
+    /// manual `run` request calls the executor half directly, so a client does
+    /// not wait for the next tick.
     ///
     /// The write is synchronous and conditional for the same reason a settings
     /// write is: the claim that queues a run must be on disk before the run can
@@ -376,7 +382,8 @@ impl AppState {
     /// twice.
     pub fn sweep_automations(&self, now_ms: u64) -> automations::SweepReport {
         let report = self.automations.sweep_due(now_ms);
-        if report.changed() {
+        let executed = self.execute_pending_automation_runs(now_ms);
+        if report.changed() || executed.changed() {
             if let Err(error) = self.snapshot() {
                 eprintln!("loom-server: persisting scheduled automation runs failed: {error}");
             }

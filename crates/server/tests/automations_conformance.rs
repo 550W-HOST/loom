@@ -11,6 +11,7 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use axum::Router;
 use http_body_util::BodyExt;
+use loom_domain::EnvironmentId;
 use loom_server::automations::{AutomationState, StoredAutomation, StoredAutomationRun};
 use loom_server::http::router;
 use loom_server::state::{AppConfig, AppState};
@@ -81,7 +82,7 @@ async fn delete(app: &Router, path: &str) -> axum::response::Response {
 }
 
 /// An agent execution body, in the contract's shape.
-fn agent_execution() -> Value {
+fn agent_execution(environment: &str) -> Value {
     json!({
         "mode": "agent",
         "prompt": "summarise the repository",
@@ -89,28 +90,68 @@ fn agent_execution() -> Value {
         "model": "pi/default",
         "reasoningLevel": "medium",
         "permissionMode": "auto",
-        "environment": { "type": "project-default" }
+        "environment": { "type": "reuse", "environmentId": environment }
     })
 }
 
 /// A create body, in the contract's shape.
-fn create_body(name: &str) -> Value {
+///
+/// The execution reuses an environment that exists and is ready. An automation
+/// whose environment cannot be resolved is a *run* failure, not a create
+/// failure, and these tests are about the routes: the fixture hands the
+/// executor something it can actually dispatch to.
+fn create_body(name: &str, environment: &EnvironmentId) -> Value {
     let body = json!({
         "name": name,
         "trigger": { "triggerType": "schedule", "cron": "0 9 * * 1-5", "timezone": "Europe/Paris" },
-        "execution": agent_execution(),
+        "execution": agent_execution(&environment.to_string()),
         "origin": "human"
     });
     assert_schema(&contract::create_request(), &body, "create request");
     body
 }
 
+/// An enrolled host with a ready workspace, and the environment bound to it.
+///
+/// A schedule that fires has to run *somewhere*: the fixture provides one
+/// connected machine and one unmanaged environment, which is the smallest
+/// deployment an automation can execute in.
+fn executable_environment(state: &AppState) -> EnvironmentId {
+    let (host, host_events) = state
+        .registry
+        .enroll_host(None, "worker".into(), 1)
+        .expect("enrolls a host");
+    for event in &host_events {
+        state.publish_domain_event(event).expect("publishes");
+    }
+    let (environment, events) = state
+        .registry
+        .create_environment(
+            Some(state.registry.personal_project_id()),
+            host.id,
+            loom_domain::EnvironmentKind::Unmanaged,
+            Some("/srv/loom".into()),
+            1,
+        )
+        .expect("creates an environment");
+    for event in &events {
+        state.publish_domain_event(event).expect("publishes");
+    }
+    environment.id
+}
+
 /// The ephemeral server the route tests run against.
-async fn server() -> (AppState, Router, String) {
-    let state = AppState::build(AppConfig::default()).unwrap();
+async fn server() -> (AppState, Router, String, EnvironmentId) {
+    let state = AppState::build(AppConfig {
+        reconcile_interval: std::time::Duration::ZERO,
+        schedule_interval: std::time::Duration::ZERO,
+        ..AppConfig::default()
+    })
+    .unwrap();
     let app = router(state.clone());
     let project = state.registry.personal_project_id().to_string();
-    (state, app, project)
+    let environment = executable_environment(&state);
+    (state, app, project, environment)
 }
 
 /* ------------------------------------------------------------------ */
@@ -119,13 +160,13 @@ async fn server() -> (AppState, Router, String) {
 
 #[tokio::test]
 async fn automations_crud_overview_and_history_are_contract_shaped() {
-    let (state, app, project) = server().await;
+    let (state, app, project, environment) = server().await;
 
     // create
     let response = post(
         &app,
         &format!("/api/v1/projects/{project}/automations"),
-        Some(create_body("nightly")),
+        Some(create_body("nightly", &environment)),
     )
     .await;
     assert_eq!(response.status(), StatusCode::CREATED);
@@ -265,7 +306,24 @@ async fn automations_crud_overview_and_history_are_contract_shaped() {
     assert_eq!(run["run"]["status"], "running");
     assert_eq!(run["run"]["trigger"], "manual");
     assert_eq!(run["run"]["runMode"], "agent");
-    assert!(run["run"]["threadId"].is_null());
+    // The run was dispatched: it names the thread the turn runs in, and that
+    // thread is the one the provider is working in.
+    let run_thread = run["run"]["threadId"]
+        .as_str()
+        .expect("a dispatched run names its thread")
+        .to_owned();
+    assert_eq!(
+        state
+            .registry
+            .thread(
+                &run_thread
+                    .parse::<loom_domain::ThreadId>()
+                    .expect("a thread id")
+            )
+            .expect("the thread exists")
+            .status,
+        loom_domain::ThreadStatus::Working
+    );
     assert!(run["run"]["finishedAt"].is_null());
     assert!(run["run"].get("idempotencyKey").is_none());
     let run_id = run["run"]["id"].as_str().unwrap().to_owned();
@@ -351,10 +409,10 @@ async fn automations_crud_overview_and_history_are_contract_shaped() {
 
 #[tokio::test]
 async fn a_once_trigger_arms_its_instant_and_a_past_one_is_refused() {
-    let (state, app, project) = server().await;
+    let (state, app, project, environment) = server().await;
     let future = 4_000_000_000_000u64;
 
-    let mut body = create_body("one shot");
+    let mut body = create_body("one shot", &environment);
     body["trigger"] = json!({ "triggerType": "once", "runAt": future });
     assert_schema(&contract::create_request(), &body, "create request");
     let response = post(
@@ -368,7 +426,7 @@ async fn a_once_trigger_arms_its_instant_and_a_past_one_is_refused() {
     assert_schema(&contract::response(), &created, "create response");
     assert_eq!(created["nextRunAt"], future);
 
-    let mut past = create_body("too late");
+    let mut past = create_body("too late", &environment);
     past["trigger"] = json!({ "triggerType": "once", "runAt": 1 });
     assert_schema(&contract::create_request(), &past, "create request");
     let response = post(
@@ -383,7 +441,7 @@ async fn a_once_trigger_arms_its_instant_and_a_past_one_is_refused() {
     assert!(error["message"].as_str().unwrap().contains("trigger.runAt"));
 
     // An inline script needs exactly one source, and a bad cron five fields.
-    let mut both_script_sources = create_body("scripted");
+    let mut both_script_sources = create_body("scripted", &environment);
     both_script_sources["execution"] = json!({
         "mode": "script",
         "script": "echo hi",
@@ -405,7 +463,7 @@ async fn a_once_trigger_arms_its_instant_and_a_past_one_is_refused() {
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     assert_eq!(body_json(response).await["code"], "invalid_request");
 
-    let mut bad_cron = create_body("bad cron");
+    let mut bad_cron = create_body("bad cron", &environment);
     bad_cron["trigger"] =
         json!({ "triggerType": "schedule", "cron": "0 9 * *", "timezone": "UTC" });
     let response = post(
@@ -418,7 +476,7 @@ async fn a_once_trigger_arms_its_instant_and_a_past_one_is_refused() {
     let error = body_json(response).await;
     assert!(error["message"].as_str().unwrap().contains("trigger.cron"));
 
-    let mut bad_timezone = create_body("bad timezone");
+    let mut bad_timezone = create_body("bad timezone", &environment);
     bad_timezone["trigger"] =
         json!({ "triggerType": "schedule", "cron": "0 9 * * *", "timezone": "Europe Paris" });
     let response = post(
@@ -438,12 +496,12 @@ async fn a_once_trigger_arms_its_instant_and_a_past_one_is_refused() {
 
 #[tokio::test]
 async fn automation_requests_are_strict_and_unknown_targets_are_refused() {
-    let (state, app, project) = server().await;
+    let (state, app, project, environment) = server().await;
 
     // An unknown field is not silently dropped. Rejecting a body that does not
     // match the request shape is the framework's job, so it is a 422 in the
     // same uniform error shape the contract middleware uses.
-    let mut unknown_field = create_body("strict");
+    let mut unknown_field = create_body("strict", &environment);
     unknown_field["unexpected"] = json!(true);
     let response = post(
         &app,
@@ -455,7 +513,7 @@ async fn automation_requests_are_strict_and_unknown_targets_are_refused() {
     assert_eq!(body_json(response).await["code"], "invalid_request");
 
     // An unknown field inside a union member is refused as well.
-    let mut unknown_inner = create_body("strict inner");
+    let mut unknown_inner = create_body("strict inner", &environment);
     unknown_inner["execution"]["unexpected"] = json!(true);
     let response = post(
         &app,
@@ -470,7 +528,7 @@ async fn automation_requests_are_strict_and_unknown_targets_are_refused() {
         post(
             &app,
             &format!("/api/v1/projects/{project}/automations"),
-            Some(create_body("targets")),
+            Some(create_body("targets", &environment)),
         )
         .await,
     )
@@ -488,7 +546,7 @@ async fn automation_requests_are_strict_and_unknown_targets_are_refused() {
     let response = patch(
         &app,
         &path,
-        json!({ "execution": agent_execution(), "agent": { "model": "pi/other" } }),
+        json!({ "execution": agent_execution(&environment.to_string()), "agent": { "model": "pi/other" } }),
     )
     .await;
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
@@ -540,12 +598,12 @@ async fn automation_requests_are_strict_and_unknown_targets_are_refused() {
 
 #[tokio::test]
 async fn automations_are_scoped_to_their_project() {
-    let (state, app, project) = server().await;
+    let (state, app, project, environment) = server().await;
     let automation = body_json(
         post(
             &app,
             &format!("/api/v1/projects/{project}/automations"),
-            Some(create_body("scoped")),
+            Some(create_body("scoped", &environment)),
         )
         .await,
     )
@@ -596,12 +654,12 @@ async fn automations_are_scoped_to_their_project() {
 
 #[tokio::test]
 async fn the_write_routes_refuse_a_key_the_contract_does_not_name() {
-    let (state, app, project) = server().await;
+    let (state, app, project, environment) = server().await;
     let automation = body_json(
         post(
             &app,
             &format!("/api/v1/projects/{project}/automations"),
-            Some(create_body("strict")),
+            Some(create_body("strict", &environment)),
         )
         .await,
     )
@@ -621,19 +679,19 @@ async fn the_write_routes_refuse_a_key_the_contract_does_not_name() {
             "create",
             "top level",
             create_path.clone(),
-            json!({ "name": "strict", "trigger": { "triggerType": "schedule", "cron": "0 9 * * *", "timezone": "UTC" }, "execution": agent_execution(), "origin": "human", "extra": 1 }),
+            json!({ "name": "strict", "trigger": { "triggerType": "schedule", "cron": "0 9 * * *", "timezone": "UTC" }, "execution": agent_execution(&environment.to_string()), "origin": "human", "extra": 1 }),
         ),
         (
             "create",
             "schedule trigger",
             create_path.clone(),
-            json!({ "name": "strict", "trigger": { "triggerType": "schedule", "cron": "0 9 * * *", "timezone": "UTC", "extra": 1 }, "execution": agent_execution(), "origin": "human" }),
+            json!({ "name": "strict", "trigger": { "triggerType": "schedule", "cron": "0 9 * * *", "timezone": "UTC", "extra": 1 }, "execution": agent_execution(&environment.to_string()), "origin": "human" }),
         ),
         (
             "create",
             "once trigger",
             create_path.clone(),
-            json!({ "name": "strict", "trigger": { "triggerType": "once", "runAt": 4_000_000_000_000u64, "extra": 1 }, "execution": agent_execution(), "origin": "human" }),
+            json!({ "name": "strict", "trigger": { "triggerType": "once", "runAt": 4_000_000_000_000u64, "extra": 1 }, "execution": agent_execution(&environment.to_string()), "origin": "human" }),
         ),
         (
             "create",
@@ -696,7 +754,7 @@ async fn the_write_routes_refuse_a_key_the_contract_does_not_name() {
 
     // The same shapes without the extra key are accepted, so the rejection is
     // the extra key and not the shape.
-    let mut valid = create_body("strict again");
+    let mut valid = create_body("strict again", &environment);
     valid["trigger"] = json!({ "triggerType": "once", "runAt": 4_000_000_000_000u64 });
     let response = post(&app, &create_path, Some(valid)).await;
     assert_eq!(response.status(), StatusCode::CREATED);
@@ -717,12 +775,13 @@ async fn automations_survive_a_durable_server_restart() {
     let state = AppState::build(config.clone()).unwrap();
     let app = router(state.clone());
     let project = state.registry.personal_project_id().to_string();
+    let environment = executable_environment(&state);
 
     let created = body_json(
         post(
             &app,
             &format!("/api/v1/projects/{project}/automations"),
-            Some(create_body("durable")),
+            Some(create_body("durable", &environment)),
         )
         .await,
     )
@@ -750,7 +809,25 @@ async fn automations_survive_a_durable_server_restart() {
     assert_eq!(response.status(), StatusCode::OK);
     let fetched = body_json(response).await;
     assert_schema(&contract::read_result(), &fetched, "restored get response");
-    assert_eq!(fetched, created);
+    // The automation itself is unchanged — same id, name, trigger, execution
+    // and schedule — and the run it dispatched is what the restart settled: a
+    // turn nobody can prove was still running is failed, and the automation
+    // records that failure rather than pretending the run is still in flight.
+    assert_eq!(fetched["id"], created["id"]);
+    assert_eq!(fetched["name"], created["name"]);
+    assert_eq!(fetched["trigger"], created["trigger"]);
+    assert_eq!(fetched["execution"], created["execution"]);
+    assert_eq!(fetched["nextRunAt"], created["nextRunAt"]);
+    assert_eq!(fetched["enabled"], created["enabled"]);
+    assert_eq!(fetched["lastRunStatus"], "failed");
+    assert_eq!(
+        fetched["lastError"],
+        "the server restarted while this run was in flight"
+    );
+    assert_eq!(
+        fetched["runCount"], 0,
+        "a manual run is not a scheduled window"
+    );
 
     let runs = body_json(
         get(
@@ -775,6 +852,11 @@ async fn automations_survive_a_durable_server_restart() {
     );
     assert_eq!(runs["runs"][0]["id"], json!(run_id));
     assert_eq!(
+        runs["runs"][0]["status"], "failed",
+        "the interrupted turn was failed once, by the restart"
+    );
+    assert!(runs["runs"][0]["threadId"].is_string());
+    assert_eq!(
         body_json(get(&app, "/api/v1/automations").await).await["automations"]
             .as_array()
             .unwrap()
@@ -795,11 +877,12 @@ async fn an_older_snapshot_without_automations_still_loads() {
     };
     let state = AppState::build(config.clone()).unwrap();
     let project = state.registry.personal_project_id().to_string();
+    let environment = executable_environment(&state);
     let app = router(state.clone());
     post(
         &app,
         &format!("/api/v1/projects/{project}/automations"),
-        Some(create_body("kept")),
+        Some(create_body("kept", &environment)),
     )
     .await;
     // Shut down first, so the final snapshot cannot overwrite the hand-edited
@@ -871,12 +954,12 @@ fn crc32(bytes: &[u8]) -> u32 {
 
 #[tokio::test]
 async fn a_damaged_stored_row_is_reported_and_explained_not_dropped() {
-    let (state, app, project) = server().await;
+    let (state, app, project, environment) = server().await;
     let automation = body_json(
         post(
             &app,
             &format!("/api/v1/projects/{project}/automations"),
-            Some(create_body("damaged")),
+            Some(create_body("damaged", &environment)),
         )
         .await,
     )
@@ -985,12 +1068,12 @@ async fn a_damaged_stored_row_is_reported_and_explained_not_dropped() {
 
 #[tokio::test]
 async fn a_run_page_is_cursored_newest_first() {
-    let (state, app, project) = server().await;
+    let (state, app, project, environment) = server().await;
     let automation = body_json(
         post(
             &app,
             &format!("/api/v1/projects/{project}/automations"),
-            Some(create_body("history")),
+            Some(create_body("history", &environment)),
         )
         .await,
     )
@@ -1046,7 +1129,7 @@ async fn a_run_page_is_cursored_newest_first() {
 /// both this suite and the response schema it validates against.
 #[tokio::test]
 async fn a_host_environment_response_keeps_the_contract_workspace_shape() {
-    let (state, app, project) = server().await;
+    let (state, app, project, environment) = server().await;
     let host = loom_domain::HostId::mint().to_string();
 
     for (label, workspace, expect_path) in [
@@ -1061,7 +1144,7 @@ async fn a_host_environment_response_keeps_the_contract_workspace_shape() {
             json!("/srv/loom"),
         ),
     ] {
-        let mut body = create_body(&format!("host {label}"));
+        let mut body = create_body(&format!("host {label}"), &environment);
         body["execution"]["environment"] = json!({
             "type": "host",
             "hostId": host,
@@ -1129,11 +1212,11 @@ fn make_due(state: &AppState, automation: &str, window: u64) {
 
 #[tokio::test]
 async fn a_schedule_is_armed_in_its_zone_and_a_due_window_becomes_a_queued_run() {
-    let (state, app, project) = server().await;
+    let (state, app, project, environment) = server().await;
 
     // Europe/Paris, every weekday at 09:00 local: what `nextRunAt` holds is
     // that wall clock, not the server's.
-    let mut body = create_body("paris mornings");
+    let mut body = create_body("paris mornings", &environment);
     body["trigger"] = json!({
         "triggerType": "schedule",
         "cron": "0 9 * * 1-5",
@@ -1235,12 +1318,23 @@ async fn a_schedule_is_armed_in_its_zone_and_a_due_window_becomes_a_queued_run()
 
 #[tokio::test]
 async fn pausing_cancels_a_queued_run_over_http() {
-    let (state, app, project) = server().await;
+    let (state, app, project, _environment) = server().await;
+    // A *script* automation: the executor deliberately leaves its queued runs
+    // alone (the script executor is a later stage), so this is a run that is
+    // genuinely still waiting when the user pauses.
+    let mut body = create_body("queued", &loom_domain::EnvironmentId::mint());
+    body["execution"] = json!({
+        "mode": "script",
+        "script": "echo hi",
+        "interpreter": "bash",
+        "timeoutMs": 120000
+    });
+    assert_schema(&contract::create_request(), &body, "create request");
     let automation = body_json(
         post(
             &app,
             &format!("/api/v1/projects/{project}/automations"),
-            Some(create_body("queued")),
+            Some(body),
         )
         .await,
     )
@@ -1306,7 +1400,7 @@ async fn pausing_cancels_a_queued_run_over_http() {
 }
 
 #[tokio::test]
-async fn a_queued_run_and_its_window_survive_a_restart_without_firing_twice() {
+async fn a_claimed_window_is_not_replayed_and_its_interrupted_turn_fails_once() {
     let dir = TempDir::new().unwrap();
     let config = || AppConfig {
         backend_path: Some(dir.path().to_path_buf()),
@@ -1318,11 +1412,12 @@ async fn a_queued_run_and_its_window_survive_a_restart_without_firing_twice() {
     let state = AppState::build(config()).unwrap();
     let app = router(state.clone());
     let project = state.registry.personal_project_id().to_string();
+    let environment = executable_environment(&state);
     let automation = body_json(
         post(
             &app,
             &format!("/api/v1/projects/{project}/automations"),
-            Some(create_body("durable")),
+            Some(create_body("durable", &environment)),
         )
         .await,
     )
@@ -1331,7 +1426,8 @@ async fn a_queued_run_and_its_window_survive_a_restart_without_firing_twice() {
         .unwrap()
         .to_owned();
     make_due(&state, &automation, 1_000);
-    // The queued run is what single-flight leaves in flight across the restart.
+    // The window becomes a run, and that run becomes a turn on the enrolled
+    // host: what the restart finds in flight is a provider run.
     state.sweep_automations(2_000);
     let runs = body_json(
         get(
@@ -1357,9 +1453,16 @@ async fn a_queued_run_and_its_window_survive_a_restart_without_firing_twice() {
     assert_eq!(
         runs["runs"].as_array().unwrap().len(),
         1,
-        "the queued run is durable work, not a window to replay"
+        "one window, one run: the claimed window is not replayed"
     );
-    assert_eq!(runs["runs"][0]["status"], "running");
+    assert_eq!(
+        runs["runs"][0]["status"], "failed",
+        "the turn an interrupted process cannot prove was running is failed once"
+    );
+    assert!(runs["runs"][0]["error"]
+        .as_str()
+        .is_some_and(|error| error.contains("restarted")));
+    assert!(runs["runs"][0]["threadId"].is_string());
 
     // The window it was queued for is behind the schedule now, so a sweep
     // after the restart claims nothing.
@@ -1391,11 +1494,12 @@ async fn a_payload_from_before_the_scheduler_reads_as_queued_work_after_a_restar
     let state = AppState::build(config()).unwrap();
     let app = router(state.clone());
     let project = state.registry.personal_project_id().to_string();
+    let environment = executable_environment(&state);
     let automation = body_json(
         post(
             &app,
             &format!("/api/v1/projects/{project}/automations"),
-            Some(create_body("legacy")),
+            Some(create_body("legacy", &environment)),
         )
         .await,
     )

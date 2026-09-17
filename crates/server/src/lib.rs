@@ -22,6 +22,7 @@
 #![forbid(unsafe_code)]
 
 pub mod artifacts;
+pub mod automation_execution;
 pub mod automations;
 pub mod automations_contract;
 pub mod b10;
@@ -56,6 +57,7 @@ pub use artifacts::{
     ArtifactClient, ArtifactDownload, Artifacts, InstallVersion, DIGEST_HEADER,
     INSTALL_DAEMON_PATH, INSTALL_VERSION_PATH,
 };
+pub use automation_execution::AutomationExecutionReport;
 pub use automations::{AutomationState, AutomationsRegistry, AUTOMATIONS_VERSION};
 pub use b5::{MAX_FILE_CONTENT_BYTES, MAX_HTML_PREVIEW_BYTES, THREAD_COUNT_ROOT_PARENT};
 pub use b7::MAX_ATTACHMENT_BYTES;
