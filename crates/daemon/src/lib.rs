@@ -46,6 +46,7 @@
 pub mod acp;
 pub mod host_files;
 pub mod provider;
+pub mod scripts;
 pub mod session;
 pub mod terminal;
 pub mod update;
@@ -421,8 +422,17 @@ pub struct Daemon {
     /// Terminal answers waiting to be forwarded to the server.
     terminal_reports: mpsc::Receiver<loom_provider_protocol::TerminalReport>,
     terminal_reports_tx: mpsc::Sender<loom_provider_protocol::TerminalReport>,
+    /// Automation-script results waiting to be forwarded to the server.
+    script_reports: mpsc::Receiver<loom_provider_protocol::ScriptRunReport>,
+    script_reports_tx: mpsc::Sender<loom_provider_protocol::ScriptRunReport>,
     /// The PTY sessions this daemon holds.
     terminal_sessions: crate::terminal::TerminalRegistry,
+    /// The automation scripts this daemon is running.
+    ///
+    /// Held here rather than created per dispatch because a cancel has to
+    /// reach a running process: the runner is what maps a run id to the task
+    /// that owns the child.
+    scripts: Option<crate::scripts::ScriptRunner>,
     /// Runs with a provider task in flight, keyed by run id.
     running: HashSet<RunId>,
 }
@@ -446,6 +456,7 @@ impl Daemon {
                     mpsc::channel(REPORT_CHANNEL_CAPACITY);
                 let (terminal_reports_tx, terminal_reports) =
                     mpsc::channel(REPORT_CHANNEL_CAPACITY);
+                let (script_reports_tx, script_reports) = mpsc::channel(REPORT_CHANNEL_CAPACITY);
                 Ok(Self {
                     socket,
                     cursor: config.resume_cursor,
@@ -466,7 +477,13 @@ impl Daemon {
                     host_rpc_reports_tx,
                     terminal_reports,
                     terminal_reports_tx,
+                    script_reports,
+                    script_reports_tx,
                     terminal_sessions: crate::terminal::TerminalRegistry::new(),
+                    // Built at enrollment: a script runs in a directory named
+                    // after the automation under the daemon's data directory,
+                    // which is a fact about the enrolled host.
+                    scripts: None,
                     running: HashSet::new(),
                 })
             }
@@ -504,6 +521,14 @@ impl Daemon {
             }
         };
         self.host_id = Some(host_id.clone());
+        // The script runner needs the enrolled host and the data directory a
+        // script's workspace is named after, and both are known now.
+        self.scripts = Some(crate::scripts::ScriptRunner::new(
+            host_id.clone(),
+            self.config.data_dir.clone(),
+            self.config.server_url.clone(),
+            self.script_reports_tx.clone(),
+        ));
 
         // Follow the room first, then replay: a live dispatch that arrives in
         // between is queued on the socket and also present in the replay
@@ -604,6 +629,10 @@ impl Daemon {
                 report = self.terminal_reports.recv() => {
                     let Some(report) = report else { continue };
                     self.send(&ClientCommand::TerminalReport { report }).await?;
+                }
+                report = self.script_reports.recv() => {
+                    let Some(report) = report else { continue };
+                    self.send(&ClientCommand::ScriptReport { report }).await?;
                 }
             }
         }
@@ -722,8 +751,40 @@ impl Daemon {
             serde_json::from_str::<loom_provider_protocol::TerminalRequest>(payload)
         {
             self.start_terminal_request(request);
+        } else if let Ok(dispatch) =
+            serde_json::from_str::<loom_provider_protocol::ScriptRunDispatch>(payload)
+        {
+            self.start_script_run(dispatch);
+        } else if let Ok(cancel) =
+            serde_json::from_str::<loom_provider_protocol::ScriptRunCancel>(payload)
+        {
+            self.cancel_script_run(cancel);
         }
         Ok(())
+    }
+
+    /// Starts an automation script on this machine.
+    ///
+    /// The work runs on its own task: a script can take minutes, and the socket
+    /// loop must keep forwarding heartbeats and other runs' reports while it
+    /// does.
+    fn start_script_run(&self, dispatch: loom_provider_protocol::ScriptRunDispatch) {
+        let Some(scripts) = self.scripts.clone() else {
+            return;
+        };
+        tokio::spawn(async move {
+            scripts.start(dispatch).await;
+        });
+    }
+
+    /// Kills a script this machine is running.
+    fn cancel_script_run(&self, cancel: loom_provider_protocol::ScriptRunCancel) {
+        let Some(scripts) = self.scripts.clone() else {
+            return;
+        };
+        tokio::spawn(async move {
+            scripts.cancel(&cancel).await;
+        });
     }
 
     /// Executes one terminal operation on the daemon's machine.

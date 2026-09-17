@@ -453,6 +453,9 @@ pub enum DaemonClientMessage {
     TerminalReport {
         report: loom_provider_protocol::TerminalReport,
     },
+    ScriptReport {
+        report: loom_provider_protocol::ScriptRunReport,
+    },
     Replay {
         scope: Scope,
         #[serde(default, skip_serializing_if = "Option::is_none")]

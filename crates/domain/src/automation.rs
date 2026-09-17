@@ -513,6 +513,15 @@ pub struct ScriptExecution {
     /// Extra environment variables for the run.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub env: Option<BTreeMap<String, String>>,
+    /// Where the host wrote this script, once it has run one.
+    ///
+    /// The response half of the contract only: a client cannot send it, and
+    /// the write path refuses it (the request schema is strict). It exists
+    /// because the *host* owns the file — an inline script is written on the
+    /// machine that runs it, and that machine is the only one that can name
+    /// the path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stored_script_path: Option<String>,
 }
 
 fn default_script_timeout_ms() -> u64 {
@@ -1099,6 +1108,14 @@ pub struct AutomationRun {
     /// history row ran in. Absent while the run is only queued, and for a run
     /// that never reached a provider.
     pub provider_run_id: Option<String>,
+    /// The machine a script run was dispatched to.
+    ///
+    /// A script runs *on a host* and reports back by name, so the run has to
+    /// remember which machine that is: a cancel has to reach it, and a run
+    /// whose host is gone has to be reaped rather than left in flight. An
+    /// agent run leaves this `None` — its host travels with the provider run
+    /// record, which the run registry already tracks.
+    pub host_id: Option<HostId>,
     /// The instant the run was due at. For a manual run that is when it was
     /// asked for.
     pub scheduled_for: u64,
@@ -1180,6 +1197,7 @@ impl AutomationRun {
             exit_code: None,
             idempotency_key,
             provider_run_id: None,
+            host_id: None,
             scheduled_for,
             started_at: now_ms,
             finished_at: None,
@@ -1220,6 +1238,16 @@ impl AutomationRun {
         self.provider_run_id = Some(provider_run_id);
     }
 
+    /// Records the host a script run was dispatched to.
+    ///
+    /// Separate from [`AutomationRun::attach_dispatch`] because a script has no
+    /// thread and no provider run: what the control plane needs to remember is
+    /// which machine owes it a report, so a cancel can reach it and a host that
+    /// went away can be reaped.
+    pub fn attach_script_dispatch(&mut self, host_id: HostId) {
+        self.host_id = Some(host_id);
+    }
+
     /// Ends an in-flight run.
     ///
     /// A terminal state is terminal: a second outcome for the same run is the
@@ -1255,8 +1283,9 @@ impl AutomationRun {
                 self.apply_result(thread_id, output, *exit_code);
                 self.error = Some(error.clone());
             }
-            AutomationRunOutcome::Skipped { reason } => {
+            AutomationRunOutcome::Skipped { reason, exit_code } => {
                 self.skip_reason = Some(reason.clone());
+                self.exit_code = *exit_code;
             }
             AutomationRunOutcome::Cancelled { reason } => {
                 self.skip_reason = Some(reason.clone());
@@ -1325,6 +1354,10 @@ pub enum AutomationRunOutcome {
     Skipped {
         /// Why it did not run.
         reason: String,
+        /// What the process exited with, when the skipped thing *did* run and
+        /// simply had nothing to report — a script whose output is empty is
+        /// skipped rather than succeeded, and bb records its `0` either way.
+        exit_code: Option<i32>,
     },
     /// The run was abandoned before it started: it is not a failure, and it is
     /// not skipped by the run's own logic either.
@@ -1811,6 +1844,7 @@ mod tests {
             interpreter: None,
             timeout_ms: AUTOMATION_SCRIPT_TIMEOUT_DEFAULT_MS,
             env: None,
+            stored_script_path: None,
         };
         assert!(script(Some("echo hi"), None).validate().is_ok());
         assert!(script(None, Some("/srv/job.sh")).validate().is_ok());
@@ -1841,6 +1875,7 @@ mod tests {
             interpreter: Some(ScriptInterpreter::Bash),
             timeout_ms: 0,
             env: None,
+            stored_script_path: None,
         };
         assert!(execution.validate().is_err());
         execution.timeout_ms = AUTOMATION_SCRIPT_TIMEOUT_MAX_MS;
@@ -2027,6 +2062,7 @@ mod tests {
             interpreter: None,
             timeout_ms: AUTOMATION_SCRIPT_TIMEOUT_DEFAULT_MS,
             env: None,
+            stored_script_path: None,
         });
         assert!(matches!(
             automation.update(

@@ -32,9 +32,9 @@ const DEFAULT_UNTRACKED_LINE_FILES: usize = 100;
 const DEFAULT_UNTRACKED_LINE_BYTES: u64 = 512 * 1024;
 
 #[derive(Clone, Debug)]
-struct Failure {
+pub(crate) struct Failure {
     code: &'static str,
-    message: String,
+    pub(crate) message: String,
 }
 
 impl Failure {
@@ -1501,7 +1501,12 @@ async fn read_optional_file(path: &Path, limit: usize) -> Result<Vec<u8>, Failur
     }
 }
 
-async fn safe_workspace_path(workspace: &Path, raw: &str) -> Result<PathBuf, Failure> {
+/// Resolves `raw` inside `workspace`, refusing anything that leaves it.
+///
+/// `pub(crate)` because automation scripts run a file the control plane named
+/// the same way a host file request reads one: the check has to be the
+/// filesystem one, and there is exactly one implementation of it.
+pub(crate) async fn safe_workspace_path(workspace: &Path, raw: &str) -> Result<PathBuf, Failure> {
     validate_relative_path(raw)?;
     let candidate = workspace.join(raw);
     let canonical = match tokio::fs::canonicalize(&candidate).await {
