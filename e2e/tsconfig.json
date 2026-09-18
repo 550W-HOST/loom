@@ -1,0 +1,17 @@
+{
+  "extends": "@bb/tsconfig/base.json",
+  "compilerOptions": {
+    "composite": false,
+    "declaration": false,
+    "declarationMap": false,
+    "noEmit": true,
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "rootDir": ".",
+    // Pinned for the same reason the app pins it: without this, tsc walks up
+    // past the repository and picks up whatever `@types` a developer's home
+    // directory happens to contain.
+    "types": ["node"]
+  },
+  "include": ["tests/**/*.ts", "helpers/**/*.ts", "playwright.config.ts"]
+}

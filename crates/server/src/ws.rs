@@ -510,12 +510,15 @@ async fn handle_command(
                         detail: None,
                     })
                 }
-                RecordOutcome::Unknown(detail) => Some(ServerMessage::InteractionRequestAck {
-                    request_id,
-                    interaction_id: None,
-                    accepted: false,
-                    detail: Some(detail),
-                }),
+                RecordOutcome::Unknown(detail) => {
+                    eprintln!("loom-server: refused an interaction request: {detail}");
+                    Some(ServerMessage::InteractionRequestAck {
+                        request_id,
+                        interaction_id: None,
+                        accepted: false,
+                        detail: Some(detail),
+                    })
+                }
             }
         }
         ClientCommand::EnvironmentReport { report } => {
