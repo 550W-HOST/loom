@@ -1,23 +1,24 @@
 #!/usr/bin/env bash
 # Build the loom-server and loom-daemon container images.
 #
-# The input is the *packaged* binaries — what `scripts/package-release.sh`
-# writes as `dist/loom-server-<target>` — so an image carries the same bytes the
-# release page publishes, rather than a second build of the same commit. That is
-# also why aarch64 images can be built on an amd64 machine: nothing here runs the
-# binary, and neither Dockerfile has a `RUN`, so no emulator is involved. The
-# aarch64 pair is still verified by `scripts/verify-release-binaries.sh`, which
-# is where the machine that can execute it lives.
+# The two images are the one `loom` binary in its two roles, and the input is the
+# *packaged* binary — what `scripts/package-release.sh` writes as
+# `dist/loom-<target>` — so an image carries the same bytes the release page
+# publishes, rather than a second build of the same commit. That is also why
+# aarch64 images can be built on an amd64 machine: nothing here runs the binary,
+# and neither Dockerfile has a `RUN`, so no emulator is involved. The aarch64
+# binary is still verified by `scripts/verify-release-binaries.sh`, which is where
+# the machine that can execute it lives.
 #
 # Nothing else is staged: the server's product app is compiled into the binary,
 # so the server image serves the client the packaged bytes were built with and
 # has no bundle to copy in or path to configure.
 #
 # What the build reads is a staged context, not the repository: one binary per
-# Docker architecture, named `<binary>-<amd64|arm64>`, plus the `.keep`
-# placeholder the Dockerfiles copy into their volumes. `--platform` selects which
-# binaries the build needs, so a one-platform build stages one platform. The
-# Dockerfiles are handed to docker with `--file`, so they stay in `deploy/`.
+# Docker architecture, named `loom-<amd64|arm64>`, plus the `.keep` placeholder
+# the Dockerfiles copy into their volumes. `--platform` selects which binary the
+# build needs, so a one-platform build stages one platform. The Dockerfiles are
+# handed to docker with `--file`, so they stay in `deploy/`.
 #
 # Usage:
 #   scripts/build-container-images.sh [options]
@@ -27,13 +28,13 @@
 #   --tags LIST       image tags, comma-separated  default dev
 #   --registry REPO   repository prefix to tag under, e.g. ghcr.io/550w-host
 #                     default empty, i.e. `loom-server:<tag>`
-#   --dist-dir DIR    where the packaged binaries are  default dist
+#   --dist-dir DIR    where the packaged binary is  default dist
 #   --push            push to the registry; without it the images are loaded
 #                     into the local daemon, which takes a single platform
 #   -h, --help        this text
 #
-# Needs docker with the buildx plugin, and the staged binaries for every
-# platform named.
+# Needs docker with the buildx plugin, and the staged binary for every platform
+# named.
 
 set -euo pipefail
 
@@ -93,7 +94,7 @@ if [[ -z "$platforms" ]]; then
 fi
 
 # One target is published per platform (docs/releasing.md § Targets), and the
-# context names binaries by Docker architecture because that is the only name
+# context names the binary by Docker architecture because that is the only name
 # BuildKit's TARGETARCH can select with.
 target_for_platform() { # <platform> -> "<rust target triple> <docker architecture>"
   case "$1" in
@@ -111,12 +112,10 @@ install -m 0644 "$repo_root/deploy/containers/keep" "$context/.keep"
 IFS=',' read -r -a platform_list <<<"$platforms"
 for platform in "${platform_list[@]}"; do
   read -r triple arch <<<"$(target_for_platform "$platform")"
-  for binary in loom-server loom-daemon; do
-    built="$dist_dir/$binary-$triple"
-    [[ -f "$built" ]] ||
-      die "$built is missing; build and package $triple first: scripts/package-release.sh $triple"
-    install -m 0755 "$built" "$context/$binary-$arch"
-  done
+  built="$dist_dir/loom-$triple"
+  [[ -f "$built" ]] ||
+    die "$built is missing; build and package $triple first: scripts/package-release.sh $triple"
+  install -m 0755 "$built" "$context/loom-$arch"
   note "staged $triple as $arch"
 done
 

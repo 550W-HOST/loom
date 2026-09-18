@@ -1,4 +1,7 @@
-//! `loom-daemon` binary — the **daemon-only** startup path.
+//! The **daemon role**, as a library entry point.
+//!
+//! Reached through `loom daemon` (or the `loom-daemon` name the same binary
+//! answers to): the daemon-only startup path.
 //!
 //! It reaches out to a server URL and does nothing else. It can run on a
 //! different machine from the server, under a different supervisor, and be
@@ -20,7 +23,7 @@
 //! # Lifecycle
 //!
 //! The binary does not own a connection; it owns a *supervised session*
-//! ([`loom_daemon::session`]). The loop is: connect, enrol, run, and on a
+//! ([`crate::session`]). The loop is: connect, enrol, run, and on a
 //! failure reconnect on an exponential backoff. When the server speaks a newer
 //! protocol the loop fetches the matching daemon from that same server,
 //! verifies its SHA-256, installs it with a rename, and **exits** — systemd's
@@ -31,26 +34,25 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use loom_daemon::session::{run_session, DaemonState, SessionOutcome};
-use loom_daemon::update::{UpdateConfig, Updater};
-use loom_daemon::DaemonConfig;
+use crate::session::{run_session, DaemonState, SessionOutcome};
+use crate::update::{UpdateConfig, Updater};
+use crate::DaemonConfig;
 use loom_domain::HostId;
 use loom_provider_protocol::ProviderSpec;
 use loom_relay::EventId;
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+pub async fn run(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     // Ahead of `Options::parse`, which refuses a command line with no
     // `--server-url`: `--version` must answer on a machine that has not been
     // pointed at a server yet. That is also the check a release verification
     // runs against a downloaded daemon, before it tries to connect it to
     // anything.
-    if std::env::args().skip(1).any(|arg| arg == "--version") {
+    if args.iter().any(|arg| arg == "--version") {
         println!("{}", loom_server::version_line("loom-daemon"));
         return Ok(());
     }
 
-    let options = match Options::parse(std::env::args().skip(1))? {
+    let options = match Options::parse(args.iter().cloned())? {
         Some(options) => options,
         None => {
             print_help();
@@ -291,21 +293,21 @@ impl Options {
             Some(raw) => Some(raw.parse::<HostId>().map_err(|error| error.to_string())?),
         };
         let heartbeat_interval = match heartbeat_ms {
-            None => loom_daemon::DEFAULT_HEARTBEAT_INTERVAL,
+            None => crate::DEFAULT_HEARTBEAT_INTERVAL,
             Some(raw) => Duration::from_millis(
                 raw.parse::<u64>()
                     .map_err(|error| format!("--heartbeat-ms: {error}"))?,
             ),
         };
         let run_timeout = match run_timeout_ms {
-            None => loom_daemon::DEFAULT_RUN_TIMEOUT,
+            None => crate::DEFAULT_RUN_TIMEOUT,
             Some(raw) => Duration::from_millis(
                 raw.parse::<u64>()
                     .map_err(|error| format!("--run-timeout-ms: {error}"))?,
             ),
         };
         let permission_timeout = match permission_timeout_ms {
-            None => loom_daemon::DEFAULT_PERMISSION_TIMEOUT,
+            None => crate::DEFAULT_PERMISSION_TIMEOUT,
             Some(raw) => Duration::from_millis(
                 raw.parse::<u64>()
                     .map_err(|error| format!("--permission-timeout-ms: {error}"))?,

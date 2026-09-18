@@ -1162,6 +1162,23 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f9f8bd3e56ce4dfc153cf470fffbfa98c7620958b312ca5c3a4b8d5181fd13c6"
 
 [[package]]
+name = "loom"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "loom-contract",
+ "loom-daemon",
+ "loom-domain",
+ "loom-provider-protocol",
+ "loom-relay",
+ "loom-server",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "loom-contract"
 version = "0.1.0"
 dependencies = [

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # Install loom as systemd services. Idempotent: re-running upgrades the
-# binaries and units and leaves existing environment files and data alone.
+# binary and the units and leaves existing environment files and data alone.
 #
 #   sudo deploy/install.sh server
 #   sudo deploy/install.sh daemon <server-key> <server-url> [<host-name>]
@@ -11,18 +11,20 @@
 # the machine that runs the control plane (a hostname, not a URL). It names the
 # daemon instance and its data directory.
 #
-# The script never builds. The binaries come from one of two places:
+# The script never builds. The binary comes from one of two places:
 #
-#   --release <version>   download loom-server-<target>, loom-daemon-<target>
-#                         and SHA256SUMS from a GitHub Release, verify them,
-#                         then install them
-#   LOOM_BIN_SOURCE       copy them from a local build (default
-#                         target/release), i.e. `cargo build --release` first
+#   --release <version>   download loom-<target> and SHA256SUMS from a GitHub
+#                         Release, verify the download, then install it
+#   LOOM_BIN_SOURCE       copy it from a local build (default target/release),
+#                         i.e. `cargo build --release -p loom` first
 #
 # So an execution machine with no Rust toolchain is one command away from a
 # release artifact, and a machine with a checkout keeps building locally.
 #
-# An install is those two executables and the units, and nothing else: the
+# An install is that one file, the two names it answers to and the units, and
+# nothing else: `loom` is the artifact, and `loom-server` / `loom-daemon` are
+# relative symlinks to it, so one process can be started as either role and the
+# server hosts the sibling `loom-daemon` name a self-updating daemon fetches. The
 # server carries the product app compiled into it (`crates/server/build.rs`), so
 # there is no bundle to place beside the binary or to point a variable at.
 #
@@ -59,9 +61,9 @@ Usage: install.sh [options] <command> [arguments]
 
 Commands:
   server
-      Install and start the control plane. The binaries come from a local
-      build (`cargo build --release`) or from `--release <version>`, and the
-      server is left on loopback unless LOOM_BIND is edited.
+      Install and start the control plane. The binary comes from a local
+      build (`cargo build --release -p loom`) or from `--release <version>`,
+      and the server is left on loopback unless LOOM_BIND is edited.
 
   daemon <server-key> <server-url> [<host-name>]
       Install and start one execution-daemon instance joined to <server-url>.
@@ -76,17 +78,19 @@ Commands:
 
 Options:
   --release <version>
-      Take the binaries from the GitHub Release for <version>, which is a tag
+      Take the binary from the GitHub Release for <version>, which is a tag
       (`v0.1.0`, `0.1.0`) or `latest`, instead of copying a local build. The
-      release asset for this machine's target is downloaded and its SHA-256 is
-      checked against the release's SHA256SUMS before anything is installed.
+      release asset for this machine's target, `loom-<target>`, is downloaded
+      and its SHA-256 is checked against the release's SHA256SUMS before
+      anything is installed.
 
   --from <dir>
-      Copy the binaries from <dir> instead of target/release (the same thing as
-      setting LOOM_BIN_SOURCE).
+      Copy the binary from <dir> instead of target/release (the same thing as
+      setting LOOM_BIN_SOURCE). <dir> may name it either `loom`, as a build
+      output does, or `loom-<target>`, as an extracted archive does.
 
 Options (environment variables):
-  LOOM_INSTALL_PREFIX  binaries      default /usr/local
+  LOOM_INSTALL_PREFIX  install prefix default /usr/local
   LOOM_BIN_SOURCE      build output  default target/release
   LOOM_RELEASE_REPO    release repo  default 550W-HOST/loom
   GITHUB_TOKEN         private repo  token used to read a private release
@@ -102,7 +106,8 @@ Options (environment variables):
                        production supervisor)
 
 The script must run as root. It never overwrites an existing environment file:
-re-running keeps your edits and only refreshes binaries and units.
+re-running keeps your edits and only refreshes the binary, its two names and the
+units.
 EOF
 }
 
@@ -139,10 +144,10 @@ ensure_service_user() {
 
 # --- release artifacts -------------------------------------------------------
 #
-# A release publishes, per target triple, the two executables plus a
+# A release publishes, per target triple, the one executable plus a
 # `sha256sum`-format SHA256SUMS file:
 #
-#   loom-server-<target>   loom-daemon-<target>   SHA256SUMS
+#   loom-<target>   SHA256SUMS
 #
 # so installing from one needs curl (or wget) and sha256sum (or shasum) and
 # nothing else. A public repository is read over plain https URLs; a private one
@@ -198,7 +203,7 @@ checksum_for() { # <sums file> <asset>
 }
 
 # Runs before anything is installed, so a truncated or tampered download leaves
-# the machine with the binaries it already had.
+# the machine with the binary it already had.
 verify_checksum() { # <dir> <asset>
     local dir="$1" asset="$2" expected actual
     [ -f "$dir/SHA256SUMS" ] || die "$dir/SHA256SUMS is missing from the release"
@@ -278,27 +283,25 @@ download() { # <tag> <asset> <dir>
 }
 
 # Downloads <asset> and proves it is the file SHA256SUMS describes. SHA256SUMS
-# itself is not a `download_verified` call: it is the root of trust the others
-# are checked against, and it arrives over the same TLS connection.
+# itself is not a `download_verified` call: it is the root of trust the asset is
+# checked against, and it arrives over the same TLS connection.
 download_verified() { # <tag> <asset> <dir>
     download "$1" "$2" "$3"
     verify_checksum "$3" "$2"
 }
 
-# Leaves both verified binaries in STAGING_DIR, shaped like a build output
-# directory, so the install step is the same as for a local build.
+# Leaves the verified binary in STAGING_DIR under the name a build output uses,
+# so the install step is the same as for a local build.
 fetch_release() {
-    local tag target binary
+    local tag target
     tag="$(release_tag)"
     target="$(target_triple)"
     STAGING_DIR="$(mktemp -d)"
     log "downloading $RELEASE_REPO release $tag for $target"
     download "$tag" "SHA256SUMS" "$STAGING_DIR"
-    for binary in loom-server loom-daemon; do
-        download_verified "$tag" "$binary-$target" "$STAGING_DIR"
-        mv "$STAGING_DIR/$binary-$target" "$STAGING_DIR/$binary"
-        chmod 0755 "$STAGING_DIR/$binary"
-    done
+    download_verified "$tag" "loom-$target" "$STAGING_DIR"
+    mv "$STAGING_DIR/loom-$target" "$STAGING_DIR/loom"
+    chmod 0755 "$STAGING_DIR/loom"
 }
 
 cleanup_staging() {
@@ -315,6 +318,27 @@ bin_source_dir() {
     esac
 }
 
+# The binary as <dir> names it. A build output holds `loom`; an extracted
+# release archive holds `loom-<target>`, the name the release page publishes.
+# Both are the same file under a different name, and a local build is tried
+# first because that is the common case.
+source_binary() { # <dir> -> path
+    local dir="$1" asset
+    if [ -f "$dir/loom" ]; then
+        printf '%s' "$dir/loom"
+        return
+    fi
+    # Asked for only now: a local build names the file `loom` on any platform,
+    # while the release name needs the target triple to be detected (and is a
+    # Linux-only name, which is why the detection is not on the path above).
+    asset="loom-$(target_triple)"
+    if [ -f "$dir/$asset" ]; then
+        printf '%s' "$dir/$asset"
+        return
+    fi
+    die "$dir holds no loom binary (looked for loom and $asset)"
+}
+
 install_binaries() {
     local source binary
     if [ -n "$RELEASE" ]; then
@@ -323,14 +347,18 @@ install_binaries() {
     else
         source="$(bin_source_dir)"
         [ -d "$source" ] ||
-            die "no build output at $source; run 'cargo build --release', set LOOM_BIN_SOURCE, or install from a release with --release <version>"
+            die "no build output at $source; run 'cargo build --release -p loom', set LOOM_BIN_SOURCE, or install from a release with --release <version>"
     fi
+    binary="$(source_binary "$source")"
     install -d -m 0755 "$INSTALL_PREFIX/bin"
-    for binary in loom-server loom-daemon; do
-        [ -f "$source/$binary" ] || die "$source/$binary is missing"
-        install -m 0755 "$source/$binary" "$INSTALL_PREFIX/bin/$binary"
-    done
-    log "installed binaries to $INSTALL_PREFIX/bin"
+    install -m 0755 "$binary" "$INSTALL_PREFIX/bin/loom"
+    # Relative, not absolute: the names have to survive the prefix being moved,
+    # bind-mounted elsewhere or copied into an image. And `-n` on top of `-f` so
+    # re-running over the names an older install left as real files replaces
+    # them instead of following them.
+    ln -sfn loom "$INSTALL_PREFIX/bin/loom-server"
+    ln -sfn loom "$INSTALL_PREFIX/bin/loom-daemon"
+    log "installed $INSTALL_PREFIX/bin/loom (loom-server, loom-daemon)"
 }
 
 install_unit() {
@@ -367,7 +395,7 @@ install_server() {
     systemctl_do enable loom-server.service
     [ "${LOOM_NO_START:-0}" = "1" ] || systemctl_do restart loom-server.service
     if ! service_manager; then
-        printf '\nStart the server by hand with:\n  set -a; . %s/loom-server.env; set +a\n  %s/bin/loom-server\n' \
+        printf '\nStart the server by hand with:\n  set -a; . %s/loom-server.env; set +a\n  %s/bin/loom server\n' \
             "$ETC_DIR" "$INSTALL_PREFIX"
     fi
 }
@@ -408,7 +436,7 @@ install_daemon() {
     systemctl_do enable "loom-host-daemon@$key.service"
     [ "${LOOM_NO_START:-0}" = "1" ] || systemctl_do restart "loom-host-daemon@$key.service"
     if ! service_manager; then
-        printf '\nStart the daemon by hand with:\n  set -a; . %s; set +a\n  %s/bin/loom-daemon\n' \
+        printf '\nStart the daemon by hand with:\n  set -a; . %s; set +a\n  %s/bin/loom daemon\n' \
             "$env_file" "$INSTALL_PREFIX"
     fi
 }

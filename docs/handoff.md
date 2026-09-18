@@ -393,10 +393,10 @@ Open questions carried forward:
 
 - `LOOM_BIND` is the env var for the server's listen address (not
   `LOOM_LISTEN`); default `127.0.0.1:38886`. Others: `LOOM_DATA_DIR`,
-  `LOOM_NODE_ID`, `LOOM_REDIS_URL`, `LOOM_UI_DIR`, `LOOM_ARTIFACT_DIR`
+  `LOOM_NODE_ID`, `LOOM_REDIS_URL`, `LOOM_UI_PROXY`, `LOOM_ARTIFACT_DIR`
 - daemon: `LOOM_SERVER_URL`, `LOOM_HOST_NAME`, `LOOM_DAEMON_STATE`,
-  `LOOM_AUTO_UPDATE`, and others listed at the top of `crates/daemon/src/main.rs`
-- A stale `target/debug/loom-server` from an earlier session held the default
+  `LOOM_AUTO_UPDATE`, and others listed at the top of `crates/daemon/src/run.rs`
+- A stale `target/debug/loom server` from an earlier session held the default
   port. Check `ss -tln` before assuming a startup failure is a code problem
 - `sccache` occasionally fails with `exit status: 254`; `sccache --stop-server`
   clears it. Not a loom issue

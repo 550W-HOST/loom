@@ -33,7 +33,7 @@ Type=simple
 User=loom
 Group=loom
 EnvironmentFile=/etc/loom/daemon/%i.env
-ExecStart=/usr/local/bin/loom-daemon
+ExecStart=/usr/local/bin/loom daemon
 WorkingDirectory=/var/lib/loom/machines/%i
 
 # A daemon's whole job is to stay attached. It must come back after a crash, a

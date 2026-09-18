@@ -154,7 +154,7 @@ in that directory is read, rewritten or templated at runtime.
 ```bash
 pnpm install --frozen-lockfile
 pnpm --filter @bb/app run build          # → apps/app/dist, the input to cargo build
-cargo run -p loom-server
+cargo run -p loom -- server
 ```
 
 `apps/app/dist` holds `index.html`, `assets/**` with content-hashed names, and

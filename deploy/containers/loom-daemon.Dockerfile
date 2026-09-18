@@ -24,7 +24,7 @@ FROM alpine:3.22@sha256:14358309a308569c32bdc37e2e0e9694be33a9d99e68afb0f5ff33cc
 # holds one binary per architecture (docs/containers.md).
 ARG TARGETARCH
 
-COPY --chown=1000:1000 loom-daemon-${TARGETARCH} /usr/local/bin/loom-daemon
+COPY --chown=1000:1000 loom-${TARGETARCH} /usr/local/bin/loom
 
 # Owned directories, created without a `RUN` so a cross-platform build needs no
 # emulator. The server Dockerfile explains why the volume path cannot be left
@@ -34,7 +34,7 @@ COPY --chown=1000:1000 loom-daemon-${TARGETARCH} /usr/local/bin/loom-daemon
 COPY --chown=1000:1000 .keep /var/lib/loom/.keep
 COPY --chown=1000:1000 .keep /workspace/.keep
 
-# The `loom` identity as a number, the same pair both images use.
+# The `loom` identity as a number, the same uid and gid both images use.
 USER 1000:1000
 
 # HOME is the state volume on purpose. A provider keeps its per-user
@@ -63,4 +63,9 @@ WORKDIR /var/lib/loom
 # NAT and needs no inbound rule (deploy/README.md § Ports).
 VOLUME /var/lib/loom
 
-ENTRYPOINT ["/usr/local/bin/loom-daemon"]
+# The one binary, in its daemon role: the same file the server image carries,
+# started as the other process. Self-update replaces that file in place and the
+# container's restart policy starts the new one (docs/upgrades.md § Daemon
+# self-update); the server this container dials hosts the artifact under the
+# `loom-daemon` name.
+ENTRYPOINT ["/usr/local/bin/loom", "daemon"]

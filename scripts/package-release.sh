@@ -1,17 +1,18 @@
 #!/usr/bin/env bash
-# Package one target's release binaries for a GitHub Release.
+# Package one target's release binary for a GitHub Release.
 #
-# Three things per target: the two bare executables the release page offers as
-# `<name>-<target>`, and a tarball an operator extracts and hands to
-# `deploy/install.sh`. The tarball's top directory holds the binaries unnamed
-# (so `LOOM_BIN_SOURCE=.` points the installer at them), plus `deploy/` and
-# `README.md`. No client ships beside them: the product app is compiled into the
-# server, so the binary that serves it is the binary in the archive.
+# Two things per target: the bare executable the release page offers as
+# `loom-<target>`, and a tarball an operator extracts and hands to
+# `deploy/install.sh`. The tarball's top directory holds that same
+# `loom-<target>` name — one name for the asset and for the file inside it —
+# plus `deploy/` and `README.md`. No client ships beside it: the product app is
+# compiled into the server, so the binary that serves it is the binary in the
+# archive, and the two roles (`loom server`, `loom daemon`) are that one file.
 #
-# Every input is a build output or an argument — the binaries from
+# Every input is a build output or an argument — the binary from
 # `target/<target>/release`, the version from `cargo metadata` — so the same
-# command reproduces the same archive on any machine that has built them. The
-# binaries are never read: they may be another architecture.
+# command reproduces the same archive on any machine that has built it. The
+# binary is never read: it may be another architecture.
 #
 # Usage:
 #   scripts/package-release.sh <target> [--bin-dir DIR] [--out-dir DIR]
@@ -74,19 +75,17 @@ for tool in cargo jq tar; do
   command -v "$tool" >/dev/null || die "$tool is required"
 done
 
-for binary in loom-server loom-daemon; do
-  [[ -x "$bin_dir/$binary" ]] ||
-    die "$bin_dir/$binary is missing; build with 'cargo build --release --locked --target $target'"
-done
+[[ -x "$bin_dir/loom" ]] ||
+  die "$bin_dir/loom is missing; build with 'cargo build --release --locked -p loom --target $target'"
 
 # The version comes from the manifest, not from running the binary: an aarch64
 # artifact cannot be run on the x86_64 machine that packages it, and the name of
 # the archive has to be the same either way.
 version="$(
   cargo metadata --manifest-path "$repo_root/Cargo.toml" --no-deps --format-version 1 --locked |
-    jq -r '[.packages[] | select(.name == "loom-server")][0].version'
+    jq -r '[.packages[] | select(.name == "loom")][0].version'
 )"
-[[ -n "$version" && "$version" != "null" ]] || die "could not read the loom-server version"
+[[ -n "$version" && "$version" != "null" ]] || die "could not read the loom version"
 
 name="loom-$version-$target"
 staging="$out_dir/$name"
@@ -95,13 +94,13 @@ rm -rf "$staging"
 install -d -m 0755 "$staging"
 
 # Named for the release page: the asset says which platform it is for.
-install -m 0755 "$bin_dir/loom-server" "$out_dir/loom-server-$target"
-install -m 0755 "$bin_dir/loom-daemon" "$out_dir/loom-daemon-$target"
+install -m 0755 "$bin_dir/loom" "$out_dir/loom-$target"
 
-# And un-named inside the archive, which is the name `deploy/install.sh`
-# installs from its `LOOM_BIN_SOURCE`.
-install -m 0755 "$bin_dir/loom-server" "$staging/loom-server"
-install -m 0755 "$bin_dir/loom-daemon" "$staging/loom-daemon"
+# And inside the archive under the same name, which is one of the two
+# `deploy/install.sh` looks for under its `LOOM_BIN_SOURCE` (the other is the
+# `loom` a build output holds) — so an extracted archive installs from the
+# directory itself.
+install -m 0755 "$bin_dir/loom" "$staging/loom-$target"
 cp -R "$repo_root/deploy" "$staging/deploy"
 install -m 0644 "$repo_root/README.md" "$staging/README.md"
 
@@ -112,4 +111,4 @@ tar -C "$out_dir" --sort=name --owner=0 --group=0 --numeric-owner -czf "$out_dir
 rm -rf "$staging"
 
 printf 'packaged %s:\n' "$name.tar.gz"
-ls -l "$out_dir/loom-server-$target" "$out_dir/loom-daemon-$target" "$out_dir/$name.tar.gz"
+ls -l "$out_dir/loom-$target" "$out_dir/$name.tar.gz"

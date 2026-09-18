@@ -1,0 +1,23 @@
+[package]
+name = "loom"
+description = "loom: one binary with the control plane and the execution plane as separate roles"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+loom-daemon.workspace = true
+loom-server.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+axum.workspace = true
+loom-contract.workspace = true
+loom-domain.workspace = true
+loom-provider-protocol.workspace = true
+loom-relay.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tempfile = "3"
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }

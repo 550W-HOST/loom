@@ -21,17 +21,18 @@ on it and it can be validated on its own.
 
 - [x] `loom-relay` — scoped, sharded, replayable event log
 - [x] `loom-relay-hub` — rooms, idempotent fan-out, backpressure signal
-- [x] `loom-server` — HTTP + WebSocket surface; publish reaches subscribers through the log
+- [x] `loom` — one binary carrying both roles; `loom-server` (control plane: HTTP + WebSocket surface, publish reaches subscribers through the log) and `loom-daemon` (execution plane) are roles of it, still two processes
 - [x] `loom-domain` — projects, threads, hosts and environments as pure types and invariants
 - [x] Managed projects: create / list / rename / archive / sources over HTTP, with threads and environments naming their project (`docs/projects.md`)
-- [x] Server-only startup and an independently stoppable local daemon (`loom-daemon`)
+- [x] Server-only startup and an independently stoppable local daemon: `loom server` and `loom daemon`, or the installed symlinks that name the same file
 - [x] `loom-provider-protocol` — the server↔daemon ACP execution contract, replayable run events, and a terminal-state guarantee
 - [x] The event model aligned with bb's `ThreadEvent` contract (35 provider event types) — see [`docs/event-model.md`](docs/event-model.md)
 - [ ] Persist domain entities (the domain registry is in-process and lost on restart)
-- [x] `loom-server` hosts the UI from its own origin: the product app in `apps/app` is compiled into the server binary (`crates/server/build.rs`), so one binary carries the client and nothing about serving it is configured (`docs/ui.md`)
+- [x] The server role hosts the UI from its own origin: the product app in `apps/app` is compiled into the binary (`crates/server/build.rs`), so the one artifact carries its client and nothing about serving it is configured (`docs/ui.md`)
 - [x] The ported bb app (`apps/app`) is the only UI — same-origin typed `/api/v1` routes, the public `/ws` realtime contract, and machine-checked provenance against the pinned bb commit (`docs/ui-baseline.md`)
 - [ ] Check in the Node execution plane (`apps/host-daemon`) against the daemon contract
-  (`loom-daemon` is the reference implementation and exercises the whole contract today)
+  (`loom daemon` is the reference implementation of that contract and exercises
+  all of it today)
 - [x] Automations: domain, durable storage, typed HTTP surface, a cron/timezone scheduler and agent execution through the existing thread/run/ACP path (`docs/automations.md`)
 - [x] Redis Streams relay backend for restart-transparent upgrades (`LOOM_REDIS_URL`)
 - [x] bb's HTTP/WebSocket/daemon contract exported to JSON Schema, with a Rust conformance harness (`docs/contract.md`)
@@ -41,17 +42,22 @@ on it and it can be validated on its own.
 
 ```
 crates/
+  loom/         loom            the one binary, dispatching by invocation name
+                                (`loom server` / `loom daemon`) or by the
+                                installed `loom-server` / `loom-daemon` symlinks
   domain/       loom-domain     projects, threads, hosts, environments, scopes, events, runs
   relay/        loom-relay      scopes, event ids, retention, dedup, backends
   relay-hub/    loom-relay-hub  connections, rooms, delivery
   server/       loom-server     HTTP, WebSocket, protocol, dispatch, fixed readers, UI hosting
+                                (the control-plane role's implementation)
   provider-protocol/  loom-provider-protocol  the server↔daemon provider contract
-  daemon/       loom-daemon     the execution plane: enrollment, dispatch, ACP agents
+  daemon/       loom-daemon     the execution plane's implementation: enrollment,
+                                dispatch, ACP agents (the other role of `loom`)
   contract/     loom-contract   bb's exported contract as a conformance target
 contracts/bb/                   generated JSON Schema from bb's contract packages
 tools/contract-export/          the exporter that produces contracts/bb
 apps/app/                       the product app: the only UI, compiled into
-                                loom-server by crates/server/build.rs
+                                the binary by crates/server/build.rs
 ui/packages/*                   the pinned bb packages the product app builds
                                 against (domain, contract, thread-view, …)
         ui/provenance.json, ui/app-patch-ledger.json, ui/app-port-plan.json
@@ -108,10 +114,17 @@ pnpm provenance:check
 pnpm port-plan:check
 pnpm check:bundle     # the app's boot and lazy-route budget, after the build
 
+cargo build --release -p loom   # the one binary both roles run from
 cargo test --workspace
 cargo clippy --workspace --all-targets
 cargo fmt --all
 ```
+
+`cargo build --release -p loom` puts the artifact at `target/release/loom`;
+`loom server` starts the control plane and `loom daemon` an execution machine,
+and `deploy/install.sh` adds the `loom-server` / `loom-daemon` symlinks so
+anything that spawns a binary by name keeps working. For a quick start,
+`cargo run -p loom -- server`.
 
 The ported `thread-view`, `client-core`, `core-ui`, `shared-ui`, and contract
 packages live under `ui/packages/` and are what the app builds against. Their
@@ -120,7 +133,7 @@ source pin and deliberate hard-fork synchronization policy are recorded in
 migration boundary are in [`docs/ui-baseline.md`](docs/ui-baseline.md).
 
 `pnpm build` produces the UI bundle at `apps/app/dist`, which `cargo build`
-compiles into the server (`crates/server/build.rs`); the server never reads a UI
+compiles into the binary (`crates/server/build.rs`); the server never reads a UI
 directory at runtime, so there is no path to configure. That makes the build a
 prerequisite rather than an optional extra: without `apps/app/dist`, `cargo
 build` stops and names `pnpm --filter @bb/app run build` as the instruction. The
@@ -144,7 +157,7 @@ Run it:
 ```bash
 # Server-only: the control plane and nothing else. It never starts a daemon
 # and never exits because one is missing.
-cargo run -p loom-server            # listens on 127.0.0.1:38886
+cargo run -p loom -- server       # listens on 127.0.0.1:38886
 
 curl localhost:38886/health
 curl localhost:38886/api/v1/hosts/primary
@@ -158,9 +171,13 @@ Daemon-only, in a second terminal. It dials the server outbound and can stop
 without touching it:
 
 ```bash
-cargo run -p loom-daemon -- --server-url http://127.0.0.1:38886 --name laptop
+cargo run -p loom -- daemon --server-url http://127.0.0.1:38886 --name laptop
 # → loom-daemon "laptop" enrolled as host_01M… with http://127.0.0.1:38886
 ```
+
+The same binary runs both roles: `loom server` and `loom daemon` are the
+explicit form, and the installed `loom-server` / `loom-daemon` symlinks are the
+same file answering to the old names.
 
 With no daemon at all, `GET /api/v1/hosts/primary` answers `200` with
 `{"host":null,"source":"no_host"}` rather than an error — a server-only
@@ -204,7 +221,7 @@ published frame arrives.
 
 The UI is served from the same origin: open `http://127.0.0.1:38886/`. It is the
 product app, built with `pnpm --filter @bb/app run build` and compiled into the
-`loom-server` binary — there is no UI directory to point at and no UI variable to
+binary — there is no UI directory to point at and no UI variable to
 set. `LOOM_UI_PROXY` is the one override, development only, and reverse-proxies
 to a dev server; `LOOM_UI_DIR` is not read any more, so a line left over from the
 shape that served a bundle from disk is inert. The client derives its server from
@@ -218,9 +235,10 @@ guarantee that a run always ends — is specified in
 [`docs/provider-protocol.md`](docs/provider-protocol.md).
 
 Deploying the multi-machine shape (server plus execution machines) is
-[`deploy/`](deploy/README.md): two systemd units, environment templates, and an
-idempotent install/uninstall script. The same two processes are published as
-container images — `docker run`, or a `docker compose` all-in-one —
+[`deploy/`](deploy/README.md): the one binary plus its role symlinks, two
+systemd units, environment templates, and an idempotent install/uninstall
+script. The same two processes are published as container images — `docker run`,
+or a `docker compose` all-in-one —
 [`docs/containers.md`](docs/containers.md), which is also where the limits of a
 containerised execution daemon are written down. Remote access is
 [`docs/remote-access.md`](docs/remote-access.md) (Tailscale Serve in front of a

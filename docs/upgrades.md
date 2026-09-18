@@ -1,16 +1,19 @@
 # Upgrading
 
-loom ships two coordinated binaries. The server and daemon negotiate one
-internal protocol number; the client the server carries uses the separately
-exported bb public schema and WebSocket subprotocol:
+loom ships one binary in two roles, upgraded together. The server and daemon
+negotiate one internal protocol number; the client the server carries uses the
+separately exported bb public schema and WebSocket subprotocol:
 
-| Artifact | What it is | Where it runs |
+| Role | What it is | Where it runs |
 | --- | --- | --- |
-| **server** | `loom-server` binary, with the product app from `apps/app` compiled into it | one machine |
-| **daemon** | `loom-daemon` binary | every execution machine |
+| **server** | the `loom` binary started as `loom server` — the installed `loom-server` name is a symlink onto the same file — with the product app from `apps/app` compiled into it | one machine |
+| **daemon** | that same file started as `loom daemon` (installed as the `loom-daemon` symlink) | every execution machine |
 
-The client is part of the server binary, not a directory beside it
-([`ui.md`](ui.md)): installing or upgrading the server installs or upgrades its
+An upgrade moves one artifact, not two: replacing `/usr/local/bin/loom`
+replaces both roles, and the symlinks beside it keep pointing at the file.
+
+The client is part of the binary, not a directory beside it
+([`ui.md`](ui.md)): installing or upgrading the binary installs or upgrades its
 UI, there is no bundle to place, and no server can serve a client other than the
 one it was built with. An environment file written while main served a
 bundle from disk may still name `LOOM_UI_DIR` — no release carried that shape —
@@ -55,18 +58,21 @@ one legacy `welcome` carrying v3 and closes, which drives that daemon into the
 same self-update flow. A public client must negotiate `loom-bb-realtime-v1` and
 never sees either internal handshake.
 
-Both binaries answer the same question about the file itself, before either one
+The binary answers the same question about the file itself, before either role
 has been started — which is what a download has to be checked with
 ([`releasing.md`](releasing.md)):
 
 ```bash
-loom-server --version
+loom server --version
 # loom-server 0.1.0 (x86_64-unknown-linux-musl, protocol 3, commit 0f1e2d3c…)
+loom daemon --version
+# loom-daemon 0.1.0 (x86_64-unknown-linux-musl, protocol 3, commit 0f1e2d3c…)
 ```
 
-The line names the target triple and the commit the file was built from as well
-as the version, so two binaries from different releases are told apart without
-starting either of them.
+The line names the role it was asked as, the target triple, and the commit the
+file was built from as well as the version, so two downloads from different
+releases are told apart without starting either role — and both lines come from
+the one file, so they can never disagree about the commit.
 
 > **Rule:** server and daemon must speak the same internal `protocol_version`,
 > and the client inside the server must match the server's exported public
@@ -171,18 +177,21 @@ failure:
 | `GET /install/loom-daemon?target=<triple>` | the binary, with `X-Loom-Artifact-Sha256` and `ETag` |
 
 The server looks in `LOOM_ARTIFACT_DIR`, and **by default in the directory
-holding the running `loom-server`**. That default is what makes an ordinary
-deployment work with no configuration: `deploy/install.sh` installs
-`/usr/local/bin/loom-server` and `/usr/local/bin/loom-daemon` side by side, so
-the sibling daemon *is* the artifact that matches this server. A release archive
-extracted and installed the same way behaves identically. Two file names are
-accepted:
+holding the running binary**. That default is what makes an ordinary deployment
+work with no configuration: `deploy/install.sh` installs `/usr/local/bin/loom`
+and links `/usr/local/bin/loom-server` and `/usr/local/bin/loom-daemon` to it,
+so the `loom-daemon` name it looks up resolves to the very file that is running
+— the one binary, which is exactly the artifact this server's protocol version
+matches. A release archive extracted and installed the same way behaves
+identically. Two file names are accepted:
 
-- `loom-daemon-<triple>` — the release page's asset name, which is how a server
-  is given binaries for machines of another architecture;
+- `loom-daemon-<triple>` — the name that says which architecture a file is for,
+  which is how a server is given a binary for a machine that is not its own (a
+  release's `loom-<triple>` asset copied under this name);
 - `loom-daemon` — the installed name, and only an answer for the server's **own**
-  triple, because a binary built for the wrong machine would install and then
-  fail to execute.
+  triple, because a file built for the wrong machine would install and then
+  fail to execute. In an install that name is the symlink to the running
+  `loom`.
 
 The `target` query parameter is validated before it touches the filesystem
 (ASCII alphanumerics, `-` and `_` only), so a crafted value cannot walk out of
@@ -197,7 +206,8 @@ can reach the port can already enroll a host.
 
 A containerised server has no sibling `loom-daemon` — the image is `scratch` and
 carries the control plane only. Point `LOOM_ARTIFACT_DIR` at a directory
-containing `loom-daemon-<triple>` if a containerised server should host
+containing `loom-daemon-<triple>` (a copy of the release's `loom-<triple>`) if a
+containerised server should host
 artifacts, or run daemons from images (`docs/containers.md`) and update them by
 pulling a new image, which is the same "replace the file, restart the process"
 with the container runtime as the supervisor.
@@ -225,6 +235,12 @@ executable, and only then `rename`d over the target. A rename within one
 directory is atomic, and it does not disturb the running process, whose image is
 already mapped. An interrupted download, a failed digest, a full disk and a crash
 between the two steps all leave the old binary in place and working.
+
+The target is `std::env::current_exe()` — the file the daemon was started from,
+with symlinks resolved. Started as `loom-daemon`, that is
+`/usr/local/bin/loom`, so the update replaces the one binary and both role names
+go on pointing at it; a daemon started as `loom daemon` and one started through
+the symlink take exactly the same path.
 
 ### In-flight runs
 
@@ -282,7 +298,7 @@ An operator who wants to control upgrades centrally turns it off:
 
 ```bash
 # the flag, or the environment
-loom-daemon --server-url https://loom.example.com --no-auto-update
+loom daemon --server-url https://loom.example.com --no-auto-update
 ```
 
 ```
@@ -329,7 +345,7 @@ daemon with self-update disabled:
 
 ```bash
 # A. from a checkout: build, then install from the build output
-cargo build --release
+cargo build --release -p loom
 sudo deploy/install.sh server
 
 # B. from a release: no toolchain needed, the installer downloads and verifies
@@ -344,16 +360,17 @@ sudo systemctl restart loom-host-daemon@builder-1
 ```
 
 With self-update enabled the daemon steps are unnecessary: restarting the server
-is the whole upgrade. `--release <version>` downloads the binaries for this
-machine's target from the GitHub Release, checks each of them against the
-release's `SHA256SUMS`, and only then replaces `/usr/local/bin/loom-*`;
+is the whole upgrade. `--release <version>` downloads the binary for this
+machine's target from the GitHub Release, checks it against the
+release's `SHA256SUMS`, and only then installs it as `/usr/local/bin/loom` with
+its `loom-server` / `loom-daemon` symlinks beside it;
 [`../deploy/README.md`](../deploy/README.md) § Install from a release has the
 details, including `GITHUB_TOKEN` for a private repository. A download that fails,
 or one whose digest does not match, aborts **before** anything is installed and
 exits non-zero, so a fleet upgrade is never half-done by a bad connection.
 
 `install.sh` never overwrites an existing environment file, so re-running is safe
-and safe from a configuration-management tool that replaces binaries.
+and safe from a configuration-management tool that replaces files.
 
 ### What a restart does not lose
 
@@ -375,20 +392,21 @@ and safe from a configuration-management tool that replaces binaries.
 
 ## Rollback
 
-Rolling back is running the previous binaries and restarting; data formats are
-stable within a `protocol_version`.
+Rolling back is running the previous binary and restarting; data formats are
+stable within a `protocol_version`. One file per machine is what gets replaced,
+so the role symlinks point at the rolled-back file too.
 
 ```bash
-# keep the previous binaries where the upgrade can find them again
-sudo install -m 0755 /var/lib/loom/bin/loom-server.prev /usr/local/bin/loom-server
+# keep the previous binary where the upgrade can find it again
+sudo install -m 0755 /var/lib/loom/bin/loom.prev /usr/local/bin/loom
 sudo systemctl restart loom-server
 
-# a daemon likewise
-sudo install -m 0755 /var/lib/loom/bin/loom-daemon.prev /usr/local/bin/loom-daemon
+# a daemon machine, the same way — it keeps its own copy of the file
+sudo install -m 0755 /var/lib/loom/bin/loom.prev /usr/local/bin/loom
 sudo systemctl restart loom-host-daemon@builder-1
 ```
 
-If the previous binaries were not kept, the previous release is the copy:
+If the previous binary was not kept, the previous release is the copy:
 
 ```bash
 sudo deploy/install.sh --release v0.1.0 server
