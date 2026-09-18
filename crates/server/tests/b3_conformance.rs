@@ -1628,16 +1628,21 @@ fn publish_agent_message_completed(fixture: &Fixture, run_id: &loom_domain::RunI
         .unwrap();
 }
 
-async fn assistant_rows(fixture: &Fixture) -> Vec<Value> {
-    let timeline = fixture
+async fn timeline_rows(fixture: &Fixture) -> Vec<Value> {
+    fixture
         .get(&format!("/api/v1/threads/{}/timeline", fixture.thread_id))
-        .await;
-    timeline.body["rows"]
+        .await
+        .body["rows"]
         .as_array()
         .unwrap()
-        .iter()
+        .clone()
+}
+
+async fn assistant_rows(fixture: &Fixture) -> Vec<Value> {
+    timeline_rows(fixture)
+        .await
+        .into_iter()
         .filter(|row| row["kind"] == "conversation" && row["role"] == "assistant")
-        .cloned()
         .collect()
 }
 
@@ -1774,6 +1779,43 @@ async fn an_empty_message_without_deltas_adds_no_row() {
     assert!(
         assistant_rows(&fixture).await.is_empty(),
         "an empty message must not render a bubble"
+    );
+    fixture.state.shutdown();
+}
+
+// --- a lifecycle transition is state, not content ----------------------------
+
+/// A status change keeps its domain event but does not become a timeline row.
+///
+/// The transition is real: it drives the thread's status and the `status-changed`
+/// change a client reloads on. But it is state, not something the thread said, so
+/// projecting it rendered a full-prominence `idle -> working` block around every
+/// turn — a `systemKind` of `debug` that the client has no branch for.
+#[tokio::test]
+async fn a_status_change_adds_no_timeline_row() {
+    let fixture = fixture().await;
+    let project_id = fixture
+        .state
+        .registry
+        .thread(&fixture.thread_id())
+        .unwrap()
+        .project_id;
+    let before = timeline_rows(&fixture).await.len();
+    fixture
+        .state
+        .publish_domain_event(&loom_domain::DomainEvent::ThreadStatusChanged {
+            thread_id: fixture.thread_id(),
+            project_id,
+            from: loom_domain::ThreadStatus::Idle,
+            to: loom_domain::ThreadStatus::Working,
+            at_ms: loom_relay::now_ms(),
+        })
+        .unwrap();
+    let after = timeline_rows(&fixture).await;
+    assert_eq!(
+        after.len(),
+        before,
+        "a lifecycle transition is not content: {after:#?}"
     );
     fixture.state.shutdown();
 }

@@ -3360,7 +3360,6 @@ fn timeline_row_base(
 fn timeline_row_for_event(
     thread_id: &ThreadId,
     sequence: u64,
-    created_at_ms: u64,
     event: &DomainEvent,
 ) -> Option<Value> {
     let mut base = match event {
@@ -3370,13 +3369,6 @@ fn timeline_row_for_event(
             None,
             sequence,
             message.created_at_ms,
-        ),
-        DomainEvent::ThreadStatusChanged { .. } => timeline_row_base(
-            format!("status-{sequence}"),
-            thread_id,
-            None,
-            sequence,
-            created_at_ms,
         ),
         DomainEvent::ThreadRunEvent { run } => timeline_row_base(
             format!("{}-{sequence}", run.run_id),
@@ -3428,15 +3420,6 @@ fn timeline_row_for_event(
                 ]);
             }
         },
-        DomainEvent::ThreadStatusChanged { from, to, .. } => {
-            object.extend([
-                ("kind".into(), json!("system")),
-                ("title".into(), json!("Thread status changed")),
-                ("detail".into(), json!(format!("{from} -> {to}"))),
-                ("status".into(), Value::Null),
-                ("systemKind".into(), json!("debug")),
-            ]);
-        }
         DomainEvent::ThreadRunEvent { run } => {
             let event_value =
                 serde_json::to_value(&run.event).expect("ThreadEvent always serializes");
@@ -3559,7 +3542,7 @@ async fn thread_timeline(
                     return None;
                 }
             }
-            timeline_row_for_event(&thread_id, *sequence, *created_at_ms, event)
+            timeline_row_for_event(&thread_id, *sequence, event)
         })
         .collect::<Vec<_>>();
     all_rows.extend(assistant_rows);
@@ -4940,8 +4923,8 @@ async fn thread_turn_summary_details(
     let mut rows = entries
         .iter()
         .filter(|(_, sequence, _, _)| *sequence >= source_start && *sequence <= source_end)
-        .filter_map(|(_event_id, sequence, created_at_ms, event)| {
-            timeline_row_for_event(&thread_id, *sequence, *created_at_ms, event)
+        .filter_map(|(_event_id, sequence, _created_at_ms, event)| {
+            timeline_row_for_event(&thread_id, *sequence, event)
         })
         .collect::<Vec<_>>();
 
