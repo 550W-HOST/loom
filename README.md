@@ -206,8 +206,9 @@ The UI is served from the same origin: open `http://127.0.0.1:38886/`. It is the
 product app, built with `pnpm --filter @bb/app run build` and compiled into the
 `loom-server` binary — there is no UI directory to point at and no UI variable to
 set. `LOOM_UI_PROXY` is the one override, development only, and reverse-proxies
-to a dev server; a server started with `LOOM_UI_DIR` set exits with an error
-naming the removal. The client derives its server from its own origin, talks
+to a dev server; `LOOM_UI_DIR` is not read any more, so a line left over from the
+shape that served a bundle from disk is inert. The client derives its server from
+its own origin, talks
 typed `/api/v1` routes and the public `/ws` protocol, and recovers from a
 reconnect by invalidating and reloading — the contract is in
 [`docs/ui.md`](docs/ui.md).

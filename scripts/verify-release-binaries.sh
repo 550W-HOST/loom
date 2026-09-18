@@ -15,9 +15,8 @@
 #      falls back to it, and an unknown `/api` path is a JSON 404 rather than the
 #      shell
 #   5. a `LOOM_UI_DIR` left over from the commit range that served a bundle
-#      from disk is refused rather than ignored: the binary carries the client,
-#      so there is no bundle path to configure and a variable naming one is an
-#      operator error
+#      from disk is inert: the binary carries the client, so the variable has
+#      nothing to point at and the server still serves its embedded app
 #
 # The pipeline runs this on the x86_64 artifacts, and a maintainer can run it
 # against a downloaded release. The aarch64 artifacts cannot be executed on an
@@ -322,21 +321,28 @@ IFS=$'\t' read -r miss_code miss_type <<<"$api_miss"
   die "an unknown API path answered content-type $miss_type, expected application/json"
 note "GET /api/v1/definitely-not-a-route -> 404 application/json"
 
-# The other half of "the client is in the binary": a `LOOM_UI_DIR` left behind by
-# the release that shipped a bundle beside it must stop the server rather than be
-# ignored, or an operator upgrades and quietly keeps serving nothing but their
-# own stale copy. Started on another port, so a refusal is all this can observe.
-# `timeout` bounds a run that wrongly starts, and 124 is read as that failure
-# rather than as a refusal — the message check below is what decides.
-refusal_status=0
-timeout 10 env -u LOOM_UI_PROXY LOOM_BIND="127.0.0.1:$((port + 1))" \
+# A `LOOM_UI_DIR` left over from the commit range that served a bundle from disk
+# is inert rather than fatal: the server starts, keeps serving the embedded app,
+# and says once that it is ignoring the variable. Started on another port so it
+# cannot disturb the run above.
+env -u LOOM_UI_PROXY LOOM_BIND="127.0.0.1:$((port + 1))" \
   LOOM_DATA_DIR="$tmp/server-ui-dir-set" LOOM_NODE_ID="release-verification" \
-  LOOM_UI_DIR="$tmp/ui" "$server" >"$tmp/loom-ui-dir-set.log" 2>&1 || refusal_status=$?
-[[ "$refusal_status" -ne 0 && "$refusal_status" -ne 124 ]] ||
-  die "loom-server exited $refusal_status with LOOM_UI_DIR set; the app is compiled into the binary, so a bundle path has to be refused"
-grep -q 'LOOM_UI_DIR is no longer read' "$tmp/loom-ui-dir-set.log" ||
-  die "a server started with LOOM_UI_DIR set failed without explaining the removal: $(head -c 400 "$tmp/loom-ui-dir-set.log")"
-note "LOOM_UI_DIR set -> exit $refusal_status, refused by name"
+  LOOM_UI_DIR="$tmp/ui" "$server" >"$tmp/loom-ui-dir-set.log" 2>&1 &
+ui_dir_pid=$!
+trap 'kill "$ui_dir_pid" 2>/dev/null || true' EXIT
+for _ in $(seq 1 100); do
+  if curl -fsS "http://127.0.0.1:$((port + 1))/" >"$tmp/loom-ui-dir-set-index.html" 2>/dev/null; then
+    break
+  fi
+  sleep 0.1
+done
+grep -q '<script' "$tmp/loom-ui-dir-set-index.html" ||
+  die "a server started with LOOM_UI_DIR set did not serve its embedded app"
+grep -q 'ignoring LOOM_UI_DIR' "$tmp/loom-ui-dir-set.log" ||
+  die "a server started with LOOM_UI_DIR set did not say it was ignoring it: $(head -c 400 "$tmp/loom-ui-dir-set.log")"
+note "LOOM_UI_DIR set -> served the embedded app, ignoring the variable"
+kill "$ui_dir_pid" 2>/dev/null || true
+trap - EXIT
 
 # A JSON response is captured in a file before it is parsed, and the body is
 # printed when the request fails. `curl -f` alone throws the body away, and on

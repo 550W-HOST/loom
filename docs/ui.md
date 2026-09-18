@@ -40,10 +40,9 @@ The release pipeline and CI run it before the Rust jobs for the same reason
 
 The proxy is an override rather than the other half of a choice: nothing else
 replaces the embedded bundle, and the override is development only. `LOOM_UI_DIR`
-is **gone**: a server started with it set exits with an error naming the removal
-rather than ignoring it, because an environment file from the release that put a
-bundle beside the binary would otherwise look configured while the binary served
-its own client (`crates/server/src/main.rs`).
+is **gone** as an input: the server does not read it, says once at startup that
+it is ignoring it, and serves the client it was built with — a leftover line in
+an environment file is not worth refusing to boot over (`crates/server/src/main.rs`).
 
 Rules that apply to both:
 

@@ -40,9 +40,9 @@ compiled into it ([`ui.md`](ui.md)), so there is no directory to copy, no
 The 6.9 MB in the size column was measured before the client was embedded, so
 today's image is larger by the bundle it carries — but it is still one file, and
 one thing to pull, tag and roll back. `LOOM_UI_PROXY` (development only) is the
-only UI override the image's process accepts; `LOOM_UI_DIR` makes it exit with an
-error naming the removal, which is what an environment file from the
-bundle-on-disk release would otherwise leave behind.
+only UI override the image's process accepts; a `LOOM_UI_DIR` left in an
+environment file by the bundle-on-disk shape is ignored, with one line saying
+so.
 
 Neither image carries a Rust toolchain, or anything else that was needed to
 build it.

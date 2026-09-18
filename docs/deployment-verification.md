@@ -125,10 +125,9 @@ What this proves, item by item:
 > was the default UI. That client is still gone, and the product app has taken
 > its place *inside* the same binary: `crates/server/build.rs` embeds
 > `apps/app/dist` and `loom-server` serves it, so there is nothing to configure —
-> while `LOOM_UI_DIR`, the variable the bundle-on-disk release used, now makes
-> the server exit with an error naming the removal. So the recorded command in
-> this step would fail before it reached `GET /`: a rerun starts the server with
-> no UI variable at all and checks the served shell and its `/assets/*.js` and
+> `LOOM_UI_DIR`, the variable the bundle-on-disk shape used, is simply not read
+> any more. The recorded command in this step named it, so a rerun starts the
+> server without it and checks the served shell and its `/assets/*.js` and
 > `/assets/*.css` rather than `/app.js` and `/style.css`
 > ([`ui.md`](ui.md), [`releasing.md`](releasing.md)). Everything else this run
 > recorded — server-only startup, enrollment, dispatch, relay replay and the
