@@ -30,7 +30,11 @@ interface AreTimelinePaginationCursorsEqualArgs {
 
 interface MergeLatestTimelineRowsArgs {
   latestRows: readonly TimelineRow[];
-  latestWindowStartSequence: number;
+  /**
+   * The oldest sequence the latest page covers, or `null` when it carried no
+   * rows and so says nothing about where a window would start.
+   */
+  latestWindowStartSequence: number | null;
   loadedRows: TimelineRow[];
 }
 
@@ -239,6 +243,7 @@ export function mergeLatestTimelineRows({
   );
   const rowsToRetain = loadedRows.filter(
     (row) =>
+      latestWindowStartSequence === null ||
       row.sourceSeqEnd < latestWindowStartSequence ||
       latestRowsById.has(row.id),
   );
@@ -291,19 +296,43 @@ export function mergeLatestTimelineRows({
   };
 }
 
-function timelineWindowStartSequence(timeline: ThreadTimelineResponse): number {
-  return timeline.timelinePage.olderCursor?.anchorSeq ?? 0;
+/**
+ * The oldest sequence a response's rows cover, or `null` when it carries none.
+ *
+ * It is the page's own first row, not its pagination cursor. A page fetched
+ * with `afterSequence` is a *suffix* of the timeline and has no older cursor at
+ * all, so reading the cursor said the window began at sequence 0 — and the
+ * merge then dropped every loaded row the page did not repeat. A later page
+ * that carried nothing new (which is what a refetch after the last event
+ * returns) therefore emptied the thread: the loaded rows were all "before the
+ * window start" and the window itself was empty.
+ */
+function timelineWindowStartSequence(
+  timeline: ThreadTimelineResponse,
+): number | null {
+  return timeline.rows[0]?.sourceSeqStart ?? null;
 }
 
 function timelineWindowsAreContiguous(
   current: LoadedTimelineState,
   latestTimeline: ThreadTimelineResponse,
 ): boolean {
+  if (
+    current.latestWindowEndSequence === null ||
+    latestTimeline.maxSeq < current.latestWindowEndSequence
+  ) {
+    return false;
+  }
+  // Only a page that *has* an older cursor claims to be a window with a known
+  // start ("these are the newest rows above `anchorSeq`"): it touches what we
+  // hold only when that start reaches back to it. A page without one is the
+  // newest rows, and sequence numbers count events rather than rows — the
+  // sequences between the two may simply produce no rows — so it continues the
+  // timeline instead of opening a gap in it.
+  const windowStartSequence = latestTimeline.timelinePage.olderCursor?.anchorSeq;
   return (
-    current.latestWindowEndSequence !== null &&
-    latestTimeline.maxSeq >= current.latestWindowEndSequence &&
-    timelineWindowStartSequence(latestTimeline) <=
-      current.latestWindowEndSequence + 1
+    windowStartSequence === undefined ||
+    windowStartSequence <= current.latestWindowEndSequence + 1
   );
 }
 

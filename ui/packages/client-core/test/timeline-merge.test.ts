@@ -74,6 +74,7 @@ function cursor(id: string, sequence: number): TimelinePaginationCursor {
 function timelineResponse(
   rows: TimelineRow[],
   olderCursor: TimelinePaginationCursor | null,
+  maxSeq?: number,
 ): ThreadTimelineResponse {
   return {
     rows,
@@ -85,7 +86,7 @@ function timelineResponse(
     pendingTodos: null,
     goal: null,
     modelFallback: null,
-    maxSeq: Math.max(0, ...rows.map((row) => row.sourceSeqEnd)),
+    maxSeq: maxSeq ?? Math.max(0, ...rows.map((row) => row.sourceSeqEnd)),
     timelinePage: {
       kind: "latest",
       segmentLimit: 20,
@@ -187,5 +188,45 @@ describe("timeline page merging", () => {
 
     expect(merged.rows).toEqual([accepted]);
     expect(merged.rows[0]).toBe(accepted);
+  });
+
+  // A refetch asks with `afterSequence`, so the server answers with the rows
+  // *after* that sequence and no older cursor: a suffix, not the whole window.
+  // Reading the missing cursor as "the window starts at 0" dropped every loaded
+  // row the page did not repeat, which is how a resolved approval emptied the
+  // thread (W-534).
+  it("keeps loaded rows the suffix page does not repeat", () => {
+    const prompt = userRow("prompt", 1);
+    const status = commandRow("status", 2);
+    const current = loadedState([prompt, status], null, 5);
+    const latest = timelineResponse([userRow("answer", 8)], null, 8);
+
+    const merged = mergeLoadedTimelineWithLatest({
+      current,
+      latestTimeline: latest,
+      surfaceKey: "thread-1:default",
+    });
+
+    expect(merged.rows.map((row) => row.id)).toEqual([
+      "prompt",
+      "status",
+      "answer",
+    ]);
+  });
+
+  it("keeps the loaded rows when a refetch brings nothing new", () => {
+    const prompt = userRow("prompt", 1);
+    const answer = userRow("answer", 8);
+    const current = loadedState([prompt, answer], null, 11);
+    const latest = timelineResponse([], null, 11);
+
+    const merged = mergeLoadedTimelineWithLatest({
+      current,
+      latestTimeline: latest,
+      surfaceKey: "thread-1:default",
+    });
+
+    expect(merged.rows.map((row) => row.id)).toEqual(["prompt", "answer"]);
+    expect(merged.rows[0]).toBe(prompt);
   });
 });
