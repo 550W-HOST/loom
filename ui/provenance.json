@@ -16056,7 +16056,7 @@
         "name": "@bb/client-core",
         "upstreamPath": "packages/client-core",
         "disposition": "retain-source",
-        "gitTree": "172b9056f72d85c222a3e29570362fbd35e897b3",
+        "gitTree": "f24917c3e24014d1901c483b3a5146920400d789",
         "path": "ui/packages/client-core",
         "tree": {
           "files": 50,
