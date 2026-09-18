@@ -1452,6 +1452,88 @@ async fn project_reorder_moves_a_project_between_neighbours() {
     assert_status_and_error(&unknown, 404, "project_not_found");
 }
 
+/// The personal project is a scope with a reserved id, not a listed project.
+///
+/// The product app addresses the projectless scope by the literal
+/// `proj_personal`: it is what a projectless thread is filed under, and what
+/// the client puts in its `/threads/:id` route. Serving a minted id there meant
+/// that route never matched the project the server reported, which the client
+/// renders as "Not found" — and an id re-minted on a start without a snapshot
+/// also invalidated every project-scoped URL a client already held.
+#[tokio::test]
+async fn the_personal_scope_carries_its_reserved_id_and_is_not_a_listed_project() {
+    let fixture = fixture().await;
+    let personal = fixture.personal_project_id.clone();
+    assert_eq!(personal, "proj_personal");
+
+    // A client is handed the scope as `personalProject`...
+    let bootstrap = fixture.get("/api/v1/sidebar-bootstrap").await;
+    assert_eq!(bootstrap.status, 200, "{:?}", bootstrap.body);
+    assert_eq!(bootstrap.body["personalProject"]["id"], personal.as_str());
+    assert_eq!(bootstrap.body["personalProject"]["kind"], "personal");
+    // ...and it is not one of the rows a client can drag.
+    assert!(
+        bootstrap.body["projects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|project| project["id"].as_str() != Some(personal.as_str())),
+        "{}",
+        bootstrap.body
+    );
+
+    let listed = fixture.get("/api/v1/projects").await;
+    assert_eq!(listed.status, 200, "{:?}", listed.body);
+    assert!(
+        listed
+            .body
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|project| project["id"].as_str() != Some(personal.as_str())),
+        "{}",
+        listed.body
+    );
+
+    // The literal a client sends back resolves...
+    let project_path = format!("/api/v1/projects/{personal}");
+    let resolved = fixture.get(&project_path).await;
+    assert_eq!(resolved.status, 200, "{:?}", resolved.body);
+    assert_eq!(resolved.body["id"], personal.as_str());
+
+    // ...and a thread filed under it reports it, so the client's projectless
+    // route matches the thread instead of rendering "Not found".
+    let (thread, _) = fixture
+        .state
+        .registry
+        .create_thread(
+            Some(personal.parse().unwrap()),
+            Some("personal thread".into()),
+            None,
+            loom_relay::now_ms(),
+        )
+        .unwrap();
+    let thread_id = thread.id.to_string();
+    let thread_path = format!("/api/v1/threads/{thread_id}");
+    let detail = fixture.get(&thread_path).await;
+    assert_eq!(detail.status, 200, "{:?}", detail.body);
+    assert_eq!(detail.body["projectId"], personal.as_str());
+
+    // The scope still groups its own threads in the sidebar.
+    let bootstrap = fixture.get("/api/v1/sidebar-bootstrap").await;
+    assert!(
+        bootstrap.body["personalProject"]["threads"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["id"].as_str() == Some(thread_id.as_str())),
+        "{}",
+        bootstrap.body
+    );
+
+    fixture.state.shutdown();
+}
+
 #[tokio::test]
 async fn project_update_source_repoints_and_promotes() {
     let fixture = fixture().await;

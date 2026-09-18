@@ -7,31 +7,45 @@ workspaces its threads run in.
 ## The seeded personal project
 
 The server seeds **one** project when it first starts, with
-`kind: "personal"` and the name `Personal`. The decision, stated plainly:
+`kind: "personal"` and the name `Personal`. Its id is the **reserved**
+`proj_personal`: the one id in the system that is not a minted ULID. See
+[`Entity::SENTINEL`](../crates/domain/src/id.rs).
 
-> The personal project is seeded once and then treated as an ordinary project.
-> It is not a hidden fallback.
+The decision, stated plainly:
+
+> The personal project is a scope, not a list entry. Its id is fixed on the
+> wire because both sides have to agree on it, and it is not a hidden fallback.
 
 Concretely:
 
-- it is returned by `GET /api/v1/projects` like any other project;
-- it can be renamed, given sources, and archived;
+- it is **not** returned by `GET /api/v1/projects`, which lists the projects a
+  user created — it is handed to a client as `personalProject` by
+  `GET /api/v1/sidebar-bootstrap`, next to the project list and the sections;
+- it is addressed by the literal `proj_personal`. The product app puts that
+  literal in a projectless `/threads/:id` route and sends it as a thread's
+  `projectId`, so the server has to accept exactly that string and answer with
+  it. A minted id could not: the client's projectless routes never matched the
+  project the server reported, and an id re-minted on a start without a snapshot
+  invalidated every project-scoped URL a client already held;
+- it is still an ordinary project in every other respect: renameable,
+  sourceable, archivable, and `GET /api/v1/projects/proj_personal` resolves it;
 - **`kind` is provenance, not privilege.** Nothing in the command API behaves
   differently for it. A client renders it however it likes — the product app
-  simply lists it with the rest;
+  shows it as the pinned local scope, above the projects a user created;
 - a thread and an environment must **name** their project. The thread route
   takes the contract's `projectId` (absent is a `422` from the request
   validator), the environment route its own `project_id` (absent is a `400`);
-  neither lands silently in the personal project. That is what removes the "one
+  neither lands silently in the personal project. A projectless thread names the
+  personal scope explicitly, as `proj_personal`. That is what removes the "one
   implicit project" failure mode this change exists to fix.
 
 The seeded project's creation is deliberately **not** published as a
 `project_created` event. It is part of the registry's construction, and like
 the seeded project's id itself it travels in the domain snapshot rather than in
 the log. See [`domain-persistence.md`](domain-persistence.md). A client that
-wants every project including the seeded one uses `GET /api/v1/projects`;
-`global` only carries projects created while a client was listening (and the
-replay window, for as long as that stretches).
+wants the personal scope reads it from the sidebar bootstrap; `global` only
+carries projects created while a client was listening (and the replay window,
+for as long as that stretches).
 
 ## Sources
 

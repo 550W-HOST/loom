@@ -507,9 +507,15 @@ async fn the_host_and_thread_commands_drive_a_real_conversation() {
     );
 
     // A project is required for every thread. The seeded personal one is
-    // fetched, not assumed, so the test proves the list is usable.
-    let projects = http_json(&addr, "/api/v1/projects").await;
-    let project_id = projects[0]["id"].as_str().unwrap().to_string();
+    // fetched, not assumed, so the test drives the client's own path: the
+    // sidebar hands it over as `personalProject` under the reserved id
+    // `proj_personal`, which is what a projectless thread is filed under.
+    let bootstrap = http_json(&addr, "/api/v1/sidebar-bootstrap").await;
+    let project_id = bootstrap["personalProject"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(project_id, "proj_personal");
 
     // Bind the thread to an environment so its message dispatches a run
     // instead of failing for want of a workspace.

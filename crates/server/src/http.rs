@@ -840,14 +840,19 @@ fn configured_execution_options(state: &AppState) -> Value {
 async fn sidebar_bootstrap(State(state): State<AppState>) -> Json<Value> {
     // A deleted project is a tombstone: it still resolves by id for threads
     // and events, but it is not part of the list a client renders.
-    let projects = state
+    let all = state
         .registry
         .projects()
         .into_iter()
         .filter(|project| !project.is_deleted())
         .collect::<Vec<_>>();
+    // The personal project is a scope, not a list entry: the client renders it
+    // from `personalProject` and addresses it by the reserved `proj_personal`.
+    // Listing it under `projects` as well showed the same project twice, and
+    // the row under `projects` was one the client did not recognise as
+    // personal — a minted id it had never seen before.
     let personal_id = state.registry.personal_project_id();
-    let personal_project = projects
+    let personal_project = all
         .iter()
         .find(|project| project.id == personal_id)
         .map(|project| project_detail_value(&state, project))
@@ -864,8 +869,9 @@ async fn sidebar_bootstrap(State(state): State<AppState>) -> Json<Value> {
                 "defaultExecutionOptions": null
             })
         });
-    let projects = projects
+    let projects = all
         .iter()
+        .filter(|project| project.id != personal_id)
         .map(|project| project_detail_value(&state, project))
         .collect::<Vec<_>>();
     // Sections are durable entities now (`threadSections.*`), so the sidebar's
@@ -5566,12 +5572,17 @@ pub struct ProjectResponse {
 /// therefore subscribes to `global` once and follows the list from there.
 ///
 /// The contract returns a bare array of `projectSchema` (`$defs/d471`).
+///
+/// The personal project is not in it: it is a scope the client is handed
+/// separately (see [`sidebar_bootstrap`]), and bb's own list does not carry it.
 async fn list_projects(State(state): State<AppState>) -> Json<Vec<Value>> {
+    let personal_id = state.registry.personal_project_id();
     Json(
         state
             .registry
             .projects()
             .iter()
+            .filter(|project| project.id != personal_id)
             .map(project_value)
             .collect(),
     )
@@ -6950,7 +6961,9 @@ mod tests {
         assert_eq!(events[0]["type"], "project_created");
         assert_eq!(events[0]["project"]["id"], project_id);
 
-        // The seeded project and the new one are both listed, seeded first.
+        // The seeded personal project is *not* listed: it is a scope, which the
+        // client reads from `personalProject` and addresses by the reserved id
+        // rather than a minted one.
         let listed = body_json(get(&app, "/api/v1/projects").await).await;
         let ids: Vec<&str> = listed
             .as_array()
@@ -6958,9 +6971,11 @@ mod tests {
             .iter()
             .map(|project| project["id"].as_str().unwrap())
             .collect();
-        assert_eq!(ids.len(), 2);
-        assert_eq!(ids[0], state.registry.personal_project_id().to_string());
-        assert!(ids.contains(&project_id.as_str()));
+        assert_eq!(ids, vec![project_id.as_str()]);
+        assert_eq!(
+            state.registry.personal_project_id().to_string(),
+            "proj_personal"
+        );
 
         // A rename publishes to the project's own scope.
         let renamed = body_json(

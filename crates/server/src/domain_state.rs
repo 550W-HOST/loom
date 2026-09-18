@@ -167,8 +167,14 @@ fn normalize_queued_order_keys(messages: &mut HashMap<QueuedMessageId, QueuedMes
 /// step: an unranked workspace looks exactly as it did before `projects.reorder`
 /// existed.
 fn compare_projects(left: &Project, right: &Project) -> std::cmp::Ordering {
-    left.is_archived()
-        .cmp(&right.is_archived())
+    // The personal scope leads, whatever id it carries. It used to lead because
+    // it was seeded with the earliest ULID — an accident of minting order that
+    // stopped being true when its id became the reserved `proj_personal`, which
+    // sorts after every ULID.
+    let personal = |project: &Project| project.kind == ProjectKind::Personal;
+    personal(right)
+        .cmp(&personal(left))
+        .then_with(|| left.is_archived().cmp(&right.is_archived()))
         .then_with(|| match (&left.sort_key, &right.sort_key) {
             (Some(left_key), Some(right_key)) => left_key.cmp(right_key),
             (Some(_), None) => std::cmp::Ordering::Less,
@@ -265,10 +271,22 @@ struct RegistryInner {
 
 impl DomainRegistry {
     /// Creates the registry with the implicit personal project seeded.
+    ///
+    /// The personal project's id is the reserved `proj_personal`, not a minted
+    /// one: it is the scope the client puts in a projectless thread route, so
+    /// it has to be the same string on both sides and the same one on every
+    /// start. A minted id made it a different project to the client after each
+    /// restart.
     pub fn new(now_ms: u64) -> Self {
-        let (project, _) = Project::create("Personal", ProjectKind::Personal, now_ms)
-            .expect("a personal project always has a valid name");
-        let personal_project_id = project.id.clone();
+        let personal_project_id =
+            ProjectId::sentinel().expect("the personal project reserves an id");
+        let (project, _) = Project::create_with_id(
+            personal_project_id.clone(),
+            "Personal",
+            ProjectKind::Personal,
+            now_ms,
+        )
+        .expect("a personal project always has a valid name");
         let mut projects = HashMap::new();
         projects.insert(project.id.clone(), project);
         Self {
@@ -592,10 +610,23 @@ impl DomainRegistry {
         };
         let previous = neighbor(previous_project_id)?;
         let next = neighbor(next_project_id)?;
-        if previous.is_some_and(|left| next.is_some_and(|right| left.id >= right.id)) {
-            return Err(CommandError::Conflict(
-                "the requested neighbors are not ordered".into(),
-            ));
+        // The neighbours must name an ordered pair in the list as the client
+        // sees it. Comparing ids was a shortcut that held only while every id
+        // was a ULID minted in creation order: the reserved personal id sorts
+        // outside that, and a reorder moves a project away from the position
+        // its id implies. Read the positions instead.
+        if let (Some(previous), Some(next)) = (previous, next) {
+            let position = |project: &Project| {
+                ordered
+                    .iter()
+                    .position(|candidate| candidate.id == project.id)
+                    .expect("a neighbour is a member of the ordered list")
+            };
+            if position(previous) >= position(next) {
+                return Err(CommandError::Conflict(
+                    "the requested neighbors are not ordered".into(),
+                ));
+            }
         }
 
         // The order the client asked for, computed without touching anything:

@@ -915,14 +915,15 @@ async fn an_older_snapshot_without_automations_still_loads() {
             .unwrap()
             .is_empty()
     );
-    assert_eq!(
-        body_json(get(&app, "/api/v1/projects").await)
-            .await
-            .as_array()
-            .unwrap()
-            .len(),
-        1
-    );
+    // The listed projects are the ones a user creates, and this workspace has
+    // none. The personal scope is not among them — a client is handed it as
+    // `personalProject` — but it still resolves by id, which the automations
+    // request above proves.
+    assert!(body_json(get(&app, "/api/v1/projects").await)
+        .await
+        .as_array()
+        .unwrap()
+        .is_empty());
     restored.shutdown();
 }
 

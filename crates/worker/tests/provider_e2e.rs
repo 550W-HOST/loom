@@ -1715,10 +1715,17 @@ async fn script_automation(
 }
 
 /// The personal project's id, which every fixture automation belongs to.
+///
+/// Taken from the sidebar bootstrap rather than `/api/v1/projects`: the
+/// personal scope is handed to a client as `personalProject` and is not one of
+/// the projects that endpoint lists.
 async fn state_project(addr: &str) -> String {
-    let (status, projects) = http(addr, "GET", "/api/v1/projects", None).await;
-    assert_eq!(status, 200, "{projects}");
-    projects[0]["id"].as_str().unwrap().to_owned()
+    let (status, bootstrap) = http(addr, "GET", "/api/v1/sidebar-bootstrap", None).await;
+    assert_eq!(status, 200, "{bootstrap}");
+    bootstrap["personalProject"]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned()
 }
 
 /// Waits for an automation run to reach a terminal state, over HTTP.

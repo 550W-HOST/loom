@@ -10,6 +10,11 @@
 //! parse *and* on deserialize, so a frame carrying the wrong kind of id is
 //! rejected before it reaches domain code.
 //!
+//! One id is not minted at all: the personal project is `proj_personal`,
+//! because that literal is what the client addresses the projectless scope by.
+//! A kind may reserve such an id with [`Entity::SENTINEL`]; it is accepted on
+//! parse, never produced by [`Id::mint`], and there is exactly one.
+//!
 //! The 26-character body is ULID-shaped (48-bit millisecond timestamp + 80
 //! bits of process entropy), which means identifiers sort in creation order.
 //! That is the same shape the relay uses for its event ids, but it is a
@@ -34,10 +39,35 @@ pub trait Entity: Sized {
     const PREFIX: &'static str;
     /// Human-readable name, used in error messages.
     const NAME: &'static str;
+    /// One id this kind reserves, when the wire contract fixes one.
+    ///
+    /// Every id this crate mints is ULID-shaped, which is what makes ids sort
+    /// in creation order. That is the wrong property for a *scope* the client
+    /// addresses by a fixed name: the personal project is `proj_personal` on
+    /// the wire, not something the server invents, so a client that built a
+    /// route out of that literal must be able to send it back. A reserved id
+    /// is therefore accepted by [`Id::parse`] — and so by deserialization,
+    /// which validates through it — without being mintable.
+    ///
+    /// Only [`ProjectTag`] has one. Nothing else should: a reserved id is a
+    /// fixed point in the wire contract, not a convenience.
+    const SENTINEL: Option<&'static str> = None;
 }
+
+/// The id the personal project is fixed to on the wire.
+///
+/// The client addresses the projectless scope by this literal — it is the id
+/// it puts in a `/threads/:id` route and sends back when creating a thread
+/// outside any project — so the server has to answer with it too. It is not
+/// minted and not derived: it is the fixed point the two sides agree on, which
+/// is why it is the one entry in [`Entity::SENTINEL`].
+pub const PERSONAL_PROJECT_ID: &str = "proj_personal";
 
 macro_rules! entity_marker {
     ($marker:ident, $prefix:literal, $name:literal, $doc:literal) => {
+        entity_marker!($marker, $prefix, $name, $doc, None);
+    };
+    ($marker:ident, $prefix:literal, $name:literal, $doc:literal, $sentinel:expr) => {
         #[doc = $doc]
         #[derive(Debug)]
         pub enum $marker {}
@@ -45,6 +75,7 @@ macro_rules! entity_marker {
         impl Entity for $marker {
             const PREFIX: &'static str = $prefix;
             const NAME: &'static str = $name;
+            const SENTINEL: Option<&'static str> = $sentinel;
         }
     };
 }
@@ -53,7 +84,8 @@ entity_marker!(
     ProjectTag,
     "proj",
     "project",
-    "Marker type for project identifiers."
+    "Marker type for project identifiers.",
+    Some(PERSONAL_PROJECT_ID)
 );
 entity_marker!(
     ThreadTag,
@@ -188,11 +220,28 @@ impl<T: Entity> Id<T> {
         }
     }
 
-    /// Parses `<prefix>_<26-char ULID>`.
+    /// This kind's reserved id, when it has one. See [`Entity::SENTINEL`].
+    ///
+    /// `None` for every kind but the project, whose reserved id is the scope
+    /// the client calls personal.
+    pub fn sentinel() -> Option<Self> {
+        T::SENTINEL.map(|value| Self {
+            value: value.to_owned(),
+            _marker: PhantomData,
+        })
+    }
+
+    /// Parses `<prefix>_<26-char ULID>`, or the kind's reserved id.
     ///
     /// Rejects a well-formed ULID carrying the wrong prefix, which is the
     /// whole point of typed ids.
     pub fn parse(value: &str) -> Result<Self, DomainError> {
+        if T::SENTINEL == Some(value) {
+            return Ok(Self {
+                value: value.to_owned(),
+                _marker: PhantomData,
+            });
+        }
         let malformed = || DomainError::MalformedId {
             expected: T::NAME,
             value: value.to_owned(),
@@ -208,7 +257,10 @@ impl<T: Entity> Id<T> {
         })
     }
 
-    /// The 26-character body below the prefix.
+    /// The body below the prefix.
+    ///
+    /// The 26-character ULID for a minted id, or the reserved word for the one
+    /// kind that has a reserved id.
     pub fn body(&self) -> &str {
         // A parsed or minted id always has `PREFIX` followed by `_`.
         &self.value[T::PREFIX.len() + 1..]
@@ -502,6 +554,42 @@ mod tests {
 
         // A well-formed string for the wrong kind is rejected at deserialize.
         assert!(serde_json::from_str::<ThreadId>("\"host_01M27Y6Q0J8V4W2C7K5N3P1R9Z\"").is_err());
+    }
+
+    #[test]
+    fn the_reserved_project_id_parses_and_round_trips() {
+        // The one id that is not ULID-shaped. A client addresses the personal
+        // scope by this literal and sends it back as a thread's `projectId`, so
+        // the server has to accept it — and answer with it.
+        let personal = ProjectId::parse(PERSONAL_PROJECT_ID).unwrap();
+        assert_eq!(personal.as_str(), "proj_personal");
+        assert_eq!(personal.body(), "personal");
+        assert_eq!(ProjectId::sentinel(), Some(personal.clone()));
+
+        // Deserialization validates through `parse`, so a frame carrying it is
+        // accepted too.
+        let from_json: ProjectId =
+            serde_json::from_str(&format!("\"{PERSONAL_PROJECT_ID}\"")).unwrap();
+        assert_eq!(from_json, personal);
+
+        // It is reserved, not minted: minting still produces a ULID body, and
+        // no other kind reserves anything.
+        let minted = ProjectId::mint();
+        assert_ne!(minted, personal);
+        assert_eq!(minted.body().len(), BODY_LEN);
+        assert_eq!(ThreadId::sentinel(), None);
+        assert_eq!(HostId::sentinel(), None);
+    }
+
+    #[test]
+    fn a_reserved_id_belongs_to_one_kind_only() {
+        // The reserved id is a project id, so it is not a thread id; and the
+        // reserved word is not an id on its own, in another case, or with a
+        // stray character.
+        assert!(ThreadId::parse(PERSONAL_PROJECT_ID).is_err());
+        assert!(ProjectId::parse("personal").is_err());
+        assert!(ProjectId::parse("PROJ_PERSONAL").is_err());
+        assert!(ProjectId::parse("proj_personal ").is_err());
     }
 
     #[test]

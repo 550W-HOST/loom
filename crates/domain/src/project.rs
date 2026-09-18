@@ -11,11 +11,14 @@
 //!   when the code is a checkout, the git remote it came from
 //!   ([`ProjectSource::git_remote_url`]). Declaring a source never clones or
 //!   fetches: actually materialising a workspace is the environment's job.
-//! * **The personal project is ordinary after startup.** The server seeds
-//!   exactly one [`ProjectKind::Personal`] project when it first starts and
-//!   then treats it like any other project — it is listed, renamed and sourced
-//!   normally. It is **not** a hidden fallback: a thread must name the project
-//!   it belongs to. See `docs/projects.md`.
+//! * **The personal project is a scope with a reserved id.** The server seeds
+//!   exactly one [`ProjectKind::Personal`] project under the fixed
+//!   `proj_personal`, because that literal is what a client addresses the
+//!   projectless scope by: it appears in the client's `/threads/:id` routes and
+//!   in a thread's `projectId`. It is not one of the projects a project list
+//!   carries — a client is handed it as `personalProject` — but it is ordinary
+//!   in every other respect, and it is **not** a hidden fallback: a thread must
+//!   name the project it belongs to. See `docs/projects.md`.
 //! * **Archiving is refused while a run is in flight.** A project with a
 //!   thread in `working` or `waiting` cannot be archived. Idle, errored and
 //!   archived threads do not block it and are **not** cascaded: they keep
@@ -125,12 +128,38 @@ impl Project {
         Self::create_with_remote(name, kind, None, now_ms)
     }
 
+    /// Creates a project under an id the caller already holds.
+    ///
+    /// One caller: the server seeds the personal project under the id the
+    /// client addresses that scope by, which is a reserved id rather than a
+    /// minted one — see [`crate::id::PERSONAL_PROJECT_ID`].
+    pub fn create_with_id(
+        id: ProjectId,
+        name: impl Into<String>,
+        kind: ProjectKind,
+        now_ms: u64,
+    ) -> Result<(Self, DomainEvent), DomainError> {
+        Self::build(id, name, kind, None, now_ms)
+    }
+
     /// Creates a project, optionally backed by a git remote.
     ///
     /// One event, not two: a project created with a remote is announced by a
     /// single `project_created` carrying the remote, rather than a create
     /// followed by an update.
     pub fn create_with_remote(
+        name: impl Into<String>,
+        kind: ProjectKind,
+        git_remote_url: Option<String>,
+        now_ms: u64,
+    ) -> Result<(Self, DomainEvent), DomainError> {
+        Self::build(ProjectId::mint(), name, kind, git_remote_url, now_ms)
+    }
+
+    /// The one place a project is assembled, so a minted id and a reserved one
+    /// pass the same validation.
+    fn build(
+        id: ProjectId,
         name: impl Into<String>,
         kind: ProjectKind,
         git_remote_url: Option<String>,
@@ -144,7 +173,7 @@ impl Project {
             });
         }
         let project = Self {
-            id: ProjectId::mint(),
+            id,
             kind,
             name,
             git_remote_url: normalise_remote(git_remote_url),
