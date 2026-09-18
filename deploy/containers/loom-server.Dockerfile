@@ -9,13 +9,12 @@
 #
 # The build context is not the repository: it is the staged directory
 # `scripts/build-container-images.sh` writes (docs/containers.md), which holds
-# one binary per architecture named for the Docker architecture, the built
-# product app as `ui/`, plus `.keep`:
+# one binary per architecture named for the Docker architecture, plus `.keep`:
 #
 #   scripts/package-release.sh x86_64-unknown-linux-musl
 #   scripts/build-container-images.sh --platform linux/amd64
 #
-# so a hand-built image is these three lines over a context of a few megabytes,
+# so a hand-built image is those two commands over a context of a few megabytes,
 # and the binaries the image carries are the ones the release page publishes.
 FROM scratch
 
@@ -34,14 +33,6 @@ ARG TARGETARCH
 # would need emulation.
 COPY --chown=1000:1000 loom-server-${TARGETARCH} /usr/local/bin/loom-server
 COPY --chown=1000:1000 .keep /var/lib/loom/server/.keep
-
-# The UI bundle, at the path a `deploy/install.sh` install produces and
-# LOOM_UI_DIR below names. The server serves no client of its own, so this copy
-# is what makes the image usable at all: without it the process exits at startup
-# saying no UI source is configured. A directory COPY carries the bundle's
-# contents — `index.html` at the root of the target — and needs no `RUN`, so the
-# no-emulator property of this file is untouched.
-COPY --chown=1000:1000 ui /usr/local/share/loom/ui
 
 # The `loom` identity, as a number. Numeric rather than a name because a name
 # needs an /etc/passwd this image deliberately does not carry, and because
@@ -62,17 +53,15 @@ USER 1000:1000
 #                            is the default rather than an opt-in.
 #   LOOM_NODE_ID             stamps every envelope this node produces; two
 #                            server containers must not share it.
-#   LOOM_UI_DIR              the bundle copied above, at the same path
-#                            deploy/install.sh installs it to. The server has no
-#                            embedded client, so leaving this out is a server
-#                            that refuses to start.
+#
+# The product app needs no variable: the image carries the server built with the
+# client compiled into it, so `/` serves the app with nothing configured here.
 #
 # LOOM_REDIS_URL is deliberately unset: the in-process/disk backend needs no
 # second service (docs/redis-backend.md).
 ENV LOOM_BIND=0.0.0.0:38886 \
     LOOM_DATA_DIR=/var/lib/loom/server \
-    LOOM_NODE_ID=loom-server \
-    LOOM_UI_DIR=/usr/local/share/loom/ui
+    LOOM_NODE_ID=loom-server
 
 # Where the relative paths in an environment file would land, as in the systemd
 # unit. The two paths that matter are absolute by default either way.

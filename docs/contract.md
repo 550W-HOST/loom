@@ -10,8 +10,8 @@ machine-readable export under `contracts/bb/` and the decision it encodes.
 There are two protocol surfaces in loom, and they have different rules.
 
 **1. UI-facing surface — adopt bb's contract wholesale (subset, no additions).**
-The UI is the product app built from bb's client source and served from
-`LOOM_UI_DIR`, and bb's client code is the consumer. A UI cannot negotiate a
+The UI is the product app built from bb's client source and compiled into
+`loom-server`, and bb's client code is the consumer. A UI cannot negotiate a
 dialect, so anything the UI can see must be byte-compatible with bb. That
 covers:
 

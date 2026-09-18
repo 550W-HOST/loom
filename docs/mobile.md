@@ -22,18 +22,17 @@ Don't.
 
 The product app already carries what an installable PWA needs — a web app
 manifest, maskable icons, `display: standalone` and safe-area insets — so
-nothing mobile-specific needs to be built. Build it, and serve it from the
-server:
+nothing mobile-specific needs to be built. Build it into the server and start
+the server:
 
 ```bash
-pnpm --filter @bb/app run build          # → apps/app/dist
+pnpm --filter @bb/app run build          # → apps/app/dist, embedded by cargo build
+cargo run -p loom-server                 # or install the release binary
 ```
 
-```
-LOOM_UI_DIR=/usr/local/share/loom/ui     # where deploy/install.sh puts that bundle
-```
-
-and open the server URL on the phone:
+There is nothing to configure on the server side — the client is compiled into
+the binary, so no UI path or variable exists — and then open the server URL on
+the phone:
 
 - **iOS / iPadOS (Safari):** Share → *Add to Home Screen*. It launches
   full-screen, no browser chrome, with the notch/home-indicator insets handled.
@@ -50,8 +49,8 @@ Two prerequisites for installability, both satisfied by the Tailscale path:
   `window.location.origin`, so the installed app talks to the server with no
   per-device configuration.
 
-> There is no mobile-specific build and no second client: the app served from
-> `LOOM_UI_DIR` is the one you install. It declares a manifest with maskable
+> There is no mobile-specific build and no second client: the app the server
+> carries is the one you install. It declares a manifest with maskable
 > icons (`apps/app/dist/manifest.webmanifest`) and handles the notch and
 > home-indicator insets (`env(safe-area-inset-*)` in `AppLayout`). It registers
 > no service worker, so nothing about the shell is cached for offline use and

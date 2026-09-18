@@ -21,10 +21,10 @@ jobs:
     name: fmt + clippy + test
     runs-on: ubuntu-24.04
     timeout-minutes: 20
-    # The UI job owns the workspace's JavaScript gates (typecheck, tests,
-    # build, bundle budget, provenance). Waiting for it means a client that
-    # fails any of them stops the pipeline before the Rust jobs spend twenty
-    # minutes on a change that cannot ship.
+    # The Rust crates embed the built app, so this job cannot compile until
+    # the `ui` job has produced the bundle — and a client that fails its own
+    # gates stops the pipeline there rather than twenty minutes into a Rust
+    # build that could not ship.
     needs: ui
     steps:
       - name: Checkout
@@ -39,6 +39,14 @@ jobs:
           rustup show active-toolchain
           rustc --version
           cargo --version
+
+      # The app is compiled into these binaries: without the bundle the build
+      # fails rather than shipping a server that cannot serve a client.
+      - name: Download the app bundle
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: ui-dist
+          path: apps/app/dist
 
       - name: Cache cargo registry and target
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -107,6 +115,14 @@ jobs:
       - name: Install the MSRV toolchain
         run: rustup toolchain install "${{ steps.msrv.outputs.version }}" --profile minimal
 
+      # The app is compiled into these binaries: without the bundle the build
+      # fails rather than shipping a server that cannot serve a client.
+      - name: Download the app bundle
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: ui-dist
+          path: apps/app/dist
+
       - name: Cache cargo registry and target
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
@@ -164,11 +180,12 @@ jobs:
 
   # The client is a pnpm workspace of the product app and the pinned bb
   # packages it builds against (`apps/app` + `ui/packages/*`), whose tests and
-  # type checks nothing else runs. The app is also the only UI the server can
-  # serve (there is no buildless fallback), so this job builds the bundle the
-  # release ships and checks it against the bundle budget: a client that drifts
-  # from its source, or grows past its budget, otherwise ships a server that is
-  # wrong only in a browser.
+  # type checks nothing else runs. The app is also **compiled into
+  # `loom-server`** (`crates/server/build.rs` walks `apps/app/dist`), so this
+  # job produces a compile-time input for every Rust job below: it builds the
+  # bundle, checks it against the bundle budget, and uploads it. A client that
+  # drifts from its source, or grows past its budget, otherwise ships a server
+  # that is wrong only in a browser.
   ui:
     name: UI typecheck, tests, bundle and provenance
     runs-on: ubuntu-24.04
@@ -213,9 +230,21 @@ jobs:
 
       # The build above writes bundle-stats.json, which this reads. The budget
       # is what keeps the client loadable on a slow link: a route that grows
-      # past its allowance fails here rather than in a user's browser.
+      # past its allowance fails here rather than in a user's browser. It also
+      # fails when the build did not precompress, because an unmeasured bundle
+      # could hide growth behind the compressed budget.
       - name: Bundle budget
         run: pnpm --filter @bb/app run check:bundle
+
+      # The Rust jobs compile these bytes into the server, so they need the
+      # bundle in their own workspaces; passing it as an artifact keeps one
+      # build authoritative instead of each job rebuilding the app.
+      - name: Upload the app bundle
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ui-dist
+          path: apps/app/dist/
+          if-no-files-found: error
 
       # Fetch the exact source baseline as a separate checkout. The provenance
       # checker reads this checkout's HEAD and hashes apps/app plus every
@@ -272,6 +301,14 @@ jobs:
         run: |
           rustup toolchain install
           rustup show active-toolchain
+
+      # The app is compiled into these binaries: without the bundle the build
+      # fails rather than shipping a server that cannot serve a client.
+      - name: Download the app bundle
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: ui-dist
+          path: apps/app/dist
 
       - name: Cache cargo registry and target
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -334,6 +371,14 @@ jobs:
         run: |
           rustup toolchain install
           rustup show active-toolchain
+
+      # The app is compiled into these binaries: without the bundle the build
+      # fails rather than shipping a server that cannot serve a client.
+      - name: Download the app bundle
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: ui-dist
+          path: apps/app/dist
 
       - name: Cache cargo registry and target
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2

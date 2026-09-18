@@ -20,12 +20,10 @@ Group=loom
 EnvironmentFile=/etc/loom/loom-server.env
 ExecStart=/usr/local/bin/loom-server
 
-# The relay log and the UI bundle are the only things the server needs. The
-# bundle is the product app installed at /usr/local/share/loom/ui and named by
-# LOOM_UI_DIR in the environment file; ProtectSystem=strict below mounts the
-# hierarchy read-only rather than hiding it, so that content stays readable and
-# nothing in this unit has to exempt it. WorkingDirectory keeps any relative
-# path in the environment file anchored.
+# The relay log is the only thing the server needs from the filesystem: the
+# binary carries the product app compiled into it, so there is no bundle path in
+# this unit and nothing in the sandbox below has to exempt one.
+# WorkingDirectory keeps any relative path in the environment file anchored.
 WorkingDirectory=/var/lib/loom
 
 Restart=on-failure

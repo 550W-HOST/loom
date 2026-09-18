@@ -7751,35 +7751,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_root_path_serves_the_configured_ui_bundle() {
-        let dir = tempfile::TempDir::new().unwrap();
-        std::fs::write(dir.path().join("index.html"), "<title>loom</title>").unwrap();
-        let state = AppState::build(AppConfig {
-            ui_dir: Some(dir.path().to_path_buf()),
-            ..AppConfig::default()
-        })
-        .unwrap();
-        let app = router(state);
+    async fn the_router_fallback_serves_the_embedded_app() {
+        // The app is compiled into the binary, so every server has a client on
+        // the same origin as its API — there is nothing to configure and no
+        // second artifact to install.
+        let app = router(test_state());
 
         let response = get(&app, "/").await;
         assert_eq!(response.status(), StatusCode::OK);
         let body = response.into_body().collect().await.unwrap().to_bytes();
-        assert!(String::from_utf8_lossy(&body).contains("<title>loom</title>"));
+        assert!(String::from_utf8_lossy(&body).contains("/assets/"));
 
-        // A client route is the same bundle; an API typo is not the shell.
+        // A client route is the same document; an API typo is not.
         let client_route = get(&app, "/threads/thr_1").await;
         assert_eq!(client_route.status(), StatusCode::OK);
         let api = get(&app, "/api/v1/typo").await;
         assert_eq!(api.status(), StatusCode::NOT_FOUND);
-    }
-
-    #[tokio::test]
-    async fn an_api_only_server_serves_no_client() {
-        // The library default has no UI: no bundle, and no built-in client to
-        // fall back to (the binary refuses to start without one).
-        let app = router(test_state());
-        let response = get(&app, "/").await;
-        assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 
     /// A state whose artifact directory holds one real file.

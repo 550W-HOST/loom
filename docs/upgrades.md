@@ -1,23 +1,24 @@
 # Upgrading
 
-loom ships three coordinated artifacts. The server and daemon negotiate one
-internal protocol number; the UI bundle uses the separately exported bb public
-schema and WebSocket subprotocol:
+loom ships two coordinated binaries. The server and daemon negotiate one
+internal protocol number; the client the server carries uses the separately
+exported bb public schema and WebSocket subprotocol:
 
 | Artifact | What it is | Where it runs |
 | --- | --- | --- |
-| **server** | `loom-server` binary | one machine |
+| **server** | `loom-server` binary, with the product app from `apps/app` compiled into it | one machine |
 | **daemon** | `loom-daemon` binary | every execution machine |
-| **package** | the built UI bundle — the product app from `apps/app` | the server's `LOOM_UI_DIR` (`/usr/local/share/loom/ui`), served to every client |
 
-The package is a directory on the server's disk, not something compiled into
-either binary: the release archive carries it as `ui/`
-([`releasing.md`](releasing.md)), the server image copies it to
-`/usr/local/share/loom/ui`, and `deploy/install.sh` puts it at
-`<prefix>/share/loom/ui`. A server with no bundle — and no development-only
-`LOOM_UI_PROXY` — refuses to start rather than serving nothing
-([`ui.md`](ui.md)), which is why upgrading the server means upgrading its bundle
-in the same step.
+The client is part of the server binary, not a directory beside it
+([`ui.md`](ui.md)): installing or upgrading the server installs or upgrades its
+UI, there is no bundle to place, and no server can serve a client other than the
+one it was built with. An environment file written while main served a
+bundle from disk still names `LOOM_UI_DIR` — never a release, since no release
+carried that shape — and the server now exits at startup with an error naming
+the removal rather than ignoring it: that line is the one thing such an
+environment has to drop. `LOOM_UI_PROXY` — development only, a frontend
+dev server to reverse-proxy to — is the single override that survives, and no
+deployment uses it.
 
 This page defines what "agree" means, how the daemon follows a server upgrade on
 its own, and how to roll back. The guiding lesson is bb #3143: when a self-update
@@ -69,9 +70,9 @@ as the version, so two binaries from different releases are told apart without
 starting either of them.
 
 > **Rule:** server and daemon must speak the same internal `protocol_version`,
-> and the UI bundle must match the server's exported public schema. For a
-> protocol bump, deploy the server first: old daemons receive the migration
-> mismatch and pull the matching binary before they can enroll.
+> and the client inside the server must match the server's exported public
+> schema. For a protocol bump, deploy the server first: old daemons receive the
+> migration mismatch and pull the matching binary before they can enroll.
 
 A mismatch is not a degraded mode. The daemon refuses to enroll, and — with
 self-update enabled, which is the default — installs the server's own daemon and
@@ -405,7 +406,13 @@ Rules:
   binary for a protocol older than its own. Rolling a daemon back is
   `install.sh` (or copying the previous file) plus a restart.
 - The environment file and the data directory are unchanged across an ordinary
-  upgrade, so rollback does not touch them. The two update state files
+  upgrade, so rollback does not touch them. One commit range changed how
+  the UI is served rather than how the protocol works: the server that serves a
+  bundle from disk needs `LOOM_UI_DIR` plus that directory, and the server that
+  carries the client in its binary refuses to start while the variable is set,
+  so rolling across that boundary edits the environment file in one direction or
+  the other. (The disk-bundle shape existed only between two commits on main; no
+  release shipped it.) The two update state files
   (`host-daemon-update-attempt.json`, `host-artifact.sha256`) are safe to delete:
   the next attempt is then unconditional and unthrottled.
 - The relay log needs no migration within a `protocol_version`. It is an

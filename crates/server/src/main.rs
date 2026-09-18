@@ -45,24 +45,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Ok(raw) if !raw.trim().is_empty() => Some(raw.parse::<HostId>()?),
         _ => None,
     };
-    // The UI is served from the same origin as the API, and it is always the
-    // product app: LOOM_UI_DIR points at a built bundle (production) and
-    // LOOM_UI_PROXY at a frontend dev server (development). A server with
-    // neither cannot serve a client at all, so it refuses to start rather than
-    // fall back to something else.
-    let ui_dir = std::env::var_os("LOOM_UI_DIR").map(std::path::PathBuf::from);
+    // The UI is the product app compiled into this binary, so a server serves
+    // a client with no configuration at all. LOOM_UI_PROXY is the one override,
+    // for developing the app against a real server; a LOOM_UI_DIR left over
+    // from the release that shipped a bundle beside the binary is refused
+    // rather than ignored, because the bundle in the binary is what will be
+    // served.
+    if std::env::var_os("LOOM_UI_DIR").is_some() {
+        return Err(
+            "LOOM_UI_DIR is no longer read: the product app is embedded in this binary, so \
+             there is no bundle path to configure (remove it from the environment or the \
+             unit's EnvironmentFile). LOOM_UI_PROXY still selects a dev server for frontend \
+             work."
+                .into(),
+        );
+    }
     let ui_proxy = match std::env::var("LOOM_UI_PROXY") {
         Ok(url) if !url.trim().is_empty() => Some(url),
         _ => None,
     };
-    if ui_dir.is_none() && ui_proxy.is_none() {
-        return Err(
-            "no UI source is configured: set LOOM_UI_DIR to a built product bundle \
-             (build it with `pnpm --filter @bb/app run build`; deploy/install.sh installs it \
-             under <prefix>/share/loom/ui), or LOOM_UI_PROXY to a frontend dev server"
-                .into(),
-        );
-    }
     // Where the daemon binaries this server hosts live. Unset (the default)
     // falls back to the directory holding this executable, which is exactly
     // where `deploy/install.sh` puts the matching `loom-daemon`, so a default
@@ -74,7 +75,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         backend_path,
         backend_redis,
         local_host_id: local_host_id.clone(),
-        ui_dir,
         ui_proxy,
         artifact_dir,
         ..AppConfig::default()

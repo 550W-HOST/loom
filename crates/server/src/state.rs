@@ -98,14 +98,11 @@ pub struct AppConfig {
     pub snapshot_interval: Duration,
     /// The provider the control plane asks execution machines to run.
     pub provider_spec: ProviderSpec,
-    /// The built UI bundle to serve.
+    /// A frontend dev server to reverse-proxy unmatched requests to.
     ///
-    /// The server binary requires one of this or [`AppConfig::ui_proxy`]; a
-    /// library embedding the server may leave both unset to run API-only, which
-    /// is what [`crate::ui::Ui::disabled`] means.
-    pub ui_dir: Option<PathBuf>,
-    /// A frontend dev server to reverse-proxy unmatched requests to. Mutually
-    /// exclusive with [`AppConfig::ui_dir`].
+    /// Development only: the product app is embedded in the binary, and this is
+    /// the one override that lets a dev server serve the client instead while
+    /// `/api`, `/ws` and `/internal/ws` stay here.
     pub ui_proxy: Option<String>,
     /// Where daemon binaries are hosted for self-update.
     ///
@@ -133,7 +130,6 @@ impl Default for AppConfig {
             schedule_interval: Duration::from_secs(10),
             snapshot_interval: Duration::from_secs(30),
             provider_spec: ProviderSpec::pi(),
-            ui_dir: None,
             ui_proxy: None,
             artifact_dir: None,
         }
@@ -255,7 +251,7 @@ impl AppState {
         config: AppConfig,
         backend: loom_relay::SharedBackend,
     ) -> Result<Self, BuildStateError> {
-        let ui = ui_source(config.ui_dir.clone(), config.ui_proxy.clone())
+        let ui = Ui::from_config(config.ui_proxy.clone())
             .map_err(|message| BuildStateError { message })?;
         let artifacts = Arc::new(Artifacts::from_config(config.artifact_dir.clone()));
         let relay = Relay::new(backend, config.retention, config.node_id.clone())?;
@@ -889,18 +885,6 @@ pub fn relay_scope(scope: &DomainScope) -> loom_relay::Scope {
         DomainScope::Host(id) => loom_relay::Scope::Host(id.to_string()),
         DomainScope::User(id) => loom_relay::Scope::User(id.to_string()),
     }
-}
-
-/// The UI source for one build.
-///
-/// No configuration means no UI at all — never a built-in one. The binary
-/// refuses to start in that state (`main.rs` names both variables); a library
-/// or test that builds `AppState` directly is asking for the API alone.
-fn ui_source(dir: Option<PathBuf>, proxy: Option<String>) -> Result<Ui, String> {
-    if dir.is_none() && proxy.is_none() {
-        return Ok(Ui::disabled());
-    }
-    Ui::from_config(dir, proxy)
 }
 
 impl std::fmt::Debug for AppState {

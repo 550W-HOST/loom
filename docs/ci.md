@@ -18,7 +18,11 @@ Both triggers have been observed green: the `push` run
 [34666503929](https://github.com/550W-HOST/loom/actions/runs/34666503929), each
 with all five jobs succeeding. The durations below are those runs; the workflow
 has gained the `api-coverage` job and the client change since, and the places
-where a measurement no longer describes today's job say so.
+where a measurement no longer describes today's job say so. They also predate the
+client being compiled into the server: the `ui` job now uploads `apps/app/dist`
+as the `ui-dist` artifact and every Rust job downloads and embeds it, because
+`cargo build` does not compile without that bundle — the wall-clock numbers are a
+record of the runs that produced them, not of today's job set.
 
 ## What runs
 
@@ -28,7 +32,7 @@ where a measurement no longer describes today's job say so.
 | `api-coverage` | `API coverage document is current` | `node scripts/check-api-coverage.mjs` re-reads the contract and the source routes and refuses a stale row, or an implemented JSON-body route with no `validate_request*` assertion |
 | `msrv` | `MSRV` | the workspace still compiles on the `rust-version` floor in the manifests |
 | `contract` | `bb contract is reproducible` | re-exporting bb's contract yields the committed `contracts/bb` byte for byte |
-| `ui` | `UI typecheck, tests, bundle and provenance` | `pnpm install --frozen-lockfile`, `pnpm run typecheck`, `pnpm run test`, `pnpm --filter @bb/app run build` builds the bundle the release ships, `pnpm run check:bundle` holds that build to the committed budget, `pnpm provenance:test` covers patch-ledger negative cases and `BB_SRC=... pnpm run provenance:check` verifies recomputed source/package/contract hashes and the import closure, and `BB_SRC=... pnpm run port-plan:test`/`port-plan:check` verifies the route-level port plan |
+| `ui` | `UI typecheck, tests, bundle and provenance` | `pnpm install --frozen-lockfile`, `pnpm run typecheck`, `pnpm run test`, `pnpm --filter @bb/app run build` builds the bundle every Rust job below compiles into the server and uploads it as the `ui-dist` artifact, `pnpm run check:bundle` holds that build to the committed budget, `pnpm provenance:test` covers patch-ledger negative cases and `BB_SRC=... pnpm run provenance:check` verifies recomputed source/package/contract hashes and the import closure, and `BB_SRC=... pnpm run port-plan:test`/`port-plan:check` verifies the route-level port plan |
 | `pi` | `real pi provider (allowed to fail)` | the `#[ignore]`d provider tests against the real `pi` CLI — `provider_e2e` drives the streamed turn, `real_pi` adds the first-turn-plus-cross-run-resume property — skipped unless the runner has a configured `pi` |
 | `self-update` | `daemon self-update end to end` | the `#[ignore]`d self-update tests: a real daemon process, refused by a server that speaks a newer protocol, installing that server's binary over itself, and the reinstalled binary running a real turn |
 
@@ -265,15 +269,16 @@ The Rust workspace is not the only thing in this repository that can break
 silently. The client is a pnpm workspace of the product app and the pinned bb
 packages it builds against — `apps/app` plus `ui/packages/*`, listed in
 [`ui-package-sync.md`](ui-package-sync.md) — carrying a strict `tsc --noEmit`, a
-vitest suite, and the only build of the bundle the release ships. None of it ran
-on a push or a pull request before this job: `thread-view` is a 16k-line
-projection layer, and the only way to know a change to it was sound was to run
-pnpm by hand.
+vitest suite, and the only build of the bundle the Rust jobs compile into the
+server. None of it ran on a push or a pull request before this job:
+`thread-view` is a 16k-line projection layer, and the only way to know a change
+to it was sound was to run pnpm by hand.
 
-The app is also the only UI there is. There is no buildless bundle in the binary
-and no compiled-in fallback ([`ui.md`](ui.md)), so a client that does not build
-is not a degraded server — it is a server with no UI at all. That is what makes
-this job required rather than advisory.
+The app is also the compile-time input of every Rust job. `crates/server/build.rs`
+walks `apps/app/dist` and embeds it in the server binary, so a client that does
+not build is not a degraded server — it is a server that does not build at all.
+That is what makes this job required rather than advisory, and why it ends by
+uploading the bundle as `ui-dist` for the jobs below to download.
 
 The job is the repository's own entry points, in the order a developer runs
 them:
@@ -282,16 +287,17 @@ them:
 pnpm install --frozen-lockfile
 pnpm run typecheck                  # every ui/packages/* and apps/app
 pnpm run test                       # the same fan-out
-pnpm --filter @bb/app run build     # → apps/app/dist
+pnpm --filter @bb/app run build     # → apps/app/dist, the input to cargo build
 pnpm run check:bundle               # the budget, against that build
 ```
 
 `typecheck` and `test` are the root scripts rather than an explicit list of
 packages, so a project added to the workspace is checked as soon as it joins.
-The build is the app's own, because the app's bundle is the artifact every
-downstream consumer needs: the release archive stages it as `ui/`
-([`releasing.md`](releasing.md)) and the server image carries it at
-`/usr/local/share/loom/ui` ([`containers.md`](containers.md)).
+The build is the app's own, and it is the first step of the pipeline: `cargo
+build` embeds `apps/app/dist` ([`ui.md`](ui.md)), so the artifact this job
+uploads is what `checks`, `msrv`, `pi` and `self-update` download before they
+compile. The release workflow does the same with its own `ui` job
+([`releasing.md`](releasing.md)).
 
 ### The bundle budget
 
@@ -452,7 +458,7 @@ Protect `main` and require these five checks:
 | `fmt + clippy + test` | format, lint and the full test suite |
 | `MSRV` | the declared floor keeps compiling |
 | `bb contract is reproducible` | the committed contract is what the exporter produces |
-| `UI typecheck, tests, bundle and provenance` | the client type-checks and passes its tests, the product app builds and holds its bundle budget, and the source/package/contract provenance and the port plan match their manifests |
+| `UI typecheck, tests, bundle and provenance` | the client type-checks and passes its tests, the product app builds the bundle every Rust job embeds and holds it to its bundle budget, and the source/package/contract provenance and the port plan match their manifests |
 | `daemon self-update end to end` | a real daemon follows a newer-protocol server: fetch, verify, install over itself, restart, run a turn |
 
 The four jobs that declare `needs: ui` — `checks`, `msrv`, `pi` and
@@ -487,6 +493,11 @@ change set; they are repository settings a maintainer applies.
 
 ## Reproducing CI locally
 
+Every cargo command below needs the app's bundle in the tree, because the server
+embeds it: CI downloads the `ui-dist` artifact first, and locally the equivalent
+is `pnpm --filter @bb/app run build` (the `ui` job's recipe further down) before
+the first cargo command.
+
 The `checks` job is three commands:
 
 ```bash
@@ -518,13 +529,17 @@ from `packageManager`), then runs the app's build and every metadata check:
 pnpm install --frozen-lockfile
 pnpm run typecheck
 pnpm run test
-pnpm --filter @bb/app run build
+pnpm --filter @bb/app run build     # the bundle the Rust jobs compile in
 pnpm run check:bundle
 BB_SRC=/tmp/bb pnpm run provenance:test && BB_SRC=/tmp/bb pnpm run provenance:check
 BB_SRC=/tmp/bb pnpm run port-plan:test  && BB_SRC=/tmp/bb pnpm run port-plan:check
 git diff --exit-code -- ui/ apps/app/
 test -z "$(git status --porcelain -- ui/ apps/app/)"
 ```
+
+Where CI uploads `apps/app/dist` as the `ui-dist` artifact, a local run just
+leaves it in place — the four jobs that need it download it into the same path
+before they call cargo.
 
 `/tmp/bb` is the pinned checkout the `contract` job's recipe above produces —
 provenance and the port plan read their commit from `ui/provenance.json`, which

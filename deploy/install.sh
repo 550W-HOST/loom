@@ -22,13 +22,9 @@
 # So an execution machine with no Rust toolchain is one command away from a
 # release artifact, and a machine with a checkout keeps building locally.
 #
-# The server serves the product app from disk and has no client of its own, so
-# `server` and `all` also install the built bundle — `apps/app/dist` in a
-# checkout, the archive's `ui/` for a release, or `--ui-dir <path>` — at
-# <prefix>/share/loom/ui, and point LOOM_UI_DIR in the environment file at it. A
-# missing bundle, or an environment file that names none, fails the install: a
-# server that cannot serve a UI is not a successful install. The script still
-# never builds the bundle itself.
+# An install is those two executables and the units, and nothing else: the
+# server carries the product app compiled into it (`crates/server/build.rs`), so
+# there is no bundle to place beside the binary or to point a variable at.
 #
 # Environment overrides: LOOM_INSTALL_PREFIX (/usr/local), LOOM_SYSTEMD_DIR
 # (/etc/systemd/system), LOOM_ETC_DIR (/etc/loom), LOOM_STATE_DIR (/var/lib/loom),
@@ -44,7 +40,6 @@ ETC_DIR="${LOOM_ETC_DIR:-/etc/loom}"
 STATE_DIR="${LOOM_STATE_DIR:-/var/lib/loom}"
 SERVICE_USER="${LOOM_SERVICE_USER:-loom}"
 BIN_SOURCE="${LOOM_BIN_SOURCE:-target/release}"
-UI_DIR=""                                    # --ui-dir <path>
 RELEASE=""                                   # --release <version|latest>
 FROM_FLAG=""                                 # --from was given explicitly
 RELEASE_REPO="${LOOM_RELEASE_REPO:-550W-HOST/loom}"
@@ -65,9 +60,8 @@ Usage: install.sh [options] <command> [arguments]
 Commands:
   server
       Install and start the control plane. The binaries come from a local
-      build (`cargo build --release`) or from `--release <version>`, the UI
-      bundle from `apps/app/dist` (or `--ui-dir`), and the server is left on
-      loopback unless LOOM_BIND is edited.
+      build (`cargo build --release`) or from `--release <version>`, and the
+      server is left on loopback unless LOOM_BIND is edited.
 
   daemon <server-key> <server-url> [<host-name>]
       Install and start one execution-daemon instance joined to <server-url>.
@@ -91,15 +85,8 @@ Options:
       Copy the binaries from <dir> instead of target/release (the same thing as
       setting LOOM_BIN_SOURCE).
 
-  --ui-dir <dir>
-      Install the UI bundle from <dir> instead of `apps/app/dist` (a checkout)
-      or `ui/` (an extracted release archive). <dir> is what
-      `pnpm --filter @bb/app run build` writes; it is copied to
-      <prefix>/share/loom/ui, which LOOM_UI_DIR in the environment file points
-      at.
-
 Options (environment variables):
-  LOOM_INSTALL_PREFIX  install root  default /usr/local (bin/, share/loom/ui)
+  LOOM_INSTALL_PREFIX  binaries      default /usr/local
   LOOM_BIN_SOURCE      build output  default target/release
   LOOM_RELEASE_REPO    release repo  default 550W-HOST/loom
   GITHUB_TOKEN         private repo  token used to read a private release
@@ -115,9 +102,7 @@ Options (environment variables):
                        production supervisor)
 
 The script must run as root. It never overwrites an existing environment file:
-re-running keeps your edits and only refreshes binaries and units — but an
-existing file that does not set LOOM_UI_DIR fails the install, because a server
-with no bundle to serve refuses to start.
+re-running keeps your edits and only refreshes binaries and units.
 EOF
 }
 
@@ -356,78 +341,8 @@ install_unit() {
     systemctl_do daemon-reload
 }
 
-# --- UI bundle --------------------------------------------------------------
-#
-# The server serves the product app from disk and has no client compiled into
-# it, so the bundle is as much a prerequisite as the binary is. This script
-# still builds nothing: a bundle that has not been built fails the install with
-# the command that builds it.
-
-ui_install_dir() { printf '%s/share/loom/ui' "$INSTALL_PREFIX"; }
-
-# Where the bundle to install comes from: --ui-dir, else the checkout's build
-# output, else the `ui/` a release archive carries beside `deploy/`. The archive
-# is the fallback rather than a peer, and only when there is no checkout at all,
-# so a `ui/` left lying in a working tree can never be mistaken for the app.
-ui_source_dir() {
-    local root
-    if [ -n "$UI_DIR" ]; then
-        printf '%s' "$UI_DIR"
-        return
-    fi
-    root="$(cd -- "$SCRIPT_DIR/.." && pwd)"
-    if [ -d "$root/apps/app" ]; then
-        printf '%s/apps/app/dist' "$root"
-    else
-        printf '%s/ui' "$root"
-    fi
-}
-
-install_ui_bundle() { # <bundle directory>
-    local source="$1" destination
-    destination="$(ui_install_dir)"
-    [ -f "$source/index.html" ] ||
-        die "no UI bundle at $source; build one with 'pnpm --filter @bb/app run build', or point --ui-dir at a built bundle"
-    case "$destination" in
-        /*/share/loom/ui) ;;
-        *) die "refusing to install a UI bundle to '$destination'" ;;
-    esac
-    install -d -m 0755 "$(dirname -- "$destination")"
-    # Replaced rather than merged: the bundle is a set of content-hashed files,
-    # and keeping the previous release's set would grow the directory on every
-    # upgrade for nothing.
-    rm -rf "$destination"
-    cp -R "$source" "$destination"
-    # Readable whatever umask built it: the service user reads this tree, and
-    # every file in it is served to clients anyway.
-    chmod -R a+rX "$destination"
-    log "installed UI bundle to $destination"
-}
-
-# Escapes a value for the replacement half of a sed s/// expression.
-sed_replacement() {
-    printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/&/\\&/g' -e 's/|/\\|/g'
-}
-
-# Whether <file> assigns <name>. systemd reads the file literally, so a
-# commented-out line is not an assignment; one written with leading whitespace
-# still is.
-env_file_sets() { # <file> <name>
-    grep -q "^[[:space:]]*$2=" "$1"
-}
-
-# An environment file an operator has already edited is never rewritten, so the
-# bundle it names is checked instead: an install that quietly left LOOM_UI_DIR
-# out would look successful and then fail on the next restart.
-require_env_ui_dir() { # <env file> <bundle directory>
-    local file="$1" bundle="$2"
-    [ -e "$file" ] || return 0
-    env_file_sets "$file" LOOM_UI_DIR && return 0
-    die "$file does not set LOOM_UI_DIR; add 'LOOM_UI_DIR=$bundle' to it, or delete the file and re-run to have this script write one — the server refuses to start without a UI source"
-}
-
-ensure_env_file() { # <template> <destination> <LOOM_UI_DIR value>
-    local source="$1" destination="$2" ui_dir="$3"
+ensure_env_file() {
+    local source="$1" destination="$2"
     if [ -e "$destination" ]; then
         log "kept existing $destination"
         return
@@ -435,13 +350,7 @@ ensure_env_file() { # <template> <destination> <LOOM_UI_DIR value>
     install -d -m 0755 "$(dirname -- "$destination")"
     # Read by systemd as root before it drops to $SERVICE_USER; 0640 root:root
     # keeps any future secret (a Redis URL with a password) out of world read.
-    # The bundle path is the one value an install cannot leave to the template's
-    # own default, because the prefix it installs under is a variable.
-    sed -e "s|^LOOM_UI_DIR=.*|LOOM_UI_DIR=$(sed_replacement "$ui_dir")|" \
-        "$source" > "$destination"
-    chmod 0640 "$destination"
-    env_file_sets "$destination" LOOM_UI_DIR ||
-        die "$SCRIPT_DIR/env/loom-server.env has no LOOM_UI_DIR line to fill in"
+    install -m 0640 "$source" "$destination"
     log "created $destination — edit it before the first remote deployment"
 }
 
@@ -449,17 +358,10 @@ server_state_dir() { printf '%s/server' "$STATE_DIR"; }
 
 install_server() {
     require_root
-    local bundle_dir
-    bundle_dir="$(ui_install_dir)"
-    # Both UI prerequisites are checked before anything is installed: neither can
-    # be repaired by the rest of the install, and a refusal has to leave the
-    # machine exactly as it was.
-    require_env_ui_dir "$ETC_DIR/loom-server.env" "$bundle_dir"
-    install_ui_bundle "$(ui_source_dir)"
     install_binaries
     ensure_service_user
     install_unit loom-server.service
-    ensure_env_file "$SCRIPT_DIR/env/loom-server.env" "$ETC_DIR/loom-server.env" "$bundle_dir"
+    ensure_env_file "$SCRIPT_DIR/env/loom-server.env" "$ETC_DIR/loom-server.env"
     install -d -o "$SERVICE_USER" -g "$SERVICE_USER" -m 0750 "$(server_state_dir)"
     log "created $(server_state_dir)"
     systemctl_do enable loom-server.service
@@ -473,6 +375,11 @@ install_server() {
 default_host_name() {
     local key="$1"
     printf '%s' "${key:-$(hostname -s)}"
+}
+
+# Escapes a value for the replacement half of a sed s/// expression.
+sed_replacement() {
+    printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/&/\\&/g' -e 's/|/\\|/g'
 }
 
 install_daemon() {
@@ -529,15 +436,6 @@ while [ $# -gt 0 ]; do
         --from=*)
             BIN_SOURCE="${1#--from=}"
             FROM_FLAG=1
-            shift
-            ;;
-        --ui-dir)
-            [ $# -ge 2 ] || die "--ui-dir needs a directory"
-            UI_DIR="$2"
-            shift 2
-            ;;
-        --ui-dir=*)
-            UI_DIR="${1#--ui-dir=}"
             shift
             ;;
         --)
