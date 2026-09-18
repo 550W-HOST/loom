@@ -23,7 +23,7 @@ pub const DEFAULT_FILE_PREVIEW_TTL_MS: u64 = 5 * 60 * 1_000;
 /// A root-bound preview capability.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FilePreviewLease {
-    /// The host whose daemon owns the root.
+    /// The host whose worker owns the root.
     pub host_id: HostId,
     /// Absolute root on that host.
     pub root_path: String,

@@ -39,7 +39,7 @@
 //! Four scopes, and they are not interchangeable:
 //!
 //! * **Workspace scope** (`files`, `paths`, `fileContent`) — the project
-//!   source's own path, root-confined on the daemon side.
+//!   source's own path, root-confined on the worker side.
 //! * **Attachment scope** (`attachmentContent`, `uploadAttachment`,
 //!   `copyAttachments`) — the project's attachment directory, root-confined on
 //!   both sides of a copy.
@@ -50,7 +50,7 @@
 //!
 //! Every client-supplied relative path is validated before a request is built:
 //! NUL, a leading `/`, and any `.`/`..` segment are refused with `400
-//! invalid_path`, exactly as bb's `parseSafeRelativeRoutePath` does. The daemon
+//! invalid_path`, exactly as bb's `parseSafeRelativeRoutePath` does. The worker
 //! re-checks containment on the resolved path, which is the half the control
 //! plane cannot do — and for an upload, checks the *parent* directory, because
 //! the target file does not exist yet.
@@ -89,7 +89,7 @@ use crate::state::AppState;
 /// The largest file any project content route will serve.
 ///
 /// The same 25 MB B5 uses for a thread file, and for the same reason: the
-/// daemon enforces it from the request, so there is one number rather than two
+/// worker enforces it from the request, so there is one number rather than two
 /// that can drift.
 const MAX_FILE_CONTENT_BYTES: u64 = 25 * 1024 * 1024;
 
@@ -979,7 +979,7 @@ fn project_commands_projection(result: Value) -> Result<Value, Response> {
 /// `projects.attachmentContent`: a stored attachment's bytes.
 ///
 /// The `path` parameter is the **host-local path an upload returned**, so the
-/// daemon reports whether it was inside the project's attachment root rather
+/// worker reports whether it was inside the project's attachment root rather
 /// than the control plane guessing. A path the host refuses is a `400`, which
 /// is exactly what the containment check is for.
 pub async fn project_attachment_content(
@@ -1025,7 +1025,7 @@ pub async fn project_attachment_content(
 ///
 /// The file name is reduced to its final path segment before it is used. A
 /// client-supplied `../../etc/passwd` must not escape the attachment directory,
-/// and the daemon's root confinement is the second half of that defence rather
+/// and the worker's root confinement is the second half of that defence rather
 /// than the only half.
 pub async fn project_upload_attachment(
     State(state): State<AppState>,
@@ -1134,7 +1134,7 @@ pub async fn project_upload_attachment(
     } else {
         "localFile"
     };
-    // A collision is not a failure: the daemon suffixes the name, and the
+    // A collision is not a failure: the worker suffixes the name, and the
     // response reports the path it actually wrote, which is what a client must
     // send back when it references the attachment.
     let target = join_root(&root, &relative_name);
@@ -1157,7 +1157,7 @@ pub async fn project_upload_attachment(
     };
     let written = match outcome {
         HostFileOutcome::Written(written) => written,
-        // A collision is not a failure: the daemon suffixed the name, and the
+        // A collision is not a failure: the worker suffixed the name, and the
         // response reports the path it actually wrote. So the only failures
         // that reach here are genuine (a bad path, an oversized file).
         HostFileOutcome::Failed { code, message } => return host_failure(&code, &message),
@@ -1201,7 +1201,7 @@ struct UploadedFile {
 ///
 /// Only the final segment survives, and a name that reduces to nothing, to `.`
 /// or to `..` is refused. This is the control-plane half of the traversal
-/// defence; the daemon re-checks the resolved parent against the root on the
+/// defence; the worker re-checks the resolved parent against the root on the
 /// machine that owns the filesystem.
 fn safe_attachment_name(raw: &str) -> Option<String> {
     let name = raw
@@ -1224,10 +1224,10 @@ fn safe_attachment_name(raw: &str) -> Option<String> {
 /// `projects.copyAttachments`: copy attachments in from another project.
 ///
 /// The source directory is the **other project's** attachment root and the
-/// destination is this project's, which is why the daemon's copy operation
+/// destination is this project's, which is why the worker's copy operation
 /// carries two roots. Both sides are confined on the machine that owns the
 /// files, and a source that is missing, oversized or outside its root is
-/// reported by the daemon as a per-path failure the caller can act on.
+/// reported by the worker as a per-path failure the caller can act on.
 pub async fn project_copy_attachments(
     State(state): State<AppState>,
     AxumPath(raw_project_id): AxumPath<String>,
@@ -1305,7 +1305,7 @@ pub async fn project_copy_attachments(
             let _ = files;
             Json(json!({ "ok": true })).into_response()
         }
-        // The daemon refuses the request as a whole only when the destination
+        // The worker refuses the request as a whole only when the destination
         // itself is unusable, which is a real failure the client must see.
         HostFileOutcome::Failed { code, message } => host_failure(&code, &message),
         _ => api_error(

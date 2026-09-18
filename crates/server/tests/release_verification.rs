@@ -96,7 +96,7 @@ async fn the_release_script_parses_the_shapes_the_server_answers() {
         health.body
     );
 
-    // The host a daemon enrols as. Created through the registry rather than the
+    // The host a worker enrols as. Created through the registry rather than the
     // register route, so this test depends only on the endpoints the script
     // itself consumes.
     let host = state
@@ -106,7 +106,7 @@ async fn the_release_script_parses_the_shapes_the_server_answers() {
         .0;
 
     // `hosts.list`: a bare array whose rows carry `.status` and `.id`. The
-    // script waits on `.[] | select(.status == "connected")` to know the daemon
+    // script waits on `.[] | select(.status == "connected")` to know the worker
     // enrolled, then takes `.id` from that row.
     let hosts = request(&addr, "GET", "/api/v1/hosts", None).await;
     assert_eq!(hosts.status, 200, "GET /api/v1/hosts: {}", hosts.body);
@@ -254,8 +254,8 @@ async fn the_release_script_parses_the_install_routes_the_server_answers() {
     let artifacts = tempfile::tempdir().unwrap();
     // A stand-in with real length, so the digest is over more than an empty
     // file and the body comparison means something.
-    let bytes = b"a stand-in for the released loom-daemon binary\n".repeat(64);
-    std::fs::write(artifacts.path().join("loom-daemon"), &bytes).unwrap();
+    let bytes = b"a stand-in for the released loom-worker binary\n".repeat(64);
+    std::fs::write(artifacts.path().join("loom-worker"), &bytes).unwrap();
 
     let state = AppState::build(AppConfig {
         artifact_dir: Some(artifacts.path().to_path_buf()),
@@ -290,18 +290,18 @@ async fn the_release_script_parses_the_install_routes_the_server_answers() {
         "/install/version no longer reports `version`: {version}"
     );
 
-    // `GET /install/loom-daemon`: the header the script extracts with `sed`,
+    // `GET /install/loom-worker`: the header the script extracts with `sed`,
     // and the body it hashes. The header must be the digest of the bytes, or a
-    // downloading daemon would refuse a good artifact.
+    // downloading worker would refuse a good artifact.
     let artifact = raw_request(
         &addr,
-        &format!("/install/loom-daemon?target={}", loom_server::TARGET),
+        &format!("/install/loom-worker?target={}", loom_server::TARGET),
         &[],
     )
     .await;
     assert_eq!(
         artifact.status, 200,
-        "/install/loom-daemon -> {}",
+        "/install/loom-worker -> {}",
         artifact.status
     );
     let digest = artifact
@@ -331,7 +331,7 @@ async fn the_release_script_parses_the_install_routes_the_server_answers() {
     // `304` with no body, which is what makes a fleet's reconnects cheap.
     let conditional = raw_request(
         &addr,
-        &format!("/install/loom-daemon?target={}", loom_server::TARGET),
+        &format!("/install/loom-worker?target={}", loom_server::TARGET),
         &[("If-None-Match", &format!("\"sha256-{digest}\"")[..])],
     )
     .await;

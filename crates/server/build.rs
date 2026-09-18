@@ -17,7 +17,7 @@
 //! something: it emits `LOOM_GIT_COMMIT` and `LOOM_BUILD_TARGET`, which
 //! `build_info` reads back with `env!`.
 //!
-//! It lives in `loom-server` because both binaries depend on it — the daemon
+//! It lives in `loom-server` because both binaries depend on it — the worker
 //! already reads `loom_server::PROTOCOL_VERSION` — so one script stamps the
 //! whole release.
 //!

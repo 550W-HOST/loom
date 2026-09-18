@@ -203,7 +203,7 @@ off-by-default `protocol-v2` feature.
 ## The resulting loom architecture
 
 ```
-loom daemon (one process)
+loom worker (one process)
   │
   ├─ ACP client                        ← loom's only provider code
   │    ├─ Channel::duplex() ──▶ pi-acp as a lib ──▶ pi (child process)
@@ -225,7 +225,7 @@ UI projection (thread-view)       ← already ported
 
 Pi does not speak ACP natively, so something must translate its `--mode rpc`
 JSON-RPC into ACP. That translator is `pi-acp`, and it is **linked into the
-daemon as a library** rather than run as another process.
+worker as a library** rather than run as another process.
 
 The framework already supports this. `ConnectTo`'s provided method:
 
@@ -334,7 +334,7 @@ unmapped frame is reported, never given a catch-all body.
 
 Current state: loom depends on `pi-acp` and the ACP SDK. `ProviderLaunch` has
 only two ACP forms: `AcpEmbeddedPi` for Pi and `AcpStdio` for native agents.
-`crates/daemon/src/provider.rs` contains only run metadata and terminal-event
+`crates/worker/src/provider.rs` contains only run metadata and terminal-event
 construction; the old `effective_argv` and direct Pi JSON-RPC mapper are gone.
 The server persists the opaque provider session id in the thread snapshot and
 carries it on the next `RunDispatch`. The ACP driver uses `session/resume` for a
@@ -343,7 +343,7 @@ history notifications from the new run in both cases.
 
 The current implementation negotiates ACP v2 first and falls back to v1 through
 the SDK connector. The v2 schema is still unstable, so v1 remains a required
-compatibility path and the v2-specific shapes are contained in the daemon
+compatibility path and the v2-specific shapes are contained in the worker
 adapter. The default Pi path can therefore continue to negotiate v1 while native
 agents that support v2 use message patches, terminal updates and idle
 completion.
@@ -371,7 +371,7 @@ completion.
   schema copy in the tree — type identity matters between the re-exported
   `agent_client_protocol::schema` and a direct dependency.
 - **Does the embedded `pi-acp` need its own process isolation?** Running in the
-  daemon means a panic in the translator takes the daemon with it, whereas a
+  worker means a panic in the translator takes the worker with it, whereas a
   spawned process would not. Worth deciding explicitly rather than by default.
 - **How long to keep the v1 path?** v2 is a draft and may rename things again
   (it already dropped `session/load`). The negotiation makes supporting both
@@ -402,6 +402,6 @@ completion.
 - bb `packages/provider-bridge-protocol/src/thread-delta.ts` — the grammar
   itself
 - bb `plugins/provider-acp/src/known-agents.ts` — the five ACP agents
-- `crates/daemon/src/provider.rs` — ACP run metadata and the shared terminal
+- `crates/worker/src/provider.rs` — ACP run metadata and the shared terminal
   event; the old Pi-specific direct driver was removed
 - `docs/provider-sessions-research.md` — the storage survey this builds on

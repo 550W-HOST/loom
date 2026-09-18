@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 #
 # Uninstall loom systemd services. Data is kept unless --purge is given, so the
-# default is reversible: reinstall and the daemon resumes its enrolled identity
+# default is reversible: reinstall and the worker resumes its enrolled identity
 # and replay cursor.
 #
 #   sudo deploy/uninstall.sh server [--purge]
-#   sudo deploy/uninstall.sh daemon <server-key> [--purge]
+#   sudo deploy/uninstall.sh worker <server-key> [--purge]
 #   sudo deploy/uninstall.sh all    <server-key> [--purge]
 #   sudo deploy/uninstall.sh binaries
 #
-# --purge deletes the relay log / the daemon's host id and cursor under
+# --purge deletes the relay log / the worker's host id and cursor under
 # LOOM_STATE_DIR. It is never inferred: the flag must be passed.
 set -euo pipefail
 
@@ -25,14 +25,14 @@ Usage: uninstall.sh <command> [--purge]
 
 Commands:
   server [--purge]            stop and remove the control plane unit
-  daemon <server-key> [--purge]  stop and remove one daemon instance
-  all    <server-key> [--purge]  server plus one daemon instance
+  worker <server-key> [--purge]  stop and remove one worker instance
+  all    <server-key> [--purge]  server plus one worker instance
   binaries                    remove /usr/local/bin/loom and its two names
   help                        print this text
 
 --purge also deletes the data directory:
   server          $LOOM_STATE_DIR/server
-  daemon <key>    $LOOM_STATE_DIR/machines/<key>
+  worker <key>    $LOOM_STATE_DIR/machines/<key>
 
 Without --purge the relay log, the enrolled host id and the replay cursor are
 left in place, so a reinstall continues where this left off.
@@ -82,23 +82,23 @@ uninstall_server() {
     log "kept $ETC_DIR/loom-server.env (delete it by hand if the host is being reused)"
 }
 
-uninstall_daemon() {
+uninstall_worker() {
     local key="$1" purge="$2"
-    [ -n "$key" ] || die "daemon needs a <server-key>"
-    systemctl_do disable --now "loom-host-daemon@$key.service" || true
+    [ -n "$key" ] || die "worker needs a <server-key>"
+    systemctl_do disable --now "loom-worker@$key.service" || true
     if [ "$purge" = "1" ]; then
         rm -rf "${STATE_DIR:?}/machines/${key:?}"
-        rm -f "${ETC_DIR:?}/daemon/${key:?}.env"
-        log "purged $STATE_DIR/machines/$key and $ETC_DIR/daemon/$key.env"
+        rm -f "${ETC_DIR:?}/worker/${key:?}.env"
+        log "purged $STATE_DIR/machines/$key and $ETC_DIR/worker/$key.env"
     else
-        log "kept $STATE_DIR/machines/$key and $ETC_DIR/daemon/$key.env"
+        log "kept $STATE_DIR/machines/$key and $ETC_DIR/worker/$key.env"
     fi
 }
 
 uninstall_binaries() {
     # The two names first, then the file they point at, so nothing is ever left
     # dangling over the file being already gone.
-    for binary in loom-server loom-daemon loom; do
+    for binary in loom-server loom-worker loom; do
         rm -f "$INSTALL_PREFIX/bin/$binary"
         log "removed $INSTALL_PREFIX/bin/$binary"
     done
@@ -117,10 +117,10 @@ done
 
 case "$command" in
     server) uninstall_server "$purge" ;;
-    daemon) uninstall_daemon "${args[0]:-}" "$purge" ;;
+    worker) uninstall_worker "${args[0]:-}" "$purge" ;;
     all)
         uninstall_server "$purge"
-        uninstall_daemon "${args[0]:-}" "$purge"
+        uninstall_worker "${args[0]:-}" "$purge"
         ;;
     binaries) require_root; uninstall_binaries ;;
     help | --help | -h) usage ;;

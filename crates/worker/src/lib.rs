@@ -1,4 +1,4 @@
-//! The loom host daemon.
+//! The loom worker.
 //!
 //! This is the **execution plane as an independent process**. It connects
 //! *outbound* to a server URL, enrolls as a host, keeps that host alive with
@@ -12,7 +12,7 @@
 //! but the *boundary* it sits behind is small: enroll, heartbeat, receive
 //! dispatch through a scope, report events back. This crate implements exactly
 //! that boundary, with an ACP client and the embedded `pi-acp` adapter for Pi.
-//! When the Node daemon lands it replaces the execution implementation, not the
+//! When the Node host daemon lands it replaces the execution implementation, not the
 //! contract.
 //!
 //! # Lifecycle
@@ -32,13 +32,13 @@
 //!
 //! Two properties matter and both are enforced in code, not convention:
 //!
-//! * **Dispatch arrives through the relay.** The daemon subscribes to
+//! * **Dispatch arrives through the relay.** The worker subscribes to
 //!   `host:{id}` and parses [`RunDispatch`] out of relayed event payloads. It
 //!   replays from its cursor on reconnect, so a dispatch published while it was
 //!   disconnected is delivered late rather than lost.
 //! * **A run always ends.** Every provider process ends in exactly one
 //!   `finished` report — see [`provider`] — and the server separately reaps a
-//!   run whose deadline passes, so a daemon that dies mid-run cannot leave the
+//!   run whose deadline passes, so a worker that dies mid-run cannot leave the
 //!   thread `working`.
 //!
 //! [`RunDispatch`]: loom_provider_protocol::RunDispatch
@@ -67,7 +67,7 @@ use loom_provider_protocol::{
 use loom_relay::dedup::SeenSet;
 use loom_relay::{EventId, Scope};
 use loom_server::protocol::{
-    DaemonClientMessage as ClientCommand, DaemonServerMessage as ServerMessage,
+    WorkerClientMessage as ClientCommand, WorkerServerMessage as ServerMessage,
 };
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
@@ -78,13 +78,13 @@ use crate::provider::ProviderRun;
 
 type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
-/// How often a connected daemon reports liveness by default.
+/// How often a connected worker reports liveness by default.
 pub const DEFAULT_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(15);
 
-/// How long a provider run may take before the daemon kills it, by default.
+/// How long a provider run may take before the worker kills it, by default.
 pub const DEFAULT_RUN_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 
-/// How many dispatch ids the daemon remembers to suppress redelivery.
+/// How many dispatch ids the worker remembers to suppress redelivery.
 pub const DISPATCH_DEDUP_CAPACITY: usize = 512;
 
 /// How many reports may be queued before a provider task waits.
@@ -99,7 +99,7 @@ pub const DEFAULT_PERMISSION_TIMEOUT: Duration = crate::acp::permission::DEFAULT
 /// Where managed environments' workspaces are created by default.
 ///
 /// `LOOM_WORKSPACE_ROOT` overrides it; otherwise `$HOME/.loom/workspaces`, or
-/// the system temp directory when there is no home. The daemon owns this
+/// the system temp directory when there is no home. The worker owns this
 /// layout: the control plane only learns the resulting path from the report.
 ///
 /// Deliberately independent of [`default_data_dir`]: a data directory is where
@@ -116,10 +116,10 @@ pub fn default_environment_root() -> PathBuf {
     std::env::temp_dir().join("loom-workspaces")
 }
 
-/// The daemon's own data directory on this machine.
+/// The worker's own data directory on this machine.
 ///
 /// `LOOM_DATA_DIR` overrides it; otherwise `$HOME/.loom`, or the system temp
-/// directory when there is no home. This is the root the daemon reports at
+/// directory when there is no home. This is the root the worker reports at
 /// enrollment and the one thread storage is named from, so the control plane
 /// never has to guess where a machine keeps its data.
 pub fn default_data_dir() -> PathBuf {
@@ -132,18 +132,18 @@ pub fn default_data_dir() -> PathBuf {
     std::env::temp_dir().join("loom-data")
 }
 
-/// A daemon could not connect, could not speak the protocol, or was rejected.
+/// A worker could not connect, could not speak the protocol, or was rejected.
 #[derive(Debug)]
-pub enum DaemonError {
+pub enum WorkerError {
     /// The socket could not be opened or failed mid-conversation.
     WebSocket(String),
-    /// The server sent a frame this daemon could not use.
+    /// The server sent a frame this worker could not use.
     Protocol(String),
     /// The server announced a protocol version this build cannot speak.
     ///
-    /// Kept apart from the general [`DaemonError::Protocol`] because it is the
+    /// Kept apart from the general [`WorkerError::Protocol`] because it is the
     /// one protocol failure with an automatic remedy: the reconnect loop reads
-    /// the version out of it and fetches the matching daemon
+    /// the version out of it and fetches the matching worker
     /// ([`crate::update`]).
     ProtocolMismatch {
         /// The version the server announced.
@@ -153,25 +153,25 @@ pub enum DaemonError {
     },
 }
 
-impl std::fmt::Display for DaemonError {
+impl std::fmt::Display for WorkerError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            DaemonError::WebSocket(message) => write!(f, "websocket: {message}"),
-            DaemonError::Protocol(message) => write!(f, "protocol: {message}"),
-            DaemonError::ProtocolMismatch {
+            WorkerError::WebSocket(message) => write!(f, "websocket: {message}"),
+            WorkerError::Protocol(message) => write!(f, "protocol: {message}"),
+            WorkerError::ProtocolMismatch {
                 server_protocol_version,
                 local_protocol_version,
             } => write!(
                 f,
                 "server speaks protocol version {server_protocol_version}, \
-                 this daemon speaks {local_protocol_version}; this daemon must be updated \
-                 (upgrade server and daemon together, or let the daemon self-update)"
+                 this worker speaks {local_protocol_version}; this worker must be updated \
+                 (upgrade server and worker together, or let the worker self-update)"
             ),
         }
     }
 }
 
-impl DaemonError {
+impl WorkerError {
     /// The protocol version the peer announced, for a version refusal.
     ///
     /// This is the one piece of information the reconnect loop needs out of a
@@ -180,7 +180,7 @@ impl DaemonError {
     /// than for a re-read of it that could have moved.
     pub fn mismatched_protocol_version(&self) -> Option<u32> {
         match self {
-            DaemonError::ProtocolMismatch {
+            WorkerError::ProtocolMismatch {
                 server_protocol_version,
                 ..
             } => Some(*server_protocol_version),
@@ -189,23 +189,23 @@ impl DaemonError {
     }
 }
 
-impl std::error::Error for DaemonError {}
+impl std::error::Error for WorkerError {}
 
-impl From<tokio_tungstenite::tungstenite::Error> for DaemonError {
+impl From<tokio_tungstenite::tungstenite::Error> for WorkerError {
     fn from(error: tokio_tungstenite::tungstenite::Error) -> Self {
-        DaemonError::WebSocket(error.to_string())
+        WorkerError::WebSocket(error.to_string())
     }
 }
 
-impl From<serde_json::Error> for DaemonError {
+impl From<serde_json::Error> for WorkerError {
     fn from(error: serde_json::Error) -> Self {
-        DaemonError::Protocol(error.to_string())
+        WorkerError::Protocol(error.to_string())
     }
 }
 
-/// Refuses a server whose hello protocol version this daemon cannot speak.
+/// Refuses a server whose hello protocol version this worker cannot speak.
 ///
-/// The server and every daemon and UI bundle must agree on
+/// The server and every worker and UI bundle must agree on
 /// [`loom_server::PROTOCOL_VERSION`]: it is the wire contract, not a marketing
 /// version. A mixed deployment is rejected here, at the first frame, rather
 /// than misbehaving mid-run. See `docs/upgrades.md`.
@@ -215,23 +215,23 @@ impl From<serde_json::Error> for DaemonError {
 /// matching binary, installs it and restarts. Keeping the refusal here —
 /// before `enroll`, before a single dispatch — is what makes an update safe to
 /// perform: no run is in flight on a connection that never enrolled.
-pub fn ensure_compatible_protocol(server_protocol_version: u32) -> Result<(), DaemonError> {
+pub fn ensure_compatible_protocol(server_protocol_version: u32) -> Result<(), WorkerError> {
     let local = loom_server::PROTOCOL_VERSION;
     if server_protocol_version == local {
         Ok(())
     } else {
-        Err(DaemonError::ProtocolMismatch {
+        Err(WorkerError::ProtocolMismatch {
             server_protocol_version,
             local_protocol_version: local,
         })
     }
 }
 
-/// Everything a daemon needs to reach and describe itself.
+/// Everything a worker needs to reach and describe itself.
 #[derive(Clone, Debug)]
-pub struct DaemonConfig {
+pub struct WorkerConfig {
     /// The server to connect to: `http://host:port`, `https://…`, or an
-    /// explicit `ws(s)://` URL. The daemon only ever dials out.
+    /// explicit `ws(s)://` URL. The worker only ever dials out.
     pub server_url: String,
     /// The machine's display name.
     pub name: String,
@@ -251,13 +251,13 @@ pub struct DaemonConfig {
     /// Root under which managed environments' workspaces are created.
     ///
     /// A managed environment's directory is `<environment_root>/<env_id>`. The
-    /// daemon owns the directory layout and reports the resulting path; the ACP
+    /// worker owns the directory layout and reports the resulting path; the ACP
     /// agent owns its own session storage.
     pub environment_root: PathBuf,
-    /// The daemon's own data directory, reported at enrollment.
+    /// The worker's own data directory, reported at enrollment.
     ///
     /// Thread storage is named from it (`<data_dir>/thread-storage/<thread>`),
-    /// so a daemon that does not report one leaves those routes answering `501`
+    /// so a worker that does not report one leaves those routes answering `501`
     /// rather than reading a path the control plane invented.
     pub data_dir: PathBuf,
     /// The host-scope event id to resume from. `None` replays the retained
@@ -267,7 +267,7 @@ pub struct DaemonConfig {
     pub join_code: Option<String>,
     /// Maximum frames to request in the reconnect replay.
     pub replay_limit: usize,
-    /// How the daemon reacts to a server whose protocol does not match.
+    /// How the worker reacts to a server whose protocol does not match.
     ///
     /// [`crate::update::UpdateConfig`] carries "allowed at all", the install
     /// path and the backoff schedule. The reconnect loop is the only party that
@@ -276,12 +276,12 @@ pub struct DaemonConfig {
     pub update: crate::update::UpdateConfig,
 }
 
-impl DaemonConfig {
+impl WorkerConfig {
     /// A configuration with the default heartbeat interval and no provider
     /// override.
     ///
     /// The update configuration defaults to "enabled, install over the running
-    /// executable, no persisted state", so a daemon started with no flags at
+    /// executable, no persisted state", so a worker started with no flags at
     /// all still follows a newer server. `UpdateConfig::for_current_binary`
     /// reports the one machine-level failure it can have (a running executable
     /// that cannot be resolved); when it does, self-update is turned off loudly
@@ -289,7 +289,7 @@ impl DaemonConfig {
     pub fn new(server_url: impl Into<String>, name: impl Into<String>) -> Self {
         let update =
             crate::update::UpdateConfig::for_current_binary(true, None).unwrap_or_else(|error| {
-                eprintln!("loom-daemon: self-update disabled: {error}");
+                eprintln!("loom-worker: self-update disabled: {error}");
                 crate::update::UpdateConfig {
                     enabled: false,
                     install_path: PathBuf::new(),
@@ -316,11 +316,11 @@ impl DaemonConfig {
         }
     }
 
-    /// The internal daemon WebSocket endpoint derived from
-    /// [`DaemonConfig::server_url`].
+    /// The internal worker WebSocket endpoint derived from
+    /// [`WorkerConfig::server_url`].
     ///
     /// Accepts the URL an operator would paste into a browser and turns it
-    /// into the socket path, so "the server is a URL" holds for daemons too.
+    /// into the socket path, so "the server is a URL" holds for workers too.
     pub fn websocket_url(&self) -> String {
         let base = self.server_url.trim_end_matches('/');
         let base = if let Some(rest) = base.strip_prefix("https://") {
@@ -378,13 +378,13 @@ impl RunSeen {
     }
 }
 
-/// A connected daemon.
+/// A connected worker.
 ///
-/// Created by [`Daemon::connect`], identified by [`Daemon::enroll`], kept
-/// alive by [`Daemon::run`] or [`Daemon::heartbeat`].
-pub struct Daemon {
+/// Created by [`Worker::connect`], identified by [`Worker::enroll`], kept
+/// alive by [`Worker::run`] or [`Worker::heartbeat`].
+pub struct Worker {
     socket: Socket,
-    config: DaemonConfig,
+    config: WorkerConfig,
     host_id: Option<HostId>,
     /// Highest host-scope event id applied, for reconnect replay.
     cursor: Option<EventId>,
@@ -426,9 +426,9 @@ pub struct Daemon {
     /// Automation-script results waiting to be forwarded to the server.
     script_reports: mpsc::Receiver<loom_provider_protocol::ScriptRunReport>,
     script_reports_tx: mpsc::Sender<loom_provider_protocol::ScriptRunReport>,
-    /// The PTY sessions this daemon holds.
+    /// The PTY sessions this worker holds.
     terminal_sessions: crate::terminal::TerminalRegistry,
-    /// The automation scripts this daemon is running.
+    /// The automation scripts this worker is running.
     ///
     /// Held here rather than created per dispatch because a cancel has to
     /// reach a running process: the runner is what maps a run id to the task
@@ -438,9 +438,9 @@ pub struct Daemon {
     running: HashSet<RunId>,
 }
 
-impl Daemon {
+impl Worker {
     /// Opens the internal socket and consumes the server's hello frame.
-    pub async fn connect(config: DaemonConfig) -> Result<Self, DaemonError> {
+    pub async fn connect(config: WorkerConfig) -> Result<Self, WorkerError> {
         let url = config.websocket_url();
         let (mut socket, _) = connect_async(&url).await?;
         match next_message(&mut socket).await? {
@@ -482,13 +482,13 @@ impl Daemon {
                     script_reports_tx,
                     terminal_sessions: crate::terminal::TerminalRegistry::new(),
                     // Built at enrollment: a script runs in a directory named
-                    // after the automation under the daemon's data directory,
+                    // after the automation under the worker's data directory,
                     // which is a fact about the enrolled host.
                     scripts: None,
                     running: HashSet::new(),
                 })
             }
-            other => Err(DaemonError::Protocol(format!(
+            other => Err(WorkerError::Protocol(format!(
                 "expected hello, got {other:?}"
             ))),
         }
@@ -497,10 +497,10 @@ impl Daemon {
     /// Enrolls as a host, follows its `host:{id}` room, and replays anything it
     /// missed while disconnected.
     ///
-    /// After this returns, the daemon is receiving dispatches: live ones from
+    /// After this returns, the worker is receiving dispatches: live ones from
     /// the room and anything published while it was away, replayed from the
     /// relay's retained window.
-    pub async fn enroll(&mut self) -> Result<HostId, DaemonError> {
+    pub async fn enroll(&mut self) -> Result<HostId, WorkerError> {
         self.send(&ClientCommand::EnrollHost {
             host_id: self.config.host_id.clone(),
             name: self.config.name.clone(),
@@ -516,7 +516,7 @@ impl Daemon {
             match next_message(&mut self.socket).await? {
                 ServerMessage::HostEnrolled { host, .. } => break host.id,
                 ServerMessage::Error { message } => {
-                    return Err(DaemonError::Protocol(message));
+                    return Err(WorkerError::Protocol(message));
                 }
                 _ => continue,
             }
@@ -541,11 +541,11 @@ impl Daemon {
 
     /// Sends one heartbeat. Frames are not awaited: heartbeats carry no reply
     /// the execution plane needs, and `run` drains the socket.
-    pub async fn heartbeat(&mut self) -> Result<(), DaemonError> {
+    pub async fn heartbeat(&mut self) -> Result<(), WorkerError> {
         let host_id = self
             .host_id
             .clone()
-            .ok_or_else(|| DaemonError::Protocol("not enrolled yet".into()))?;
+            .ok_or_else(|| WorkerError::Protocol("not enrolled yet".into()))?;
         self.send(&ClientCommand::HostHeartbeat { host_id }).await
     }
 
@@ -553,9 +553,9 @@ impl Daemon {
     /// incoming frames, starts providers for dispatches, and forwards the
     /// reports those providers produce.
     ///
-    /// Cancelling the future leaves the socket open; call [`Daemon::disconnect`]
+    /// Cancelling the future leaves the socket open; call [`Worker::disconnect`]
     /// to announce the departure before dropping it.
-    pub async fn run(&mut self) -> Result<(), DaemonError> {
+    pub async fn run(&mut self) -> Result<(), WorkerError> {
         let mut ticker = tokio::time::interval(self.config.heartbeat_interval);
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         // The first tick is immediate; the connection is fresh, so skip it.
@@ -571,7 +571,7 @@ impl Daemon {
                         // The connection dropped. The processes do not: a
                         // terminal is the user's, not the connection's, so the
                         // sessions are marked undrivable and reconciled when the
-                        // daemon reconnects.
+                        // worker reconnects.
                         None => {
                             self.terminal_sessions
                                 .mark_all_disconnected(loom_relay::now_ms());
@@ -598,7 +598,7 @@ impl Daemon {
                             .await;
                         if settled > 0 {
                             eprintln!(
-                                "loom-daemon: settled {settled} permission request(s) as cancelled \
+                                "loom-worker: settled {settled} permission request(s) as cancelled \
                                  because the run ended"
                             );
                         }
@@ -641,17 +641,17 @@ impl Daemon {
 
     /// Announces the departure and closes the socket.
     ///
-    /// A clean shutdown kills every terminal this daemon holds: they are its
-    /// child processes, and leaving them running with no daemon to report them
+    /// A clean shutdown kills every terminal this worker holds: they are its
+    /// child processes, and leaving them running with no worker to report them
     /// would leak processes the control plane could never see again. A dropped
     /// connection does **not** go through here — a terminal is the user's, not
     /// the connection's, so those sessions survive a reconnect and are
     /// reconciled then.
-    pub async fn disconnect(mut self) -> Result<(), DaemonError> {
+    pub async fn disconnect(mut self) -> Result<(), WorkerError> {
         let closing = self.terminal_sessions.len();
         self.terminal_sessions.close_all(loom_relay::now_ms());
         if closing > 0 {
-            eprintln!("loom-daemon: closed {closing} terminal session(s) on shutdown");
+            eprintln!("loom-worker: closed {closing} terminal session(s) on shutdown");
         }
         if let Some(host_id) = self.host_id.clone() {
             let _ = self.send(&ClientCommand::HostDisconnect { host_id }).await;
@@ -672,8 +672,8 @@ impl Daemon {
 
     /// The highest host-scope event id applied so far.
     ///
-    /// A daemon that restarts can persist this and pass it back as
-    /// [`DaemonConfig::resume_cursor`], so it replays exactly what it missed
+    /// A worker that restarts can persist this and pass it back as
+    /// [`WorkerConfig::resume_cursor`], so it replays exactly what it missed
     /// instead of the whole retained window.
     pub fn cursor(&self) -> Option<&EventId> {
         self.cursor.as_ref()
@@ -685,17 +685,17 @@ impl Daemon {
     }
 
     /// Handles one frame from the server.
-    fn on_socket_message(&mut self, message: Message) -> Result<(), DaemonError> {
+    fn on_socket_message(&mut self, message: Message) -> Result<(), WorkerError> {
         match message {
             Message::Text(text) => self.on_server_frame(serde_json::from_str(text.as_str())?),
             Message::Binary(bytes) => self.on_server_frame(serde_json::from_slice(&bytes)?),
-            Message::Close(_) => Err(DaemonError::Protocol("server closed the socket".into())),
+            Message::Close(_) => Err(WorkerError::Protocol("server closed the socket".into())),
             Message::Ping(_) | Message::Pong(_) | Message::Frame(_) => Ok(()),
         }
     }
 
     /// Handles one decoded server message, starting a provider for dispatches.
-    fn on_server_frame(&mut self, message: ServerMessage) -> Result<(), DaemonError> {
+    fn on_server_frame(&mut self, message: ServerMessage) -> Result<(), WorkerError> {
         match message {
             ServerMessage::Event {
                 event_id,
@@ -703,7 +703,7 @@ impl Daemon {
                 payload,
                 ..
             } => self.observe_event(&event_id, &scope, &payload),
-            ServerMessage::Error { message } => Err(DaemonError::Protocol(message)),
+            ServerMessage::Error { message } => Err(WorkerError::Protocol(message)),
             // A question the control plane refused to record has no client that
             // can ever answer it — the interaction entity a UI renders and
             // answers was never created. Waiting out the permission timeout
@@ -722,12 +722,12 @@ impl Daemon {
                 tokio::spawn(async move {
                     if registry.refuse(&request_id, &reason).await {
                         eprintln!(
-                            "loom-daemon: the control plane refused permission request \
+                            "loom-worker: the control plane refused permission request \
                              {request_id} ({reason}); the agent is told it was not granted"
                         );
                     } else {
                         eprintln!(
-                            "loom-daemon: the control plane refused permission request \
+                            "loom-worker: the control plane refused permission request \
                              {request_id} ({reason}), but nothing was waiting for it"
                         );
                     }
@@ -747,7 +747,7 @@ impl Daemon {
         event_id: &str,
         scope: &Scope,
         payload: &str,
-    ) -> Result<(), DaemonError> {
+    ) -> Result<(), WorkerError> {
         let parsed = event_id.parse::<EventId>().ok();
         if let Some(id) = &parsed {
             // Advance the resume cursor monotonically; replay and live traffic
@@ -820,11 +820,11 @@ impl Daemon {
         });
     }
 
-    /// Executes one terminal operation on the daemon's machine.
+    /// Executes one terminal operation on the worker's machine.
     ///
     /// The work runs on the blocking pool: a pty read or a shell spawn is
     /// synchronous, and running it on the socket loop would stall every other
-    /// session this daemon serves.
+    /// session this worker serves.
     fn start_terminal_request(&self, request: loom_provider_protocol::TerminalRequest) {
         if self.host_id.as_ref() != Some(&request.host_id) {
             return;
@@ -836,7 +836,7 @@ impl Daemon {
                 tokio::task::spawn_blocking(move || crate::terminal::answer(request, &sessions))
                     .await
                     .unwrap_or_else(|error| {
-                        eprintln!("loom-daemon: terminal request panicked: {error}");
+                        eprintln!("loom-worker: terminal request panicked: {error}");
                         loom_provider_protocol::TerminalReport {
                             host_id: loom_domain::HostId::mint(),
                             request_id: String::new(),
@@ -850,7 +850,7 @@ impl Daemon {
         });
     }
 
-    /// Executes one workspace operation on the daemon's machine.
+    /// Executes one workspace operation on the worker's machine.
     fn start_host_rpc_request(&self, request: HostRpcRequest) {
         if self.host_id.as_ref() != Some(&request.host_id) {
             return;
@@ -865,13 +865,13 @@ impl Daemon {
 
     /// Hands a permission answer to the provider task waiting for it.
     ///
-    /// A resolution for a request this daemon is not holding is a no-op rather
-    /// than an error: the relay may replay a frame the daemon already applied,
+    /// A resolution for a request this worker is not holding is a no-op rather
+    /// than an error: the relay may replay a frame the worker already applied,
     /// and a frame for a run that ended while the answer was in flight has
     /// nowhere to go. Neither is a failure, and treating one as a failure would
     /// make a redelivered frame fatal.
     fn resolve_interaction(&self, resolution: InteractionResolutionFrame) {
-        // A frame addressed to a different host is not this daemon's: the relay
+        // A frame addressed to a different host is not this worker's: the relay
         // room should make that impossible, but checking costs nothing and a
         // panic on an unexpected frame would take the whole connection down.
         if self.host_id.as_ref() != Some(&resolution.host_id) {
@@ -884,7 +884,7 @@ impl Daemon {
                 .await
             {
                 eprintln!(
-                    "loom-daemon: an answer for permission request {} arrived with nothing \
+                    "loom-worker: an answer for permission request {} arrived with nothing \
                      waiting for it; dropping it",
                     resolution.request_id
                 );
@@ -903,7 +903,7 @@ impl Daemon {
         // An operator override replaces the *executable*, never the workspace:
         // the environment decides where a provider runs, the machine decides
         // which binary. Carrying `cwd` across the override is what keeps a
-        // `LOOM_PROVIDER_CMD` from silently running in the daemon's own cwd.
+        // `LOOM_PROVIDER_CMD` from silently running in the worker's own cwd.
         let spec = match &self.config.provider {
             Some(override_spec) => {
                 let mut spec = override_spec.clone();
@@ -976,12 +976,12 @@ impl Daemon {
     }
 
     /// Subscribes and waits for the acknowledgement.
-    async fn subscribe(&mut self, scope: Scope) -> Result<(), DaemonError> {
+    async fn subscribe(&mut self, scope: Scope) -> Result<(), WorkerError> {
         self.send(&ClientCommand::Subscribe { scope }).await?;
         loop {
             match next_message(&mut self.socket).await? {
                 ServerMessage::Subscribed { .. } => return Ok(()),
-                ServerMessage::Error { message } => return Err(DaemonError::Protocol(message)),
+                ServerMessage::Error { message } => return Err(WorkerError::Protocol(message)),
                 _ => continue,
             }
         }
@@ -996,7 +996,7 @@ impl Daemon {
     /// precisely so that repeating the request with the advanced cursor cannot
     /// skip any. Stopping at the first page would advance the cursor past the
     /// dispatches that did not fit, and they would never be retried.
-    async fn replay_host_scope(&mut self, host_id: &HostId) -> Result<(), DaemonError> {
+    async fn replay_host_scope(&mut self, host_id: &HostId) -> Result<(), WorkerError> {
         let scope = Scope::Host(host_id.to_string());
         loop {
             self.send(&ClientCommand::Replay {
@@ -1017,7 +1017,7 @@ impl Daemon {
                         ..
                     } => self.observe_event(&event_id, &scope, &payload)?,
                     ServerMessage::ReplayComplete { has_more, .. } => break has_more,
-                    ServerMessage::Error { message } => return Err(DaemonError::Protocol(message)),
+                    ServerMessage::Error { message } => return Err(WorkerError::Protocol(message)),
                     _ => continue,
                 }
             };
@@ -1028,7 +1028,7 @@ impl Daemon {
         }
     }
 
-    async fn send(&mut self, command: &ClientCommand) -> Result<(), DaemonError> {
+    async fn send(&mut self, command: &ClientCommand) -> Result<(), WorkerError> {
         let text = serde_json::to_string(command)?;
         self.socket.send(Message::Text(text.into())).await?;
         Ok(())
@@ -1055,17 +1055,17 @@ async fn provision_environment(
     }
 }
 
-async fn next_message(socket: &mut Socket) -> Result<ServerMessage, DaemonError> {
+async fn next_message(socket: &mut Socket) -> Result<ServerMessage, WorkerError> {
     loop {
         let message = socket
             .next()
             .await
-            .ok_or_else(|| DaemonError::Protocol("server closed the socket".into()))??;
+            .ok_or_else(|| WorkerError::Protocol("server closed the socket".into()))??;
         match message {
             Message::Text(text) => return Ok(serde_json::from_str(text.as_str())?),
             Message::Binary(bytes) => return Ok(serde_json::from_slice(&bytes)?),
             Message::Close(_) => {
-                return Err(DaemonError::Protocol("server closed the socket".into()));
+                return Err(WorkerError::Protocol("server closed the socket".into()));
             }
             Message::Ping(_) | Message::Pong(_) | Message::Frame(_) => continue,
         }
@@ -1078,16 +1078,16 @@ mod tests {
 
     #[test]
     fn a_plain_http_url_becomes_a_websocket_url() {
-        let config = DaemonConfig::new("http://127.0.0.1:38886", "laptop");
+        let config = WorkerConfig::new("http://127.0.0.1:38886", "laptop");
         assert_eq!(config.websocket_url(), "ws://127.0.0.1:38886/internal/ws");
 
-        let config = DaemonConfig::new("https://loom.example.com/", "laptop");
+        let config = WorkerConfig::new("https://loom.example.com/", "laptop");
         assert_eq!(config.websocket_url(), "wss://loom.example.com/internal/ws");
 
-        let config = DaemonConfig::new("ws://host:9/ws", "laptop");
+        let config = WorkerConfig::new("ws://host:9/ws", "laptop");
         assert_eq!(config.websocket_url(), "ws://host:9/internal/ws");
 
-        let config = DaemonConfig::new("host:1234", "laptop");
+        let config = WorkerConfig::new("host:1234", "laptop");
         assert_eq!(config.websocket_url(), "ws://host:1234/internal/ws");
     }
 

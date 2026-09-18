@@ -1,6 +1,6 @@
 [package]
 name = "loom-provider-protocol"
-description = "The wire contract between the loom control plane and a daemon's provider execution"
+description = "The wire contract between the loom control plane and a worker's provider execution"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

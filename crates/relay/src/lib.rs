@@ -24,7 +24,7 @@
 //! adds a dependency-free local log so a restart replays the grace window
 //! instead of losing it. [`backend::redis::RedisBackend`] keeps the log in
 //! Redis Streams, which a second node can attach to and which makes a server
-//! restart invisible to connected daemons; it is configuration, not a new
+//! restart invisible to connected workers; it is configuration, not a new
 //! default. None of them change anything above this line.
 
 #![forbid(unsafe_code)]

@@ -1,6 +1,6 @@
 //! The supervised connection loop: connect, run, reconnect, and self-update.
 //!
-//! [`crate::Daemon`] owns one connection. This module owns the *lifecycle*
+//! [`crate::Worker`] owns one connection. This module owns the *lifecycle*
 //! around it, which is where the operational promises live:
 //!
 //! * a dropped socket is retried with exponential backoff rather than ending
@@ -8,7 +8,7 @@
 //!   not each need the supervisor;
 //! * a server that speaks a newer protocol triggers the update flow
 //!   ([`crate::update`]) instead of a hard failure;
-//! * a failed update keeps the current daemon running and retries on the same
+//! * a failed update keeps the current worker running and retries on the same
 //!   backoff schedule — it never exits into a restart loop, and it never stops
 //!   retrying;
 //! * a *successful* update ends the session so the supervisor starts the new
@@ -26,7 +26,7 @@ use loom_domain::HostId;
 use loom_relay::EventId;
 
 use crate::update::{UpdateOutcome, Updater};
-use crate::{Daemon, DaemonConfig};
+use crate::{Worker, WorkerConfig};
 
 /// The first delay after a dropped connection.
 pub const DEFAULT_RECONNECT_INITIAL: Duration = Duration::from_secs(1);
@@ -37,7 +37,7 @@ pub const DEFAULT_RECONNECT_MAX: Duration = Duration::from_secs(30);
 /// Exponential backoff for reconnects.
 ///
 /// A field rather than a free function because the schedule must survive
-/// successes: a daemon that connects, drops after a second, and reconnects in a
+/// successes: a worker that connects, drops after a second, and reconnects in a
 /// tight loop would otherwise hammer the server with no memory of it. The
 /// caller resets it once a connection has been established and has run for a
 /// while.
@@ -82,12 +82,12 @@ impl ReconnectBackoff {
     }
 }
 
-/// The machine-local state a daemon keeps across restarts.
+/// The machine-local state a worker keeps across restarts.
 ///
 /// A trait rather than concrete file paths so the session loop can be tested
 /// without a filesystem, and so the one place that knows the on-disk layout
 /// stays `main.rs` (next to the host id and cursor it already writes).
-pub trait DaemonState: Send + Sync {
+pub trait WorkerState: Send + Sync {
     /// The identity to present on connect, if a previous run enrolled one.
     fn host_id(&self) -> Result<Option<HostId>, String>;
     /// Persists a freshly minted identity.
@@ -101,7 +101,7 @@ pub trait DaemonState: Send + Sync {
 /// Why a supervised session ended.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SessionOutcome {
-    /// A new daemon was installed (or was already installed) and the caller
+    /// A new worker was installed (or was already installed) and the caller
     /// must exit so the supervisor starts it.
     RestartForUpdate {
         /// What was installed, for the log.
@@ -111,19 +111,19 @@ pub enum SessionOutcome {
     Shutdown,
 }
 
-/// Runs a daemon until `shutdown` resolves or an update requires a restart.
+/// Runs a worker until `shutdown` resolves or an update requires a restart.
 ///
 /// `updater` is `None` when self-update is disabled, in which case a protocol
 /// mismatch is retried on the reconnect backoff rather than fetched — the
-/// daemon still never exits into a restart loop.
+/// worker still never exits into a restart loop.
 pub async fn run_session<S, F>(
-    config: DaemonConfig,
+    config: WorkerConfig,
     updater: Option<&Updater>,
     state: &S,
     shutdown: F,
 ) -> SessionOutcome
 where
-    S: DaemonState + ?Sized,
+    S: WorkerState + ?Sized,
     F: Future<Output = ()>,
 {
     // A join code is a one-time enrollment capability. Keep it in the
@@ -141,26 +141,26 @@ where
         attempt.host_id = match state.host_id() {
             Ok(host_id) => host_id,
             Err(error) => {
-                eprintln!("loom-daemon: could not read the persisted host id: {error}");
+                eprintln!("loom-worker: could not read the persisted host id: {error}");
                 None
             }
         };
         attempt.resume_cursor = match state.cursor() {
             Ok(cursor) => cursor,
             Err(error) => {
-                eprintln!("loom-daemon: could not read the persisted cursor: {error}");
+                eprintln!("loom-worker: could not read the persisted cursor: {error}");
                 None
             }
         };
         let url = attempt.server_url.clone();
 
-        match Daemon::connect(attempt).await {
-            Ok(mut daemon) => {
+        match Worker::connect(attempt).await {
+            Ok(mut worker) => {
                 let connected_at = std::time::Instant::now();
-                let enrolled = match daemon.enroll().await {
+                let enrolled = match worker.enroll().await {
                     Ok(enrolled) => enrolled,
                     Err(error) => {
-                        eprintln!("loom-daemon: enrol failed: {error}");
+                        eprintln!("loom-worker: enrol failed: {error}");
                         let delay = reconnect.take();
                         if wait_or_shutdown(delay, &mut shutdown).await {
                             return SessionOutcome::Shutdown;
@@ -170,37 +170,37 @@ where
                 };
                 config.join_code = None;
                 eprintln!(
-                    "loom-daemon \"{}\" enrolled as {enrolled} with {url}",
+                    "loom-worker \"{}\" enrolled as {enrolled} with {url}",
                     config.name
                 );
                 if let Err(error) = state.save_host_id(&enrolled) {
-                    eprintln!("loom-daemon: could not persist the host id: {error}");
+                    eprintln!("loom-worker: could not persist the host id: {error}");
                 }
 
                 let ended = tokio::select! {
-                    result = daemon.run() => Some(result),
+                    result = worker.run() => Some(result),
                     _ = shutdown.as_mut() => None,
                 };
 
-                let cursor = daemon.cursor().cloned();
+                let cursor = worker.cursor().cloned();
                 if ended.is_none() {
-                    eprintln!("loom-daemon \"{}\" stopping", config.name);
-                    let _ = daemon.disconnect().await;
+                    eprintln!("loom-worker \"{}\" stopping", config.name);
+                    let _ = worker.disconnect().await;
                     if let Err(error) = state.save_cursor(cursor.as_ref()) {
-                        eprintln!("loom-daemon: could not persist the cursor: {error}");
+                        eprintln!("loom-worker: could not persist the cursor: {error}");
                     }
                     return SessionOutcome::Shutdown;
                 }
                 match ended.unwrap() {
                     Ok(()) => {
-                        eprintln!("loom-daemon \"{}\" lost its server connection", config.name);
+                        eprintln!("loom-worker \"{}\" lost its server connection", config.name);
                     }
                     Err(error) => {
-                        eprintln!("loom-daemon \"{}\" connection failed: {error}", config.name);
+                        eprintln!("loom-worker \"{}\" connection failed: {error}", config.name);
                     }
                 }
                 if let Err(error) = state.save_cursor(cursor.as_ref()) {
-                    eprintln!("loom-daemon: could not persist the cursor: {error}");
+                    eprintln!("loom-worker: could not persist the cursor: {error}");
                 }
 
                 // A connection that stayed up at least as long as the delay the
@@ -226,12 +226,12 @@ where
                         // Logged before the update runs: the refusal is the
                         // reason the download is happening, and an operator
                         // reading the journal should see both lines.
-                        eprintln!("loom-daemon \"{}\": {error}", config.name);
+                        eprintln!("loom-worker \"{}\": {error}", config.name);
                         match updater {
                             Some(updater) => {
                                 let outcome = updater.update(server_protocol_version).await;
                                 eprintln!(
-                                    "loom-daemon \"{}\": {}",
+                                    "loom-worker \"{}\": {}",
                                     config.name,
                                     outcome.describe()
                                 );
@@ -267,7 +267,7 @@ where
                         }
                     }
                     None => {
-                        eprintln!("loom-daemon \"{}\": {error}", config.name);
+                        eprintln!("loom-worker \"{}\": {error}", config.name);
                         let delay = reconnect.take();
                         if wait_or_shutdown(delay, &mut shutdown).await {
                             return SessionOutcome::Shutdown;
@@ -372,7 +372,7 @@ mod tests {
         cursor: Mutex<Option<EventId>>,
     }
 
-    impl DaemonState for MemoryState {
+    impl WorkerState for MemoryState {
         fn host_id(&self) -> Result<Option<HostId>, String> {
             Ok(self.host_id.lock().unwrap().clone())
         }
@@ -396,7 +396,7 @@ mod tests {
         // Port 1 refuses immediately: the loop fails to connect, enters its
         // backoff wait, and the ready shutdown must interrupt that wait rather
         // than the test waiting out the delay.
-        let config = DaemonConfig::new("http://127.0.0.1:1", "test-daemon");
+        let config = WorkerConfig::new("http://127.0.0.1:1", "test-worker");
         let outcome = tokio::time::timeout(
             Duration::from_secs(5),
             run_session(config, None, &state, async {}),
@@ -409,7 +409,7 @@ mod tests {
     #[tokio::test]
     async fn a_shutdown_during_a_reconnect_wait_ends_the_session() {
         let state = MemoryState::default();
-        let config = DaemonConfig::new("http://127.0.0.1:1", "test-daemon");
+        let config = WorkerConfig::new("http://127.0.0.1:1", "test-worker");
         // The 1 s reconnect delay must be cut short by this 50 ms shutdown.
         let shutdown = async {
             tokio::time::sleep(Duration::from_millis(50)).await;

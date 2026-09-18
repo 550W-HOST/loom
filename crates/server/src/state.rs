@@ -62,22 +62,22 @@ pub struct AppConfig {
     /// one.
     ///
     /// Defaults to `None`, which is what makes the server-only path safe: no
-    /// local daemon is assumed, so primary-host resolution never gets stranded
+    /// local worker is assumed, so primary-host resolution never gets stranded
     /// on an absent local machine. Set `LOOM_LOCAL_HOST_ID` (or this field) on
-    /// a single-machine deployment to prefer that machine while its daemon is
+    /// a single-machine deployment to prefer that machine while its worker is
     /// attached.
     pub local_host_id: Option<HostId>,
     /// How long a dispatched run may stay in flight before the server reaps it.
     ///
-    /// This is the backstop for a daemon that is connected but wedged. The
+    /// This is the backstop for a worker that is connected but wedged. The
     /// execution plane enforces its own provider timeout; this one exists so a
-    /// silent daemon cannot leave a thread `working` forever.
+    /// silent worker cannot leave a thread `working` forever.
     pub run_timeout: Duration,
     /// How long a host may go without a heartbeat before it is considered gone
     /// and its in-flight runs are failed.
     ///
-    /// Must comfortably exceed the daemon's heartbeat interval; the default is
-    /// four times the daemon default.
+    /// Must comfortably exceed the worker's heartbeat interval; the default is
+    /// four times the worker default.
     pub host_stale_after: Duration,
     /// How often the server runs the timeout/staleness sweep. `Duration::ZERO`
     /// disables the background sweep, which is what unit tests want when they
@@ -104,10 +104,10 @@ pub struct AppConfig {
     /// the one override that lets a dev server serve the client instead while
     /// `/api`, `/ws` and `/internal/ws` stay here.
     pub ui_proxy: Option<String>,
-    /// Where daemon binaries are hosted for self-update.
+    /// Where worker binaries are hosted for self-update.
     ///
     /// `None` falls back to the directory holding the running `loom-server`,
-    /// which is where `install.sh` puts the matching `loom-daemon`. Set it when
+    /// which is where `install.sh` puts the matching `loom-worker`. Set it when
     /// the two binaries are not side by side (a container, or a server that
     /// hosts another machine's artifacts).
     pub artifact_dir: Option<PathBuf>,
@@ -179,7 +179,7 @@ pub struct AppState {
     pub automations: Arc<AutomationsRegistry>,
     /// The static UI source the fallback route serves.
     pub ui: Ui,
-    /// The daemon binaries this server hosts for self-update.
+    /// The worker binaries this server hosts for self-update.
     pub artifacts: Arc<Artifacts>,
     /// One-time host enrollment capabilities.
     pub join_codes: Arc<JoinCodeRegistry>,
@@ -220,7 +220,7 @@ impl AppState {
         let backend: loom_relay::SharedBackend = match (&config.backend_redis, &config.backend_path)
         {
             // Shared backend: every node attaches to the same window, so a
-            // restart does not drop what a connected daemon already had.
+            // restart does not drop what a connected worker already had.
             (Some(redis), None) => Arc::new(loom_relay::backend::redis::RedisBackend::open(
                 redis.clone(),
                 config.backend_max_len,
@@ -628,7 +628,7 @@ impl AppState {
     ///
     /// A restarted server cannot prove a provider is still running, so the
     /// invariant it protects instead is that no thread is left `working` and no
-    /// run is left without a terminal event. The daemon's later report is an
+    /// run is left without a terminal event. The worker's later report is an
     /// idempotent no-op (`ReportOutcome::Unknown`). Returns how many runs were
     /// failed.
     fn fail_in_flight_runs(&self, records: Vec<RunRecord>, now: u64) -> usize {
@@ -863,9 +863,9 @@ impl AppState {
 /// scope is the frame's scope. Run dispatches and any raw producer payloads
 /// share the log, so "is it JSON object with a `type` tag" is not enough.
 pub(crate) fn domain_event_from_envelope(envelope: &loom_relay::Envelope) -> Option<DomainEvent> {
-    let message: crate::protocol::DaemonServerMessage =
+    let message: crate::protocol::WorkerServerMessage =
         serde_json::from_slice(&envelope.payload).ok()?;
-    let crate::protocol::DaemonServerMessage::Event { payload, .. } = message else {
+    let crate::protocol::WorkerServerMessage::Event { payload, .. } = message else {
         return None;
     };
     let event: DomainEvent = serde_json::from_str(&payload).ok()?;
@@ -1133,11 +1133,11 @@ mod tests {
         let mut changes = Vec::new();
         for frame in &frames {
             let Ok(message) =
-                serde_json::from_slice::<crate::protocol::DaemonServerMessage>(&frame.payload)
+                serde_json::from_slice::<crate::protocol::WorkerServerMessage>(&frame.payload)
             else {
                 continue;
             };
-            let crate::protocol::DaemonServerMessage::Event { payload, .. } = message else {
+            let crate::protocol::WorkerServerMessage::Event { payload, .. } = message else {
                 continue;
             };
             let Ok(event) = serde_json::from_str::<DomainEvent>(&payload) else {

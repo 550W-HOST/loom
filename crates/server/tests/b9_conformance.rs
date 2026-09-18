@@ -3,14 +3,14 @@
 //! Every route in this batch is a request to the machine that owns the file or
 //! the process. These tests therefore use a **scripted host**: a real WebSocket
 //! connection that enrolls as a host, receives whatever the control plane
-//! published to its room, and answers with the frame a real daemon would send.
+//! published to its room, and answers with the frame a real worker would send.
 //! That is the property the batch must prove — a file read never touches the
 //! server's own disk, and a terminal is never a server-side abstraction — and a
 //! scripted host can assert exactly which operation it was asked to perform.
 //!
 //! The filesystem and PTY semantics themselves (containment, base64, mode bits,
 //! optimistic-concurrency conflicts, output cursors) are covered against the
-//! real implementations in `crates/daemon`, because that is where the file and
+//! real implementations in `crates/worker`, because that is where the file and
 //! the process actually are.
 //!
 //! Every successful body is validated against the embedded bb contract, and
@@ -670,7 +670,7 @@ async fn files_write_with_a_null_hash_is_create_only() {
     assert_eq!(response.body["outcome"], "written");
     assert_eq!(response.body["sha256"], "fresh");
 
-    // `null` must reach the daemon as create-only, not as "no check".
+    // `null` must reach the worker as create-only, not as "no check".
     match fixture.next_file_request().await {
         HostFileOperation::WriteFile {
             create_only,
@@ -1413,7 +1413,7 @@ async fn deleting_a_thread_settles_its_terminals() {
         .await;
     assert_eq!(deleted.status, 200, "{:?}", deleted.body);
 
-    // The record is settled immediately; the daemon is asked to kill the
+    // The record is settled immediately; the worker is asked to kill the
     // process in the background.
     let read = fixture
         .get(&format!("/api/v1/terminals/{terminal_id}"))
@@ -1461,7 +1461,7 @@ async fn a_terminal_failure_is_reported_and_does_not_fabricate_output() {
         message: "the host lost the output ring".into(),
     });
     let response = fixture.get(&format!("/api/v1/terminals/{id}/output")).await;
-    // An unknown daemon code becomes the generic host failure at the same
+    // An unknown worker code becomes the generic host failure at the same
     // status rather than inventing an error code no client can branch on.
     assert_status_and_error(&response, 502, "host_unavailable");
     fixture.state.shutdown();

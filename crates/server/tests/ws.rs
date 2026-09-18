@@ -175,7 +175,7 @@ async fn public_socket_is_typed_and_needs_no_origin_header() {
     assert_eq!(client.recv().await, json!({ "type": "pong" }));
 
     client
-        .send(json!({ "type": "enroll_host", "name": "not-a-daemon" }))
+        .send(json!({ "type": "enroll_host", "name": "not-a-worker" }))
         .await;
     assert!(client.try_recv(Duration::from_millis(100)).await.is_none());
 
@@ -264,7 +264,7 @@ async fn public_list_and_project_targets_cover_entities_created_after_subscribe(
 }
 
 #[tokio::test]
-async fn old_daemon_endpoint_receives_a_version_mismatch_frame_then_closes() {
+async fn old_worker_endpoint_receives_a_version_mismatch_frame_then_closes() {
     use futures_util::StreamExt;
 
     let (addr, state) = spawn_server().await;
@@ -580,44 +580,44 @@ async fn the_host_and_thread_commands_drive_a_real_conversation() {
 }
 
 #[tokio::test]
-async fn a_daemon_enrolls_over_the_socket_and_a_lost_socket_detaches_it() {
+async fn a_worker_enrolls_over_the_socket_and_a_lost_socket_detaches_it() {
     let (addr, state) = spawn_server().await;
 
-    let mut daemon = Client::connect(&addr).await;
-    daemon
+    let mut worker = Client::connect(&addr).await;
+    worker
         .send(json!({ "type": "enroll_host", "name": "laptop" }))
         .await;
-    let enrolled = daemon.recv().await;
+    let enrolled = worker.recv().await;
     assert_eq!(enrolled["type"], "host_enrolled");
     assert_eq!(enrolled["host"]["status"], "connected");
     let host_id = enrolled["host"]["id"].as_str().unwrap().to_string();
     assert!(enrolled["event_id"].as_str().unwrap().len() == 26);
 
     // A heartbeat from the enrolled connection is acknowledged.
-    daemon
+    worker
         .send(json!({ "type": "host_heartbeat", "host_id": host_id }))
         .await;
-    let ack = daemon.recv().await;
+    let ack = worker.recv().await;
     assert_eq!(ack["type"], "host_heartbeat_ack");
     assert_eq!(ack["host_id"], host_id);
 
-    // Dispatch reaches a daemon that follows its own host room.
-    daemon.subscribe(Scope::Host(host_id.clone())).await;
+    // Dispatch reaches a worker that follows its own host room.
+    worker.subscribe(Scope::Host(host_id.clone())).await;
     state
         .publish(Scope::Host(host_id.clone()), "{\"dispatch\":1}")
         .unwrap();
-    assert_eq!(daemon.recv().await["payload"], "{\"dispatch\":1}");
+    assert_eq!(worker.recv().await["payload"], "{\"dispatch\":1}");
 
-    // A daemon may not speak for another machine.
+    // A worker may not speak for another machine.
     let other = loom_domain::HostId::mint();
-    daemon
+    worker
         .send(json!({ "type": "host_heartbeat", "host_id": other }))
         .await;
-    assert_eq!(daemon.recv().await["type"], "error");
+    assert_eq!(worker.recv().await["type"], "error");
 
     // Dropping the socket without a goodbye still detaches the host, and the
     // server keeps serving.
-    drop(daemon);
+    drop(worker);
     let host_id = host_id.parse::<loom_domain::HostId>().unwrap();
     for _ in 0..200 {
         if state

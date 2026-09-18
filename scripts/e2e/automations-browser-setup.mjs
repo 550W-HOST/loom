@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * Boots the stack the browser acceptance run drives: a real server role, a
- * real daemon role with an ACP stub provider, and the product app compiled into
+ * real worker role with an ACP stub provider, and the product app compiled into
  * the binary.
  *
  * The browser talks to **the server's origin**, serving the same bundle a
@@ -13,7 +13,7 @@
  * acceptance evidence W-599.5 asks for — a human (or an agent driving a
  * browser) walks the Automations view against real processes. What is checked
  * automatically is the same flow at the API level (`crates/server/tests/`,
- * `crates/daemon/tests/`); what this adds is the view.
+ * `crates/worker/tests/`); what this adds is the view.
  *
  *   node scripts/e2e/automations-browser-setup.mjs [--keep] [--reuse]
  *
@@ -47,11 +47,11 @@ const uiDir = process.env.LOOM_E2E_UI_DIR ?? join(repoRoot, "apps", "app", "dist
 
 const root = reuseRoot ?? mkdtempSync(join(tmpdir(), "loom-e2e-"));
 const serverDataDir = join(root, "server");
-const daemonDataDir = join(root, "daemon");
+const workerDataDir = join(root, "worker");
 
 /**
  * The ACP stub: a JSON-RPC agent over stdio that answers the handshake and one
- * prompt, the same shell the Rust end-to-end tests write, so the daemon's real
+ * prompt, the same shell the Rust end-to-end tests write, so the worker's real
  * ACP client is what the browser run exercises.
  */
 const stubPath = join(root, "acp-stub.sh");
@@ -144,11 +144,11 @@ start("server", join(repoRoot, "target", "debug", "loom"), ["server"], {
 });
 
 start(
-  "daemon",
+  "worker",
   join(repoRoot, "target", "debug", "loom"),
-  ["daemon", "--server-url", apiOrigin, "--name", "e2e"],
+  ["worker", "--server-url", apiOrigin, "--name", "e2e"],
   {
-    LOOM_DATA_DIR: daemonDataDir,
+    LOOM_DATA_DIR: workerDataDir,
     LOOM_PROVIDER_CMD: stubPath,
     LOOM_PROVIDER_ARGS: "",
   },
@@ -189,7 +189,7 @@ process.stdout.write(
     apiOrigin,
     dataDir: root,
     serverDataDir,
-    daemonDataDir,
+    workerDataDir,
     acpStub: stubPath,
   })}\n`,
 );

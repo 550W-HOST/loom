@@ -1,6 +1,6 @@
 [package]
-name = "loom-daemon"
-description = "loom host daemon: the execution-plane process, started and stopped independently of the server"
+name = "loom-worker"
+description = "loom worker: the execution-plane process, started and stopped independently of the server"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

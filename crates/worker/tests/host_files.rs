@@ -1,4 +1,4 @@
-//! The daemon's host file reads and listings, against a real filesystem.
+//! The worker's host file reads and listings, against a real filesystem.
 //!
 //! The server's B5 conformance tests use a scripted host, because what they
 //! must prove is that the *control plane* asks a machine rather than reading its
@@ -7,11 +7,11 @@
 
 use std::path::{Path, PathBuf};
 
-use loom_daemon::host_files::answer;
 use loom_domain::HostId;
 use loom_provider_protocol::{
     HostFileEncoding, HostFileOperation, HostFileOutcome, HostFileRequest, HostPathKind,
 };
+use loom_worker::host_files::answer;
 
 fn request(operation: HostFileOperation) -> HostFileRequest {
     HostFileRequest {
@@ -131,7 +131,7 @@ fn a_missing_file_and_a_directory_are_each_refused_with_their_own_code() {
     assert_eq!(code, "invalid_path");
     assert!(message.contains("directory"), "{message}");
 
-    // A relative path is refused outright: this daemon has no cwd to resolve it
+    // A relative path is refused outright: this worker has no cwd to resolve it
     // against, and guessing one is how the wrong file gets served.
     let (code, _) = failure(read(Path::new("relative.txt"), None, 1024));
     assert_eq!(code, "invalid_path");

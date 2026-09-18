@@ -195,7 +195,7 @@ impl Fixture {
         self.thread_id.parse().unwrap()
     }
 
-    /// Records an interaction directly, the way a daemon's report would.
+    /// Records an interaction directly, the way a worker's report would.
     ///
     /// The payload is the smallest body the contract declares for each kind, so
     /// every response built from it is valid without the route reshaping
@@ -1150,7 +1150,7 @@ async fn clear_goal_publishes_the_clearing_event_the_client_projects() {
 
     // A goal is not a stored field: it is a projection of the thread's run log.
     // Publishing `thread/goal/updated` is what sets it, so the test does that
-    // the same way a daemon report would.
+    // the same way a worker report would.
     fixture
         .state
         .publish_domain_event(&loom_domain::DomainEvent::ThreadRunEvent {
@@ -1220,7 +1220,7 @@ async fn event_wait_returns_null_on_timeout_and_a_row_on_a_match() {
         .and_then(|row| row["seq"].as_u64())
         .unwrap_or(0);
 
-    // A run event, the shape a daemon report becomes.
+    // A run event, the shape a worker report becomes.
     let thread_id = fixture.thread_id();
     let project_id = fixture
         .state

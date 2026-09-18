@@ -70,7 +70,7 @@ impl Hub {
 
     /// Registers a connection, subscribed to `primary`.
     ///
-    /// A client always starts in its own scope; daemons start in their host
+    /// A client always starts in its own scope; workers start in their host
     /// scope. Returns the new connection id.
     pub fn connect(&mut self, transport: Box<dyn Transport>, primary: Scope) -> ConnId {
         self.next_conn_id += 1;

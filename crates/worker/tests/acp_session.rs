@@ -18,11 +18,11 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use loom_daemon::acp::permission::PermissionRegistry;
-use loom_daemon::acp::session::{drive, Transport};
-use loom_daemon::provider::ProviderRun;
 use loom_domain::RunOutcome;
 use loom_provider_protocol::ProviderSpec;
+use loom_worker::acp::permission::PermissionRegistry;
+use loom_worker::acp::session::{drive, Transport};
+use loom_worker::provider::ProviderRun;
 use tokio::sync::mpsc;
 
 /// The `pi-acp` binary, when this checkout can find one.
@@ -428,7 +428,7 @@ async fn a_dispatch_without_a_working_directory_is_refused() {
     let (tx, mut rx) = mpsc::channel(64);
     let mut run = run("/tmp");
     // An ACP session is created *in* a directory; without one there is nothing
-    // to create it in, and starting in the daemon's own cwd would edit the
+    // to create it in, and starting in the worker's own cwd would edit the
     // wrong project.
     run.spec.cwd = None;
     let transport = Transport::Stdio {
@@ -502,7 +502,7 @@ async fn the_terminal_event_carries_an_outcome() {
     let terminal = terminal(&events).expect("a run ends");
     assert!(
         terminal.outcome.is_some(),
-        "the daemon's verdict travels with the terminal event"
+        "the worker's verdict travels with the terminal event"
     );
     assert!(matches!(
         terminal.outcome,
@@ -578,7 +578,7 @@ async fn the_thread_is_identified_before_any_update_about_it() {
 }
 
 /// A workspace that no longer exists fails the run, rather than starting the
-/// agent in whatever directory the daemon happens to be in.
+/// agent in whatever directory the worker happens to be in.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_workspace_that_does_not_exist_is_refused() {
     let (tx, mut rx) = mpsc::channel(64);
@@ -619,7 +619,7 @@ async fn a_workspace_that_does_not_exist_is_refused() {
 ///
 /// This is the failure bb's own bridge found worth guarding: a resumed session
 /// belongs to the directory it was created in, so if that directory is gone the
-/// conversation cannot continue — and starting a new one in the daemon's own cwd
+/// conversation cannot continue — and starting a new one in the worker's own cwd
 /// would edit the wrong project while looking like success.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_resume_in_a_missing_workspace_fails_and_names_the_path() {
@@ -657,7 +657,7 @@ async fn a_resume_in_a_missing_workspace_fails_and_names_the_path() {
     // The refusal is returned before any session exists, and nothing was
     // reported as a resumed identity: no session was opened at all. `drive`'s
     // contract is that a pre-terminal failure is returned and `spawn` — the
-    // daemon's path — turns it into the one terminal event, so the assertion
+    // worker's path — turns it into the one terminal event, so the assertion
     // here is on the reason rather than on a terminal event.
     let message = result.expect_err("a missing workspace must be refused");
     assert!(
@@ -781,7 +781,7 @@ async fn a_real_agent_is_probed_for_its_session_capabilities() {
         eprintln!("skipping: no pi-acp binary (set PI_ACP_BIN or build the sibling checkout)");
         return;
     };
-    use loom_daemon::acp::sessions::{list_sessions, SessionListOutcome};
+    use loom_worker::acp::sessions::{list_sessions, SessionListOutcome};
 
     let outcome = list_sessions(
         Transport::Stdio {

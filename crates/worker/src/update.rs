@@ -1,18 +1,18 @@
-//! Daemon self-update: what a daemon does when the server speaks a newer
+//! Worker self-update: what a worker does when the server speaks a newer
 //! protocol.
 //!
-//! A server and a daemon must agree on [`loom_server::PROTOCOL_VERSION`] to
+//! A server and a worker must agree on [`loom_server::PROTOCOL_VERSION`] to
 //! exchange a single frame, and upgrading every execution machine by hand is the
 //! operational trap this module removes. The design is:
 //!
-//! 1. **Pull, not push.** The daemon asks on connect; the server never tells a
-//!    connected daemon to update. Everything needed is already in the handshake
+//! 1. **Pull, not push.** The worker asks on connect; the server never tells a
+//!    connected worker to update. Everything needed is already in the handshake
 //!    — the server's protocol version arrives in the internal `hello` frame — so the
-//!    daemon needs no update state machine driven by the control plane and the
+//!    worker needs no update state machine driven by the control plane and the
 //!    server never has to track who is current. See `docs/upgrades.md` for the
 //!    conclusion and the trade-offs against a push design.
 //! 2. **The server hosts the artifact that matches it.** [`ArtifactClient`]
-//!    fetches `/install/loom-daemon` from the same server whose protocol did not
+//!    fetches `/install/loom-worker` from the same server whose protocol did not
 //!    match, so "the binary is compatible with this server" is true by
 //!    construction. No release lookup, no version matrix, no external service.
 //! 3. **Verify before install, install atomically, keep the old binary until the
@@ -21,12 +21,12 @@
 //!    `rename`d over it. A failed download, a failed digest and a failed write
 //!    all leave the current process running the current binary.
 //! 4. **Exit for the supervisor; never replace the running process.** After a
-//!    successful install the daemon exits and systemd's `Restart=always` starts
+//!    successful install the worker exits and systemd's `Restart=always` starts
 //!    the new binary. loom already makes a restart safe — the host identity and
 //!    the replay cursor are persisted — so the restart is the update, not a side
 //!    effect of one.
 //! 5. **Back off, do not spin.** Attempts are counted per target protocol
-//!    version and persisted, so a daemon whose new binary still mismatches
+//!    version and persisted, so a worker whose new binary still mismatches
 //!    retries on an exponential schedule (5 s doubling to 5 min) instead of
 //!    restart-looping.
 //!
@@ -39,7 +39,7 @@
 //! disconnect: the provider process is gone with the old process, the server's
 //! reaper terminates the run (`host_stale`, or `timed_out` past its deadline),
 //! and the thread leaves `working`. It is not resumed, because the dispatch was
-//! published before the daemon's persisted cursor and is therefore not replayed;
+//! published before the worker's persisted cursor and is therefore not replayed;
 //! re-issue the turn. See `docs/upgrades.md` § In-flight runs.
 
 use std::path::{Path, PathBuf};
@@ -49,29 +49,29 @@ use loom_server::artifacts::{sha256_hex, valid_sha256_hex, ArtifactClient, Artif
 use loom_server::PROTOCOL_VERSION;
 use serde::{Deserialize, Serialize};
 
-/// How long the first retry waits, matching bb's daemon self-update.
+/// How long the first retry waits, matching bb's host-daemon self-update.
 pub const DEFAULT_INITIAL_BACKOFF: Duration = Duration::from_secs(5);
 
-/// The longest a retry waits, matching bb's daemon self-update.
+/// The longest a retry waits, matching bb's host-daemon self-update.
 pub const DEFAULT_MAX_BACKOFF: Duration = Duration::from_secs(5 * 60);
 
-/// File the attempt counter lives in, inside the daemon's state directory.
-pub const ATTEMPT_FILE: &str = "host-daemon-update-attempt.json";
+/// File the attempt counter lives in, inside the worker's state directory.
+pub const ATTEMPT_FILE: &str = "worker-update-attempt.json";
 
 /// File the digest of the last successfully installed artifact lives in.
 pub const INSTALLED_DIGEST_FILE: &str = "host-artifact.sha256";
 
-/// How the daemon should behave when the server's protocol does not match.
+/// How the worker should behave when the server's protocol does not match.
 #[derive(Clone, Debug)]
 pub struct UpdateConfig {
     /// Whether self-update is permitted. An operator turns it off with
     /// `--no-auto-update` / `LOOM_AUTO_UPDATE=0`; the reason is logged and the
-    /// daemon then refuses a mismatched server loudly instead of fetching.
+    /// worker then refuses a mismatched server loudly instead of fetching.
     pub enabled: bool,
     /// The binary to replace. Defaults to the running executable.
     pub install_path: PathBuf,
     /// Where the attempt counter and installed digest are kept. `None` keeps
-    /// them in memory only, which is what a daemon started without `--state`
+    /// them in memory only, which is what a worker started without `--state`
     /// gets: it still updates, it just cannot back off across restarts.
     pub state_dir: Option<PathBuf>,
     /// The target triple to fetch: the one this binary was built for.
@@ -109,16 +109,16 @@ pub struct UpdateAttempt {
     pub protocol_version: u32,
 }
 
-/// What the daemon should do after asking the server whether it is current.
+/// What the worker should do after asking the server whether it is current.
 ///
-/// Every variant is a decision, not an error: a daemon that cannot update keeps
+/// Every variant is a decision, not an error: a worker that cannot update keeps
 /// running its current binary and retries on the backoff schedule.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum UpdateOutcome {
     /// Self-update was disabled by the operator.
     Disabled,
     /// The server does not speak a newer protocol. Nothing to do — and a
-    /// **downgrade is never attempted**, which is what keeps a daemon that is
+    /// **downgrade is never attempted**, which is what keeps a worker that is
     /// ahead of an old server from regressing itself.
     NotNewer {
         /// The server's protocol version.
@@ -175,7 +175,7 @@ impl UpdateOutcome {
         )
     }
 
-    /// A one-line description for the daemon's log.
+    /// A one-line description for the worker's log.
     pub fn describe(&self) -> String {
         match self {
             UpdateOutcome::Disabled => "self-update disabled by configuration".into(),
@@ -183,7 +183,7 @@ impl UpdateOutcome {
             UpdateOutcome::AlreadyCurrent {
                 version, digest, ..
             } => format!(
-                "the server's daemon artifact {version} ({digest}) is already installed; \
+                "the server's worker artifact {version} ({digest}) is already installed; \
                  restarting to run it"
             ),
             UpdateOutcome::Installed {
@@ -192,11 +192,11 @@ impl UpdateOutcome {
                 path,
                 ..
             } => format!(
-                "installed daemon {version} ({digest}) at {}; restarting to run it",
+                "installed worker {version} ({digest}) at {}; restarting to run it",
                 path.display()
             ),
             UpdateOutcome::Failed { reason, retry_in } => format!(
-                "self-update failed: {reason}; keeping the current daemon and retrying in {:.1}s",
+                "self-update failed: {reason}; keeping the current worker and retrying in {:.1}s",
                 retry_in.as_secs_f64()
             ),
             UpdateOutcome::BackingOff {
@@ -256,7 +256,7 @@ impl std::fmt::Debug for Updater {
 }
 
 impl Updater {
-    /// Builds an updater for `server_url` (the same URL the daemon dials).
+    /// Builds an updater for `server_url` (the same URL the worker dials).
     pub fn new(config: UpdateConfig, server_url: &str) -> Result<Self, String> {
         let client = ArtifactClient::new(server_url)?;
         Ok(Self {
@@ -291,12 +291,12 @@ impl Updater {
                 server_protocol_version,
                 reason: if server_protocol_version < PROTOCOL_VERSION {
                     format!(
-                        "server speaks protocol {server_protocol_version}, this daemon speaks \
+                        "server speaks protocol {server_protocol_version}, this worker speaks \
                          {PROTOCOL_VERSION}; refusing to downgrade"
                     )
                 } else {
                     format!(
-                        "server speaks protocol {server_protocol_version}, matching this daemon; \
+                        "server speaks protocol {server_protocol_version}, matching this worker; \
                          no update needed"
                     )
                 },
@@ -331,7 +331,7 @@ impl Updater {
             // A state directory that cannot be written is not fatal: the update
             // can still proceed, it just cannot back off across restarts. Say
             // so rather than refusing to update.
-            eprintln!("loom-daemon: could not record the update attempt: {error}");
+            eprintln!("loom-worker: could not record the update attempt: {error}");
         }
         self.attempt_with_backoff(attempt.attempt_count).await
     }
@@ -345,7 +345,7 @@ impl Updater {
             return UpdateOutcome::NotNewer {
                 server_protocol_version,
                 reason: format!(
-                    "server speaks protocol {server_protocol_version}, this daemon speaks \
+                    "server speaks protocol {server_protocol_version}, this worker speaks \
                      {PROTOCOL_VERSION}; refusing to update"
                 ),
             };
@@ -357,7 +357,7 @@ impl Updater {
             protocol_version: server_protocol_version,
         };
         if let Err(error) = self.write_attempt(&attempt) {
-            eprintln!("loom-daemon: could not record the update attempt: {error}");
+            eprintln!("loom-worker: could not record the update attempt: {error}");
         }
         self.attempt_with_backoff(attempt.attempt_count).await
     }
@@ -425,7 +425,7 @@ impl Updater {
 
         let path = self.install(&bytes).await?;
         if let Err(error) = self.write_installed_digest(&digest) {
-            eprintln!("loom-daemon: could not record the installed artifact digest: {error}");
+            eprintln!("loom-worker: could not record the installed artifact digest: {error}");
         }
         Ok(UpdateOutcome::Installed {
             protocol_version: server.protocol_version,
@@ -439,7 +439,7 @@ impl Updater {
     ///
     /// Write-then-rename, both in the install directory, is what makes this
     /// atomic: the running process keeps its image (an open file is not
-    /// disturbed by a rename over its name), and a daemon that restarts
+    /// disturbed by a rename over its name), and a worker that restarts
     /// mid-write finds either the old binary or the complete new one. The
     /// temporary file is removed on every failure path.
     async fn install(&self, bytes: &[u8]) -> Result<PathBuf, String> {
@@ -452,7 +452,7 @@ impl Updater {
             ".{}.update.{}",
             path.file_name()
                 .and_then(|name| name.to_str())
-                .unwrap_or("loom-daemon"),
+                .unwrap_or("loom-worker"),
             std::process::id()
         ));
 
@@ -577,7 +577,7 @@ mod tests {
     async fn a_downgrade_is_never_attempted() {
         let config = UpdateConfig {
             enabled: true,
-            install_path: PathBuf::from("/nonexistent/loom-daemon"),
+            install_path: PathBuf::from("/nonexistent/loom-worker"),
             state_dir: None,
             target: "x86_64-unknown-linux-musl".into(),
             initial_backoff: DEFAULT_INITIAL_BACKOFF,
@@ -602,7 +602,7 @@ mod tests {
     async fn a_matching_server_needs_no_update() {
         let config = UpdateConfig {
             enabled: true,
-            install_path: PathBuf::from("/nonexistent/loom-daemon"),
+            install_path: PathBuf::from("/nonexistent/loom-worker"),
             state_dir: None,
             target: "t".into(),
             initial_backoff: DEFAULT_INITIAL_BACKOFF,
@@ -617,7 +617,7 @@ mod tests {
     async fn a_disabled_updater_does_nothing() {
         let config = UpdateConfig {
             enabled: false,
-            install_path: PathBuf::from("/nonexistent/loom-daemon"),
+            install_path: PathBuf::from("/nonexistent/loom-worker"),
             state_dir: None,
             target: "t".into(),
             initial_backoff: DEFAULT_INITIAL_BACKOFF,
@@ -712,7 +712,7 @@ mod tests {
     #[tokio::test]
     async fn installing_replaces_the_file_atomically_and_leaves_no_temporary() {
         let dir = tempfile::tempdir().unwrap();
-        let install_path = dir.path().join("loom-daemon");
+        let install_path = dir.path().join("loom-worker");
         std::fs::write(&install_path, b"old binary").unwrap();
 
         let mut config = UpdateConfig::for_current_binary(true, None).unwrap();
@@ -743,7 +743,7 @@ mod tests {
     #[tokio::test]
     async fn a_failed_install_leaves_the_current_binary_untouched() {
         let dir = tempfile::tempdir().unwrap();
-        let install_path = dir.path().join("loom-daemon");
+        let install_path = dir.path().join("loom-worker");
         std::fs::write(&install_path, b"old binary").unwrap();
 
         let mut config = UpdateConfig::for_current_binary(true, None).unwrap();

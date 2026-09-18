@@ -21,7 +21,7 @@ pub struct Envelope {
     pub event_id: EventId,
     /// The room this event belongs to.
     pub scope: Scope,
-    /// The frame exactly as it should reach a client or daemon.
+    /// The frame exactly as it should reach a client or worker.
     pub payload: Bytes,
     /// Producer wall-clock time, in milliseconds since the epoch.
     pub created_at_ms: u64,

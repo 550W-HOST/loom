@@ -22,15 +22,15 @@ covers:
 loom-specific frames must never be sent to a bb client. The contract is a lower
 bound, not a suggestion.
 
-**2. Server↔daemon surface — intentional divergence.** bb's daemon protocol is
-replaced because the daemon is a Rust rewrite (`loom-daemon`) and the relay
+**2. Server↔worker surface — intentional divergence.** bb's daemon protocol is
+replaced because the worker is a Rust rewrite (`loom-worker`) and the relay
 owns delivery. The relay envelope in `crates/server/src/protocol.rs`
 (`subscribe { scope }`, `event { event_id, scope, payload }`, `enroll_host`,
 `run_report`, ...) is the **internal transport**, not the client protocol. It is
 still captured here as `host-daemon.json` so the Node execution plane can be
 checked in against it later, but loom is allowed to differ. This is the
 "明确分歧" the issue asked for: the divergence is real and is confined to the
-daemon half of the wire.
+worker half of the wire.
 
 ### Current wire split
 
@@ -39,14 +39,14 @@ daemon half of the wire.
 - `/ws` accepts only bb `subscribe`/`unsubscribe`/`ping` messages when the
   client explicitly negotiates `loom-bb-realtime-v1`; it emits only
   `changed`/`pong`.
-- `/internal/ws` carries daemon enrollment, scoped relay delivery, reports and
+- `/internal/ws` carries worker enrollment, scoped relay delivery, reports and
   replay under `PROTOCOL_VERSION`.
 
 No `Origin` or user-agent heuristic selects a protocol. During the v2 to v3
 migration only, a `/ws` connection that offers no subprotocol receives a legacy
 `welcome` carrying v3 and is immediately closed. That single refusal frame lets
-an already-deployed v2 daemon enter self-update; it cannot enroll or send an
-internal command on the public endpoint. New daemons connect directly to
+an already-deployed v2 worker enter self-update; it cannot enroll or send an
+internal command on the public endpoint. New workers connect directly to
 `/internal/ws` and receive the versioned `hello` frame.
 
 The loom-native HTTP control endpoints remain contract-external and are listed
@@ -59,7 +59,7 @@ The export is **JSON Schema 2020-12 plus a manifest**, one file per surface.
 Why not OpenAPI:
 
 - Two of the four surfaces are not HTTP. bb's UI `/ws`, terminal `/ws` and the
-  daemon `/internal/ws` are WebSocket message protocols. OpenAPI cannot express them, so
+  worker `/internal/ws` are WebSocket message protocols. OpenAPI cannot express them, so
   an OpenAPI document would cover at most a third of the contract and hide the
   rest.
 - The contract is generated from zod and TypeScript, not spec-first. zod v4
@@ -101,8 +101,8 @@ assert!(violations.is_empty(), "{violations:?}");
 
 `Violation` carries a JSON path, so a failure names the field that is wrong.
 The same API covers client messages (`validate_client_message`), server
-messages (`validate_server_message`) and daemon frames
-(`validate_daemon_message`, `validate_server_to_daemon_message`).
+messages (`validate_server_message`) and worker frames
+(`validate_worker_message`, `validate_server_to_worker_message`).
 Thread projection code can query `thread_event_schema("item/started")` or
 validate a complete event with `validate_thread_event`.
 
@@ -186,7 +186,7 @@ decision, not a test waiver:
 
 - **`threads.compact` answers `501 not_configured`.** Compaction asks the
   provider to summarise its own context, and `loom_provider_protocol` has no
-  such frame: a dispatch carries a prompt, nothing more. The daemon only ever
+  such frame: a dispatch carries a prompt, nothing more. The worker only ever
   *observes* compaction — Pi decides, and the bridge maps `compaction_end` to
   `thread/compacted` (`docs/event-model.md` row 7) — so there is no direction in
   which one can be requested. Answering `{ "ok": true }` for a compaction that
@@ -210,7 +210,7 @@ decision, not a test waiver:
   contract declares one and B2's refusal was explicitly a placeholder for it.
 - **`threads.stop` cancels on the control plane only.** The stop shares the run
   lifecycle (`finish_run` with `RunOutcome::Cancelled`), so the thread scope
-  receives one terminal event and the thread returns to `idle`. The daemon is
+  receives one terminal event and the thread returns to `idle`. The worker is
   not told, because the provider protocol has no cancel frame; the provider
   process runs to its own end and its later reports are dropped as unknown runs,
   exactly as a superseded run's already are. The route is idempotent: a thread
@@ -278,7 +278,7 @@ breaking change.
 * **`cancel`** settles the interaction as `interrupted` with **no answer**. It
   is not a denial: a denial is a decision the provider receives, whereas a
   cancellation is loom giving up on a question the provider will never get an
-  answer to (because the run was stopped, or the daemon went away).
+  answer to (because the run was stopped, or the worker went away).
 
 A settled interaction refuses a second answer with `409
 awaiting_user_interaction`, which is a status the contract declares for that
@@ -286,12 +286,12 @@ code. `finish_run_with` settles every interaction a thread still had open when
 its turn ended, so `hasPendingInteraction` in the thread list cannot be stuck.
 
 **Where interactions come from.** ACP's `session/request_permission` is the
-producer, wired in W-566. The daemon holds the request open and sends
+producer, wired in W-566. The worker holds the request open and sends
 `ClientCommand::InteractionRequest` up its socket; `AppState::record_interaction_request`
 records a durable interaction and publishes `thread_interaction_changed` to the
 thread scope; a client answers over the interaction routes; and
 `AppState::deliver_interaction_resolution` publishes
-`InteractionResolutionFrame` through the relay to `host:{id}`, where the daemon's
+`InteractionResolutionFrame` through the relay to `host:{id}`, where the worker's
 broker hands it to the agent's blocked request.
 
 That is a frame in each direction, which is what the earlier batch deliberately
@@ -304,10 +304,10 @@ client or a reviewer will check:
   timeline.
 * **The interaction id is derived from `(run_id, request_id)`.** ACP's request
   ids are unique only within a session, so scoping the hash by run is what keeps
-  a restarted daemon's fresh question from colliding with a settled row from an
+  a restarted worker's fresh question from colliding with a settled row from an
   earlier run. The provider's own id stays verbatim in `origin`, so the answer
   frame can name it.
-* **No client, no answer.** The daemon cancels an unanswered request after its
+* **No client, no answer.** The worker cancels an unanswered request after its
   permission timeout, cancels it immediately when the control plane refuses to
   record it, and cancels every open request when the connection drops. A
   cancellation is never an approval. See `docs/acp-adapter.md`.
@@ -442,13 +442,13 @@ machines, and on a single-machine one the answer would be right by accident and
 wrong by design. So `loom-provider-protocol` gained a third request/report pair:
 
 ```text
-  server ── HostFileRequest ──▶ relay host:{id} ──▶ daemon
-  server ◀── HostFileReport ── daemon socket (host_file_report)
+  server ── HostFileRequest ──▶ relay host:{id} ──▶ worker
+  server ◀── HostFileReport ── worker socket (host_file_report)
 ```
 
 The request travels **through the relay** for the same reason a dispatch does: a
-daemon that was reconnecting receives it on replay, and replaying a read is
-harmless because reading is idempotent. The answer comes back **up the daemon's
+worker that was reconnecting receives it on replay, and replaying a read is
+harmless because reading is idempotent. The answer comes back **up the worker's
 own socket**, not through the room, because it satisfies exactly one waiting
 HTTP request — fanning a file's contents out to every client watching the host
 would be a leak with no reader.
@@ -466,15 +466,15 @@ room nobody is in could only time out. The timeout is `30 s`, matching bb's
 
 ### Thread storage is named from the host's own data directory
 
-`<data_dir>/thread-storage/<thread_id>` is bb's layout, and it is the **daemon**
+`<data_dir>/thread-storage/<thread_id>` is bb's layout, and it is the **worker**
 that owns it. The control plane cannot know a machine's data directory unless
 that machine says so, so `enroll_host` gained an additive `data_dir` field, and
 `Host` records it. `threads.storageLocation` is then answered from the entity
 view without asking the host at all: it is a question about the layout, and a
-client opening a storage panel should not fail because the daemon is briefly
+client opening a storage panel should not fail because the worker is briefly
 away.
 
-A host that never reported a data directory — an older daemon, or a host
+A host that never reported a data directory — an older worker, or a host
 enrolled through the reference HTTP endpoint — answers **`501 not_configured`**
 on the storage routes. Inventing a path on a machine the server does not own is
 the failure this refuses to commit. The value survives a reconnect and is only
@@ -496,7 +496,7 @@ mirroring bb's `parseSafeRelativeRoutePath`. That check cannot see symlinks and
 cannot see through a path assembled on another machine, so a read that names a
 root is re-checked on the host, which resolves both sides and refuses anything
 that escapes. Both halves are tested: the server test proves a `..` never
-reaches the host, and the daemon test proves a symlink out of the root is
+reaches the host, and the worker test proves a symlink out of the root is
 refused.
 
 The absolute-host scope is deliberately **not** root-confined — the client is
@@ -570,7 +570,7 @@ the decision:
 A source with an empty path (a repository declared but not yet checked out) is
 a `409 conflict`, not an empty directory: those are different facts. As in B5,
 relative paths are refused with `400 invalid_path` before a request is built,
-and the daemon re-resolves the real path against the workspace root.
+and the worker re-resolves the real path against the workspace root.
 
 ### Attachments are written by the host, inside a root it enforces
 
@@ -581,11 +581,11 @@ handler rejects a missing file part, an empty file, a file over 16 MB, and a
 name that reduces to nothing. Only the final path segment of a client-supplied
 name survives, so `../../etc/passwd` cannot name a destination.
 
-Storing one is a `HostFileOperation::Write` the daemon confines to
+Storing one is a `HostFileOperation::Write` the worker confines to
 `<data_dir>/project-attachments/<project_id>` — the sibling of B5's thread
 storage, named from the same reported data directory, with the same `501
 not_configured` when a host never reported one. The bytes travel base64-encoded
-so binary uploads survive the JSON hop. The daemon resolves the target's
+so binary uploads survive the JSON hop. The worker resolves the target's
 **parent** against the root before joining the file name, because the target
 does not exist yet and a symlinked parent is exactly the escape a prefix
 comparison would miss.
@@ -604,7 +604,7 @@ A prompt-command list is a property of the workspace on disk — project prompts
 live under `<cwd>/.pi/prompts` — so this is a `HostRpcOperation::ListCommands`
 against the project's source. The discovery itself is `pi-acp`'s
 (`load_slash_commands` plus the built-in command list), so loom does not
-maintain a second, drifting notion of where a slash command lives. The daemon
+maintain a second, drifting notion of where a slash command lives. The worker
 answers raw rows and the control plane projects them into bb's
 `projectCommandSchema`: a file command is `origin: project`, a built-in is
 `origin: builtin`, and `source` is always `command`. The contract's `provider`
@@ -668,16 +668,16 @@ exception, questions for the machine that owns the file or the process.
 
 Every file route follows B5/B7's rule. The control plane resolves the target
 host — an explicit `hostId`, or the primary connected host — and publishes a
-`HostFileRequest`; the daemon performs the operation and reports the outcome.
+`HostFileRequest`; the worker performs the operation and reports the outcome.
 The three scopes are:
 
 - **Root-confined** (`mkdir`, `write`, `move`, `remove`, `read`) — `rootPath` is
   **required**, and the path is treated as root-relative. It is validated for
-  `..`/NUL/backslash/absolute escapes here and then re-checked on the daemon
+  `..`/NUL/backslash/absolute escapes here and then re-checked on the worker
   against the *canonicalised* path, so a symlink inside the root cannot leave
   it. A route in this family with no root is a `400 invalid_request` before
   anything is published: the route's job is to require the boundary, even
-  though the daemon would tolerate its absence.
+  though the worker would tolerate its absence.
 - **Absolute-path** (`list`, `listPaths`, `read` with no root) — the client
   names a path it already knows, still executed on that host.
 - **Preview capability** — B8's short-lived root-bound lease; B9's file routes
@@ -692,7 +692,7 @@ key is what is captured. A mismatch answers `200` with
 `{outcome: "conflict", currentSha256}`, exactly as the contract declares — a
 conflict is a successful comparison, not a transport failure.
 
-The daemon writes through a sibling temp file and renames it into place, so a
+The worker writes through a sibling temp file and renames it into place, so a
 crash mid-write leaves either the old file or the new one, never a truncated
 file that looks like a successful save. The write path reports the SHA-256 of
 the bytes it just wrote as a new optional field on `HostFileContent`, so
@@ -730,11 +730,11 @@ anything is published. A `host_path` target with no `cwd` uses the host's own
 reported data directory, because the control plane cannot invent a path on a
 machine it does not own.
 
-#### Output is bounded on the daemon, and the cursor is explicit
+#### Output is bounded on the worker, and the cursor is explicit
 
 A terminal's stdout is unbounded. Buffering it in the control plane would turn
 "a command printed a lot" into "the server ran out of memory", so each session
-owns a **bounded ring** on the daemon: at most 4096 chunks and 8 MiB of decoded
+owns a **bounded ring** on the worker: at most 4096 chunks and 8 MiB of decoded
 bytes, oldest dropped first. `terminals.output` reads a window
 (`sinceSeq`/`limitChunks`/`tailBytes`, all clamped) and always answers with
 `nextSeq` — the cursor to pass next time — and `truncated`, which says whether
@@ -754,18 +754,18 @@ does not have to distinguish "nothing new" from "no such session".
                 └─ spawn failed ─────────────▶ exited (process-exit)
 
   server connection drops ─▶ session marked `disconnected` (process survives)
-  daemon reconnects ───────▶ the server asks for a full inventory and reconciles
+  worker reconnects ───────▶ the server asks for a full inventory and reconciles
 ```
 
 A terminal belongs to its **process and its user**, not to the server
 connection. So a dropped connection marks the record `disconnected` rather than
-killing the process — the daemon keeps it running — and a reconnect reconciles:
-the daemon is the authority on liveness, and `TerminalOperation::Report` returns
-every session it holds. A session the host no longer knows (a daemon restart, a
+killing the process — the worker keeps it running — and a reconnect reconciles:
+the worker is the authority on liveness, and `TerminalOperation::Report` returns
+every session it holds. A session the host no longer knows (a worker restart, a
 machine reboot) is closed as `daemon-disconnect`; one it still holds is
-returned to `running`. A **clean daemon shutdown**, by contrast, kills every
+returned to `running`. A **clean worker shutdown**, by contrast, kills every
 session it holds: they are its own child processes, and leaving them running
-with no daemon to report them would leak processes the control plane could never
+with no worker to report them would leak processes the control plane could never
 see again.
 
 A thread being deleted or archived, and an environment being destroyed, settle
@@ -781,7 +781,7 @@ touches a host and a disconnected session can still be renamed.
 #### One deliberate divergence in `files.read`
 
 The contract's `filesReadResponseSchema` declares `mimeType` as nullable but
-required, and `content-encoding` as `base64` | `utf8`. The daemon *does* compute
+required, and `content-encoding` as `base64` | `utf8`. The worker *does* compute
 a best-effort media type for the content routes (B5/B7 use it for a
 `content-type` header), but `files.read` deliberately reports `null` rather than
 inventing a type: the client that calls this route is an editor that already

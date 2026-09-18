@@ -1,7 +1,7 @@
 //! Host-side workspace and git operations.
 //!
 //! The server never opens an environment path. It sends a [`HostRpcRequest`]
-//! to the daemon that owns the environment, and this module performs the
+//! to the worker that owns the environment, and this module performs the
 //! operation on that machine. Every command is bounded and every path is
 //! checked again here because the server cannot see host-local symlinks.
 
@@ -55,12 +55,12 @@ struct CommandOutput {
 }
 
 /// Answers one request. This function is async so command children can be
-/// killed on timeout without blocking the daemon's socket loop.
+/// killed on timeout without blocking the worker's socket loop.
 pub async fn answer(request: HostRpcRequest) -> HostRpcReport {
     answer_with_root(request, crate::default_environment_root()).await
 }
 
-/// Answers a request using the daemon's configured workspace root.
+/// Answers a request using the worker's configured workspace root.
 pub async fn answer_with_root(
     request: HostRpcRequest,
     default_root: std::path::PathBuf,
@@ -1451,7 +1451,7 @@ async fn git_file_or_empty(
         )),
         Ok(output) if output.stderr_truncated => Err(Failure::new(
             "output_truncated",
-            "git file output exceeded the daemon output limit",
+            "git file output exceeded the worker output limit",
         )),
         Ok(output) => Ok(output.stdout),
         Err(error) if error.code == "path_not_found" || error.code == "unknown" => Ok(Vec::new()),
@@ -1609,7 +1609,7 @@ fn ensure_complete(output: &CommandOutput, operation: &str) -> Result<(), Failur
     if output.stdout_truncated || output.stderr_truncated {
         return Err(Failure::new(
             "output_truncated",
-            format!("{operation} exceeded the daemon output limit"),
+            format!("{operation} exceeded the worker output limit"),
         ));
     }
     Ok(())
@@ -1795,7 +1795,7 @@ const MAX_LISTED_COMMANDS: usize = 500;
 ///
 /// The discovery itself belongs to `pi-acp` — the same code the ACP adapter
 /// runs when it advertises commands to a client — so loom does not maintain a
-/// second, drifting notion of where a slash command lives. The daemon answers
+/// second, drifting notion of where a slash command lives. The worker answers
 /// plain rows; the control plane projects them into bb's contract shape.
 ///
 /// The project directories are scanned first so a project's command shadows a

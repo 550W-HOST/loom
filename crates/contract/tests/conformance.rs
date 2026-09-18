@@ -228,7 +228,7 @@ fn client_websocket_messages_conform() {
 }
 
 #[test]
-fn daemon_contract_is_typed() {
+fn worker_contract_is_typed() {
     let contract = Contract::load();
     assert_eq!(
         contract
@@ -246,11 +246,11 @@ fn daemon_contract_is_typed() {
 
     let heartbeat = json!({ "type": "heartbeat" });
     assert!(
-        contract.validate_daemon_message(&heartbeat).is_empty(),
-        "heartbeat must be a valid daemon -> server frame"
+        contract.validate_worker_message(&heartbeat).is_empty(),
+        "heartbeat must be a valid worker -> server frame"
     );
     assert!(!contract
-        .validate_daemon_message(&json!({ "type": "not-a-message" }))
+        .validate_worker_message(&json!({ "type": "not-a-message" }))
         .is_empty());
 }
 

@@ -2,7 +2,7 @@
 //! interaction entity, and the answer back.
 //!
 //! The ACP client must answer a permission request, and the answer is the
-//! *user's*, not the daemon's. So the daemon holds the request open and asks the
+//! *user's*, not the worker's. So the worker holds the request open and asks the
 //! control plane, which is where a UI can see and answer it. Two frames carry
 //! the exchange, in opposite directions and over different transports:
 //!
@@ -20,9 +20,9 @@
 //! # Why the answer does not come back on the socket
 //!
 //! A resolution travels down through the relay to `host:{id}`, not as a reply to
-//! the daemon's own `InteractionRequest` frame. That is what lets the answering
-//! client be an ordinary UI that never speaks the daemon protocol, and what
-//! makes a resolution published while the daemon was reconnecting replayable to
+//! the worker's own `InteractionRequest` frame. That is what lets the answering
+//! client be an ordinary UI that never speaks the worker protocol, and what
+//! makes a resolution published while the worker was reconnecting replayable to
 //! it. It is the same shape dispatch already uses.
 //!
 //! # What this module refuses to do
@@ -69,15 +69,15 @@ pub struct PermissionBroker {
     timeout: Duration,
 }
 
-/// The requests a daemon is holding open, shared with the socket loop.
+/// The requests a worker is holding open, shared with the socket loop.
 ///
 /// Shared rather than owned by the broker because the answer arrives on a
 /// different task: the broker is inside a provider's ACP client, while the
-/// resolution arrives from the daemon's socket. Both must see the same table.
+/// resolution arrives from the worker's socket. Both must see the same table.
 ///
-/// Keyed by the daemon's own `request_id`, which is unique within a run, and
+/// Keyed by the worker's own `request_id`, which is unique within a run, and
 /// tagged with the run so one run ending settles only *its* open requests — a
-/// daemon can be running several threads at once, and cancelling another thread's
+/// worker can be running several threads at once, and cancelling another thread's
 /// question would block it for no reason.
 #[derive(Clone, Default)]
 pub struct PermissionRegistry {
@@ -152,7 +152,7 @@ impl PermissionRegistry {
     ///
     /// Called when that run ends: a turn that finished cannot still be blocked on
     /// a question, and a request whose answer can no longer arrive must not keep
-    /// the agent waiting. Scoped by run because a daemon serves several threads
+    /// the agent waiting. Scoped by run because a worker serves several threads
     /// concurrently — settling *every* request here would cancel a question
     /// another run is legitimately waiting on.
     pub async fn cancel_run(&self, run_id: &loom_domain::RunId, reason: &str) -> usize {
@@ -181,7 +181,7 @@ impl PermissionRegistry {
 
     /// Asks every held request to settle as cancelled, returning how many.
     ///
-    /// Called when the connection drops or the daemon is stopping: at that point
+    /// Called when the connection drops or the worker is stopping: at that point
     /// nothing can answer *any* request, so settling all of them is the correct
     /// reading rather than an over-broad one.
     pub async fn cancel_all(&self, reason: &str) -> usize {
@@ -290,7 +290,7 @@ impl PermissionBroker {
         }
     }
 
-    /// The daemon's identity for one ACP request.
+    /// The worker's identity for one ACP request.
     ///
     /// ACP identifies a tool call by `toolCallId`, which is unique within a
     /// session, and a session is one run, so the pair `(session, tool call)` is
@@ -555,7 +555,7 @@ mod tests {
             "a refusal is never an approval"
         );
 
-        // A refusal for something this daemon is not holding — a redelivered
+        // A refusal for something this worker is not holding — a redelivered
         // acknowledgement, or a run that ended first — is a no-op the socket
         // loop logs rather than an error.
         assert!(
@@ -589,7 +589,7 @@ mod tests {
             "the tool call is the subject"
         );
 
-        // The answer arrives on the daemon's socket, not as a reply to the
+        // The answer arrives on the worker's socket, not as a reply to the
         // frame, so it is routed through the shared registry.
         assert!(
             pending
@@ -675,7 +675,7 @@ mod tests {
     /// This is a **documented lossiness**, kept because the alternative is worse.
     /// loom's contract types an approval's answer as one of three decisions, and
     /// its response schema rejects an opaque resolution on an approval — so there
-    /// is no conformant way to name an ACP `optionId`. The daemon therefore maps
+    /// is no conformant way to name an ACP `optionId`. The worker therefore maps
     /// the decision onto the agent's ordering, which is the only rule that does
     /// not invent a choice the user did not make. A permission request whose
     /// options *are* distinguishable by polarity (the normal ACP shape: an
@@ -772,7 +772,7 @@ mod tests {
 
     /// One run ending settles only *its* requests.
     ///
-    /// A daemon serves several threads concurrently. Cancelling every held
+    /// A worker serves several threads concurrently. Cancelling every held
     /// request when one turn finished would block another thread's agent on a
     /// question that is still perfectly answerable.
     #[tokio::test]
@@ -823,7 +823,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_resolution_for_an_unknown_request_is_a_no_op() {
-        // Redelivery: the relay may hand the daemon the same frame twice, and a
+        // Redelivery: the relay may hand the worker the same frame twice, and a
         // frame for a run that already ended must not be an error.
         let registry = PermissionRegistry::new();
         assert!(

@@ -2,7 +2,7 @@
 //!
 //! `acp_session.rs` proves the client half works against a `pi-acp` *process*.
 //! Here there is no adapter process at all: `pi-acp`'s `AcpAgent` runs on a
-//! task inside the daemon and the two halves are joined by an in-process
+//! task inside the worker and the two halves are joined by an in-process
 //! channel pair. Only the stub `pi` is a child.
 //!
 //! The stub speaks the Pi JSONL protocol *behind* the embedded `pi-acp` agent,
@@ -13,11 +13,11 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use loom_daemon::acp::permission::PermissionRegistry;
-use loom_daemon::acp::session::{drive, Transport};
-use loom_daemon::provider::ProviderRun;
 use loom_domain::RunOutcome;
 use loom_provider_protocol::ProviderSpec;
+use loom_worker::acp::permission::PermissionRegistry;
+use loom_worker::acp::session::{drive, Transport};
+use loom_worker::provider::ProviderRun;
 use tokio::sync::mpsc;
 
 /// The JSONL `pi` replies with: a message start, one text delta, the
@@ -26,7 +26,7 @@ use tokio::sync::mpsc;
 /// These are the events `pi-acp` translates; matching them means the test
 /// exercises the real translation rather than a shortcut.
 /// A stub Pi speaking the private JSONL protocol consumed internally by
-/// `pi-acp`. The outer daemon path is still ACP.
+/// `pi-acp`. The outer worker path is still ACP.
 ///
 /// Written here rather than reused from pi-acp because pi-acp's mock lives in
 /// its *binary*, and cargo does not build a dependency's binary. The shapes

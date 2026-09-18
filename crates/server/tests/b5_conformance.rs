@@ -2,14 +2,14 @@
 //!
 //! The file routes are exercised with a **scripted host**: a real WebSocket
 //! connection that enrolls as a host, receives the `HostFileRequest` published
-//! to its room, and answers with the bytes a real daemon would send. That is the
+//! to its room, and answers with the bytes a real worker would send. That is the
 //! property this batch has to prove — the control plane never reads its own
 //! disk, it asks the machine that owns the thread's environment — and a
 //! scripted host can assert exactly which request it received and refuse to
 //! answer when it should not have been asked.
 //!
 //! The filesystem semantics themselves (containment, base64, truncation) are
-//! covered against the real implementation in `crates/daemon` (`host_files`),
+//! covered against the real implementation in `crates/worker` (`host_files`),
 //! because that is where the filesystem lives.
 //!
 //! Every successful body is validated against the embedded bb contract, and a
@@ -263,10 +263,10 @@ async fn fixture() -> Fixture {
 
 /// Enrolls a scripted host over a real socket and answers its file requests.
 ///
-/// This is a stand-in for a daemon and nothing more: it enrolls with a data
+/// This is a stand-in for a worker and nothing more: it enrolls with a data
 /// directory, answers whatever the test scripted, and forwards each request to
 /// the test so the test can assert what was asked. The real filesystem work is
-/// tested in `crates/daemon/tests/host_files.rs`.
+/// tested in `crates/worker/tests/host_files.rs`.
 async fn spawn_scripted_host(
     addr: &str,
     requests: mpsc::UnboundedSender<HostFileOperation>,
@@ -296,7 +296,7 @@ async fn spawn_scripted_host(
     let host_id_for_task = host_id.clone();
 
     // Follow the host room, which is where a file request is published. A
-    // daemon does this in `Daemon::enroll`; a scripted host must do it too or
+    // worker does this in `Worker::enroll`; a scripted host must do it too or
     // it would never receive a request at all.
     socket
         .send(tokio_tungstenite::tungstenite::Message::Text(

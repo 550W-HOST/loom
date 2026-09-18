@@ -2,7 +2,7 @@
 //!
 //! These handlers own server-local configuration state. Settings are persisted
 //! in the domain snapshot and publish typed public cache invalidations; active
-//! runs remain owned by the run registry and provider session on the daemon.
+//! runs remain owned by the run registry and provider session on the worker.
 
 #![allow(clippy::result_large_err)]
 

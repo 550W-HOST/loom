@@ -1,8 +1,8 @@
-//! The ACP launch kind, end to end through a real server and daemon.
+//! The ACP launch kind, end to end through a real server and worker.
 //!
 //! `acp_session.rs` drives the transport directly; this proves the *dispatch*
 //! path chooses it: a `ProviderLaunch::AcpStdio` spec travels through the relay,
-//! the daemon picks the ACP driver for it, and the thread still leaves `working`
+//! the worker picks the ACP driver for it, and the thread still leaves `working`
 //! with exactly one terminal event.
 //!
 //! Needs a `pi-acp` binary; skips when there is none, like the sibling test.
@@ -10,11 +10,11 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use loom_daemon::{Daemon, DaemonConfig};
 use loom_domain::{EnvironmentKind, HostId, HostStatus, MessageRole, ThreadStatus};
 use loom_provider_protocol::{ProviderLaunch, ProviderSpec};
 use loom_server::http::router;
 use loom_server::state::{AppConfig, AppState};
+use loom_worker::{Worker, WorkerConfig};
 use serde_json::Value;
 
 async fn spawn_server(config: AppConfig) -> (String, AppState) {
@@ -51,25 +51,25 @@ fn acp_spec(binary: &std::path::Path) -> ProviderSpec {
     spec
 }
 
-async fn enroll_daemon(
+async fn enroll_worker(
     url: &str,
     provider: Option<ProviderSpec>,
     run_timeout: Duration,
 ) -> (HostId, tokio::task::JoinHandle<()>) {
-    let mut config = DaemonConfig::new(url, "acp-daemon");
+    let mut config = WorkerConfig::new(url, "acp-worker");
     config.host_id = None;
     config.provider = provider;
     config.run_timeout = run_timeout;
     config.heartbeat_interval = Duration::from_millis(50);
-    let mut daemon = Daemon::connect(config).await.unwrap();
-    let host_id = daemon.enroll().await.unwrap();
+    let mut worker = Worker::connect(config).await.unwrap();
+    let host_id = worker.enroll().await.unwrap();
     let handle = tokio::spawn(async move {
-        let _ = daemon.run().await;
+        let _ = worker.run().await;
     });
     (host_id, handle)
 }
 
-/// The same shape the ACP end-to-end tests use, so the server↔daemon dispatch
+/// The same shape the ACP end-to-end tests use, so the server↔worker dispatch
 /// path and the ACP driver are exercised together.
 fn start_turn(
     state: &AppState,
@@ -156,15 +156,15 @@ fn turn_completions(events: &[Value]) -> Vec<&Value> {
 /// A dispatch whose spec says ACP reaches the ACP driver, runs the turn, and
 /// ends it once.
 #[tokio::test(flavor = "multi_thread")]
-async fn an_acp_dispatch_runs_through_a_real_daemon() {
+async fn an_acp_dispatch_runs_through_a_real_worker() {
     let Some(binary) = pi_acp_binary() else {
         eprintln!("skipping: no pi-acp binary (set PI_ACP_BIN or build the sibling checkout)");
         return;
     };
     let workspace = tempfile::tempdir().unwrap();
     let (url, state) = spawn_server(AppConfig::default()).await;
-    let (_host_id, daemon) =
-        enroll_daemon(&url, Some(acp_spec(&binary)), Duration::from_secs(60)).await;
+    let (_host_id, worker) =
+        enroll_worker(&url, Some(acp_spec(&binary)), Duration::from_secs(60)).await;
 
     assert!(
         eventually(|| state
@@ -173,7 +173,7 @@ async fn an_acp_dispatch_runs_through_a_real_daemon() {
             .iter()
             .any(|h| h.status == HostStatus::Connected))
         .await,
-        "the daemon connected"
+        "the worker connected"
     );
 
     let thread_id = start_turn(&state, workspace.path(), "hello from the ACP path");
@@ -218,7 +218,7 @@ async fn an_acp_dispatch_runs_through_a_real_daemon() {
         "the server stores the ACP session id learned from thread/identity"
     );
 
-    daemon.abort();
+    worker.abort();
 }
 
 /// An ACP spec naming a binary that does not exist fails the run rather than
@@ -229,7 +229,7 @@ async fn an_acp_dispatch_to_a_missing_agent_fails_cleanly() {
     let (url, state) = spawn_server(AppConfig::default()).await;
     let mut spec = ProviderSpec::acp("/nonexistent/pi-acp".to_string(), Vec::new());
     spec.name = "pi".into();
-    let (_host_id, daemon) = enroll_daemon(&url, Some(spec), Duration::from_secs(10)).await;
+    let (_host_id, worker) = enroll_worker(&url, Some(spec), Duration::from_secs(10)).await;
 
     assert!(
         eventually(|| state
@@ -238,7 +238,7 @@ async fn an_acp_dispatch_to_a_missing_agent_fails_cleanly() {
             .iter()
             .any(|h| h.status == HostStatus::Connected))
         .await,
-        "the daemon connected"
+        "the worker connected"
     );
 
     let thread_id = start_turn(&state, workspace.path(), "this will fail");
@@ -268,10 +268,10 @@ async fn an_acp_dispatch_to_a_missing_agent_fails_cleanly() {
         "the thread is in error, not stuck"
     );
 
-    daemon.abort();
+    worker.abort();
 }
 
-/// The spec serializes the launch kind onto the wire, so a daemon on another
+/// The spec serializes the launch kind onto the wire, so a worker on another
 /// machine reaches the same driver.
 #[test]
 fn the_launch_kind_survives_serialization() {

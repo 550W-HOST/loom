@@ -1,20 +1,20 @@
-//! The **daemon role**, as a library entry point.
+//! The **worker role**, as a library entry point.
 //!
-//! Reached through `loom daemon` (or the `loom-daemon` name the same binary
-//! answers to): the daemon-only startup path.
+//! Reached through `loom worker` (or the `loom-worker` name the same binary
+//! answers to): the worker-only startup path.
 //!
 //! It reaches out to a server URL and does nothing else. It can run on a
 //! different machine from the server, under a different supervisor, and be
 //! stopped without touching the control plane:
 //!
 //! ```bash
-//! loom-daemon --server-url http://127.0.0.1:38886 --name laptop
-//! loom-daemon --server-url https://loom.example.com --name builder-1 \
+//! loom-worker --server-url http://127.0.0.1:38886 --name laptop
+//! loom-worker --server-url https://loom.example.com --name builder-1 \
 //!             --state ./builder-1.host-id
 //! ```
 //!
 //! Everything is also settable through the environment (`LOOM_SERVER_URL`,
-//! `LOOM_HOST_NAME`, `LOOM_HOST_ID`, `LOOM_HEARTBEAT_MS`, `LOOM_DAEMON_STATE`,
+//! `LOOM_HOST_NAME`, `LOOM_HOST_ID`, `LOOM_HEARTBEAT_MS`, `LOOM_WORKER_STATE`,
 //! `LOOM_PROVIDER_CMD`, `LOOM_PROVIDER_ARGS`, `LOOM_JOIN_CODE`,
 //! `LOOM_ACP_TRACE`,
 //! `LOOM_RUN_TIMEOUT_MS`, `LOOM_DATA_DIR`, `LOOM_WORKSPACE_ROOT`,
@@ -25,7 +25,7 @@
 //! The binary does not own a connection; it owns a *supervised session*
 //! ([`crate::session`]). The loop is: connect, enrol, run, and on a
 //! failure reconnect on an exponential backoff. When the server speaks a newer
-//! protocol the loop fetches the matching daemon from that same server,
+//! protocol the loop fetches the matching worker from that same server,
 //! verifies its SHA-256, installs it with a rename, and **exits** — systemd's
 //! `Restart=always` starts the new binary. This process never replaces itself,
 //! and never exits into a restart loop that would only be refused again. See
@@ -34,9 +34,9 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use crate::session::{run_session, DaemonState, SessionOutcome};
+use crate::session::{run_session, SessionOutcome, WorkerState};
 use crate::update::{UpdateConfig, Updater};
-use crate::DaemonConfig;
+use crate::WorkerConfig;
 use loom_domain::HostId;
 use loom_provider_protocol::ProviderSpec;
 use loom_relay::EventId;
@@ -45,10 +45,10 @@ pub async fn run(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     // Ahead of `Options::parse`, which refuses a command line with no
     // `--server-url`: `--version` must answer on a machine that has not been
     // pointed at a server yet. That is also the check a release verification
-    // runs against a downloaded daemon, before it tries to connect it to
+    // runs against a downloaded worker, before it tries to connect it to
     // anything.
     if args.iter().any(|arg| arg == "--version") {
-        println!("{}", loom_server::version_line("loom-daemon"));
+        println!("{}", loom_server::version_line("loom-worker"));
         return Ok(());
     }
 
@@ -60,7 +60,7 @@ pub async fn run(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    let mut config = DaemonConfig::new(&options.server_url, &options.name);
+    let mut config = WorkerConfig::new(&options.server_url, &options.name);
     config.heartbeat_interval = options.heartbeat_interval;
     config.run_timeout = options.run_timeout;
     config.permission_timeout = options.permission_timeout;
@@ -81,7 +81,7 @@ pub async fn run(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         match Updater::new(config.update.clone(), &options.server_url) {
             Ok(updater) => Some(updater),
             Err(error) => {
-                eprintln!("loom-daemon: self-update unavailable: {error}");
+                eprintln!("loom-worker: self-update unavailable: {error}");
                 config.update.enabled = false;
                 None
             }
@@ -98,14 +98,14 @@ pub async fn run(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let outcome = run_session(config, updater.as_ref(), &state, shutdown_signal()).await;
 
     match outcome {
-        SessionOutcome::Shutdown => eprintln!("loom-daemon \"{}\" stopped", options.name),
+        SessionOutcome::Shutdown => eprintln!("loom-worker \"{}\" stopped", options.name),
         SessionOutcome::RestartForUpdate { detail } => {
             // The exit is the update: systemd's `Restart=always`, or a
             // container's restart policy, is what starts the new binary. A
             // non-zero status here would be recorded as a failure rather than a
             // planned update, so this returns success.
             eprintln!(
-                "loom-daemon \"{}\" exiting for a self-update: {detail}",
+                "loom-worker \"{}\" exiting for a self-update: {detail}",
                 options.name
             );
         }
@@ -113,7 +113,7 @@ pub async fn run(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// The daemon's machine-local state, in the files `deploy/install.sh` lays out.
+/// The worker's machine-local state, in the files `deploy/install.sh` lays out.
 ///
 /// One struct knows the on-disk layout: `<state>` holds the host id and a
 /// sibling `.cursor` holds the replay position, both written atomically so a
@@ -135,7 +135,7 @@ impl FileState {
     }
 }
 
-impl DaemonState for FileState {
+impl WorkerState for FileState {
     fn host_id(&self) -> Result<Option<HostId>, String> {
         if let Some(host_id) = &self.explicit_host_id {
             return Ok(Some(host_id.clone()));
@@ -201,21 +201,21 @@ async fn shutdown_signal() {
 }
 
 /// Logs the self-update configuration once, at startup, so the reason a
-/// mismatched daemon does or does not follow its server is in the journal.
+/// mismatched worker does or does not follow its server is in the journal.
 fn describe_update(options: &Options, updater: Option<&Updater>) {
     match (&updater, options.auto_update) {
         (Some(updater), _) => eprintln!(
-            "loom-daemon self-update: enabled (target {}, installs {} with an exponential \
+            "loom-worker self-update: enabled (target {}, installs {} with an exponential \
              backoff of 5s..5m)",
             updater.config().target,
             updater.config().install_path.display()
         ),
         (None, false) => eprintln!(
-            "loom-daemon self-update: disabled by configuration; a server that speaks a newer \
+            "loom-worker self-update: disabled by configuration; a server that speaks a newer \
              protocol will be refused and retried, never fetched"
         ),
         (None, true) => {
-            eprintln!("loom-daemon self-update: unavailable (see the message above)")
+            eprintln!("loom-worker self-update: unavailable (see the message above)")
         }
     }
 }
@@ -245,14 +245,14 @@ impl Options {
         let mut heartbeat_ms = std::env::var("LOOM_HEARTBEAT_MS").ok();
         let mut run_timeout_ms = std::env::var("LOOM_RUN_TIMEOUT_MS").ok();
         let mut permission_timeout_ms = std::env::var("LOOM_PERMISSION_TIMEOUT_MS").ok();
-        let mut state = std::env::var("LOOM_DAEMON_STATE").ok();
+        let mut state = std::env::var("LOOM_WORKER_STATE").ok();
         let mut provider_cmd = std::env::var("LOOM_PROVIDER_CMD").ok();
         let mut provider_args = std::env::var("LOOM_PROVIDER_ARGS").ok();
         let mut join_code = std::env::var("LOOM_JOIN_CODE").ok();
         let mut workspace_root = std::env::var("LOOM_WORKSPACE_ROOT").ok();
         let mut data_dir = std::env::var("LOOM_DATA_DIR").ok();
         // `--auto-update` is the affirmative of bb's flag: loom's default is on,
-        // because a daemon that cannot follow a server upgrade is the
+        // because a worker that cannot follow a server upgrade is the
         // operational trap this exists to remove. `LOOM_AUTO_UPDATE=0` (or any
         // of `false`/`no`/`off`) disables it, and so does the flag below.
         let mut auto_update = parse_bool_env("LOOM_AUTO_UPDATE")?.unwrap_or(true);
@@ -287,7 +287,7 @@ impl Options {
         let server_url = server_url
             .filter(|value| !value.trim().is_empty())
             .ok_or("--server-url (or LOOM_SERVER_URL) is required")?;
-        let name = name.unwrap_or_else(|| "loom-daemon".into());
+        let name = name.unwrap_or_else(|| "loom-worker".into());
         let host_id = match host_id.filter(|value| !value.trim().is_empty()) {
             None => None,
             Some(raw) => Some(raw.parse::<HostId>().map_err(|error| error.to_string())?),
@@ -375,10 +375,10 @@ fn parse_bool_env(name: &str) -> Result<Option<bool>, String> {
 #[allow(clippy::needless_pass_by_value)]
 fn print_help() {
     println!(
-        "loom-daemon — connect this machine to a loom server as an execution host
+        "loom-worker — connect this machine to a loom server as an execution host
 
 USAGE:
-    loom-daemon --server-url <URL> [--name <NAME>] [--host-id <HOST_ID>]
+    loom-worker --server-url <URL> [--name <NAME>] [--host-id <HOST_ID>]
                 [--heartbeat-ms <MS>] [--run-timeout-ms <MS>]
                 [--permission-timeout-ms <MS>]
                 [--provider-cmd <CMD>] [--provider-args <ARGS>]
@@ -389,7 +389,7 @@ USAGE:
 FLAGS:
     --server-url <URL>       Server to dial out to. Required.
                              Env: LOOM_SERVER_URL
-    --name <NAME>            Display name for this machine. Default: loom-daemon.
+    --name <NAME>            Display name for this machine. Default: loom-worker.
                              Env: LOOM_HOST_NAME
     --host-id <HOST_ID>      Reuse an enrolled identity across restarts. Written
                              to --state on first connect. Env: LOOM_HOST_ID
@@ -412,7 +412,7 @@ FLAGS:
                              first enrollment. Env: LOOM_JOIN_CODE
     --data-dir <PATH>        This machine's data directory. Thread storage lives
                              here as <dir>/thread-storage/<thread_id>, and the
-                             server names it from what this daemon reports at
+                             server names it from what this worker reports at
                              enrollment. Default: $HOME/.loom.
                              Env: LOOM_DATA_DIR
     --workspace-root <PATH>  Root under which managed environments' workspaces
@@ -421,9 +421,9 @@ FLAGS:
     --state <PATH>           File to persist the enrolled host id in. A sibling
                              `.cursor` file persists the replay cursor, and the
                              directory also holds the self-update attempt
-                             counter. Env: LOOM_DAEMON_STATE
+                             counter. Env: LOOM_WORKER_STATE
     --auto-update            Follow a server that speaks a newer protocol by
-                             installing that server's own daemon and exiting for
+                             installing that server's own worker and exiting for
                              the supervisor to restart. Default.
     --no-auto-update         Refuse to self-update; the refusal and the reason
                              are logged, and the connection is retried. Env:
@@ -432,7 +432,7 @@ FLAGS:
                              version and commit, then exit.
     -h, --help               Print this help.
 
-The daemon only makes outbound connections; it needs no local server and is
+The worker only makes outbound connections; it needs no local server and is
 stopped independently of one. After a successful self-update it exits and
 `Restart=always` (or a container restart policy) starts the new binary."
     );

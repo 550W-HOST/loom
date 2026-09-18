@@ -2,7 +2,7 @@
 //!
 //! The control plane owns host identity and policy, but never opens a path on
 //! a host's machine. Filesystem reads are sent through `HostFileBroker`; a
-//! missing or disconnected daemon therefore returns a bounded transport error
+//! missing or disconnected worker therefore returns a bounded transport error
 //! instead of making the HTTP request wait forever.
 
 #![allow(clippy::result_large_err)]
@@ -162,7 +162,7 @@ pub struct CreatePreviewRequest {
 
 /// Issues the narrow capability consumed by `file_preview_content`.
 ///
-/// The root is retained in the lease and sent back to the owning daemon as a
+/// The root is retained in the lease and sent back to the owning worker as a
 /// containment boundary. This is the preview-specific prerequisite for the
 /// B8 content route; the remaining B9 file operations are still separate.
 pub async fn file_preview_create(
@@ -293,7 +293,7 @@ pub async fn host_delete(
         return api_error(
             StatusCode::CONFLICT,
             "host_connected",
-            "disconnect the daemon before removing the host",
+            "disconnect the worker before removing the host",
         );
     }
     if state.local_host_id() == Some(&host.id) {
@@ -577,7 +577,7 @@ pub async fn provider_cli_install(
     }
     (
         StatusCode::OK,
-        "ACP providers do not use a provider CLI; the daemon manages ACP directly",
+        "ACP providers do not use a provider CLI; the worker manages ACP directly",
     )
         .into_response()
 }
@@ -590,7 +590,7 @@ pub async fn host_retry_update(
         Ok(host) => host,
         Err(response) => return response,
     };
-    // Updates are pull-based: a daemon retries the protocol handshake on its
+    // Updates are pull-based: a worker retries the protocol handshake on its
     // next connection and fetches the matching artifact then. The endpoint is
     // still a successful acknowledgement so clients can clear their retry UI.
     Json(json!({ "ok": true })).into_response()

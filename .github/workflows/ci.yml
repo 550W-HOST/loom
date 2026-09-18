@@ -280,7 +280,7 @@ jobs:
 
   # The `ui` job builds and measures the client; nothing there can say whether
   # a browser can use it. This job runs the product the way a user meets it: the
-  # binary serving the app it was built with, and a daemon executing on the same
+  # binary serving the app it was built with, and a worker executing on the same
   # machine. It needs `ui` for the same reason `checks` does — the app is
   # compiled into the binary — and it is the only job that renders pixels.
   e2e:
@@ -314,7 +314,7 @@ jobs:
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       # The suite starts this binary in both roles, so it is the only build
-      # step: `loom server` serves the embedded app, `loom daemon` executes.
+      # step: `loom server` serves the embedded app, `loom worker` executes.
       - name: Build the binary the suite drives
         run: cargo build -p loom --locked
 
@@ -399,20 +399,20 @@ jobs:
             echo "::notice title=real pi test skipped::pi is installed but not configured on this runner (no \$HOME/.pi/agent), so the embedded pi-acp path cannot start a Pi RPC child. Configure pi to enable this job; see docs/ci.md."
           fi
 
-      - name: cargo test -p loom-daemon --test provider_e2e -- --ignored
+      - name: cargo test -p loom-worker --test provider_e2e -- --ignored
         if: steps.pi.outputs.configured == 'true'
-        run: cargo test -p loom-daemon --test provider_e2e --locked -- --ignored
+        run: cargo test -p loom-worker --test provider_e2e --locked -- --ignored
 
       # The real Pi first-turn and cross-run resume, through the embedded
       # adapter. `provider_e2e`'s ignored test already drives the real CLI; this
       # one adds the property that test cannot: that `session/load` on a second
       # run continues the *same* conversation, which is what the thread's
       # provider-session binding exists for.
-      - name: cargo test -p loom-daemon --test real_pi -- --ignored
+      - name: cargo test -p loom-worker --test real_pi -- --ignored
         if: steps.pi.outputs.configured == 'true'
-        run: cargo test -p loom-daemon --test real_pi --locked -- --ignored
+        run: cargo test -p loom-worker --test real_pi --locked -- --ignored
 
-  # The daemon's self-update, end to end: a real daemon process, a fake server
+  # The worker's self-update, end to end: a real worker process, a fake server
   # that speaks a newer protocol, a real install over the running executable,
   # and the reinstalled binary running a real turn. `#[ignore]`d because it
   # executes real binaries and binds real sockets; unlike the `pi` job it needs
@@ -422,7 +422,7 @@ jobs:
   # It needs `ui` for the same reason as `checks`: the one binary carries the
   # app, so this job embeds the bundle too.
   self-update:
-    name: daemon self-update end to end
+    name: worker self-update end to end
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     needs: ui

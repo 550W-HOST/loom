@@ -1,5 +1,5 @@
 //! The provider execution contract: what the control plane dispatches to a
-//! daemon, and what a daemon reports back.
+//! worker, and what a worker reports back.
 //!
 //! This is loom's answer to bb's `packages/host-daemon-contract`, scoped to the
 //! one thing that matters here: **running a provider for a thread**. It is a
@@ -10,23 +10,23 @@
 //! # The two directions
 //!
 //! ```text
-//!   server ── RunDispatch ──▶ relay host:{id} ──▶ daemon
-//!   server ◀── ProviderReport ── daemon socket
+//!   server ── RunDispatch ──▶ relay host:{id} ──▶ worker
+//!   server ◀── ProviderReport ── worker socket
 //! ```
 //!
 //! * [`RunDispatch`] travels **through the relay**, published to the target
-//!   host's scope. That is what gives dispatch replay: a daemon that was
+//!   host's scope. That is what gives dispatch replay: a worker that was
 //!   disconnected while a run was dispatched receives it on reconnect. The
-//!   `run_id` is the idempotency key, so a redelivery of a run the daemon
+//!   `run_id` is the idempotency key, so a redelivery of a run the worker
 //!   already started is dropped rather than run twice.
-//! * [`ProviderReport`] travels **up the daemon's own socket**. A report is an
+//! * [`ProviderReport`] travels **up the worker's own socket**. A report is an
 //!   observation, not a command: the server turns it into a
 //!   [`loom_domain::DomainEvent::ThreadRunEvent`] and publishes it to the thread
 //!   scope through the relay, so it is replayable like any other event.
 //!
 //! # Why the payload is opaque
 //!
-//! A dispatch carries only what the ACP agent needs. The daemon translates ACP
+//! A dispatch carries only what the ACP agent needs. The worker translates ACP
 //! notifications into [`RunEvent`] before it is reported; the control plane
 //! never parses provider output. This keeps an agent's wire format out of the
 //! server and the client contract.
@@ -43,12 +43,12 @@ use serde_json::Value;
 /// How to reach an ACP agent.
 ///
 /// The provider contract carries launch metadata, not a provider wire format.
-/// The daemon owns the ACP client and the agent owns its session storage.
+/// The worker owns the ACP client and the agent owns its session storage.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProviderSpec {
     /// Stable provider name, for example `"pi"`. Echoed in run events.
     pub name: String,
-    /// How the daemon should reach this agent.
+    /// How the worker should reach this agent.
     ///
     /// Defaults to [`ProviderLaunch::AcpStdio`] for an explicitly named command.
     /// The built-in [`ProviderSpec::pi`] constructor selects the embedded
@@ -83,7 +83,7 @@ impl ProviderSpec {
         }
     }
 
-    /// Pi reached through `pi-acp` linked into the daemon.
+    /// Pi reached through `pi-acp` linked into the worker.
     ///
     /// Only `pi` itself is a child process; the adapter is in-process, which is
     /// why this names no command.
@@ -116,14 +116,14 @@ impl Default for ProviderSpec {
 ///
 /// ACP is the only provider protocol. The two variants differ only in where
 /// the ACP agent lives: a native agent is a child process, while Pi's
-/// `pi-acp::AcpAgent` is linked into the daemon and connected in-process.
+/// `pi-acp::AcpAgent` is linked into the worker and connected in-process.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProviderLaunch {
     /// An ACP agent spawned as a child process and spoken to over stdio.
     #[default]
     AcpStdio,
-    /// Agent Client Protocol against `pi-acp` linked into the daemon.
+    /// Agent Client Protocol against `pi-acp` linked into the worker.
     ///
     /// Nothing is spawned for the adapter itself; only `pi` is a child.
     AcpEmbeddedPi,
@@ -131,8 +131,8 @@ pub enum ProviderLaunch {
 
 /// A request to run one provider turn for one thread.
 ///
-/// Published to `host:{host_id}` through the relay. Every field the daemon
-/// needs to run in isolation is present: the daemon never has to call back for
+/// Published to `host:{host_id}` through the relay. Every field the worker
+/// needs to run in isolation is present: the worker never has to call back for
 /// context before it can start, which keeps the control plane out of the
 /// dispatch path.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -153,9 +153,9 @@ pub struct RunDispatch {
     /// already known.
     ///
     /// The control plane learned it from the thread's `thread/identity` event.
-    /// Present means the daemon should *continue* that conversation; absent
+    /// Present means the worker should *continue* that conversation; absent
     /// means this is the thread's first run. Carried on the dispatch rather
-    /// than looked up by the daemon so a run still needs no callback before it
+    /// than looked up by the worker so a run still needs no callback before it
     /// can start — the property that keeps the control plane out of the
     /// execution path.
     ///
@@ -175,8 +175,8 @@ pub struct RunDispatch {
 /// A request to provision a managed environment's workspace on a host.
 ///
 /// Like [`RunDispatch`] this travels **through the relay**, published to the
-/// target host's scope, so a daemon that was disconnected while it was sent
-/// still receives it on reconnect. The daemon owns the directory layout and
+/// target host's scope, so a worker that was disconnected while it was sent
+/// still receives it on reconnect. The worker owns the directory layout and
 /// chooses the actual path under its configured workspace root; the control
 /// plane only learns it from [`EnvironmentProvisionReport`].
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -194,13 +194,13 @@ pub struct EnvironmentProvision {
 /// A provider's request for permission, on its way to the control plane.
 ///
 /// This is the upward half of the interaction bridge, and it travels the same
-/// way a [`ProviderReport`] does — up the daemon's own socket, as an
+/// way a [`ProviderReport`] does — up the worker's own socket, as an
 /// observation the control plane turns into a durable entity. It is a request
 /// rather than a report, so it gets its own frame: a `ProviderReport` wraps a
 /// [`loom_domain::RunEvent`], and a question is not a run event.
 ///
-/// `request_id` is the **daemon's** identity for the request, not the
-/// interaction id the control plane mints. The daemon needs a stable key to
+/// `request_id` is the **worker's** identity for the request, not the
+/// interaction id the control plane mints. The worker needs a stable key to
 /// wait on before the control plane has answered anything, and the control
 /// plane needs a value a redelivered frame deduplicates on; one string serves
 /// both. The answer comes back naming this value, not loom's interaction id.
@@ -215,7 +215,7 @@ pub struct InteractionRequest {
     pub thread_id: ThreadId,
     /// Its project, carried so the record needs no lookup.
     pub project_id: ProjectId,
-    /// The daemon's identity for this request, stable across redelivery.
+    /// The worker's identity for this request, stable across redelivery.
     pub request_id: String,
     /// The agent's session id, when it has named one. This is what a client
     /// correlates the question with the `providerThreadId` on run events.
@@ -237,9 +237,9 @@ pub struct InteractionRequest {
 /// A permission decision the control plane maps onto the agent's own options.
 ///
 /// The three words are bb's contract vocabulary, deliberately narrower than
-/// ACP's `PermissionOptionKind` (which adds a reject-always). The daemon maps a
+/// ACP's `PermissionOptionKind` (which adds a reject-always). The worker maps a
 /// word onto whichever option of that kind the agent offered — see
-/// `crates/daemon/src/acp/permission.rs` and its note on what a polarity cannot
+/// `crates/worker/src/acp/permission.rs` and its note on what a polarity cannot
 /// express.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -252,21 +252,21 @@ pub enum PermissionDecision {
     Deny,
 }
 
-/// The answer to an [`InteractionRequest`], on its way back to the daemon.
+/// The answer to an [`InteractionRequest`], on its way back to the worker.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum InteractionAnswer {
-    /// A permission decision, mapped onto the agent's own options by the daemon
+    /// A permission decision, mapped onto the agent's own options by the worker
     /// (an `allow` picks an allowing option, a `deny` a rejecting one).
     Decision {
         /// The decision.
         decision: PermissionDecision,
     },
     /// Settled without an answer: the run stopped, or no client answered and
-    /// the request was withdrawn. The daemon must **not** read this as
+    /// the request was withdrawn. The worker must **not** read this as
     /// acceptance.
     Cancelled {
-        /// Why, for the daemon's log.
+        /// Why, for the worker's log.
         reason: String,
     },
 }
@@ -274,8 +274,8 @@ pub enum InteractionAnswer {
 /// A resolved interaction, published to `host:{id}` through the relay.
 ///
 /// Downward, this travels exactly like a [`RunDispatch`] — through the relay to
-/// the target host's scope — so a daemon that was reconnecting when the user
-/// answered still receives it on replay. The daemon matches `request_id`
+/// the target host's scope — so a worker that was reconnecting when the user
+/// answered still receives it on replay. The worker matches `request_id`
 /// against the permission request it is holding open; a resolution for a
 /// request it is not waiting on is dropped, which makes redelivery idempotent.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -286,7 +286,7 @@ pub struct InteractionResolutionFrame {
     pub run_id: RunId,
     /// The thread it is advancing.
     pub thread_id: ThreadId,
-    /// The daemon's own identity for the request, echoed back so the daemon can
+    /// The worker's own identity for the request, echoed back so the worker can
     /// match it without sharing loom's id derivation.
     pub request_id: String,
     /// The control plane's interaction id, for logging and for a client that
@@ -298,13 +298,13 @@ pub struct InteractionResolutionFrame {
     pub created_at_ms: u64,
 }
 
-/// What a daemon did with an [`EnvironmentProvision`].
+/// What a worker did with an [`EnvironmentProvision`].
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "outcome", rename_all = "snake_case")]
 pub enum EnvironmentProvisionOutcome {
     /// The workspace exists and is usable at `path`.
     Provisioned {
-        /// Absolute path the daemon created.
+        /// Absolute path the worker created.
         path: String,
     },
     /// Provisioning failed; the environment moves to `error`.
@@ -314,9 +314,9 @@ pub enum EnvironmentProvisionOutcome {
     },
 }
 
-/// A daemon's report about one provisioning attempt.
+/// A worker's report about one provisioning attempt.
 ///
-/// Sent up the daemon's own socket, exactly like [`ProviderReport`]: the
+/// Sent up the worker's own socket, exactly like [`ProviderReport`]: the
 /// server turns it into environment status events and publishes them to the
 /// project scope through the relay.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -329,7 +329,7 @@ pub struct EnvironmentProvisionReport {
     pub outcome: EnvironmentProvisionOutcome,
 }
 
-/// A daemon's observation about an in-flight run.
+/// A worker's observation about an in-flight run.
 ///
 /// `host_id` is what lets the server reject a report for a run this connection
 /// is not allowed to speak for; it must match the host the socket enrolled as.
@@ -350,17 +350,17 @@ pub struct ProviderReport {
 // A thread's files live on the machine that owns its environment, and the
 // control plane must not read its *own* disk and call it a host file. So a file
 // read or a directory listing is a request to the host, and it travels the two
-// paths the daemon already has:
+// paths the worker already has:
 //
 // ```text
-//   server ── HostFileRequest ──▶ relay host:{id} ──▶ daemon
-//   server ◀── HostFileReport ── daemon socket
+//   server ── HostFileRequest ──▶ relay host:{id} ──▶ worker
+//   server ◀── HostFileReport ── worker socket
 // ```
 //
 // The request goes through the relay for the same reason a dispatch does: a
-// daemon that was reconnecting still receives it on replay, and a replayed
+// worker that was reconnecting still receives it on replay, and a replayed
 // read is harmless because reading is idempotent. The report comes back up the
-// daemon's own socket, because it answers exactly one request and must not be
+// worker's own socket, because it answers exactly one request and must not be
 // fanned out to every client watching the room.
 //
 // `request_id` is a correlation token, not a domain id: the server mints it,
@@ -386,7 +386,7 @@ pub enum HostFileOperation {
         ///
         /// The control plane joins a root and a client-supplied relative path
         /// before sending it, so this is the second half of the traversal
-        /// defence: the daemon re-checks containment against symlinks that
+        /// defence: the worker re-checks containment against symlinks that
         /// neither side could see when the path was assembled.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         root_path: Option<String>,
@@ -427,7 +427,7 @@ pub enum HostFileOperation {
     ///
     /// The root is **required and absolute**. An upload lands inside a
     /// directory the control plane derived from the project's own workspace, so
-    /// a caller cannot name an arbitrary path on the host: the daemon resolves
+    /// a caller cannot name an arbitrary path on the host: the worker resolves
     /// the real path and refuses anything outside the root, exactly as a read
     /// does. `content` is base64, so binary uploads survive the JSON hop.
     ///
@@ -457,7 +457,7 @@ pub enum HostFileOperation {
     /// Create one directory, optionally with its parents.
     ///
     /// `root_path` is optional and, when given, is the containment boundary
-    /// the daemon re-checks on the *resolved* path. A create that names no
+    /// the worker re-checks on the *resolved* path. A create that names no
     /// root is confined only by being absolute, which is what the reference
     /// client does when it creates a directory it just picked in a host dialog.
     CreateDirectory {
@@ -644,7 +644,7 @@ pub struct HostFileContent {
     pub modified_at_ms: Option<u64>,
     /// SHA-256 of the bytes on disk, lowercase hex.
     ///
-    /// Additive on the wire: an older daemon omits it and a reader that needs a
+    /// Additive on the wire: an older worker omits it and a reader that needs a
     /// hash asks for [`HostFileOperation::ReadWithMetadata`] instead. It is
     /// present on a write's answer so the `files.write` route can report the
     /// hash the contract requires without a second round trip.
@@ -927,14 +927,14 @@ pub enum HostRpcOperation {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         method: Option<String>,
     },
-    /// Ask the host-side UI capability to select a folder. Headless daemons
+    /// Ask the host-side UI capability to select a folder. Headless workers
     /// answer with a null path rather than pretending the server has a dialog.
     #[serde(rename = "host.pick_folder")]
     PickFolder {
         #[serde(rename = "clientHostId")]
         client_host_id: String,
     },
-    /// Compute the daemon's configured default clone directory.
+    /// Compute the worker's configured default clone directory.
     #[serde(rename = "host.clone_default_path")]
     CloneDefaultPath {
         #[serde(rename = "projectId")]
@@ -1000,8 +1000,8 @@ pub struct HostRpcReport {
 // handle and never buffers an unbounded stdout.
 //
 // ```text
-//   HTTP ── TerminalRequest ──▶ relay host:{id} ──▶ daemon
-//   HTTP ◀── TerminalReport ── daemon socket
+//   HTTP ── TerminalRequest ──▶ relay host:{id} ──▶ worker
+//   HTTP ◀── TerminalReport ── worker socket
 // ```
 //
 // This mirrors the file protocol deliberately: the same correlation token, the
@@ -1075,8 +1075,8 @@ pub enum TerminalCloseReason {
     ThreadDeleted,
     /// The process ended on its own.
     ProcessExit,
-    /// The owning daemon disconnected.
-    DaemonDisconnect,
+    /// The owning worker disconnected.
+    WorkerDisconnect,
     /// The owning environment was destroyed.
     EnvironmentDestroyed,
     /// The owning thread was archived.
@@ -1087,7 +1087,7 @@ pub enum TerminalCloseReason {
 
 /// The control plane's record of one terminal session.
 ///
-/// This is the entity a client lists and reads; the daemon is the authority on
+/// This is the entity a client lists and reads; the worker is the authority on
 /// whether the process it names is actually alive, and reconciles this record
 /// through [`TerminalOperation::Report`].
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1164,7 +1164,7 @@ pub struct TerminalOutputChunk {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "operation", rename_all = "snake_case")]
 pub enum TerminalOperation {
-    /// Start a new session. The daemon mints nothing; the server already
+    /// Start a new session. The worker mints nothing; the server already
     /// minted `id`, so a redelivered create is idempotent on that id.
     Create {
         /// The id the control plane assigned.
@@ -1179,7 +1179,7 @@ pub enum TerminalOperation {
         rows: u16,
         /// Display title the client chose.
         title: String,
-        /// Absolute working directory the daemon resolves and reports back.
+        /// Absolute working directory the worker resolves and reports back.
         cwd: String,
     },
     /// Send bytes to the process's stdin.
@@ -1224,7 +1224,7 @@ pub enum TerminalOperation {
     },
     /// Ask the host to report the current state of every session it holds.
     ///
-    /// Sent after a reconnect: the daemon is the authority on liveness, so the
+    /// Sent after a reconnect: the worker is the authority on liveness, so the
     /// control plane reconciles its records from this rather than guessing
     /// which processes survived.
     Report {
@@ -1298,19 +1298,19 @@ pub struct TerminalReport {
 // A script automation's script is a **process on the machine that owns the
 // workspace**, so the control plane never runs one: it publishes a request to
 // the host and turns the host's report into the run's result. The shape is the
-// terminal channel's — a request through the relay, a report up the daemon's
+// terminal channel's — a request through the relay, a report up the worker's
 // own socket, and a correlation id — with one difference: this is a
 // fire-and-forget job rather than a conversation, so the correlation id is the
 // automation run itself and there is a cancel frame for it.
 //
 // ```text
-//   server ── ScriptRunDispatch ──▶ relay host:{id} ──▶ daemon
-//   server ◀── ScriptRunReport ──── daemon socket
-//   server ── ScriptRunCancel ────▶ relay host:{id} ──▶ daemon
+//   server ── ScriptRunDispatch ──▶ relay host:{id} ──▶ worker
+//   server ◀── ScriptRunReport ──── worker socket
+//   server ── ScriptRunCancel ────▶ relay host:{id} ──▶ worker
 // ```
 //
 // `run_id` is both the correlation token and the idempotency key: a redelivered
-// dispatch of a run the daemon already started is dropped, and a report for a
+// dispatch of a run the worker already started is dropped, and a report for a
 // run this connection does not own is refused — the same guarantees the
 // provider path has.
 
@@ -1352,7 +1352,7 @@ pub struct ScriptRunDispatch {
     /// This is the whole of what the script inherits from its owner: the host
     /// runs it with a cleared environment plus `PATH`, these, and the
     /// `LOOM_*` identity variables it adds itself. A script therefore cannot
-    /// read the daemon's own environment by accident.
+    /// read the worker's own environment by accident.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub env: std::collections::BTreeMap<String, String>,
     /// How long the process may run.
@@ -1413,7 +1413,7 @@ pub struct ScriptRunReport {
 /// A request to stop a running script on its host.
 ///
 /// Published to the host's scope exactly like the dispatch, so a cancel for a
-/// daemon that is reconnecting is delivered on replay. The daemon kills the
+/// worker that is reconnecting is delivered on replay. The worker kills the
 /// process and reports [`ScriptRunOutcome::Cancelled`]; the control plane has
 /// already settled the run, so a report that arrives afterwards is an
 /// idempotent no-op.
@@ -1423,7 +1423,7 @@ pub struct ScriptRunCancel {
     pub run_id: AutomationRunId,
     /// The host expected to be running it.
     pub host_id: HostId,
-    /// Why, for the daemon's log.
+    /// Why, for the worker's log.
     pub reason: String,
     /// When the control plane published it.
     pub created_at_ms: u64,
@@ -1432,7 +1432,7 @@ pub struct ScriptRunCancel {
 /// Where a host writes the script of an automation run it was dispatched.
 ///
 /// The sibling of [`thread_storage_root`], for the same reason: the layout
-/// belongs to the daemon and the control plane can only name it from the data
+/// belongs to the worker and the control plane can only name it from the data
 /// directory the host reported. It lives here so the path a report carries can
 /// be understood by the side that stored it.
 pub fn automation_script_root(data_dir: &str, automation_id: &str) -> String {
@@ -1444,7 +1444,7 @@ pub fn automation_script_root(data_dir: &str, automation_id: &str) -> String {
 ///
 /// The layout is bb's, verbatim: `<data_dir>/thread-storage/<thread_id>`, and
 /// it lives in this crate because it is the one thing the control plane and a
-/// daemon must agree on without either importing the other. The daemon creates
+/// worker must agree on without either importing the other. The worker creates
 /// and owns the directory; the control plane composes the same path from the
 /// data directory the host *reported* at enrollment, so `storageRootPath` is a
 /// real location on a real machine rather than a guess.
@@ -1453,7 +1453,7 @@ pub fn automation_script_root(data_dir: &str, automation_id: &str) -> String {
 /// how it crosses the wire.
 pub fn thread_storage_root(data_dir: &str, thread_id: &str) -> String {
     // `/` separators rather than `Path::join`: a data directory reported by a
-    // Windows daemon is still a string the control plane must describe, and
+    // Windows worker is still a string the control plane must describe, and
     // every client is a browser that renders `/`.
     let trimmed = data_dir.trim_end_matches(['/', '\\']);
     format!("{trimmed}/thread-storage/{thread_id}")
@@ -1462,7 +1462,7 @@ pub fn thread_storage_root(data_dir: &str, thread_id: &str) -> String {
 /// Where a project's uploaded attachments live under a host's data directory.
 ///
 /// The sibling of [`thread_storage_root`], for the same reason: the layout
-/// belongs to the daemon, and the control plane can only name it from the data
+/// belongs to the worker, and the control plane can only name it from the data
 /// directory the host *reported*. `<data_dir>/project-attachments/<project_id>`
 /// keeps every attachment under the machine that owns the project, so an
 /// upload can never land on the server's own disk.
@@ -1613,7 +1613,7 @@ mod tests {
             serde_json::from_str::<InteractionRequest>(&encoded).unwrap(),
             request
         );
-        // The daemon identity survives the wire: the answer is matched on it.
+        // The worker identity survives the wire: the answer is matched on it.
         let value: serde_json::Value = serde_json::from_str(&encoded).unwrap();
         assert_eq!(value["request_id"], "call-1");
         assert_eq!(value["payload"]["kind"], "approval");
@@ -1650,7 +1650,7 @@ mod tests {
                 frame
             );
         }
-        // The tag is what the daemon dispatches on, and a denial is not
+        // The tag is what the worker dispatches on, and a denial is not
         // representable as an allow.
         let denied = serde_json::to_value(InteractionAnswer::Decision {
             decision: PermissionDecision::Deny,

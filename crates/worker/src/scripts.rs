@@ -10,16 +10,16 @@
 //!
 //! * **Where it runs.** `cwd` is the environment workspace the control plane
 //!   resolved. It must exist and be a directory; a missing workspace is a
-//!   refusal with a reason, not a fallback to the daemon's own directory.
+//!   refusal with a reason, not a fallback to the worker's own directory.
 //! * **What it can read.** The process environment is *cleared* and rebuilt:
 //!   `PATH`, the variables the automation declared, and the `LOOM_*` identity of
-//!   the run. A script cannot read the daemon's environment by accident, and it
+//!   the run. A script cannot read the worker's environment by accident, and it
 //!   cannot read the secrets in it by intent.
 //! * **What it can touch.** A `script_file` has to resolve *inside* `cwd`, and
 //!   the check is the filesystem one (`safe_workspace_path`): the candidate is
 //!   canonicalized, so a symlink pointing out of the workspace is refused even
 //!   though neither the control plane nor a lexical check could see it. An
-//!   inline script is written into the daemon's own data directory, mirroring
+//!   inline script is written into the worker's own data directory, mirroring
 //!   what the reference implementation did with its plugin directory.
 //! * **How long.** The dispatch carries the timeout; the process is killed when
 //!   it expires and the report says so rather than pretending it exited.
@@ -58,19 +58,19 @@ pub const SCRIPT_OUTPUT_MAX_BYTES: usize = 1024 * 1024;
 /// Appended to output that hit the budget above.
 const TRUNCATION_MARKER: &str = "\n[output truncated]\n";
 
-/// The `PATH` a script gets when the daemon's own environment has none.
+/// The `PATH` a script gets when the worker's own environment has none.
 const FALLBACK_PATH: &str = "/usr/local/bin:/usr/bin:/bin";
 
-/// Handles the script runs this daemon has been asked to execute.
+/// Handles the script runs this worker has been asked to execute.
 #[derive(Clone)]
 pub struct ScriptRunner {
     inner: Arc<ScriptRunnerInner>,
 }
 
 struct ScriptRunnerInner {
-    /// The daemon's enrolled host, once it has one.
+    /// The worker's enrolled host, once it has one.
     host_id: HostId,
-    /// The daemon's data directory, where an inline script is written.
+    /// The worker's data directory, where an inline script is written.
     data_dir: PathBuf,
     /// The server URL, exported to the script for the same reason the
     /// reference implementation exported its own: a script that wants to talk
@@ -103,7 +103,7 @@ impl ScriptRunner {
         }
     }
 
-    /// The runs this daemon is executing right now.
+    /// The runs this worker is executing right now.
     pub async fn running(&self) -> usize {
         self.inner.running.lock().await.len()
     }
@@ -141,9 +141,9 @@ impl ScriptRunner {
         });
     }
 
-    /// Kills the process of a run, if this daemon is running it.
+    /// Kills the process of a run, if this worker is running it.
     ///
-    /// A cancel for a run this daemon does not hold is a no-op: the relay may
+    /// A cancel for a run this worker does not hold is a no-op: the relay may
     /// replay a frame it already applied, and a run may have finished while the
     /// cancel was in flight. Neither is a failure.
     pub async fn cancel(&self, cancel: &ScriptRunCancel) {
@@ -161,7 +161,7 @@ impl ScriptRunner {
         match notify {
             Some(notify) => notify.notify_one(),
             None => eprintln!(
-                "loom-daemon: a cancel for automation run {} arrived with nothing running; \
+                "loom-worker: a cancel for automation run {} arrived with nothing running; \
                  dropping it",
                 cancel.run_id
             ),
@@ -173,7 +173,7 @@ impl ScriptRunner {
     async fn execute(&self, dispatch: &ScriptRunDispatch, cancel: Arc<Notify>) -> ScriptRunOutcome {
         let cwd = PathBuf::from(&dispatch.cwd);
         // The workspace of a script is the host's own script directory — the
-        // control plane composes the path from the data directory this daemon
+        // control plane composes the path from the data directory this worker
         // *reported*, and the layout belongs to the host — so a missing one is
         // created rather than refused. A path that cannot be created, or one
         // that exists as a file, is still a refusal with a reason.
@@ -213,9 +213,9 @@ impl ScriptRunner {
             .stderr(Stdio::piped())
             // Cleared, then rebuilt: `PATH` so the interpreter resolves, what
             // the automation declared, and the identity of this run. Nothing
-            // else from the daemon's own environment reaches the script.
+            // else from the worker's own environment reaches the script.
             .env_clear()
-            .env("PATH", daemon_path())
+            .env("PATH", worker_path())
             .envs(dispatch.env.clone())
             .env("LOOM_SERVER_URL", &self.inner.server_url)
             .env("LOOM_PROJECT_ID", dispatch.project_id.to_string())
@@ -460,8 +460,8 @@ fn sanitize_script_name(name: &str) -> String {
     }
 }
 
-/// The `PATH` a script runs with: the daemon's own, or a conservative default.
-fn daemon_path() -> String {
+/// The `PATH` a script runs with: the worker's own, or a conservative default.
+fn worker_path() -> String {
     std::env::var("PATH").unwrap_or_else(|_| FALLBACK_PATH.to_owned())
 }
 
@@ -732,7 +732,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_script_does_not_inherit_the_daemons_environment() {
+    async fn a_script_does_not_inherit_the_workers_environment() {
         let dir = tempfile::tempdir().unwrap();
         let workspace = tempfile::tempdir().unwrap();
         let (runner, mut reports, host_id) = runner(dir.path()).await;

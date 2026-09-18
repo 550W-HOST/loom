@@ -139,7 +139,7 @@ jobs:
 
       # `-p loom` is the whole artifact: one package, one file in
       # `target/<triple>/release`, with the server library the app is compiled
-      # into and the daemon library as its dependencies — so this is the only
+      # into and the worker library as its dependencies — so this is the only
       # build the release needs.
       - name: cargo build --release --locked -p loom --target ${{ matrix.target }}
         run: cargo build --release --locked -p loom --target "${{ matrix.target }}"
@@ -149,7 +149,7 @@ jobs:
       # route fallen back to it, an unknown API path answered as a JSON 404), a
       # `LOOM_UI_DIR` left in the environment ignored, the artifact the server
       # hosts checked against the bytes that were built, a project created and a
-      # daemon enrolled against it. `GITHUB_SHA` is the commit the build stamped,
+      # worker enrolled against it. `GITHUB_SHA` is the commit the build stamped,
       # so a mismatch fails here.
       - name: Verify the x86_64 binary end to end
         if: matrix.target == 'x86_64-unknown-linux-musl'
@@ -272,7 +272,7 @@ jobs:
           self-contained: no glibc, no dynamic loader to find, no shared library
           to install.
 
-          **Protocol version: __PROTOCOL__.** A server and a daemon connect only
+          **Protocol version: __PROTOCOL__.** A server and a worker connect only
           when their protocol versions are equal, so upgrade them together. The
           file is version __VERSION__ in either role, and the commit it was built
           from is `__COMMIT__`.
@@ -283,7 +283,7 @@ jobs:
           | --- | --- |
           | `loom-__VERSION__-x86_64-unknown-linux-musl.tar.gz` | `loom` for x86_64, with `deploy/` |
           | `loom-__VERSION__-aarch64-unknown-linux-musl.tar.gz` | `loom` for aarch64, with `deploy/` |
-          | `loom-<target>` | the binary alone: `loom server` or `loom daemon` |
+          | `loom-<target>` | the binary alone: `loom server` or `loom worker` |
           | `SHA256SUMS` | checksums for every file above |
 
           ## Container images
@@ -294,11 +294,11 @@ jobs:
 
           ```
           docker pull __REGISTRY__/loom-server:__VERSION__
-          docker pull __REGISTRY__/loom-daemon:__VERSION__
+          docker pull __REGISTRY__/loom-worker:__VERSION__
           ```
 
           `docs/containers.md` covers the volumes, the port, and the honest
-          limits of a containerised daemon.
+          limits of a containerised worker.
 
           ## Install
 
@@ -306,13 +306,13 @@ jobs:
           tar xzf loom-__VERSION__-<target>.tar.gz
           cd loom-__VERSION__-<target>
           sudo LOOM_BIN_SOURCE=. ./deploy/install.sh server
-          sudo LOOM_BIN_SOURCE=. ./deploy/install.sh daemon <server-key> <server-url>
+          sudo LOOM_BIN_SOURCE=. ./deploy/install.sh worker <server-key> <server-url>
           ```
 
           `LOOM_BIN_SOURCE=.` is the extracted directory itself: the archive
           holds the binary under this release's own `loom-<target>` name, which
           is what `deploy/install.sh` installs. It places `loom` in
-          `/usr/local/bin` and `loom-server` / `loom-daemon` as symlinks to it, so
+          `/usr/local/bin` and `loom-server` / `loom-worker` as symlinks to it, so
           one file is both processes. There is nothing else to install — the
           server carries the product app compiled into it, so it serves its own
           client. `deploy/README.md` has the rest.
@@ -335,7 +335,7 @@ jobs:
             client route fell back to the document, an unknown `/api` path was a
             JSON 404, a `LOOM_UI_DIR` left in the environment was ignored, the
             artifact the server hosts for self-update hashed to the built file, a
-            project was created and read back, and the same file in its daemon
+            project was created and read back, and the same file in its worker
             role enrolled against it (`scripts/verify-release-binaries.sh`)
           * the product app was built from source here and compiled into the
             binary (`crates/server/build.rs`), so the client an installing
@@ -446,7 +446,7 @@ jobs:
       # a push that carried somebody else's bytes, or an image built from the
       # wrong architecture's binary, fails here rather than in a user's terminal.
       # Each image's entrypoint is what names its role, so the `--version` below
-      # is answered by `loom server` or `loom daemon` — the same file, started in
+      # is answered by `loom server` or `loom worker` — the same file, started in
       # the role its image is for, and checked against the version this page
       # names.
       #
@@ -464,7 +464,7 @@ jobs:
           TAG: ${{ steps.images.outputs.tag }}
         run: |
           set -euo pipefail
-          for image in loom-server loom-daemon; do
+          for image in loom-server loom-worker; do
             line="$(docker run --rm "$REGISTRY/$image:$TAG" --version)"
             echo "$line"
             reported="$(awk '{print $2}' <<<"$line")"

@@ -488,16 +488,16 @@ pub fn router(state: AppState) -> Router {
             post(crate::b9::terminals_restart),
         )
         .route("/ws", get(ws::client_socket))
-        .route("/internal/ws", get(ws::daemon_socket))
-        // Daemon self-update: the version to compare against, and the binary
+        .route("/internal/ws", get(ws::worker_socket))
+        // Worker self-update: the version to compare against, and the binary
         // that matches it. Deliberately not behind the `/api` namespace — a
-        // daemon fetching its own replacement is not a domain operation — and
+        // worker fetching its own replacement is not a domain operation — and
         // declared here as literals so `scripts/check-api-coverage.mjs` can
         // parse them and record them as the contract-external entries they are
         // (`artifacts::INSTALL_VERSION_PATH` and its sibling are what the
-        // handlers and the daemon client use).
+        // handlers and the worker client use).
         .route("/install/version", get(artifacts::install_version))
-        .route("/install/loom-daemon", get(artifacts::install_daemon))
+        .route("/install/loom-worker", get(artifacts::install_worker))
         // Everything else is a client route: the UI shell (or a dev-server
         // proxy). API and socket paths are excluded inside the handler.
         .fallback(ui::serve)
@@ -916,7 +916,7 @@ async fn system_config(State(state): State<AppState>) -> Json<Value> {
 /// Loom-native workspace providers exposed to the product composer.
 ///
 /// These are capability descriptors, not plugin registrations. Personal
-/// workspaces use the daemon's existing managed-environment provisioner;
+/// workspaces use the worker's existing managed-environment provisioner;
 /// project checkout uses an explicit local-path source on the selected host.
 /// Per-machine availability is authoritative, so a remembered disconnected
 /// host cannot silently fall back to another machine at submission time.
@@ -2969,9 +2969,9 @@ async fn open_thread(
 ///
 /// Compaction is the provider summarising its own context, and loom's provider
 /// protocol cannot ask for it. `loom_provider_protocol` defines dispatch,
-/// provision and report and nothing else, and the daemon only ever *observes*
+/// provision and report and nothing else, and the worker only ever *observes*
 /// compaction: Pi decides to compact and the bridge maps its `compaction_end`
-/// to `thread/compacted` (`crates/daemon/src/provider.rs`,
+/// to `thread/compacted` (`crates/worker/src/provider.rs`,
 /// `docs/event-model.md` row 7). There is no frame in either direction that
 /// requests one.
 ///
@@ -4699,7 +4699,7 @@ struct EventWaitQuery {
 ///
 /// A long poll without a ceiling is a connection leak with a friendly name; the
 /// contract's `waitMs` is a request, and this is the bound the server applies
-/// to it. The default is deliberately shorter than the daemon heartbeat window
+/// to it. The default is deliberately shorter than the worker heartbeat window
 /// so a client that reconnects on timeout is never mistaken for a stale one.
 const EVENT_WAIT_DEFAULT_MS: u64 = 30_000;
 /// The hard ceiling on `waitMs`, so one request cannot pin a connection.
@@ -5344,7 +5344,7 @@ async fn list_runs(State(state): State<AppState>) -> Json<RunListResponse> {
 /// Body of a host-registration request.
 #[derive(Clone, Debug, Deserialize)]
 pub struct RegisterHostRequest {
-    /// A daemon-chosen identity, so a reconnect updates the same machine
+    /// A worker-chosen identity, so a reconnect updates the same machine
     /// instead of creating a second one. Omitted mints a fresh id.
     #[serde(default)]
     pub id: Option<HostId>,
@@ -5364,7 +5364,7 @@ pub struct RegisterHostResponse {
 
 /// Registers or re-enrolls a host.
 ///
-/// Idempotent when the body carries an `id`: a daemon that reconnects under
+/// Idempotent when the body carries an `id`: a worker that reconnects under
 /// the identity it was given produces a status change, not a new machine.
 async fn register_host(
     State(state): State<AppState>,
@@ -5393,7 +5393,7 @@ async fn list_hosts(State(state): State<AppState>) -> Json<Vec<Value>> {
     Json(state.registry.hosts().iter().map(host_value).collect())
 }
 
-/// Records a daemon heartbeat. Heartbeats are high frequency and deliberately
+/// Records a worker heartbeat. Heartbeats are high frequency and deliberately
 /// do not publish a frame.
 async fn host_heartbeat(
     State(state): State<AppState>,
@@ -5412,7 +5412,7 @@ async fn host_heartbeat(
     }
 }
 
-/// Marks a host's daemon detached without closing anything on the server.
+/// Marks a host's worker detached without closing anything on the server.
 async fn disconnect_host(
     State(state): State<AppState>,
     Path(raw_host_id): Path<String>,
@@ -5745,7 +5745,7 @@ pub struct CreateEnvironmentRequest {
     #[serde(default)]
     pub host_id: Option<HostId>,
     /// Absolute path for an unmanaged environment. Must be absent for a managed
-    /// one, whose path is decided by the daemon that provisions it.
+    /// one, whose path is decided by the worker that provisions it.
     #[serde(default)]
     pub path: Option<String>,
 }
@@ -5780,11 +5780,11 @@ pub struct EnvironmentListQuery {
 ///
 /// An unmanaged environment is usable immediately: it must name an absolute
 /// path and starts `ready`. A managed one starts `creating`, and provisioning
-/// is dispatched to its host in the same request; if the daemon is not there
+/// is dispatched to its host in the same request; if the worker is not there
 /// yet the request is retained in the host room and replayed on reconnect.
 ///
 /// The path's *existence* is deliberately **not** checked here. The path is on
-/// the host's filesystem, which may be another machine, so the daemon is the
+/// the host's filesystem, which may be another machine, so the worker is the
 /// only party that can validate it (and it does, refusing to start a provider
 /// when the directory is missing).
 async fn create_environment(
@@ -5801,7 +5801,7 @@ async fn create_environment(
         None => {
             return error_response(
                 StatusCode::CONFLICT,
-                "no host is available to own the environment; enroll a daemon first".into(),
+                "no host is available to own the environment; enroll a worker first".into(),
             )
         }
     };
@@ -5999,7 +5999,7 @@ pub struct PrimaryHostResponse {
 /// Resolves the primary host.
 ///
 /// Always `200`. The one property this route exists to guarantee: a machine
-/// with no local daemon must not make file browsing or host lookups fail. The
+/// with no local worker must not make file browsing or host lookups fail. The
 /// local host is a preference only, and its absence degrades to a remote host
 /// or to an explicit `no_host` — never to `host_unavailable`.
 async fn primary_host(State(state): State<AppState>) -> Json<PrimaryHostResponse> {
@@ -7357,17 +7357,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_server_with_no_daemon_stays_up_and_reports_no_primary_host() {
+    async fn a_server_with_no_worker_stays_up_and_reports_no_primary_host() {
         let state = test_state();
         let app = router(state.clone());
 
-        // Health must answer whether or not any daemon ever connected.
+        // Health must answer whether or not any worker ever connected.
         let health = get(&app, "/health").await;
         assert_eq!(health.status(), StatusCode::OK);
         assert_eq!(body_json(health).await["status"], "ok");
 
         // The primary-host lookup degrades to an explicit "no host", never an
-        // error, so file browsing is not stranded on an absent local daemon.
+        // error, so file browsing is not stranded on an absent local worker.
         let primary = get(&app, "/api/v1/hosts/primary").await;
         assert_eq!(primary.status(), StatusCode::OK);
         let json = body_json(primary).await;
@@ -7609,7 +7609,7 @@ mod tests {
             EnvironmentStatus::Provisioning
         );
 
-        // The request is in the host room, ready for a reconnecting daemon.
+        // The request is in the host room, ready for a reconnecting worker.
         let events = stored_events(&state, &Scope::Host(host.id.to_string()));
         assert_eq!(events.len(), 1);
         assert_eq!(events[0]["environment_id"], json["environment"]["id"]);
@@ -7779,7 +7779,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_install_version_route_reports_the_protocol_the_daemon_compares() {
+    async fn the_install_version_route_reports_the_protocol_the_worker_compares() {
         let app = router(test_state());
         let response = get(&app, "/install/version").await;
         assert_eq!(response.status(), StatusCode::OK);
@@ -7791,11 +7791,11 @@ mod tests {
     #[tokio::test]
     async fn the_artifact_route_serves_the_binary_with_its_digest_and_etag() {
         let dir = tempfile::tempdir().unwrap();
-        let bytes = b"a stand-in for the daemon binary";
-        std::fs::write(dir.path().join("loom-daemon"), bytes).unwrap();
+        let bytes = b"a stand-in for the worker binary";
+        std::fs::write(dir.path().join("loom-worker"), bytes).unwrap();
         let app = router(state_with_artifacts(dir.path()));
 
-        let response = get(&app, "/install/loom-daemon").await;
+        let response = get(&app, "/install/loom-worker").await;
         assert_eq!(response.status(), StatusCode::OK);
         let digest = crate::artifacts::sha256_hex(bytes);
         assert_eq!(
@@ -7813,15 +7813,15 @@ mod tests {
     #[tokio::test]
     async fn a_conditional_artifact_request_for_the_same_digest_is_a_304() {
         let dir = tempfile::tempdir().unwrap();
-        let bytes = b"an unchanged daemon binary";
-        std::fs::write(dir.path().join("loom-daemon"), bytes).unwrap();
+        let bytes = b"an unchanged worker binary";
+        std::fs::write(dir.path().join("loom-worker"), bytes).unwrap();
         let app = router(state_with_artifacts(dir.path()));
         let digest = crate::artifacts::sha256_hex(bytes);
 
         let response = app
             .clone()
             .oneshot(
-                Request::get("/install/loom-daemon")
+                Request::get("/install/loom-worker")
                     .header("if-none-match", format!("\"sha256-{digest}\""))
                     .body(Body::empty())
                     .unwrap(),
@@ -7841,7 +7841,7 @@ mod tests {
         // A different validator is not the same artifact, so the bytes come.
         let response = app
             .oneshot(
-                Request::get("/install/loom-daemon")
+                Request::get("/install/loom-worker")
                     .header("if-none-match", format!("\"sha256-{}\"", "0".repeat(64)))
                     .body(Body::empty())
                     .unwrap(),
@@ -7854,7 +7854,7 @@ mod tests {
     #[tokio::test]
     async fn an_artifact_request_for_another_target_is_a_404_that_names_it() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("loom-daemon"), b"the local binary").unwrap();
+        std::fs::write(dir.path().join("loom-worker"), b"the local binary").unwrap();
         let app = router(state_with_artifacts(dir.path()));
 
         // The unnamed binary answers only for this server's own triple.
@@ -7863,7 +7863,7 @@ mod tests {
         } else {
             "aarch64-unknown-linux-musl"
         };
-        let response = get(&app, &format!("/install/loom-daemon?target={other}")).await;
+        let response = get(&app, &format!("/install/loom-worker?target={other}")).await;
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
         let body = body_json(response).await;
         assert_eq!(body["code"], "not_found");
@@ -7873,7 +7873,7 @@ mod tests {
         );
 
         // A target that is not a triple at all is the client's mistake.
-        let response = get(&app, "/install/loom-daemon?target=..%2F..%2Fetc%2Fpasswd").await;
+        let response = get(&app, "/install/loom-worker?target=..%2F..%2Fetc%2Fpasswd").await;
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         assert_eq!(body_json(response).await["code"], "invalid_request");
     }

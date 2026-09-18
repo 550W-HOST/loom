@@ -2,7 +2,7 @@
 //!
 //! The file and attachment routes are exercised with a **scripted host**: a real
 //! WebSocket connection that enrolls as a host, receives whatever the control
-//! plane published to its room, and answers with the outcome a real daemon would
+//! plane published to its room, and answers with the outcome a real worker would
 //! send. That is the property this batch must prove — a project file read never
 //! touches the server's own disk, and an upload's path is confined to the
 //! project's attachment root on the machine that owns it — and a scripted host
@@ -13,7 +13,7 @@
 //!
 //! The filesystem semantics themselves (containment, base64, symlink escapes,
 //! the suffix a colliding copy gets) are covered against the real
-//! implementation in `crates/daemon`, because that is where the filesystem is.
+//! implementation in `crates/worker`, because that is where the filesystem is.
 //!
 //! Every successful body is validated against the embedded bb contract, and
 //! every JSON request body is asserted against the contract's request schema —
@@ -366,7 +366,7 @@ async fn fixture() -> Fixture {
 
 /// Enrolls a scripted host over a real socket and answers what it is asked.
 ///
-/// A stand-in for a daemon and nothing more. It answers both the file protocol
+/// A stand-in for a worker and nothing more. It answers both the file protocol
 /// and the host RPC protocol, because `projects.commands` uses the second.
 async fn spawn_scripted_host(
     addr: &str,
@@ -499,7 +499,7 @@ where
 }
 
 fn file_entry(path: &str, kind: HostPathKind) -> HostFileEntry {
-    // `name` is the final path segment, exactly as the daemon reports it.
+    // `name` is the final path segment, exactly as the worker reports it.
     let name = path.rsplit('/').next().unwrap_or(path).to_owned();
     HostFileEntry {
         path: path.to_owned(),
@@ -769,7 +769,7 @@ async fn project_file_content_reads_inside_the_workspace_root() {
             max_bytes,
         } => {
             assert_eq!(path, "/srv/b7/src/main.rs");
-            // The root travels with the request, so the daemon can refuse a
+            // The root travels with the request, so the worker can refuse a
             // symlink that leaves the workspace.
             assert_eq!(root_path.as_deref(), Some(WORKSPACE));
             assert!(max_bytes > 0);
@@ -1007,7 +1007,7 @@ async fn uploading_an_attachment_writes_inside_the_attachment_root() {
 #[tokio::test]
 async fn an_upload_reports_the_path_the_host_actually_wrote() {
     let mut fixture = fixture().await;
-    // The daemon suffixes a colliding name, so the response's `path` and `name`
+    // The worker suffixes a colliding name, so the response's `path` and `name`
     // are the file's real identity — a client that kept the requested name would
     // reference a file that is not there.
     fixture.answer_file(HostFileOutcome::Written(HostFileContent {

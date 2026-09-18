@@ -914,7 +914,7 @@ impl DomainRegistry {
     /// longer guesses.
     ///
     /// An `unmanaged` environment starts `ready` with its path; a `managed`
-    /// one starts `creating` with none, and is provisioned later by a daemon.
+    /// one starts `creating` with none, and is provisioned later by a worker.
     pub fn create_environment(
         &self,
         project_id: Option<ProjectId>,
@@ -1026,7 +1026,7 @@ impl DomainRegistry {
         Ok(environment.clone())
     }
 
-    /// Records a daemon-provided workspace path and reaches `ready` while the
+    /// Records a worker-provided workspace path and reaches `ready` while the
     /// registry lock is held. This prevents deletion or a second report from
     /// landing between the path write and the lifecycle transition.
     pub fn complete_environment_provisioning(
@@ -1203,18 +1203,18 @@ impl DomainRegistry {
         Ok((host, event))
     }
 
-    /// Enrolls a daemon as a host, idempotently.
+    /// Enrolls a worker as a host, idempotently.
     ///
-    /// This is the operation a daemon performs when it connects, and it is
-    /// why a daemon's identity survives reconnects:
+    /// This is the operation a worker performs when it connects, and it is
+    /// why a worker's identity survives reconnects:
     ///
     /// * `host_id: Some(id)` and the host is known — it is marked connected
     ///   and, if it was disconnected, a `host_status_changed` event is
     ///   produced. No second machine is created.
     /// * `host_id: Some(id)` and the host is unknown — it is created under the
-    ///   identity the daemon supplied, which is how a server started after the
-    ///   daemon still recognises it.
-    /// * `host_id: None` — a fresh identity is minted, for a daemon that has
+    ///   identity the worker supplied, which is how a server started after the
+    ///   worker still recognises it.
+    /// * `host_id: None` — a fresh identity is minted, for a worker that has
     ///   never enrolled before.
     ///
     /// `data_dir` is the machine's own data directory. It is recorded — never
@@ -1230,7 +1230,7 @@ impl DomainRegistry {
         self.enroll_host_with_data_dir(host_id, name, None, now_ms)
     }
 
-    /// [`DomainRegistry::enroll_host`] with the daemon's reported data
+    /// [`DomainRegistry::enroll_host`] with the worker's reported data
     /// directory.
     pub fn enroll_host_with_data_dir(
         &self,
@@ -1282,7 +1282,7 @@ impl DomainRegistry {
         Ok(host.clone())
     }
 
-    /// Marks a host's daemon detached, returning an event on an actual change.
+    /// Marks a host's worker detached, returning an event on an actual change.
     pub fn mark_host_disconnected(
         &self,
         host_id: &HostId,
@@ -1300,7 +1300,7 @@ impl DomainRegistry {
     ///
     /// `local_host_id` is the machine the *server* runs on, if the operator
     /// declared one. It is a preference, never a requirement: with no local
-    /// daemon the answer falls back to a connected remote host, and with no
+    /// worker the answer falls back to a connected remote host, and with no
     /// host at all it is `None`. See
     /// [`loom_domain::select_primary_host`].
     pub fn primary_host(&self, local_host_id: Option<&HostId>) -> Option<Host> {
@@ -3199,7 +3199,7 @@ mod tests {
         let (host, events) = registry.enroll_host(None, "laptop".into(), 2).unwrap();
         assert_eq!(events.len(), 1);
 
-        // The daemon reconnects with the id it was given: no second host, no
+        // The worker reconnects with the id it was given: no second host, no
         // registration event, and the status was already connected.
         let (again, events) = registry
             .enroll_host(Some(host.id.clone()), "laptop".into(), 3)
@@ -3265,7 +3265,7 @@ mod tests {
     }
 
     #[test]
-    fn a_server_with_no_daemon_has_no_primary_host_but_no_error() {
+    fn a_server_with_no_worker_has_no_primary_host_but_no_error() {
         let registry = registry();
         assert!(registry.primary_host(Some(&HostId::mint())).is_none());
     }

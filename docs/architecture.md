@@ -8,16 +8,16 @@ Three roles, and only three.
 | --- | --- | --- | --- |
 | **UI** | Inspect and steer. Holds no state. | Browser, installed PWA, or the desktop shell's webview | any |
 | **Server** | State, HTTP API, WebSocket, dispatch, serves the UI client it carries | one machine | 1 |
-| **Daemon** | Runs provider CLIs, provisions workspaces, executes tools | each execution machine | N |
+| **Worker** | Runs provider CLIs, provisions workspaces, executes tools | each execution machine | N |
 
-A UI never talks to a daemon. A daemon never talks to a UI. Both only talk to
+A UI never talks to a worker. A worker never talks to a UI. Both only talk to
 the server. This is the same shape as the reference design that motivated the
 fork, and it is what makes the following true:
 
 - opening the UI is "point a client at a URL" — nothing local is required;
 - turning a machine into an execution machine is one enrollment, not a
   topology change;
-- the server restarting, or a daemon restarting, is not a UI event.
+- the server restarting, or a worker restarting, is not a UI event.
 
 ## The relay layer
 
@@ -45,7 +45,7 @@ different lifetimes and different failure modes.
                  │  (ephemeral, per-node)         │
                  └───────────────┬───────────────┘
                                  │
-                   client WS ────┴──── daemon WS
+                   client WS ────┴──── worker WS
 ```
 
 `loom-relay` answers *does this event reach this node?* `loom-relay-hub` answers
@@ -99,7 +99,7 @@ subscriber, a room or a socket.
     the replay window survives a restart.
   - [`backend::redis::RedisBackend`] — the log in Redis Streams, one stream
     per shard, shared by every node that points at the same Redis. This is
-    the backend that makes a server upgrade invisible to connected daemons
+    the backend that makes a server upgrade invisible to connected workers
     and lets a second node attach to the same window. It is optional
     configuration (`LOOM_REDIS_URL`), not a dependency: the client is a
     hand-rolled RESP2 client, so a default build still compiles nothing
@@ -196,7 +196,7 @@ the caller.
 
 Regression coverage: `paging_from_a_cursor_recovers_every_missed_frame` over
 every backend, and `a_reconnect_recovers_more_dispatches_than_one_replay_page`
-end to end — a daemon restarted with a cursor and a page limit of 4 still
+end to end — a worker restarted with a cursor and a page limit of 4 still
 executes all 10 queued runs.
 
 ### Retention
@@ -246,10 +246,10 @@ rather than by making the server grow.
 | bb behaviour | Cause | Here |
 | --- | --- | --- |
 | Multi-second event-loop stalls; `fetch failed` from local plugins | synchronous `better-sqlite3` on the single Node loop, an 11-index `events` table, unbounded truncation sweeps | storage behind an async seam; no sweep cursors |
-| Daemon restart kills in-flight agent turns | provider bridge transport is inherited stdio owned by the daemon's parent | daemon is an independent process; relay replays what it missed |
+| Worker restart kills in-flight agent turns | provider bridge transport is inherited stdio owned by the worker's parent | worker is an independent process; relay replays what it missed |
 | An event the server refuses blocks every thread's events | one host-wide event queue spliced only on success | ordered per-scope log; a rejection cannot block another scope |
-| UI freezes with the server | UI and server share one process/cgroup | UI is a URL client; server and daemon are separate units |
-| Provider output handling wedges a turn | provider-specific bridge assumes one private wire format | ACP framing/translation is isolated in the daemon and the server reaps silent runs |
+| UI freezes with the server | UI and server share one process/cgroup | UI is a URL client; server and worker are separate units |
+| Provider output handling wedges a turn | provider-specific bridge assumes one private wire format | ACP framing/translation is isolated in the worker and the server reaps silent runs |
 
 ## Deployment shapes
 
@@ -259,7 +259,7 @@ count are all present with the in-process backend.
 ### A. Single machine
 
 ```
-desktop shell → loom server (loopback) → loom-relay (in-process) → UI + local daemon
+desktop shell → loom server (loopback) → loom-relay (in-process) → UI + local worker
 ```
 
 ### B. Server plus execution machines
@@ -271,12 +271,12 @@ desktop shell → loom server (loopback) → loom-relay (in-process) → UI + lo
                   └──────────────┬─────────────┘
         ┌──────────────┬─────────┼──────────┬──────────────┐
         ▼              ▼         ▼          ▼              ▼
-    daemon 1       daemon 2   daemon 3   PWA (phone)   desktop (webview)
+    worker 1       worker 2   worker 3   PWA (phone)   desktop (webview)
 ```
 
-The server and each daemon are separate services with separate data
+The server and each worker are separate services with separate data
 directories and separate resource domains. One agent exhausting a machine
-cannot take the control plane with it. Daemons make outbound connections only,
+cannot take the control plane with it. Workers make outbound connections only,
 so they work behind NAT. This shape is packaged as systemd units in
 [`../deploy/`](../deploy/README.md), with the network boundary in
 [`remote-access.md`](remote-access.md) and the update rules in
@@ -287,7 +287,7 @@ so they work behind NAT. This shape is packaged as systemd units in
 For a single server that must not lose its replay window on restart, the
 `DiskBackend` already covers it with no new process: the log lives in a data
 directory (`LOOM_DATA_DIR`), one append-only file per shard. When a server
-upgrade must additionally not disconnect running daemons *and* a second node
+upgrade must additionally not disconnect running workers *and* a second node
 must attach to the same log, point the server at Redis Streams instead:
 
 ```
@@ -330,7 +330,7 @@ configuration.
 | --- | --- |
 | Browser | open the URL |
 | Installed PWA (desktop, iOS, Android) | same, then "install" |
-| Desktop shell | webview pointed at a URL; optionally supervises a local server and/or daemon |
+| Desktop shell | webview pointed at a URL; optionally supervises a local server and/or worker |
 
 That makes these three genuinely the same client, which is why the native
 mobile app is not maintained here.
@@ -345,22 +345,22 @@ only. The client contract — typed `/api/v1` routes, the public `/ws`
 subprotocol with bb targets answered by `changed`/`pong`, and a reconnect that
 invalidates and reloads rather than replaying — is in [`ui.md`](ui.md).
 
-### Optional local daemon
+### Optional local worker
 
-The desktop shell may start, and independently stop, a local daemon. A daemon
+The desktop shell may start, and independently stop, a local worker. A worker
 is a property of a *machine*, not of a UI, so closing it must not affect the
 UI. Two consequences drive the implementation:
 
-1. Server and daemon must be independently startable processes. bb couples
+1. Server and worker must be independently startable processes. bb couples
    them in one full-stack launcher, so this is a prerequisite for the feature,
    not a follow-up.
 2. The server's notion of a "primary host" currently falls back to the local
-   daemon's id file. With no local daemon, that fallback must not strand file
+   worker's id file. With no local worker, that fallback must not strand file
    browsing and host lookups on a host that is intentionally absent.
 
-Both are now implemented: the server role is server-only, the daemon role is the
+Both are now implemented: the server role is server-only, the worker role is the
 independent execution-plane entry point, and primary-host resolution degrades
-instead of failing. They are `loom server` and `loom daemon` — one binary, two
+instead of failing. They are `loom server` and `loom worker` — one binary, two
 roles, still two processes. The boundary contract — the wire protocol, the
 primary policy, and the desktop shell's two supervision switches — is specified
 in
@@ -373,5 +373,5 @@ in
   `apps/desktop` in the tree but reduce it to a webview pointed at a URL plus
   the two supervision switches, and delete nothing until that shell is proven
   (see [`ui.md`](ui.md) § "Desktop shell").
-- How much of bb's existing Node daemon is kept as-is: it is ~45k lines and its
+- How much of bb's existing Node host daemon is kept as-is: it is ~45k lines and its
   provider bridge is the part that actually touches agents.

@@ -74,7 +74,7 @@ use crate::state::AppState;
 /// The largest file any content route will serve.
 ///
 /// bb sets 25 MB for non-image files and 10 MB for images; one bound is used
-/// here because the daemon is the side that actually enforces it from the
+/// here because the worker is the side that actually enforces it from the
 /// request, and a single number cannot drift between the two.
 pub const MAX_FILE_CONTENT_BYTES: u64 = 25 * 1024 * 1024;
 
@@ -202,7 +202,7 @@ fn host_failure_response(code: &str, message: &str) -> Response {
         "unsupported_media_type" => StatusCode::UNSUPPORTED_MEDIA_TYPE,
         _ => StatusCode::BAD_GATEWAY,
     };
-    // The daemon's own code crosses over when the contract knows it; anything
+    // The worker's own code crosses over when the contract knows it; anything
     // else becomes the contract's generic host failure at the same status,
     // rather than inventing an error code no client can branch on.
     let code: &'static str = match code {
@@ -999,7 +999,7 @@ pub async fn thread_storage_paths(
 ///
 /// Answered from the entity view, not from the host: it is a question about the
 /// layout, and a client opening a storage panel should not fail because the
-/// daemon is momentarily away. The directory itself need not exist yet.
+/// worker is momentarily away. The directory itself need not exist yet.
 pub async fn thread_storage_location(
     State(state): State<AppState>,
     AxumPath(raw_thread_id): AxumPath<String>,
@@ -1060,7 +1060,7 @@ fn public_thread(state: &AppState, thread_id: &ThreadId) -> Result<Thread, Respo
 ///
 /// Hand-rolled for the same reason the decoder is: the control plane needs two
 /// directions of one encoding, and a dependency for that is not worth the
-/// supply-chain surface. The daemon has its own copy on the other side of the
+/// supply-chain surface. The worker has its own copy on the other side of the
 /// wire.
 pub(crate) fn base64_encode(bytes: &[u8]) -> String {
     const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -1085,7 +1085,7 @@ pub(crate) fn base64_encode(bytes: &[u8]) -> String {
     encoded
 }
 
-/// Standard base64 (RFC 4648) decoding, used to turn a daemon's binary payload
+/// Standard base64 (RFC 4648) decoding, used to turn a worker's binary payload
 /// back into bytes.
 pub(crate) fn base64_decode(raw: &str) -> Option<Vec<u8>> {
     let mut decoded = Vec::with_capacity(raw.len() / 4 * 3);

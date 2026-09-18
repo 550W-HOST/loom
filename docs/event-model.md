@@ -58,38 +58,38 @@ provider bridge.
 | # | contract type | coverage | producer / reason |
 | --- | --- | --- | --- |
 | 1 | `thread/started` | not produced | Thread creation is `DomainEvent::ThreadCreated` before a run exists; no provider frame starts a thread. A turn opens with `turn/started`. |
-| 2 | `thread/identity` | produced | daemon; the run's first event after `session/new` or `session/load`. `providerThreadId` is the ACP agent's opaque session id. |
-| 3 | `turn/started` | produced | daemon; synthesized before `session/prompt` because ACP has no turn event. |
-| 4 | `turn/completed` | produced | daemon (ACP prompt stop reason, connection failure, timeout) and server (deadline, stale host, restart, no host). The single terminal event. |
+| 2 | `thread/identity` | produced | worker; the run's first event after `session/new` or `session/load`. `providerThreadId` is the ACP agent's opaque session id. |
+| 3 | `turn/started` | produced | worker; synthesized before `session/prompt` because ACP has no turn event. |
+| 4 | `turn/completed` | produced | worker (ACP prompt stop reason, connection failure, timeout) and server (deadline, stale host, restart, no host). The single terminal event. |
 | 5 | `turn/input/accepted` | not produced | loom dispatches one prompt synchronously; acceptance is the `turn/started` boundary. There is no client request id to echo yet. |
 | 6 | `thread/name/updated` | not produced | ACP session metadata is translated only when the agent sends a concrete title; the current adapter does not receive a Pi-specific rename command. |
-| 7 | `thread/compacted` | produced | daemon; an ACP adapter's compaction update when one is available. |
+| 7 | `thread/compacted` | produced | worker; an ACP adapter's compaction update when one is available. |
 | 8 | `thread/context/cleared` | not produced | ACP has no provider-neutral context-clear update that the current adapter drives. |
 | 9 | `thread/goal/updated` | not produced | The current ACP adapter does not synthesize a goal object from agent text or tool calls. |
 | 10 | `thread/goal/cleared` | not produced | as above. |
-| 11 | `item/started` | produced | daemon; ACP `tool_call` and related item-bearing updates. |
-| 12 | `item/completed` | produced | daemon; terminal ACP tool updates, message flushes and compaction updates. |
-| 13 | `item/agentMessage/delta` | produced | daemon; ACP `agent_message_chunk`. |
+| 11 | `item/started` | produced | worker; ACP `tool_call` and related item-bearing updates. |
+| 12 | `item/completed` | produced | worker; terminal ACP tool updates, message flushes and compaction updates. |
+| 13 | `item/agentMessage/delta` | produced | worker; ACP `agent_message_chunk`. |
 | 14 | `item/commandExecution/outputDelta` | not produced | ACP tool output is currently represented by generic tool progress; no command-output accumulator is synthesized. |
 | 15 | `item/fileChange/outputDelta` | not produced | The current ACP mapping closes a file change as one item; it does not invent output deltas. |
 | 16 | `item/reasoning/summaryTextDelta` | not produced | ACP thought chunks map to reasoning text, not a separate summary channel. |
-| 17 | `item/reasoning/textDelta` | produced | daemon; ACP `agent_thought_chunk`. |
+| 17 | `item/reasoning/textDelta` | produced | worker; ACP `agent_thought_chunk`. |
 | 18 | `item/plan/delta` | not produced | ACP plan updates map to `turn/plan/updated`; no item-level plan delta is synthesized. |
 | 19 | `item/mcpToolCall/progress` | not produced | ACP tool calls are not distinguished as MCP calls by the current adapter. |
-| 20 | `item/toolCall/progress` | produced | daemon; non-terminal ACP `tool_call_update`. |
+| 20 | `item/toolCall/progress` | produced | worker; non-terminal ACP `tool_call_update`. |
 | 21 | `item/backgroundTask/progress` | not produced | ACP has no mapping in the current adapter. |
 | 22 | `item/backgroundTask/completed` | not produced | as above. |
 | 23 | `item/delegation/progress` | not produced | Delegation is a loom thread operation, not an ACP item in the current adapter. |
 | 24 | `item/delegation/completed` | not produced | as above. |
 | 25 | `thread/tokenUsage/updated` | not produced | The current ACP v1 mapping receives context occupancy, not a token breakdown. |
-| 26 | `thread/contextWindowUsage/updated` | produced | daemon; ACP `usage_update`, including the usage snapshot retained during `session/load`. |
-| 27 | `turn/plan/updated` | produced | daemon; ACP `plan` update. |
+| 26 | `thread/contextWindowUsage/updated` | produced | worker; ACP `usage_update`, including the usage snapshot retained during `session/load`. |
+| 27 | `turn/plan/updated` | produced | worker; ACP `plan` update. |
 | 28 | `turn/diff/updated` | not produced | The current ACP adapter does not derive a working-tree diff. |
-| 29 | `provider/error` | produced | daemon; rejected prompt or ACP transport failure. |
+| 29 | `provider/error` | produced | worker; rejected prompt or ACP transport failure. |
 | 30 | `provider/rateLimits/updated` | not produced | The current ACP mapping does not expose rate-limit state. |
-| 31 | `provider.env-resolved` | not produced | loom resolves env at spawn time in the daemon process; it is not a Pi event. |
+| 31 | `provider.env-resolved` | not produced | loom resolves env at spawn time in the worker process; it is not a Pi event. |
 | 32 | `thread/extensionState/updated` | not produced | loom has no plugin/extension system, by decision. |
-| 33 | `provider/warning` | produced | daemon; declined ACP permission requests and adapter warnings. |
+| 33 | `provider/warning` | produced | worker; declined ACP permission requests and adapter warnings. |
 | 34 | `provider/modelFallback` | not produced | No ACP model fallback event is mapped today. |
 | 35 | `provider/unhandled` | **not produced** | An unmapped ACP update is logged and produces no fabricated contract event. |
 
@@ -154,8 +154,8 @@ The fields the projection needs are all present on the contract events:
 
 ## ACP framing
 
-ACP owns JSON-RPC framing and the daemon SDK consumes complete requests,
-responses and notifications. The daemon does not parse Pi's private JSONL
+ACP owns JSON-RPC framing and the worker SDK consumes complete requests,
+responses and notifications. The worker does not parse Pi's private JSONL
 protocol; only embedded `pi-acp` talks to Pi internally.
 
 ## Enforcement
@@ -165,7 +165,7 @@ protocol; only embedded `pi-acp` talks to Pi internally.
   type except the deliberately unmodelled `provider/unhandled` has a sample,
   and that each sample's serialized `RunEvent` validates. A renamed field or
   discriminant fails there.
-- `crates/daemon/tests/provider_e2e.rs::a_provider_turn_runs_end_to_end_and_is_replayable`
+- `crates/worker/tests/provider_e2e.rs::a_provider_turn_runs_end_to_end_and_is_replayable`
   runs an ACP agent stub and validates every translated contract event.
 - `the_real_pi_process_streams_through_the_bridge` (ignored by default, runs
   Pi through embedded `pi-acp`) validates a real turn's events the same way.

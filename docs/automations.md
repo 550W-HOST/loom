@@ -396,7 +396,7 @@ so there is no second delivery path to keep alive.
 - **Where the script lives.** In the script directory of that machine:
   `<data_dir>/automation-scripts/<automationId>/`. The control plane composes
   the path from the data directory the machine itself *reported* when it
-  enrolled, and the daemon creates the directory before running anything, so the
+  enrolled, and the worker creates the directory before running anything, so the
   layout stays the host's. An inline `script` is written there once, at first
   dispatch, and the automation then carries `storedScriptPath` — the file that
   actually ran, findable by a user. A `scriptFile` is resolved inside the same
@@ -409,8 +409,8 @@ so there is no second delivery path to keep alive.
   stdout and stderr are captured, and the environment is *cleared* and rebuilt
   from `PATH`, whatever the automation declared in `env`, and the run's own
   identity (`LOOM_SERVER_URL`, `LOOM_PROJECT_ID`, `LOOM_AUTOMATION_ID`,
-  `LOOM_AUTOMATION_RUN_ID`). Nothing else from the daemon's environment reaches
-  it — a script is a run of the automation, not of the daemon.
+  `LOOM_AUTOMATION_RUN_ID`). Nothing else from the worker's environment reaches
+  it — a script is a run of the automation, not of the worker.
 - **Time.** `timeoutMs` (default 120 000, at most 900 000) is enforced on the
   machine. A script that outlives it is killed and the run fails with "Script
   timed out". Output collection is bounded by the same kind of budget: past it
@@ -458,8 +458,8 @@ The scheduler's state is the payload, so a restart is a resume:
 ## Not here yet
 
 - **Only two hosts have ever been exercised.** Script execution is verified
-  against one server and one daemon over real sockets — including a second
-  daemon identity that enrolls and is *not* chosen — but not against two
+  against one server and one worker over real sockets — including a second
+  worker identity that enrolls and is *not* chosen — but not against two
   machines at once, and not with a workspace whose primary host differs from the
   host that reported the data directory. The address of the script is derived
   per run from the workspace's primary host, so the gap is in coverage rather
@@ -504,17 +504,17 @@ The scheduler's state is the payload, so a restart is a resume:
   created once, a script run with no machine or with a machine that never
   reported a data directory fails with the reason, a script run is dispatched to
   the machine that owns it carrying its script, workspace and timeout.
-- `crates/daemon/src/scripts.rs` — the runner in isolation: the interpreter an
+- `crates/worker/src/scripts.rs` — the runner in isolation: the interpreter an
   extension implies, names that cannot escape the directory, an inline script
   whose output and exit are reported, a non-zero exit reported verbatim, a
   script that outlives its timeout killed and said so, a cancel that kills the
-  process, the daemon's own environment excluded while a declared variable is
+  process, the worker's own environment excluded while a declared variable is
   visible, output over the budget truncated rather than failed, and both a
   traversal and a symlink out of the script directory refused.
-- `crates/daemon/tests/provider_e2e.rs` — the same paths over real sockets: a
+- `crates/worker/tests/provider_e2e.rs` — the same paths over real sockets: a
   scheduled run and a manual run each become a turn whose thread carries the
   stub's output, the run record agrees with the thread about which conversation
-  it was, a script automation runs on the daemon and records its output, path and
+  it was, a script automation runs on the worker and records its output, path and
   exit code, a non-zero exit fails the run with its code, a script that outlives
   its timeout is killed and reported, pausing the automation stops a running
   script and the run settles as cancelled, and a script path that leaves the

@@ -3,7 +3,7 @@
 //! An *interaction* is a request the agent makes to a human — "may I run this
 //! command?", "which of these two do you want?", "the plugin needs input" — and
 //! the record of what the human answered. It is durable for the same reason a
-//! queued message is: the run that raised it may be reported by a daemon after
+//! queued message is: the run that raised it may be reported by a worker after
 //! a server restart, and a client must be able to see and answer a question it
 //! did not witness arrive.
 //!
@@ -28,7 +28,7 @@
 //!   answer any more.
 //!
 //! `resolving` exists because an answer is a two-step fact: the server has
-//! accepted it and retained the delivery intent, but the replayable daemon
+//! accepted it and retained the delivery intent, but the replayable worker
 //! frame is not stored yet. A client that sees `resolving` keeps the row
 //! disabled; `resolved` means the provider answer can be delivered or replayed.
 //! Cancellation uses the same intermediate state so a relay failure cannot hide
@@ -262,7 +262,7 @@ impl Resolution {
     /// rejected by the exported schema before any client sees it. The
     /// consequence is that an approval's provider-specific option is chosen by
     /// its *polarity* (`allow_once` / `allow_for_session` / `deny`) rather than
-    /// named; see `crates/daemon/src/acp/permission.rs` for how a polarity maps
+    /// named; see `crates/worker/src/acp/permission.rs` for how a polarity maps
     /// onto an ACP option and what that costs for a multi-choice request.
     pub fn answers(&self, kind: InteractionKind) -> bool {
         match (self, kind) {

@@ -6,14 +6,14 @@
 //! impossible — so every read and listing is a request to that host:
 //!
 //! ```text
-//!   server ── HostFileRequest ──▶ relay host:{id} ──▶ daemon
-//!   server ◀── HostFileReport ── daemon socket (ClientCommand::HostFileReport)
+//!   server ── HostFileRequest ──▶ relay host:{id} ──▶ worker
+//!   server ◀── HostFileReport ── worker socket (ClientCommand::HostFileReport)
 //! ```
 //!
 //! The request goes through the relay for the same reason a dispatch does: a
-//! daemon that was reconnecting receives it on replay, and replaying a read is
+//! worker that was reconnecting receives it on replay, and replaying a read is
 //! harmless because reading is idempotent. The answer comes back up the
-//! daemon's own socket because it satisfies exactly one waiting HTTP request;
+//! worker's own socket because it satisfies exactly one waiting HTTP request;
 //! fanning it out to the host's room would deliver a file's contents to every
 //! client watching that room for no reason.
 //!
@@ -38,7 +38,7 @@ use crate::state::AppState;
 
 /// How long a host has to answer before a read is given up on.
 ///
-/// Matches bb's `COMMAND_TIMEOUT_MS`: the daemon's own filesystem work is fast,
+/// Matches bb's `COMMAND_TIMEOUT_MS`: the worker's own filesystem work is fast,
 /// so anything approaching this is a host that is connected but wedged, and
 /// holding the client's request open longer would be a connection leak with a
 /// friendly name.
@@ -51,7 +51,7 @@ pub enum HostFileTransportError {
     Publish(String),
     /// The host did not answer within [`HOST_FILE_TIMEOUT`].
     Timeout,
-    /// The host is enrolled but currently has no daemon connection.
+    /// The host is enrolled but currently has no worker connection.
     Disconnected(String),
     /// The host is not enrolled on this server at all.
     UnknownHost(String),

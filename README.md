@@ -10,7 +10,7 @@ number of structural decisions, and each one is being replaced:
 | --- | --- |
 | Single-threaded Node event loop doing synchronous SQLite work | Rust control plane; storage behind an async seam |
 | Producers mutate an in-process WebSocket hub directly | Producers only publish to a scope; the relay owns delivery |
-| Server and daemon bound together, one cgroup, one lifetime | Server and daemon are independent processes and deployment units |
+| Server and worker bound together, one cgroup, one lifetime | Server and worker are independent processes and deployment units |
 | Plugin runtime executing arbitrary JS inside the server | No plugin runtime; providers are first-class |
 | UI is whatever the local Electron shell boots | UI is a client of a URL; web, PWA and desktop are the same thing |
 
@@ -21,21 +21,21 @@ on it and it can be validated on its own.
 
 - [x] `loom-relay` — scoped, sharded, replayable event log
 - [x] `loom-relay-hub` — rooms, idempotent fan-out, backpressure signal
-- [x] `loom` — one binary carrying both roles; `loom-server` (control plane: HTTP + WebSocket surface, publish reaches subscribers through the log) and `loom-daemon` (execution plane) are roles of it, still two processes
+- [x] `loom` — one binary carrying both roles; `loom-server` (control plane: HTTP + WebSocket surface, publish reaches subscribers through the log) and `loom-worker` (execution plane) are roles of it, still two processes
 - [x] `loom-domain` — projects, threads, hosts and environments as pure types and invariants
 - [x] Managed projects: create / list / rename / archive / sources over HTTP, with threads and environments naming their project (`docs/projects.md`)
-- [x] Server-only startup and an independently stoppable local daemon: `loom server` and `loom daemon`, or the installed symlinks that name the same file
-- [x] `loom-provider-protocol` — the server↔daemon ACP execution contract, replayable run events, and a terminal-state guarantee
+- [x] Server-only startup and an independently stoppable local worker: `loom server` and `loom worker`, or the installed symlinks that name the same file
+- [x] `loom-provider-protocol` — the server↔worker ACP execution contract, replayable run events, and a terminal-state guarantee
 - [x] The event model aligned with bb's `ThreadEvent` contract (35 provider event types) — see [`docs/event-model.md`](docs/event-model.md)
 - [ ] Persist domain entities (the domain registry is in-process and lost on restart)
 - [x] The server role hosts the UI from its own origin: the product app in `apps/app` is compiled into the binary (`crates/server/build.rs`), so the one artifact carries its client and nothing about serving it is configured (`docs/ui.md`)
 - [x] The ported bb app (`apps/app`) is the only UI — same-origin typed `/api/v1` routes, the public `/ws` realtime contract, and machine-checked provenance against the pinned bb commit (`docs/ui-baseline.md`)
-- [ ] Check in the Node execution plane (`apps/host-daemon`) against the daemon contract
-  (`loom daemon` is the reference implementation of that contract and exercises
+- [ ] Check in the Node execution plane (`apps/host-daemon`) against the worker contract
+  (`loom worker` is the reference implementation of that contract and exercises
   all of it today)
 - [x] Automations: domain, durable storage, typed HTTP surface, a cron/timezone scheduler and agent execution through the existing thread/run/ACP path (`docs/automations.md`)
 - [x] Redis Streams relay backend for restart-transparent upgrades (`LOOM_REDIS_URL`)
-- [x] bb's HTTP/WebSocket/daemon contract exported to JSON Schema, with a Rust conformance harness (`docs/contract.md`)
+- [x] bb's HTTP/WebSocket/worker contract exported to JSON Schema, with a Rust conformance harness (`docs/contract.md`)
 - [x] CI on every push and PR: format, lint, the full test suite, the declared MSRV and contract reproducibility (`docs/ci.md`)
 
 ## Layout
@@ -43,15 +43,15 @@ on it and it can be validated on its own.
 ```
 crates/
   loom/         loom            the one binary, dispatching by invocation name
-                                (`loom server` / `loom daemon`) or by the
-                                installed `loom-server` / `loom-daemon` symlinks
+                                (`loom server` / `loom worker`) or by the
+                                installed `loom-server` / `loom-worker` symlinks
   domain/       loom-domain     projects, threads, hosts, environments, scopes, events, runs
   relay/        loom-relay      scopes, event ids, retention, dedup, backends
   relay-hub/    loom-relay-hub  connections, rooms, delivery
   server/       loom-server     HTTP, WebSocket, protocol, dispatch, fixed readers, UI hosting
                                 (the control-plane role's implementation)
-  provider-protocol/  loom-provider-protocol  the server↔daemon provider contract
-  daemon/       loom-daemon     the execution plane's implementation: enrollment,
+  provider-protocol/  loom-provider-protocol  the server↔worker provider contract
+  worker/       loom-worker     the execution plane's implementation: enrollment,
                                 dispatch, ACP agents (the other role of `loom`)
   contract/     loom-contract   bb's exported contract as a conformance target
 contracts/bb/                   generated JSON Schema from bb's contract packages
@@ -121,8 +121,8 @@ cargo fmt --all
 ```
 
 `cargo build --release -p loom` puts the artifact at `target/release/loom`;
-`loom server` starts the control plane and `loom daemon` an execution machine,
-and `deploy/install.sh` adds the `loom-server` / `loom-daemon` symlinks so
+`loom server` starts the control plane and `loom worker` an execution machine,
+and `deploy/install.sh` adds the `loom-server` / `loom-worker` symlinks so
 anything that spawns a binary by name keeps working. For a quick start,
 `cargo run -p loom -- server`.
 
@@ -155,7 +155,7 @@ contract.
 Run it:
 
 ```bash
-# Server-only: the control plane and nothing else. It never starts a daemon
+# Server-only: the control plane and nothing else. It never starts a worker
 # and never exits because one is missing.
 cargo run -p loom -- server       # listens on 127.0.0.1:38886
 
@@ -167,19 +167,19 @@ curl -X POST localhost:38886/api/v1/publish \
 curl 'localhost:38886/api/v1/replay?scope_kind=thread&scope_id=thr_1'
 ```
 
-Daemon-only, in a second terminal. It dials the server outbound and can stop
+Worker-only, in a second terminal. It dials the server outbound and can stop
 without touching it:
 
 ```bash
-cargo run -p loom -- daemon --server-url http://127.0.0.1:38886 --name laptop
-# → loom-daemon "laptop" enrolled as host_01M… with http://127.0.0.1:38886
+cargo run -p loom -- worker --server-url http://127.0.0.1:38886 --name laptop
+# → loom-worker "laptop" enrolled as host_01M… with http://127.0.0.1:38886
 ```
 
-The same binary runs both roles: `loom server` and `loom daemon` are the
-explicit form, and the installed `loom-server` / `loom-daemon` symlinks are the
+The same binary runs both roles: `loom server` and `loom worker` are the
+explicit form, and the installed `loom-server` / `loom-worker` symlinks are the
 same file answering to the old names.
 
-With no daemon at all, `GET /api/v1/hosts/primary` answers `200` with
+With no worker at all, `GET /api/v1/hosts/primary` answers `200` with
 `{"host":null,"source":"no_host"}` rather than an error — a server-only
 deployment degrades, it does not break. The full boundary contract is in
 [`docs/process-model.md`](docs/process-model.md).
@@ -204,7 +204,7 @@ curl -X POST localhost:38886/api/v1/threads \
   -d '{"projectId":"proj_...","origin":"app","input":[],"environment":{"type":"project-default"}}'
 
 # Message a thread; it appends and, from idle, starts a run. Both events go
-# to thread:{id}, in order. With a daemon connected, a `RunDispatch` is also
+# to thread:{id}, in order. With a worker connected, a `RunDispatch` is also
 # published to `host:{id}`; the provider's events (assistant/reasoning deltas,
 # tool items, and the terminal `turn/completed`) come back as
 # `thread_run_event`s on the thread scope, each carrying a bb `ThreadEvent`.
@@ -215,7 +215,7 @@ curl -X POST localhost:38886/api/v1/threads/thr_.../messages \
 curl localhost:38886/api/v1/runs
 ```
 
-Connect a raw relay/daemon client on `ws://127.0.0.1:38886/internal/ws`, send
+Connect a raw relay/worker client on `ws://127.0.0.1:38886/internal/ws`, send
 `{"type":"subscribe","scope":{"kind":"thread","id":"thr_1"}}`, and the
 published frame arrives.
 
@@ -240,10 +240,10 @@ systemd units, environment templates, and an idempotent install/uninstall
 script. The same two processes are published as container images — `docker run`,
 or a `docker compose` all-in-one —
 [`docs/containers.md`](docs/containers.md), which is also where the limits of a
-containerised execution daemon are written down. Remote access is
+containerised execution worker are written down. Remote access is
 [`docs/remote-access.md`](docs/remote-access.md) (Tailscale Serve in front of a
 loopback bind), phones are
-[`docs/mobile.md`](docs/mobile.md) (installed PWA, no daemon), and upgrades are
+[`docs/mobile.md`](docs/mobile.md) (installed PWA, no worker), and upgrades are
 [`docs/upgrades.md`](docs/upgrades.md). The recorded clean-machine run is
 [`docs/deployment-verification.md`](docs/deployment-verification.md).
 

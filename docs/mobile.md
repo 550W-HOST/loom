@@ -1,20 +1,20 @@
 # Mobile
 
 A phone is a **UI client and nothing else**. It points a browser at the server
-URL and installs that as a PWA. It never runs a daemon.
+URL and installs that as a PWA. It never runs a worker.
 
 ```
 phone (installed PWA) ── HTTPS + WS ──▶ loom-server ── relay ──▶ frames
                                             ▲
-                                         daemon (a real machine)
+                                         worker (a real machine)
 ```
 
 This is not a limitation to work around. From
-[`architecture.md`](architecture.md): a UI never talks to a daemon, and a daemon
+[`architecture.md`](architecture.md): a UI never talks to a worker, and a worker
 never talks to a UI. The phone is the "inspect and steer" role; the execution
 machines are the "run provider CLIs and tools" role. A phone cannot usefully be
 the second: there is no systemd there, provider CLIs are not installed, and the
-work product (a workspace on disk) does not live on the phone. Adding a daemon
+work product (a workspace on disk) does not live on the phone. Adding a worker
 would give you a machine that is offline half the day holding a host identity.
 Don't.
 
@@ -66,13 +66,13 @@ Two prerequisites for installability, both satisfied by the Tailscale path:
 - Works: several phones, a desktop and a webview watching the same threads at
   once. Frames fan out from the relay; none of them is authoritative.
 - Does not work: modifying the phone's own filesystem or running an agent
-  locally. That is what a daemon on a real machine is for.
+  locally. That is what a worker on a real machine is for.
 - Offline: there is no offline mode — a UI holds no state and the shell is not
   cached by a service worker, so with no server there is nothing to render.
   Frames resume, and the caches that went stale are reloaded, on reconnect.
 
 ## Keeping a phone from appearing as an execution machine
 
-Nothing to do: enrollment happens only when a daemon process calls
+Nothing to do: enrollment happens only when a worker process calls
 `enroll_host` on the socket. A browser never sends it. A phone appears in the UI
 only as a client, never in `GET /api/v1/hosts`.

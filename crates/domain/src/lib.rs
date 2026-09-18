@@ -7,7 +7,7 @@
 //! Three properties are the reason this is a crate of its own:
 //!
 //! 1. **No IO, no async, no storage.** Nothing here opens a file, awaits a
-//!    future or depends on `loom-relay`. Any layer — server, daemon, a future
+//!    future or depends on `loom-relay`. Any layer — server, worker, a future
 //!    CLI or migration tool — can depend on it without dragging a runtime
 //!    along, and every invariant is testable with plain unit tests.
 //! 2. **Typed identities.** A [`ThreadId`] is not a `String` and not a
@@ -27,7 +27,7 @@
 //! | `global` | the project list; events with no narrower room (`project_created`) |
 //! | `project:{id}` | a project's list-level state: `project_updated`, `thread_created`, `thread_updated`, `environment_*` |
 //! | `thread:{id}` | one conversation: `thread_status_changed`, `thread_message_added` |
-//! | `host:{id}` | one machine's daemon room: `host_registered`, `host_status_changed` |
+//! | `host:{id}` | one machine's worker room: `host_registered`, `host_status_changed` |
 //! | `user:{id}` | one user's clients. Reserved; no user entity exists yet |
 //!
 //! One event, one scope: a client subscribes to the two scopes it is

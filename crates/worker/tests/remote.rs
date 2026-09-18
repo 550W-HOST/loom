@@ -1,15 +1,15 @@
-//! A daemon process against a real server over a real socket.
+//! A worker process against a real server over a real socket.
 //!
 //! These tests are the acceptance evidence for process independence: the
-//! server is started server-only, a daemon connects to it outbound, and
-//! stopping the daemon leaves the server serving.
+//! server is started server-only, a worker connects to it outbound, and
+//! stopping the worker leaves the server serving.
 
 use std::time::Duration;
 
-use loom_daemon::{Daemon, DaemonConfig};
 use loom_domain::{HostId, HostStatus};
 use loom_server::http::router;
 use loom_server::state::{AppConfig, AppState};
+use loom_worker::{Worker, WorkerConfig};
 
 /// Starts a server-only control plane on an ephemeral port.
 async fn spawn_server(config: AppConfig) -> (String, AppState) {
@@ -35,7 +35,7 @@ async fn eventually(mut predicate: impl FnMut() -> bool) -> bool {
 }
 
 #[tokio::test]
-async fn a_server_with_no_daemon_is_up_and_a_remote_daemon_becomes_primary() {
+async fn a_server_with_no_worker_is_up_and_a_remote_worker_becomes_primary() {
     // The server declares a local host that never enrolls: server-only.
     let absent_local = HostId::mint();
     let (url, state) = spawn_server(AppConfig {
@@ -44,16 +44,16 @@ async fn a_server_with_no_daemon_is_up_and_a_remote_daemon_becomes_primary() {
     })
     .await;
 
-    // No daemon has ever connected. The server still answers, and primary
+    // No worker has ever connected. The server still answers, and primary
     // resolution degrades instead of failing.
     assert!(state.registry.hosts().is_empty());
     assert!(state.registry.primary_host(Some(&absent_local)).is_none());
 
-    // A daemon on another machine dials out and enrolls.
-    let mut daemon = Daemon::connect(DaemonConfig::new(&url, "remote-1"))
+    // A worker on another machine dials out and enrolls.
+    let mut worker = Worker::connect(WorkerConfig::new(&url, "remote-1"))
         .await
         .unwrap();
-    let host_id = daemon.enroll().await.unwrap();
+    let host_id = worker.enroll().await.unwrap();
 
     let host = state.registry.host(&host_id).unwrap();
     assert_eq!(host.status, HostStatus::Connected);
@@ -65,7 +65,7 @@ async fn a_server_with_no_daemon_is_up_and_a_remote_daemon_becomes_primary() {
 
     // Heartbeats advance last-seen without publishing a frame.
     let before = state.registry.host(&host_id).unwrap().last_seen_at_ms;
-    daemon.heartbeat().await.unwrap();
+    worker.heartbeat().await.unwrap();
     assert!(
         eventually(|| state
             .registry
@@ -76,7 +76,7 @@ async fn a_server_with_no_daemon_is_up_and_a_remote_daemon_becomes_primary() {
         "the heartbeat should be recorded"
     );
 
-    daemon.disconnect().await.unwrap();
+    worker.disconnect().await.unwrap();
     assert!(
         eventually(|| state
             .registry
@@ -90,14 +90,14 @@ async fn a_server_with_no_daemon_is_up_and_a_remote_daemon_becomes_primary() {
 }
 
 #[tokio::test]
-async fn stopping_a_daemon_leaves_the_server_serving() {
+async fn stopping_a_worker_leaves_the_server_serving() {
     let (url, state) = spawn_server(AppConfig::default()).await;
 
-    let mut daemon = Daemon::connect(DaemonConfig::new(&url, "laptop"))
+    let mut worker = Worker::connect(WorkerConfig::new(&url, "laptop"))
         .await
         .unwrap();
-    let host_id = daemon.enroll().await.unwrap();
-    daemon.disconnect().await.unwrap();
+    let host_id = worker.enroll().await.unwrap();
+    worker.disconnect().await.unwrap();
 
     assert!(
         eventually(|| state
@@ -117,10 +117,10 @@ async fn stopping_a_daemon_leaves_the_server_serving() {
 }
 
 #[tokio::test]
-async fn a_reconnecting_daemon_keeps_its_identity() {
+async fn a_reconnecting_worker_keeps_its_identity() {
     let (url, state) = spawn_server(AppConfig::default()).await;
 
-    let mut first = Daemon::connect(DaemonConfig::new(&url, "builder"))
+    let mut first = Worker::connect(WorkerConfig::new(&url, "builder"))
         .await
         .unwrap();
     let host_id = first.enroll().await.unwrap();
@@ -135,9 +135,9 @@ async fn a_reconnecting_daemon_keeps_its_identity() {
     );
 
     // A restart presents the identity it was given: one machine, reconnected.
-    let mut config = DaemonConfig::new(&url, "builder");
+    let mut config = WorkerConfig::new(&url, "builder");
     config.host_id = Some(host_id.clone());
-    let mut second = Daemon::connect(config).await.unwrap();
+    let mut second = Worker::connect(config).await.unwrap();
     assert_eq!(second.enroll().await.unwrap(), host_id);
 
     assert_eq!(state.registry.hosts().len(), 1);
@@ -150,27 +150,27 @@ async fn a_reconnecting_daemon_keeps_its_identity() {
     state.shutdown();
 }
 
-/// A real daemon answers a real server's file request over the relay.
+/// A real worker answers a real server's file request over the relay.
 ///
 /// This is the end-to-end proof for B5: the enrollment reports the machine's
 /// data directory, the server composes thread storage from it, publishes a read
-/// to the host room, and the daemon's own filesystem work comes back up the
+/// to the host room, and the worker's own filesystem work comes back up the
 /// socket. The stored bytes are the ones the test wrote on disk — the server
 /// never touched them itself.
 #[tokio::test]
-async fn a_daemon_answers_thread_storage_reads_from_its_own_disk() {
+async fn a_worker_answers_thread_storage_reads_from_its_own_disk() {
     let temp = tempfile::tempdir().unwrap();
     let data_dir = temp.path().join("data");
     std::fs::create_dir_all(&data_dir).unwrap();
 
     let (url, state) = spawn_server(AppConfig::default()).await;
-    let mut config = DaemonConfig::new(&url, "files");
+    let mut config = WorkerConfig::new(&url, "files");
     config.data_dir = data_dir.clone();
     config.heartbeat_interval = Duration::from_millis(25);
-    let mut daemon = Daemon::connect(config).await.unwrap();
-    let host_id = daemon.enroll().await.unwrap();
-    let daemon = tokio::spawn(async move {
-        let _ = daemon.run().await;
+    let mut worker = Worker::connect(config).await.unwrap();
+    let host_id = worker.enroll().await.unwrap();
+    let worker = tokio::spawn(async move {
+        let _ = worker.run().await;
     });
 
     // The server learned the machine's layout from the enrollment, and the
@@ -207,9 +207,9 @@ async fn a_daemon_answers_thread_storage_reads_from_its_own_disk() {
 
     let storage = data_dir.join("thread-storage").join(thread.id.to_string());
     std::fs::create_dir_all(&storage).unwrap();
-    std::fs::write(storage.join("notes.md"), b"# from the daemon\n").unwrap();
+    std::fs::write(storage.join("notes.md"), b"# from the worker\n").unwrap();
 
-    // A read of a file only the daemon's disk has.
+    // A read of a file only the worker's disk has.
     let outcome = state
         .request_host_file(
             &host_id,
@@ -224,7 +224,7 @@ async fn a_daemon_answers_thread_storage_reads_from_its_own_disk() {
     let loom_provider_protocol::HostFileOutcome::Content(content) = outcome else {
         panic!("expected content, got {outcome:?}");
     };
-    assert_eq!(content.content, "# from the daemon\n");
+    assert_eq!(content.content, "# from the worker\n");
     assert_eq!(content.mime_type.as_deref(), Some("text/markdown"));
 
     // A listing of the same directory, relative to it.
@@ -270,18 +270,18 @@ async fn a_daemon_answers_thread_storage_reads_from_its_own_disk() {
         Err(loom_server::HostFileTransportError::UnknownHost(_))
     ));
 
-    daemon.abort();
+    worker.abort();
     state.shutdown();
 }
 
-/// A real daemon drives a real PTY for a real server.
+/// A real worker drives a real PTY for a real server.
 ///
 /// This is the end-to-end proof for B9's terminal half: the server mints the
-/// session, publishes a create to the host room, and the daemon spawns the
+/// session, publishes a create to the host room, and the worker spawns the
 /// process, captures its output and answers a window read. The bytes the test
 /// reads back came from a process on this machine, never from the server.
 #[tokio::test]
-async fn a_daemon_runs_a_terminal_and_streams_its_output() {
+async fn a_worker_runs_a_terminal_and_streams_its_output() {
     use loom_provider_protocol::{
         TerminalOperation, TerminalOutcome, TerminalStart, TerminalStatus, TerminalTarget,
     };
@@ -291,13 +291,13 @@ async fn a_daemon_runs_a_terminal_and_streams_its_output() {
     std::fs::create_dir_all(&data_dir).unwrap();
 
     let (url, state) = spawn_server(AppConfig::default()).await;
-    let mut config = DaemonConfig::new(&url, "terminals");
+    let mut config = WorkerConfig::new(&url, "terminals");
     config.data_dir = data_dir.clone();
     config.heartbeat_interval = Duration::from_millis(25);
-    let mut daemon = Daemon::connect(config).await.unwrap();
-    let host_id = daemon.enroll().await.unwrap();
-    let daemon = tokio::spawn(async move {
-        let _ = daemon.run().await;
+    let mut worker = Worker::connect(config).await.unwrap();
+    let host_id = worker.enroll().await.unwrap();
+    let worker = tokio::spawn(async move {
+        let _ = worker.run().await;
     });
 
     // Create a session that prints something and exits.
@@ -307,7 +307,7 @@ async fn a_daemon_runs_a_terminal_and_streams_its_output() {
             TerminalOperation::Create {
                 id: "term_remote".into(),
                 start: TerminalStart::Command {
-                    command: "printf 'from the daemon'".into(),
+                    command: "printf 'from the worker'".into(),
                 },
                 target: TerminalTarget::HostPath {
                     host_id: host_id.clone(),
@@ -364,13 +364,13 @@ async fn a_daemon_runs_a_terminal_and_streams_its_output() {
             collected.push_str(&String::from_utf8_lossy(&bytes));
         }
         cursor = next_seq;
-        if collected.contains("from the daemon") {
+        if collected.contains("from the worker") {
             break;
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     assert!(
-        collected.contains("from the daemon"),
+        collected.contains("from the worker"),
         "the terminal produced no expected output: {collected:?}"
     );
 
@@ -440,6 +440,6 @@ async fn a_daemon_runs_a_terminal_and_streams_its_output() {
         Err(loom_server::TerminalTransportError::UnknownHost(_))
     ));
 
-    daemon.abort();
+    worker.abort();
     state.shutdown();
 }

@@ -7,7 +7,7 @@
 # `loom-<target>` name — one name for the asset and for the file inside it —
 # plus `deploy/` and `README.md`. No client ships beside it: the product app is
 # compiled into the server, so the binary that serves it is the binary in the
-# archive, and the two roles (`loom server`, `loom daemon`) are that one file.
+# archive, and the two roles (`loom server`, `loom worker`) are that one file.
 #
 # Every input is a build output or an argument — the binary from
 # `target/<target>/release`, the version from `cargo metadata` — so the same

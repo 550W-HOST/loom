@@ -1,4 +1,4 @@
-//! WebSocket surface for public clients and daemons.
+//! WebSocket surface for public clients and workers.
 //!
 //! The public client protocol is intentionally tiny and typed. A UI says:
 //!
@@ -9,16 +9,16 @@
 //! {"type":"ping"}
 //! ```
 //!
-//! A daemon uses `/internal/ws` to enroll, then follows its own `host:{id}`
+//! A worker uses `/internal/ws` to enroll, then follows its own `host:{id}`
 //! room:
 //!
 //! ```json
-//! // daemon -> server (`/internal/ws`)
+//! // worker -> server (`/internal/ws`)
 //! {"type":"enroll_host","name":"laptop"}
 //! {"type":"host_heartbeat","host_id":"host_..."}
 //! {"type":"host_disconnect","host_id":"host_..."}
 //!
-//! // server -> daemon
+//! // server -> worker
 //! {"type":"hello","protocol_version":3}
 //! {"type":"host_enrolled","host":{...},"event_id":"01M..."}
 //! {"type":"host_heartbeat_ack","host_id":"host_...","last_seen_at_ms":1}
@@ -50,9 +50,9 @@ use tokio::sync::broadcast;
 use crate::environments::EnvironmentReportOutcome;
 use crate::interactions::RecordOutcome;
 use crate::protocol::{
-    public_messages_from_frame, ClientMessage, DaemonClientMessage as ClientCommand,
-    DaemonServerMessage as ServerMessage, PublicEntity, ServerMessage as PublicServerMessage,
-    ThreadChangeMetadata,
+    public_messages_from_frame, ClientMessage, PublicEntity, ServerMessage as PublicServerMessage,
+    ThreadChangeMetadata, WorkerClientMessage as ClientCommand,
+    WorkerServerMessage as ServerMessage,
 };
 use crate::pump::PublicRealtimeEvent;
 use crate::runs::ReportOutcome;
@@ -63,7 +63,7 @@ use crate::PUBLIC_WS_SUBPROTOCOL;
 /// Upgrades an HTTP request to the public bb WebSocket.
 ///
 /// Product clients explicitly offer [`PUBLIC_WS_SUBPROTOCOL`]. A connection
-/// without a subprotocol is an old v2 daemon: it receives only the legacy
+/// without a subprotocol is an old v2 worker: it receives only the legacy
 /// version-mismatch frame needed to enter self-update, then the socket closes.
 /// No request is classified by `Origin` or user agent.
 pub async fn client_socket(
@@ -75,7 +75,7 @@ pub async fn client_socket(
         Ok(true) => upgrade
             .protocols([PUBLIC_WS_SUBPROTOCOL])
             .on_upgrade(move |socket| handle_public_client(socket, state)),
-        Ok(false) => upgrade.on_upgrade(handle_legacy_daemon),
+        Ok(false) => upgrade.on_upgrade(handle_legacy_worker),
         Err(()) => StatusCode::BAD_REQUEST.into_response(),
     }
 }
@@ -96,8 +96,8 @@ fn requested_public_protocol(headers: &HeaderMap) -> Result<bool, ()> {
     }
 }
 
-/// Gives a deployed v2 daemon the mismatch it needs to self-update.
-async fn handle_legacy_daemon(mut socket: WebSocket) {
+/// Gives a deployed v2 worker the mismatch it needs to self-update.
+async fn handle_legacy_worker(mut socket: WebSocket) {
     let welcome = serde_json::json!({
         "type": "welcome",
         "connection_id": 0,
@@ -107,9 +107,9 @@ async fn handle_legacy_daemon(mut socket: WebSocket) {
     let _ = socket.send(Message::Close(None)).await;
 }
 
-/// Upgrades an HTTP request to the versioned daemon WebSocket.
-pub async fn daemon_socket(upgrade: WebSocketUpgrade, State(state): State<AppState>) -> Response {
-    upgrade.on_upgrade(move |socket| handle_daemon(socket, state))
+/// Upgrades an HTTP request to the versioned worker WebSocket.
+pub async fn worker_socket(upgrade: WebSocketUpgrade, State(state): State<AppState>) -> Response {
+    upgrade.on_upgrade(move |socket| handle_worker(socket, state))
 }
 
 async fn handle_public_client(mut socket: WebSocket, state: AppState) {
@@ -220,11 +220,11 @@ fn attach_thread_project(state: &AppState, message: &mut PublicServerMessage) {
         .project_id = Some(thread.project_id.to_string());
 }
 
-async fn handle_daemon(socket: WebSocket, state: AppState) {
+async fn handle_worker(socket: WebSocket, state: AppState) {
     let (mut sink, mut stream) = socket.split();
     let (transport, mut outbound) = ChannelTransport::with_default_capacity();
 
-    let pending_scope = Scope::Client(format!("daemon-pending-{}", EventId::new()));
+    let pending_scope = Scope::Client(format!("worker-pending-{}", EventId::new()));
     let Ok(connection_id) = state.hub.connect(Box::new(transport), pending_scope).await else {
         return;
     };
@@ -259,7 +259,7 @@ async fn handle_daemon(socket: WebSocket, state: AppState) {
         }
     });
 
-    // A connection is a UI or a daemon. A daemon that enrolled is remembered
+    // A connection is a UI or a worker. A worker that enrolled is remembered
     // here so that closing the socket marks the host detached; a UI never sets
     // it and is unaffected by host bookkeeping.
     let mut enrolled_host: Option<HostId> = None;
@@ -296,11 +296,11 @@ async fn handle_daemon(socket: WebSocket, state: AppState) {
         }
     }
 
-    // A daemon that dropped without saying goodbye is still gone: the socket
+    // A worker that dropped without saying goodbye is still gone: the socket
     // closing is what detaches the host. This is deliberately independent of
-    // the server's own lifetime, so stopping a daemon never touches the server.
+    // the server's own lifetime, so stopping a worker never touches the server.
     if let Some(host_id) = enrolled_host {
-        // A terminal is driven through the daemon that owns it, so a host with
+        // A terminal is driven through the worker that owns it, so a host with
         // no connection has no drivable sessions. The record survives — the
         // process may still be alive on that machine — but its status does not
         // claim to be usable.
@@ -569,7 +569,7 @@ async fn handle_command(
             }
             // An answer nobody is waiting for is dropped, not an error: a
             // request whose client gave up, or a redelivered answer, is normal
-            // and telling the daemon about it would only make it retry.
+            // and telling the worker about it would only make it retry.
             state.host_files.resolve(report);
             None
         }
@@ -692,7 +692,7 @@ async fn replay_to_connection(
 
 /// Publishes domain events in order and returns the last event id.
 ///
-/// An empty string means nothing was published — a daemon reconnect that
+/// An empty string means nothing was published — a worker reconnect that
 /// changed no state. The caller acks the command either way; the frame is a
 /// convenience, not the ack.
 fn publish_all(state: &AppState, events: &[loom_domain::DomainEvent]) -> String {

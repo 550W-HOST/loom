@@ -5,12 +5,12 @@
 //! to that machine, using the same relay-plus-report shape as a host file read:
 //!
 //! ```text
-//!   server ── TerminalRequest ──▶ relay host:{id} ──▶ daemon
-//!   server ◀── TerminalReport ── daemon socket
+//!   server ── TerminalRequest ──▶ relay host:{id} ──▶ worker
+//!   server ◀── TerminalReport ── worker socket
 //! ```
 //!
-//! The request travels through the relay so a daemon that was reconnecting
-//! still receives it on replay. The answer comes back up the daemon's own
+//! The request travels through the relay so a worker that was reconnecting
+//! still receives it on replay. The answer comes back up the worker's own
 //! socket because it satisfies exactly one waiting HTTP request; fanning it out
 //! to the host's room would deliver one terminal's bytes to every client
 //! watching that room.
@@ -52,7 +52,7 @@ pub enum TerminalTransportError {
     Publish(String),
     /// The host did not answer before [`TERMINAL_TIMEOUT`].
     Timeout,
-    /// The host is enrolled but currently has no daemon connection.
+    /// The host is enrolled but currently has no worker connection.
     Disconnected(String),
     /// The host is not known to this server.
     UnknownHost(String),
@@ -71,9 +71,9 @@ impl std::fmt::Display for TerminalTransportError {
 
 /// The control plane's view of every terminal session it has minted.
 ///
-/// The **daemon** is the authority on whether a process is alive; this is the
+/// The **worker** is the authority on whether a process is alive; this is the
 /// routing and listing index. It holds only identity, ownership and size — never
-/// output, which lives in the daemon's bounded ring and is only ever read
+/// output, which lives in the worker's bounded ring and is only ever read
 /// through a cursor.
 #[derive(Default)]
 pub struct TerminalSessions {
@@ -134,7 +134,7 @@ impl TerminalSessions {
 
     /// Marks every live session on `host_id` as disconnected.
     ///
-    /// Called when its daemon drops: the process may well still be alive on
+    /// Called when its worker drops: the process may well still be alive on
     /// that machine, but no client can reach it through a server with no
     /// connection to the host, and reporting `running` would be a status the
     /// user cannot act on.
@@ -161,7 +161,7 @@ impl TerminalSessions {
     ///
     /// A terminal belongs to the thread it was opened from; when that thread is
     /// deleted or archived there is no client left to render its output, so the
-    /// record is closed here. The daemon kills the process when it receives the
+    /// record is closed here. The worker kills the process when it receives the
     /// matching close request.
     pub fn threads_to_close(
         &self,
@@ -273,7 +273,7 @@ impl AppState {
     /// Reconciles the control plane's terminal records with the host that owns
     /// them.
     ///
-    /// The daemon is the authority on whether a process is alive: it survives a
+    /// The worker is the authority on whether a process is alive: it survives a
     /// dropped server connection, and a terminal is the user's, not the
     /// connection's. So after a host reconnects, every session recorded for it
     /// is re-checked against the machine rather than assumed dead. A session the
@@ -319,7 +319,7 @@ impl AppState {
                 if !live.contains(&id) {
                     if let Some(mut session) = state.terminals.get(&id) {
                         session.status = TerminalStatus::Exited;
-                        session.close_reason = Some(TerminalCloseReason::DaemonDisconnect);
+                        session.close_reason = Some(TerminalCloseReason::WorkerDisconnect);
                         session.updated_at_ms = now_ms();
                         state.terminals.put(session);
                     }

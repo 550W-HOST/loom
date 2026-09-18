@@ -7,20 +7,20 @@
 //! 1. **Dispatch goes through the relay, to the environment's host.**
 //!    [`AppState::dispatch_thread`] resolves the thread's environment, fills the
 //!    provider's working directory from it, mints a run, and publishes a
-//!    [`RunDispatch`] to that host's scope. The handler never touches a daemon
+//!    [`RunDispatch`] to that host's scope. The handler never touches a worker
 //!    socket, so once the run is in the log a reconnect cannot lose it. A thread
 //!    with no usable environment, or whose host is detached, is *failed*, never
 //!    run somewhere else.
 //! 2. **Reports become thread events.** [`AppState::apply_run_report`] turns a
-//!    daemon observation into a `thread_run_event` and publishes it to the
-//!    thread scope, in order. The daemon's socket is not the fan-out path.
+//!    worker observation into a `thread_run_event` and publishes it to the
+//!    thread scope, in order. The worker's socket is not the fan-out path.
 //! 3. **Every run reaches a terminal state.** [`AppState::reconcile_runs`] is
-//!    the backstop: a provider that never reports, a daemon that stops
+//!    the backstop: a provider that never reports, a worker that stops
 //!    heartbeating, and a deadline that passed all end in exactly one terminal
 //!    `turn/completed` event, which moves the thread out of `working`.
 //!
 //! Point 3 is the one that cannot be left to the execution plane. A provider
-//! crash, a killed daemon and a network partition are indistinguishable from
+//! crash, a killed worker and a network partition are indistinguishable from
 //! the control plane's point of view, and in all three cases the thread must
 //! stop saying `working`. Making the *server* own the deadline and the
 //! stale-heartbeat sweep is what makes that guarantee independent of the bug
@@ -64,7 +64,7 @@ pub struct RunRecord {
     pub deadline_ms: u64,
     /// Whether a contract `turn/started` event has been published.
     ///
-    /// A daemon can disappear before it reports its first event. The server
+    /// A worker can disappear before it reports its first event. The server
     /// uses this bit to add exactly one synthetic start before a terminal
     /// event, while preserving a real start when one was already observed.
     #[serde(default)]
@@ -382,7 +382,7 @@ pub enum DispatchOutcome {
     },
     /// The thread has no usable environment, so there is no workspace to run
     /// the provider in. The run was failed on the spot rather than letting a
-    /// provider start in the daemon's own cwd.
+    /// provider start in the worker's own cwd.
     NoEnvironment {
         /// The synthetic run id reported in the terminal event.
         run_id: RunId,
@@ -414,7 +414,7 @@ pub enum DispatchOutcome {
 pub enum ReportOutcome {
     /// The event was published (and, for a terminal event, the thread moved).
     Applied,
-    /// The run is not in flight. Normal under redelivery: the daemon may
+    /// The run is not in flight. Normal under redelivery: the worker may
     /// report a terminal event twice after a reconnect.
     Unknown,
     /// The report named a run this host does not own, or a different thread.
@@ -474,7 +474,7 @@ impl AppState {
     ///
     /// The caller must already have moved `thread` into `working` (a user
     /// message does that). This method only decides *where* it runs, records
-    /// that it is running, and — the point of the whole path — tells the daemon
+    /// that it is running, and — the point of the whole path — tells the worker
     /// **which directory** to run the provider in.
     ///
     /// The workspace comes from the thread's environment: its path fills
@@ -623,7 +623,7 @@ impl AppState {
     /// Inventing a second thread state machine for cancellation is the thing
     /// this deliberately does not do.
     ///
-    /// The daemon is **not** told. The provider protocol has no cancel frame,
+    /// The worker is **not** told. The provider protocol has no cancel frame,
     /// so the provider process runs to its own end and its later reports are
     /// dropped as unknown runs — the same handling a superseded run already
     /// gets. Teaching the execution plane to abort is a provider-protocol
@@ -657,7 +657,7 @@ impl AppState {
     /// Resolves the environment a thread must run in.
     ///
     /// The explicit rejection of a thread with no environment is deliberate:
-    /// falling back to the daemon's own cwd is the bug this path fixes, so an
+    /// falling back to the worker's own cwd is the bug this path fixes, so an
     /// unbound thread is an error, never a silent default.
     fn resolve_environment(&self, thread: &Thread) -> Result<Environment, String> {
         let Some(environment_id) = &thread.environment_id else {
@@ -680,14 +680,14 @@ impl AppState {
         Ok(environment)
     }
 
-    /// Applies one daemon report.
+    /// Applies one worker report.
     ///
-    /// A report for an unknown run is dropped: that is what makes a daemon's
+    /// A report for an unknown run is dropped: that is what makes a worker's
     /// post-reconnect redelivery idempotent. A report for a run this host does
     /// not own is rejected, so one machine cannot terminate another's turn.
     ///
     /// The event's own identity is checked against the run record as well, so a
-    /// daemon cannot relabel one run's stream as another's.
+    /// worker cannot relabel one run's stream as another's.
     pub fn apply_run_report(&self, host_id: &HostId, report: ProviderReport) -> ReportOutcome {
         let now = now_ms();
         let run_id = report.event.run_id.clone();
@@ -710,7 +710,7 @@ impl AppState {
 
         let event = report.event;
         if event.is_terminal() {
-            // The daemon's own verdict travels in `outcome` when it has one;
+            // The worker's own verdict travels in `outcome` when it has one;
             // for a terminal event a producer sent without it, the contract
             // status is the fallback.
             let outcome = event.terminal_outcome().unwrap_or(RunOutcome::Failed);
@@ -744,7 +744,7 @@ impl AppState {
                 }
                 self.runs.mark_started(&run_id, provider_thread_id);
             } else {
-                // Turn-scoped reports can arrive before the daemon's start
+                // Turn-scoped reports can arrive before the worker's start
                 // report after a reconnect. Add the anchor before forwarding
                 // the report so the client projection remains legal.
                 if !ProviderEvent::is_thread_scoped(event_kind) && !record.turn_started {
@@ -900,7 +900,7 @@ impl AppState {
             let _ = self.finish_run_with(&record, outcome, None, None, now);
         }
 
-        // 4. The server-side deadline is the backstop for a daemon that is
+        // 4. The server-side deadline is the backstop for a worker that is
         //    connected but wedged. A run whose provider never settles is failed
         //    here even though nothing reported it.
         for record in self.runs.expired(now) {
@@ -949,7 +949,7 @@ impl AppState {
     /// Publishes a terminal event, clears the run, and moves the thread out of
     /// `working`.
     ///
-    /// `event` is the daemon's own terminal event when it reported one; for a
+    /// `event` is the worker's own terminal event when it reported one; for a
     /// server-reaped run (a deadline, a stale host) it is absent and the server
     /// synthesizes the contract event from the outcome.
     fn finish_run_with(
@@ -1051,7 +1051,7 @@ impl AppState {
         }
         let error = error.or_else(|| record.failure_reason.clone());
 
-        // A daemon can report a terminal event before its start after a
+        // A worker can report a terminal event before its start after a
         // reconnect. The start must be appended first, using the real provider
         // identity when the terminal carried one and a synthetic timeline-only
         // identity otherwise.
@@ -1098,7 +1098,7 @@ impl AppState {
             self.runs.mark_provider_error(&record.run_id);
         }
 
-        // A reaped run has no daemon event, so the server synthesizes the
+        // A reaped run has no worker event, so the server synthesizes the
         // contract terminal from its own verdict — carrying the real outcome,
         // which is what keeps `timed_out` and `host_stale` distinguishable
         // from a plain `failed`.
@@ -1311,10 +1311,10 @@ impl AppState {
     /// Publishes one run event to the thread scope.
     ///
     /// `now` is only used when the event's identity needs re-stamping; the
-    /// daemon's event already carries its own timestamp, which is preserved so
-    /// replay is byte-identical to what the daemon sent.
+    /// worker's event already carries its own timestamp, which is preserved so
+    /// replay is byte-identical to what the worker sent.
     fn publish_run_event(&self, record: &RunRecord, event: RunEvent) -> RelayResult<()> {
-        // Rebuild the envelope so a malformed daemon scope or outer identity
+        // Rebuild the envelope so a malformed worker scope or outer identity
         // cannot leak into the thread log. The provider body remains verbatim.
         let outcome = event.outcome;
         let mut event = RunEvent::new(
@@ -1434,7 +1434,7 @@ mod tests {
 
     /// A thread bound to a `ready` unmanaged environment on a connected host.
     ///
-    /// The path need not exist on the server: existence is the daemon's check
+    /// The path need not exist on the server: existence is the worker's check
     /// at spawn time, which is what keeps a remote host's workspace valid.
     fn thread_with_workspace(state: &AppState, path: &str) -> (HostId, Thread, String) {
         let host_id = enroll_host(state);
@@ -1554,7 +1554,7 @@ mod tests {
         assert_eq!(thread.status, ThreadStatus::Working);
 
         // No environment means no workspace. The dispatch is refused rather
-        // than letting a provider run in the daemon's own cwd.
+        // than letting a provider run in the worker's own cwd.
         let outcome = state.dispatch_thread(&thread, "hi");
         assert!(matches!(outcome, DispatchOutcome::NoEnvironment { .. }));
         assert_eq!(
@@ -1954,7 +1954,7 @@ mod tests {
         ));
 
         // The dispatched spec names the thread's environment path, which is the
-        // whole point: the daemon no longer chooses a cwd of its own.
+        // whole point: the worker no longer chooses a cwd of its own.
         let frames = state
             .relay
             .replay_scope(&Scope::Host(host_id.to_string()), 10)

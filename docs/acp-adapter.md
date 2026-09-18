@@ -76,7 +76,7 @@ must not invent detail.
 ACP has no thread or turn concept at all — it models a *session* and a
 *prompt*. loom's contract has `thread/started`, `thread/identity`,
 `turn/started`, `turn/input/accepted` and `turn/completed`. **The adapter
-synthesizes the missing ones** in `crates/daemon/src/acp/session.rs`:
+synthesizes the missing ones** in `crates/worker/src/acp/session.rs`:
 
 | Event | Source |
 | --- | --- |
@@ -207,8 +207,8 @@ Two frames, in opposite directions, over different transports, and there is
 
 | Hop | Carrier | Why |
 | --- | --- | --- |
-| request | `ClientCommand::InteractionRequest` up the daemon's socket | the daemon cannot record a durable entity; the control plane can |
-| answer | `InteractionResolutionFrame` through the relay to `host:{id}` | the answering client need not be the daemon's peer, and a resolution published while the daemon was reconnecting must replay |
+| request | `ClientCommand::InteractionRequest` up the worker's socket | the worker cannot record a durable entity; the control plane can |
+| answer | `InteractionResolutionFrame` through the relay to `host:{id}` | the answering client need not be the worker's peer, and a resolution published while the worker was reconnecting must replay |
 
 Mapping:
 
@@ -219,7 +219,7 @@ Mapping:
 | `PermissionOptionKind::AllowOnce` | `allow_once` |
 | `PermissionOptionKind::AllowAlways` | `allow_for_session` |
 | `PermissionOptionKind::Reject*`, or no options at all | `deny` |
-| `Selected { option_id }` | the ACP response, option id chosen by the daemon |
+| `Selected { option_id }` | the ACP response, option id chosen by the worker |
 | `Cancelled` | interaction cancelled, and the ACP response is `Cancelled` |
 
 ### There is no default answer
@@ -230,7 +230,7 @@ operations** — the exact failure the old `system/permissionGrant/lifecycle` no
 in `event-model.md` described. It is gone. What replaces it:
 
 * **An unanswered request is cancelled**, after
-  `DaemonConfig::permission_timeout` (default 5 minutes, `--permission-timeout-ms`).
+  `WorkerConfig::permission_timeout` (default 5 minutes, `--permission-timeout-ms`).
   ACP reads `Cancelled` as "not granted"; nothing else in the protocol does.
 * **A request the control plane refuses to record is cancelled at once**, rather
   than held open where no client can reach it. The refusal is a run that is not
@@ -244,7 +244,7 @@ in `event-model.md` described. It is gone. What replaces it:
 The contract's answer to an approval is one of three decisions
 (`allow_once` / `allow_for_session` / `deny`), and its response schema rejects an
 opaque resolution there. So the decision travels as a **polarity**, and the
-daemon maps it onto the agent's own options: an `allow` picks the agent's first
+worker maps it onto the agent's own options: an `allow` picks the agent's first
 allowing option of the matching strength, a `deny` a rejecting one, and a
 `deny` with no rejecting option is sent as `Cancelled` because loom must never
 answer an allow the user refused.
@@ -253,9 +253,9 @@ The lossy case is a permission request whose options are **not distinguishable
 by polarity** — ACP's `select` bridge presents one `AllowOnce` option per
 choice, so "alpha" and "beta" are both `allow_once`. loom cannot name one:
 the contract has no place for an `optionId`, and fabricating a fourth decision
-would be inventing vocabulary. The daemon therefore takes the agent's own first
+would be inventing vocabulary. The worker therefore takes the agent's own first
 matching option, which is the only rule that does not invent a choice the user
-did not make. `crates/daemon/src/acp/permission.rs` states this at the code, and
+did not make. `crates/worker/src/acp/permission.rs` states this at the code, and
 `permission::tests::a_multi_choice_request_resolves_by_the_agents_own_ordering`
 pins it. A request with the normal ACP shape (one allowing option, one rejecting
 one) is unaffected, and so is `confirm` (Yes/No).
@@ -311,7 +311,7 @@ session rather than from the thread's current environment (which can be
 re-bound between runs).
 
 A dispatch only carries the id when `Thread::may_resume_session(agent, cwd)`
-holds, and the daemon refuses before opening a session when it does not:
+holds, and the worker refuses before opening a session when it does not:
 
 | Condition | Outcome |
 | --- | --- |
@@ -347,7 +347,7 @@ cancellation is the only reply that is never an approval.
 
 | Piece | Location | Why |
 | --- | --- | --- |
-| Adapter, transport, translation | `crates/daemon/src/acp/` | It is the sole provider execution path |
+| Adapter, transport, translation | `crates/worker/src/acp/` | It is the sole provider execution path |
 | Session mapping type | `crates/domain/` | It is persisted state |
 | Event types | unchanged | The adapter produces existing `ProviderEvent`s |
 | Dispatch | `crates/provider-protocol/` | `ProviderSpec` gains an ACP variant |
@@ -400,6 +400,6 @@ worth defining before writing it:
 - **`fs` capabilities in step 1**: declaring them makes agents route file I/O
   through loom (better for remote machines); not declaring them has each agent
   touch the filesystem directly (fine on the same host, wrong for remote). This
-  interacts with the daemon's user model (W-558).
+  interacts with the worker's user model (W-558).
 - **Where permission *policy* lives**: the adapter must answer, but "auto-allow
   read-only tools" is a user preference, not an adapter constant.

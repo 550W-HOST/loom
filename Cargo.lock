@@ -1167,7 +1167,7 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "loom-contract",
- "loom-daemon",
+ "loom-worker",
  "loom-domain",
  "loom-provider-protocol",
  "loom-relay",
@@ -1188,7 +1188,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "loom-daemon"
+name = "loom-worker"
 version = "0.1.0"
 dependencies = [
  "agent-client-protocol",

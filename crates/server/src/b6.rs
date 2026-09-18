@@ -2,7 +2,7 @@
 //!
 //! Environment workspace operations belong to the host that owns the
 //! environment. HTTP handlers only resolve the domain binding and publish a
-//! typed request through [`crate::host_rpc`]; the daemon performs the git work
+//! typed request through [`crate::host_rpc`]; the worker performs the git work
 //! and sends the result back over its enrolled socket.
 
 #![allow(clippy::result_large_err)]

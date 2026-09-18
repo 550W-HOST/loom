@@ -1,7 +1,7 @@
 //! Shared provider-run metadata and terminal-event construction.
 //!
 //! Provider execution is ACP-only. The ACP driver lives in [`crate::acp`]; this
-//! module contains the run envelope shared by that driver and the daemon's
+//! module contains the run envelope shared by that driver and the worker's
 //! failure/reconciliation path. Keeping the terminal constructor here means a
 //! failure before an ACP session has an identity still produces the same
 //! contract event as a failure after one has been opened.
@@ -26,7 +26,7 @@ pub struct ProviderRun {
     pub project_id: loom_domain::ProjectId,
     /// The run's identity.
     pub run_id: loom_domain::RunId,
-    /// Daemon-side deadline. On expiry the ACP session is terminated and the
+    /// Worker-side deadline. On expiry the ACP session is terminated and the
     /// run is reported as timed out.
     pub timeout: Duration,
     /// How long an agent's permission request waits for a user before it is
@@ -46,7 +46,7 @@ pub struct ProviderRun {
 }
 
 impl ProviderRun {
-    /// Builds a run from a dispatch and the daemon's local overrides.
+    /// Builds a run from a dispatch and the worker's local overrides.
     pub fn from_dispatch(
         dispatch: &RunDispatch,
         spec: ProviderSpec,

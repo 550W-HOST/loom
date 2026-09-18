@@ -33,9 +33,9 @@ record of the runs that produced them, not of today's job set.
 | `msrv` | `MSRV` | the workspace still compiles on the `rust-version` floor in the manifests |
 | `contract` | `bb contract is reproducible` | re-exporting bb's contract yields the committed `contracts/bb` byte for byte |
 | `ui` | `UI typecheck, tests, bundle and provenance` | `pnpm install --frozen-lockfile`, `pnpm run typecheck`, `pnpm run test`, `pnpm --filter @bb/app run build` builds the bundle every Rust job below compiles into the server and uploads it as the `ui-dist` artifact, `pnpm run check:bundle` holds that build to the committed budget, `pnpm provenance:test` covers patch-ledger negative cases and `BB_SRC=... pnpm run provenance:check` verifies recomputed source/package/contract hashes and the import closure, and `BB_SRC=... pnpm run port-plan:test`/`port-plan:check` verifies the route-level port plan |
-| `e2e` | `Browser acceptance` | the Playwright suite in `e2e/` drives the real thing — the binary serving the app it was built with, a daemon on the same machine running an ACP stub — in a desktop and a mobile viewport: bootstrap, an unreachable server, a thread that answers and survives a reload, a permission request that blocks the turn until it is answered (allow and deny), automations running and reporting, and a machine going offline and coming back |
+| `e2e` | `Browser acceptance` | the Playwright suite in `e2e/` drives the real thing — the binary serving the app it was built with, a worker on the same machine running an ACP stub — in a desktop and a mobile viewport: bootstrap, an unreachable server, a thread that answers and survives a reload, a permission request that blocks the turn until it is answered (allow and deny), automations running and reporting, and a machine going offline and coming back |
 | `pi` | `real pi provider (allowed to fail)` | the `#[ignore]`d provider tests against the real `pi` CLI — `provider_e2e` drives the streamed turn, `real_pi` adds the first-turn-plus-cross-run-resume property — skipped unless the runner has a configured `pi` |
-| `self-update` | `daemon self-update end to end` | the `#[ignore]`d self-update tests: a real daemon process, refused by a server that speaks a newer protocol, installing that server's binary over itself, and the reinstalled binary running a real turn |
+| `self-update` | `worker self-update end to end` | the `#[ignore]`d self-update tests: a real worker process, refused by a server that speaks a newer protocol, installing that server's binary over itself, and the reinstalled binary running a real turn |
 
 `cargo clippy` and `cargo test` run with `--locked`, so a build that would need a
 lockfile update fails instead of quietly resolving one. `pnpm install
@@ -98,18 +98,18 @@ type-check the workspace. That is what catches a call into a newer std
 (`Option::is_none_or` needs 1.82) or a dependency that raised its own floor.
 
 That second failure mode is not hypothetical. The floor was false before this
-workflow existed: `loom-daemon` depended on `tokio-tungstenite 0.30`, which pulls
+workflow existed: `loom-worker` depended on `tokio-tungstenite 0.30`, which pulls
 `sha1 0.11 -> digest 0.11 -> block-buffer 0.12`. `block-buffer 0.12` declares
 `rust-version = "1.85"` and its manifest is edition 2024, which cargo 1.80 cannot
 even parse — so `cargo +1.80 check` failed outright, in the workspace and in
-every crate that reaches the daemon's dependency graph. `axum`'s `ws` feature
+every crate that reaches the worker's dependency graph. `axum`'s `ws` feature
 already brought `tungstenite 0.29`, so the fix was to stop carrying a second
 WebSocket stack: the workspace now pins `tokio-tungstenite = "0.29"` and the
 lockfile lost fourteen duplicate packages (`tungstenite`, `sha1`, `digest`,
 `block-buffer`, `crypto-common`, `hybrid-array`, `rand`, `rand_core`,
 `getrandom`, `chacha20`, `const-oid`, `cpufeatures 0.3.1`, `r-efi` and
 `tokio-tungstenite`).
-The relay, server, daemon, hub and protocol crates now compile on 1.80.
+The relay, server, worker, hub and protocol crates now compile on 1.80.
 
 `tungstenite 0.29` carries no advisory: the only one recorded for the crate
 (GHSA-9mcr-873m-xcxp) covers `<= 0.20.0`.
@@ -138,7 +138,7 @@ the toolchain cannot read the alternative.
 **If you are reading this to downgrade the floor**, note what the 1.80 work
 established: the floor is not a number in a manifest, it is a property the MSRV
 job verifies by compiling. Lowering it without re-running that job in the
-workspace — including the daemon's whole dependency graph — reintroduces exactly
+workspace — including the worker's whole dependency graph — reintroduces exactly
 the false declaration this job removed.
 
 ## Caching
@@ -165,7 +165,7 @@ run [34666503929](https://github.com/550W-HOST/loom/actions/runs/34666503929):
 | `MSRV` | 23 s | 26 s |
 | `bb contract is reproducible` | 27 s | 32 s |
 | `real pi provider` (skipped) | 30 s | 14 s |
-| `daemon self-update end to end` (not in these runs) | — | — |
+| `worker self-update end to end` (not in these runs) | — | — |
 
 `ui` is on the critical path now: `checks`, `msrv`, `pi` and `self-update` start
 only once it has passed, so a run is roughly `ui` plus the slowest Rust job —
@@ -178,7 +178,7 @@ here. Measured locally, busy otherwise idle: **20.7 s** for all three tests
 (`--ignored --test-threads=1`), of which the acceptance scenario is ~18 s —
 downloading the artifact, replacing the binary, and running a provider turn —
 and 1.8 s is the deliberate wait proving the disabled switch keeps running. That
-run downloaded a 2.4 MB daemon-only artifact; the artifact is the one binary
+run downloaded a 2.4 MB worker-only artifact; the artifact is the one binary
 now, so the download is larger by the client it carries and the timing is a
 record rather than today's number. It has
 no network dependency, so on a runner it is bounded by the cargo build it shares
@@ -371,7 +371,7 @@ regression the next week.
 The `e2e` job is that acceptance, runnable. It needs `ui` for the same reason
 every other Rust job does: the app is compiled into the binary, so the suite
 downloads `ui-dist`, builds `loom`, and then *is* the deployment — `loom server`
-serving the app it was built with, and `loom daemon` enrolling against it from
+serving the app it was built with, and `loom worker` enrolling against it from
 the same machine.
 
 ```bash
@@ -386,7 +386,7 @@ directory, a free-ish port, an ACP stub — and `stopStack` returns the machine 
 the state it was borrowed in. The stub answers a prompt with a fixed reply and
 asks for permission when the prompt mentions it, so a turn is deterministic and
 needs no credentials or model; `LOOM_E2E_PROVIDER_CMD` swaps in a real agent
-when a person wants one. The daemon is started with a state file, exactly as
+when a person wants one. The worker is started with a state file, exactly as
 [`process-model.md`](process-model.md) has deployments start it, because
 without one every restart enrolls as a *new* machine and the machine list is
 where that accumulates.
@@ -404,7 +404,7 @@ screenshots are uploaded when the job fails.
 ## The `pi` job
 
 `the_real_pi_process_streams_through_the_bridge` is `#[ignore]`d because it runs
-the real `pi` CLI. It is the only automated coverage of the bridge the daemon
+the real `pi` CLI. It is the only automated coverage of the bridge the worker
 actually uses in production, so leaving it manual was the larger risk, but three
 things follow from what it is:
 
@@ -452,14 +452,14 @@ upstream release cannot turn the job red without a commit here.
 is handled correctly* — and like the `pi` job it is `#[ignore]`d because it
 executes real processes. Unlike the `pi` job it needs **nothing external**: the
 artifact the fake server serves is the binary this repository just built
-(`CARGO_BIN_EXE_loom`), driven in its daemon role, so the job is allowed to fail
+(`CARGO_BIN_EXE_loom`), driven in its worker role, so the job is allowed to fail
 and is a candidate for the required set.
 
 What it does, in one process:
 
 1. starts a fake server that answers `welcome` with `PROTOCOL_VERSION + 1` and
 exposes the two `/install/*` routes;
-2. runs the real binary as a daemon against it — the daemon refuses, fetches the
+2. runs the real binary as a worker against it — the worker refuses, fetches the
 artifact, verifies its SHA-256, `rename`s it over its own executable, and exits
 **0**;
 3. asserts the file on disk is now the served bytes (whole-file comparison, not
@@ -476,11 +476,11 @@ binary, and keeps running).
 Two properties of the harness are worth knowing before editing it:
 
 - **The stale binary is a real ELF with a marker appended.** Self-update replaces
-  the running executable, so the test cannot point the daemon at an arbitrary
+  the running executable, so the test cannot point the worker at an arbitrary
   path; it starts the real binary with bytes appended (which the loader ignores)
   and then compares whole files. A test that only checked for a marker would pass
   even if the install wrote nothing.
-- **The daemon is spawned by path, never by `PATH` lookup.** `UpdateConfig`
+- **The worker is spawned by path, never by `PATH` lookup.** `UpdateConfig`
   installs over `std::env::current_exe()`, so the path the test spawns *is* the
   path under test; a lookup would silently exercise a different file.
 
@@ -505,15 +505,15 @@ Protect `main` and require these six checks:
 | `MSRV` | the declared floor keeps compiling |
 | `bb contract is reproducible` | the committed contract is what the exporter produces |
 | `UI typecheck, tests, bundle and provenance` | the client type-checks and passes its tests, the product app builds the bundle every Rust job embeds and holds it to its bundle budget, and the source/package/contract provenance and the port plan match their manifests |
-| `daemon self-update end to end` | a real daemon follows a newer-protocol server: fetch, verify, install over itself, restart, run a turn |
-| `Browser acceptance` | a real browser drives the real stack — server, daemon, an approval that blocks its turn — in a desktop and a phone viewport |
+| `worker self-update end to end` | a real worker follows a newer-protocol server: fetch, verify, install over itself, restart, run a turn |
+| `Browser acceptance` | a real browser drives the real stack — server, worker, an approval that blocks its turn — in a desktop and a phone viewport |
 
 The five jobs that declare `needs: ui` — `checks`, `msrv`, `pi`, `self-update`
 and `e2e` — are skipped when `ui` fails, which is not a hole: `ui` is itself
 required, so a red one blocks the merge and the skipped jobs only save runner
 time.
 
-`daemon self-update end to end` is the one `#[ignore]`d, process-executing job
+`worker self-update end to end` is the one `#[ignore]`d, process-executing job
 that **is** required: it depends on nothing outside this repository (the artifact
 it installs is the binary the job just built) and it is the only automated
 evidence for the upgrade path this repository promises. The `pi` job is not
@@ -604,7 +604,7 @@ LOOM_E2E_KEEP=1 pnpm --filter @loom/e2e test  # keep the run's data and logs
 ```
 
 A leftover stack from a killed run is refused rather than adopted — set
-`LOOM_E2E_PORT` to run beside it. `LOOM_E2E_PROVIDER_CMD` points the daemon at a
+`LOOM_E2E_PORT` to run beside it. `LOOM_E2E_PROVIDER_CMD` points the worker at a
 real agent instead of the stub.
 
 The `pi` job needs `pi` installed *and configured*; the test is skipped in CI
@@ -612,7 +612,7 @@ without the latter, so this is where it actually runs:
 
 ```bash
 npm install -g @earendil-works/pi-coding-agent@0.85.1
-cargo test -p loom-daemon --test provider_e2e -- --ignored
+cargo test -p loom-worker --test provider_e2e -- --ignored
 ```
 
 These are the commands the workflow runs, not equivalents of them.

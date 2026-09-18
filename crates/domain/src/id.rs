@@ -139,7 +139,7 @@ pub type ProjectSourceId = Id<ProjectSourceTag>;
 /// A provider run id, `run_…`.
 ///
 /// One dispatch of one thread to one provider process. It is minted by the
-/// control plane and is the idempotency key for dispatch delivery: a daemon
+/// control plane and is the idempotency key for dispatch delivery: a worker
 /// that reconnects and receives the same run again recognises it and does not
 /// start a second provider.
 pub type RunId = Id<RunTag>;

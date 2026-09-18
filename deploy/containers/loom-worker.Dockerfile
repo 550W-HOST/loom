@@ -1,4 +1,4 @@
-# loom-daemon — the execution plane — as a container image.
+# loom-worker — the execution plane — as a container image.
 #
 # `alpine`, for the opposite reason the server image is `scratch`: this process
 # exists to execute provider CLIs, and a provider is usually not a static
@@ -7,13 +7,13 @@
 # credentials, is a deployment decision (docs/containers.md § Providers), so
 # the image is a base: either a derived image installs one
 #
-#   FROM ghcr.io/550w-host/loom-daemon:0.1.0
+#   FROM ghcr.io/550w-host/loom-worker:0.1.0
 #   USER root
 #   RUN apk add --no-cache nodejs npm && npm install -g @earendil-works/pi-coding-agent
 #
 # or the operator mounts one in. The binary itself is still static, so nothing
 # in the base is load-bearing for loom — the shell and `apk` are for whatever
-# the daemon is asked to run.
+# the worker is asked to run.
 #
 # Pinned by digest as well as tag: the tag is what a reader recognises, the
 # digest is what actually gets built. To move it:
@@ -28,7 +28,7 @@ COPY --chown=1000:1000 loom-${TARGETARCH} /usr/local/bin/loom
 
 # Owned directories, created without a `RUN` so a cross-platform build needs no
 # emulator. The server Dockerfile explains why the volume path cannot be left
-# for the runtime to create. `/workspace` is the daemon's default environment
+# for the runtime to create. `/workspace` is the worker's default environment
 # root: present so a container that was started without a workspace mount still
 # has somewhere to work, shadowed the moment one is mounted there.
 COPY --chown=1000:1000 .keep /var/lib/loom/.keep
@@ -43,29 +43,29 @@ USER 1000:1000
 # rebuild. To reuse a configuration that already exists on the host, mount it
 # over just that directory (`-v ~/.pi:/var/lib/loom/.pi:ro`).
 #
-#   LOOM_DAEMON_STATE    the enrolled host id, so a rebuilt container is the
+#   LOOM_WORKER_STATE    the enrolled host id, so a rebuilt container is the
 #                        same machine instead of a second host
 #   LOOM_WORKSPACE_ROOT  where managed environments are created; the mount
 #                        point is the whole of what this container can edit
 #
-# LOOM_SERVER_URL has no default on purpose: the daemon refuses to start
+# LOOM_SERVER_URL has no default on purpose: the worker refuses to start
 # without it rather than guessing a server, so an unconfigured container fails
 # immediately and visibly.
 ENV HOME=/var/lib/loom \
-    LOOM_DAEMON_STATE=/var/lib/loom/host-id \
+    LOOM_WORKER_STATE=/var/lib/loom/host-id \
     LOOM_WORKSPACE_ROOT=/workspace
 
 WORKDIR /var/lib/loom
 
 # The host identity and the replay cursor live here, which is what makes "the
 # container was rebuilt" different from "a new machine joined". There is no
-# EXPOSE and no port: the daemon dials out and binds nothing, so it works behind
+# EXPOSE and no port: the worker dials out and binds nothing, so it works behind
 # NAT and needs no inbound rule (deploy/README.md § Ports).
 VOLUME /var/lib/loom
 
-# The one binary, in its daemon role: the same file the server image carries,
+# The one binary, in its worker role: the same file the server image carries,
 # started as the other process. Self-update replaces that file in place and the
-# container's restart policy starts the new one (docs/upgrades.md § Daemon
+# container's restart policy starts the new one (docs/upgrades.md § Worker
 # self-update); the server this container dials hosts the artifact under the
-# `loom-daemon` name.
-ENTRYPOINT ["/usr/local/bin/loom", "daemon"]
+# `loom-worker` name.
+ENTRYPOINT ["/usr/local/bin/loom", "worker"]

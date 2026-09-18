@@ -2,11 +2,11 @@
 //!
 //! Workspace state belongs to the machine that owns an environment. The
 //! control plane therefore publishes a request to that host's relay scope and
-//! waits for the daemon to answer on its enrolled socket:
+//! waits for the worker to answer on its enrolled socket:
 //!
 //! ```text
-//! server -- HostRpcRequest --> relay host:{id} --> daemon
-//! server <-- HostRpcReport -- daemon socket
+//! server -- HostRpcRequest --> relay host:{id} --> worker
+//! server <-- HostRpcReport -- worker socket
 //! ```
 //!
 //! The broker is intentionally separate from the relay. A relay publisher
@@ -25,7 +25,7 @@ use tokio::sync::oneshot;
 
 use crate::state::AppState;
 
-/// How long a daemon has to answer one workspace operation.
+/// How long a worker has to answer one workspace operation.
 pub const HOST_RPC_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Why a workspace request did not reach a usable report.
@@ -33,9 +33,9 @@ pub const HOST_RPC_TIMEOUT: Duration = Duration::from_secs(30);
 pub enum HostRpcTransportError {
     /// The relay rejected the append.
     Publish(String),
-    /// The daemon did not answer before [`HOST_RPC_TIMEOUT`].
+    /// The worker did not answer before [`HOST_RPC_TIMEOUT`].
     Timeout,
-    /// The host is enrolled but currently has no daemon connection.
+    /// The host is enrolled but currently has no worker connection.
     Disconnected(String),
     /// The host is not known to this server.
     UnknownHost(String),
@@ -78,7 +78,7 @@ impl HostRpcBroker {
 
     /// Resolves a report if it belongs to the host that was asked.
     ///
-    /// A mismatched or late report is dropped. In particular, a daemon cannot
+    /// A mismatched or late report is dropped. In particular, a worker cannot
     /// answer a request that happened to reuse a correlation id for another
     /// host, and a report arriving after an HTTP timeout is harmless.
     pub fn resolve(&self, report: HostRpcReport) -> bool {
@@ -150,7 +150,7 @@ impl AppState {
             Ok(Err(_)) | Err(_) => {
                 // A timeout drops the receiver, but the sender lives in the
                 // broker until it is explicitly removed. Forget it here so a
-                // disconnected or wedged daemon cannot accumulate entries.
+                // disconnected or wedged worker cannot accumulate entries.
                 self.host_rpc.forget(&request_id);
                 Err(HostRpcTransportError::Timeout)
             }

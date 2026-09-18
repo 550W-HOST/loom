@@ -1,14 +1,14 @@
 //! Terminal sessions on the machine that owns them.
 //!
 //! A terminal is a PTY with a child process attached, and it lives on exactly
-//! one host. This module is the daemon's half of
+//! one host. This module is the worker's half of
 //! [`TerminalRequest`](loom_provider_protocol::TerminalRequest): the control
-//! plane names a session and what to do with it, and the daemon — which is the
+//! plane names a session and what to do with it, and the worker — which is the
 //! only party that can see the process — performs it and reports back.
 //!
 //! ```text
-//!   server ── TerminalRequest ──▶ relay host:{id} ──▶ daemon
-//!   server ◀── TerminalReport ── daemon socket
+//!   server ── TerminalRequest ──▶ relay host:{id} ──▶ worker
+//!   server ◀── TerminalReport ── worker socket
 //! ```
 //!
 //! # Why the output lives here and not on the server
@@ -31,8 +31,8 @@
 //!                  │            └── restart ──────────▶ starting
 //!                  └── spawn failed ──────────────────▶ exited (process-exit)
 //!
-//!   daemon connection drops ──▶ every live session is marked disconnected
-//!   daemon reconnects ────────▶ the server asks for a report and reconciles
+//!   worker connection drops ──▶ every live session is marked disconnected
+//!   worker reconnects ────────▶ the server asks for a report and reconciles
 //! ```
 //!
 //! # Concurrency
@@ -62,7 +62,7 @@ use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, Pt
 
 /// The largest window of output one read may answer.
 ///
-/// bb caps `tailBytes` at 4 MiB; the daemon enforces the same ceiling so a
+/// bb caps `tailBytes` at 4 MiB; the worker enforces the same ceiling so a
 /// request cannot ask for more than the transport can carry in one frame.
 pub const MAX_TAIL_BYTES: u64 = 4 * 1024 * 1024;
 
@@ -82,7 +82,7 @@ pub const MAX_RETAINED_CHUNKS: usize = 4096;
 /// How many *bytes* of output a session retains before dropping the oldest.
 ///
 /// The chunk count alone is not a bound because a chunk can be large. This is
-/// the number that keeps a runaway producer from growing the daemon.
+/// the number that keeps a runaway producer from growing the worker.
 pub const MAX_RETAINED_BYTES: usize = 8 * 1024 * 1024;
 
 /// The largest single chunk read from the PTY.
@@ -182,9 +182,9 @@ impl SessionHandle {
 
     /// Marks the session as disconnected, without touching the process.
     ///
-    /// Used when the server connection drops: the daemon keeps the process
+    /// Used when the server connection drops: the worker keeps the process
     /// running (a terminal is the user's, not the connection's) but reports it
-    /// as undrivable, because no client can reach a daemon that is not
+    /// as undrivable, because no client can reach a worker that is not
     /// connected.
     pub fn mark_disconnected(&self, now_ms: u64) {
         let mut metadata = self
@@ -241,7 +241,7 @@ impl SessionHandle {
     }
 }
 
-/// Every terminal session this daemon holds.
+/// Every terminal session this worker holds.
 ///
 /// Cloned by handle, like [`crate::acp::permission::PermissionRegistry`]: the
 /// socket loop owns one handle and a blocking task gets another, and both must
@@ -310,14 +310,14 @@ impl TerminalRegistry {
         }
     }
 
-    /// Kills every live process, on daemon shutdown.
+    /// Kills every live process, on worker shutdown.
     ///
-    /// A terminal's process is the user's, but it is a child of *this* daemon:
-    /// leaving it running with no daemon to report it would leak a process the
+    /// A terminal's process is the user's, but it is a child of *this* worker:
+    /// leaving it running with no worker to report it would leak a process the
     /// control plane could never see again.
     pub fn close_all(&self, now_ms: u64) {
         for handle in self.all() {
-            handle.force_close(TerminalCloseReason::DaemonDisconnect, now_ms);
+            handle.force_close(TerminalCloseReason::WorkerDisconnect, now_ms);
         }
     }
 }
@@ -519,7 +519,7 @@ fn wait_for_exit(
     Some(status.exit_code() as i32)
 }
 
-/// The daemon's wall clock.
+/// The worker's wall clock.
 fn now_ms_u64() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

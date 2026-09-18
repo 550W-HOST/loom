@@ -67,7 +67,7 @@ pub enum Transport {
 ///
 /// `LOOM_ACP_TRACE=1` turns on a line per notification, per translated event and
 /// per terminal decision. It exists because a missing frame is invisible
-/// otherwise: the daemon has no logging framework, and "no terminal event ever
+/// otherwise: the worker has no logging framework, and "no terminal event ever
 /// arrived" is indistinguishable from "the agent never said the turn was over".
 fn acp_trace_enabled() -> bool {
     static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
@@ -113,7 +113,7 @@ fn v2_update_name(update: &v2::SessionUpdate) -> &'static str {
 macro_rules! acp_trace {
     ($($arg:tt)*) => {
         if crate::acp::session::acp_trace_enabled() {
-            eprintln!("loom-daemon acp: {}", format!($($arg)*));
+            eprintln!("loom-worker acp: {}", format!($($arg)*));
         }
     };
 }
@@ -134,10 +134,10 @@ pub async fn drive(
     let cwd = run.spec.cwd.clone().ok_or_else(|| {
         "an ACP session requires a working directory, and the dispatch has none".to_string()
     })?;
-    // The control plane names the workspace; the daemon is the only party that
+    // The control plane names the workspace; the worker is the only party that
     // can see this machine's filesystem, so it validates the directory here.
     // A missing directory is a hard error, never a silent start in the
-    // daemon's own cwd — an agent editing the wrong project is the bug this
+    // worker's own cwd — an agent editing the wrong project is the bug this
     // check prevents, and ACP would otherwise happily create a session there.
     if !std::path::Path::new(&cwd).is_dir() {
         return Err(format!(
@@ -218,7 +218,7 @@ pub async fn drive(
 /// `agent-client-protocol::AcpAgentConfig` intentionally models only a command,
 /// args and environment; it has no working-directory field. On Unix a small
 /// `sh -c` launcher supplies the missing process boundary without changing the
-/// agent's argv or touching the daemon's global current directory.
+/// agent's argv or touching the worker's global current directory.
 pub(super) fn agent_argv(command: &str, args: &[String], cwd: &str) -> Vec<String> {
     #[cfg(unix)]
     {
@@ -434,7 +434,7 @@ pub(super) fn embedded_agent_factory(
 /// Runs the client loop against `pi-acp` linked into this process.
 ///
 /// The adapter is not a child process: `pi-acp`'s `AcpAgent` runs on a task in
-/// this daemon, and the two halves are joined by an in-process channel pair
+/// this worker, and the two halves are joined by an in-process channel pair
 /// that the SDK provides for exactly this. Only `pi` itself is a child.
 ///
 /// The client code above is shared with the spawned path — an embedded library

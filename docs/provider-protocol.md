@@ -1,30 +1,30 @@
 # The provider execution contract
 
 This document is the boundary between `loom-server` (Rust control plane) and a
-daemon's provider execution (`loom-daemon` here; bb's Node `apps/host-daemon`
+worker's provider execution (`loom-worker` here; bb's Node `apps/host-daemon`
 later). It is the provider-shaped companion to [`process-model.md`](process-model.md):
-that document answers *how server and daemon relate*; this one answers *how a
+that document answers *how server and worker relate*; this one answers *how a
 thread turn crosses the boundary*.
 
 ## Two directions, one rule each
 
 ```text
                      relay  host:{id}                     thread:{id}
-  server ── RunDispatch ─────────▶ daemon ── ProviderReport ──▶ server ──▶ relay
-             (published to a scope)          (up the daemon's own socket)     │
+  server ── RunDispatch ─────────▶ worker ── ProviderReport ──▶ server ──▶ relay
+             (published to a scope)          (up the worker's own socket)     │
                                                                               ▼
                                                              replayable client frames
 ```
 
 * **Downward: dispatch goes through the relay.** The control plane mints a
   `run_id`, records the run, and publishes a `RunDispatch` to `host:{host_id}`.
-  It never looks at a daemon socket. Consequences: a daemon that is reconnecting
+  It never looks at a worker socket. Consequences: a worker that is reconnecting
   still gets the run, and dispatch is replayable.
-* **Upward: reports go up the daemon's own socket.** A report is an
+* **Upward: reports go up the worker's own socket.** A report is an
   observation, not a command. The server turns it into a `thread_run_event` and
   publishes it to `thread:{thread_id}` **through the relay**, so provider
   output, tool calls and turn lifecycle are replayable like any other event and
-  the daemon socket is never a fan-out path.
+  the worker socket is never a fan-out path.
 
 ## The wire types
 
@@ -32,7 +32,7 @@ They live in `crates/provider-protocol` (`loom-provider-protocol`): plain data,
 no runtime, no relay dependency.
 
 ```jsonc
-// RunDispatch — server -> relay host:{id} -> daemon
+// RunDispatch — server -> relay host:{id} -> worker
 {
   "run_id":      "run_01M…",
   "thread_id":   "thr_01M…",
@@ -50,11 +50,11 @@ no runtime, no relay dependency.
 
 `provider.cwd` is the thread's **environment workspace**, and it is the whole
 reason a dispatch carries a provider spec rather than a bare command: a
-provider that starts in the daemon's own cwd does not know what project it is
+provider that starts in the worker's own cwd does not know what project it is
 editing. See [the workspace section](#the-workspace-is-part-of-the-dispatch).
 
 ```jsonc
-// ProviderReport — daemon -> server socket
+// ProviderReport — worker -> server socket
 {
   "host_id": "host_01M…",
   "event": {
@@ -81,7 +81,7 @@ bb's projection layer consumes it unchanged. See
 [`event-model.md`](event-model.md) for the full type map and the per-type
 decisions.
 
-The events the daemon produces from ACP updates (Pi uses `pi-acp` internally):
+The events the worker produces from ACP updates (Pi uses `pi-acp` internally):
 
 | contract `type` | ACP source | note |
 | --- | --- | --- |
@@ -96,7 +96,7 @@ The events the daemon produces from ACP updates (Pi uses `pi-acp` internally):
 | `thread/contextWindowUsage/updated` | `session/update.usage_update` | context occupancy, not token counts |
 | `thread/name/updated` | `session/update.session_info_update` | only a concrete title is emitted |
 | `provider/error` | rejected prompt, transport failure | |
-| `turn/completed` | v1 prompt `stopReason` or daemon timeout | **terminal** |
+| `turn/completed` | v1 prompt `stopReason` or worker timeout | **terminal** |
 
 On the wire, the server stores the whole envelope as a domain event on the
 thread scope:
@@ -125,7 +125,7 @@ though the contract folds them into `status`
 
 A thread's execution context is an **environment** (`env_…`): a directory on a
 host, either *unmanaged* (it already exists; loom never removes it) or *managed*
-(loom creates it). The server owns the registry and the lifecycle; the daemon
+(loom creates it). The server owns the registry and the lifecycle; the worker
 owns the directory layout for managed ones.
 
 ```text
@@ -139,10 +139,10 @@ Three rules, all enforced in code:
    `provider.cwd` from the environment's path and targets the environment's
    host — the directory only exists there. See
    `AppState::dispatch_thread` in `crates/server/src/runs.rs`.
-2. **The daemon validates the directory, never falls back.** Before starting the
+2. **The worker validates the directory, never falls back.** Before starting the
    ACP agent, it checks `provider.cwd` is a directory *on its own machine*. A
    missing one fails the run with a reason naming the path; it is not a license
-   to use the daemon's cwd. See `acp::session::drive`.
+   to use the worker's cwd. See `acp::session::drive`.
 3. **An operator override replaces the executable, not the workspace.**
    `LOOM_PROVIDER_CMD` swaps what runs; `cwd` still comes from the dispatch.
 
@@ -153,7 +153,7 @@ directory: a silent default is the bug this contract fixes.
 ### Managed environments: provisioning
 
 An unmanaged environment is `ready` the moment it is created. A managed one
-starts `creating` and is provisioned by a daemon:
+starts `creating` and is provisioned by a worker:
 
 ```text
   creating ──▶ provisioning ──▶ ready
@@ -162,14 +162,14 @@ starts `creating` and is provisioned by a daemon:
 ```
 
 The request travels **through the relay** like a dispatch, and the outcome
-comes back up the daemon's socket like a report:
+comes back up the worker's socket like a report:
 
 ```jsonc
-// EnvironmentProvision — server -> relay host:{id} -> daemon
+// EnvironmentProvision — server -> relay host:{id} -> worker
 { "environment_id": "env_01M…", "project_id": "proj_01M…",
   "host_id": "host_01M…", "created_at_ms": 1789120430000 }
 
-// EnvironmentProvisionReport — daemon -> server socket
+// EnvironmentProvisionReport — worker -> server socket
 { "host_id": "host_01M…", "environment_id": "env_01M…",
   "outcome": { "outcome": "provisioned", "path": "/root/env_01M…" } }
 // or
@@ -177,11 +177,11 @@ comes back up the daemon's socket like a report:
   "outcome": { "outcome": "failed", "error": "could not create …: permission denied" } }
 ```
 
-The daemon creates `<workspace_root>/<env_id>` (`LOOM_WORKSPACE_ROOT`, default
+The worker creates `<workspace_root>/<env_id>` (`LOOM_WORKSPACE_ROOT`, default
 `$HOME/.loom/workspaces`); the control plane only learns the resulting path
 from the report, then records it and publishes `environment_status_changed` to
 `project:{id}`. A failed attempt moves the environment to `error` with the
-daemon's reason attached, and `POST /api/v1/environments/{id}/provision` retries
+worker's reason attached, and `POST /api/v1/environments/{id}/provision` retries
 it. Creation is idempotent (`create_dir_all`), so a redelivered request is
 safe.
 
@@ -195,7 +195,7 @@ This is the class of bug the contract exists to eliminate. bb's
 thread stayed `working` forever. The contract makes that unrepresentable by
 giving the terminal state **two independent owners**:
 
-1. **The daemon** guarantees it per ACP connection. The ACP driver maps a
+1. **The worker** guarantees it per ACP connection. The ACP driver maps a
    terminal prompt result, a transport exit or a timeout to exactly one
    `turn/completed`. The completion signal is taken from **whichever arrives
    first**: v1 reports `stop_reason` on the `session/prompt` response, v2 reports
@@ -214,18 +214,18 @@ is dropped, and a second status change is not produced.
 
 ## ACP framing
 
-ACP owns JSON-RPC framing. The daemon consumes typed ACP requests, responses and
+ACP owns JSON-RPC framing. The worker consumes typed ACP requests, responses and
 `session/update` notifications; it does not parse Pi's private JSONL protocol.
 Only the embedded `pi-acp` library speaks that private protocol internally.
 
 ## Idempotence and reconnect
 
-* `run_id` is the idempotency key. A daemon keeps a bounded set of run ids it
+* `run_id` is the idempotency key. A worker keeps a bounded set of run ids it
   has started, so a redelivered dispatch is dropped rather than run twice.
-* A daemon persists its host-scope event cursor and, on reconnect, subscribes
+* A worker persists its host-scope event cursor and, on reconnect, subscribes
   **then** replays from that cursor (`ClientCommand::Replay`). Live frames that
   arrive in between are also in the replay window; the event-id dedup set drops
-  the overlap. This is what makes "dispatch published while the daemon was
+  the overlap. This is what makes "dispatch published while the worker was
   away" arrive late instead of being lost.
 
 ## What is deliberately not here
@@ -234,7 +234,7 @@ Only the embedded `pi-acp` library speaks that private protocol internally.
   arguments. There is no manifest, no discovery, no marketplace, no lifecycle
   hooks.
 * **No provider protocol in the control plane.** The server never parses ACP
-  frames. The daemon owns the ACP client, translates `session/update`, and
+  frames. The worker owns the ACP client, translates `session/update`, and
   reports only the canonical run events.
 * **No provider-owned session files in loom.** The ACP agent owns storage;
   loom persists only the opaque `provider_session_id` needed for the next
@@ -246,10 +246,10 @@ Only the embedded `pi-acp` library speaks that private protocol internally.
 # Server-only, as usual.
 cargo run -p loom -- server
 
-# A daemon that runs the provider the control plane dispatched. The built-in Pi
+# A worker that runs the provider the control plane dispatched. The built-in Pi
 # provider is ACP through embedded `pi-acp`; a custom command must be an ACP
 # agent speaking stdio.
-cargo run -p loom -- daemon --server-url http://127.0.0.1:38886 --name laptop
+cargo run -p loom -- worker --server-url http://127.0.0.1:38886 --name laptop
 
 # Create a workspace pointing at an existing project directory, bind a thread
 # to it, then post a message. The provider runs in that directory. Both the
@@ -271,20 +271,20 @@ An operator can override the provider executable on a machine with
 `LOOM_WORKSPACE_ROOT`. The override never changes the workspace.
 
 When a run behaves oddly — text arrives but the turn never closes, or an
-expected frame is missing — `LOOM_ACP_TRACE=1` makes the daemon print what the
+expected frame is missing — `LOOM_ACP_TRACE=1` makes the worker print what the
 ACP boundary received (every notification by name, every translated event, and
 every terminal decision). It is the difference between "the agent never said the
-turn was over" and "the daemon never heard it".
+turn was over" and "the worker never heard it".
 
 ## Test coverage
 
 | behaviour | where |
 | --- | --- |
-| ACP mapping, session identity, one terminal per run | `crates/daemon/src/acp/` unit and integration tests |
+| ACP mapping, session identity, one terminal per run | `crates/worker/src/acp/` unit and integration tests |
 | dispatch, report, host ownership, timeout + stale reaping, `cwd` from the environment | `crates/server/src/runs.rs` unit tests |
 | environment registry, lifecycle, provisioning dispatch + reports | `crates/server/src/domain_state.rs`, `crates/server/src/environments.rs` unit tests |
 | environment HTTP API (create/list/get/destroy, path validation) | `crates/server/src/http.rs` unit tests |
-| normal ACP turn, provider crash, provider timeout, missed-dispatch replay, silent-daemon reaping | `crates/daemon/tests/provider_e2e.rs` (real sockets, real ACP agents) |
-| two-run ACP session/load resume and identity persistence | `crates/daemon/tests/acp_session.rs`, `crates/daemon/tests/acp_dispatch.rs` |
-| embedded Pi through `pi-acp` | `crates/daemon/tests/acp_embedded.rs` |
+| normal ACP turn, provider crash, provider timeout, missed-dispatch replay, silent-worker reaping | `crates/worker/tests/provider_e2e.rs` (real sockets, real ACP agents) |
+| two-run ACP session/load resume and identity persistence | `crates/worker/tests/acp_session.rs`, `crates/worker/tests/acp_dispatch.rs` |
+| embedded Pi through `pi-acp` | `crates/worker/tests/acp_embedded.rs` |
 | the real `pi` binary | same provider e2e file, `#[ignore]`d |

@@ -258,8 +258,8 @@ impl Contract {
         }
     }
 
-    /// Validate a daemon -> server frame (`hostDaemonDaemonWsMessageSchema`).
-    pub fn validate_daemon_message(&self, instance: &Value) -> Vec<Violation> {
+    /// Validate a worker -> server frame (`hostDaemonDaemonWsMessageSchema`).
+    pub fn validate_worker_message(&self, instance: &Value) -> Vec<Violation> {
         match self
             .host_daemon
             .pointer("/websocket/clientToServer/0/schema")
@@ -269,8 +269,8 @@ impl Contract {
         }
     }
 
-    /// Validate a server -> daemon frame (`hostDaemonServerWsMessageSchema`).
-    pub fn validate_server_to_daemon_message(&self, instance: &Value) -> Vec<Violation> {
+    /// Validate a server -> worker frame (`hostDaemonServerWsMessageSchema`).
+    pub fn validate_server_to_worker_message(&self, instance: &Value) -> Vec<Violation> {
         match self
             .host_daemon
             .pointer("/websocket/serverToClient/0/schema")
@@ -280,15 +280,15 @@ impl Contract {
         }
     }
 
-    /// Validate a settled daemon command (`hostDaemonCommandSchema`).
-    pub fn validate_daemon_command(&self, instance: &Value) -> Vec<Violation> {
+    /// Validate a settled worker command (`hostDaemonCommandSchema`).
+    pub fn validate_worker_command(&self, instance: &Value) -> Vec<Violation> {
         match self.host_daemon.pointer("/commands/settled") {
             Some(schema) => validate(&self.host_daemon, schema, instance),
             None => Vec::new(),
         }
     }
 
-    /// Raw access to the daemon artifact for anything not wrapped above.
+    /// Raw access to the worker artifact for anything not wrapped above.
     pub fn host_daemon(&self) -> &Value {
         &self.host_daemon
     }

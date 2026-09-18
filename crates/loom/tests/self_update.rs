@@ -1,4 +1,4 @@
-//! Daemon self-update, end to end, with the real daemon binary.
+//! Worker self-update, end to end, with the real worker binary.
 //!
 //! The acceptance scenario in `docs/upgrades.md` is:
 //!
@@ -8,11 +8,11 @@
 //! and this file walks it with real processes rather than mocks of the parts
 //! that matter:
 //!
-//! 1. A **fake server** that speaks a *newer* protocol version than the daemon
-//!    build and hosts a real `loom-daemon` binary. It is a faithful stand-in for
-//!    the one property under test — "a server announces a protocol this daemon
+//! 1. A **fake server** that speaks a *newer* protocol version than the worker
+//!    build and hosts a real `loom-worker` binary. It is a faithful stand-in for
+//!    the one property under test — "a server announces a protocol this worker
 //!    cannot speak, and offers the matching binary" — and nothing else.
-//! 2. The **real daemon process**, started with the same flags systemd uses,
+//! 2. The **real worker process**, started with the same flags systemd uses,
 //!    connects, is refused, fetches the artifact, verifies its SHA-256,
 //!    installs it **over its own executable**, and exits **0** so
 //!    `Restart=always` starts the new file.
@@ -24,7 +24,7 @@
 //!
 //! Self-update replaces the running executable, so a test cannot copy an
 //! arbitrary path over the source binary. It installs a *stale variant* of the
-//! real daemon — the same executable with a marker appended, which the ELF
+//! real worker — the same executable with a marker appended, which the ELF
 //! loader ignores — starts that, and asserts the file afterwards is the
 //! unmodified release bytes the server served. A marker check would prove less:
 //! this compares whole files.
@@ -40,37 +40,37 @@ use axum::extract::{Query, State};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
-use loom_daemon::{Daemon, DaemonConfig};
 use loom_domain::{MessageRole, ThreadStatus};
 use loom_provider_protocol::ProviderSpec;
 use loom_server::artifacts::{sha256_hex, DIGEST_HEADER};
 use loom_server::http::router as server_router;
 use loom_server::state::{AppConfig, AppState};
 use loom_server::PROTOCOL_VERSION;
+use loom_worker::{Worker, WorkerConfig};
 use serde_json::json;
 
-/// The real daemon binary, built by cargo for this integration test.
-/// The one installed binary, driven in its daemon role.
+/// The real worker binary, built by cargo for this integration test.
+/// The one installed binary, driven in its worker role.
 ///
 /// `cargo` sets this for the crate whose binary is under test, which is why
-/// this file lives beside the binary it starts: the daemon has no artifact of
+/// this file lives beside the binary it starts: the worker has no artifact of
 /// its own any more.
 const BINARY: &str = env!("CARGO_BIN_EXE_loom");
-const DAEMON_ROLE: &str = "daemon";
+const WORKER_ROLE: &str = "worker";
 
 /// The marker appended to make the stale variant distinguishable.
-const STALE_MARKER: &[u8] = b"\n# a stale daemon, awaiting self-update\n";
+const STALE_MARKER: &[u8] = b"\n# a stale worker, awaiting self-update\n";
 
 /// The newer protocol the fake server claims to speak.
 fn future_protocol() -> u32 {
     PROTOCOL_VERSION + 1
 }
 
-/// The fake newer server: a WebSocket that refuses this daemon's protocol, plus
+/// The fake newer server: a WebSocket that refuses this worker's protocol, plus
 /// the two install routes serving a real binary.
 #[derive(Clone)]
 struct FakeServer {
-    daemon_bytes: Vec<u8>,
+    worker_bytes: Vec<u8>,
     digest: String,
     protocol_version: u32,
     /// Every artifact request seen, as `(sent_if_none_match, answered_304)`.
@@ -80,14 +80,14 @@ struct FakeServer {
 async fn spawn_fake_server(bytes: Vec<u8>) -> (String, FakeServer) {
     let state = FakeServer {
         digest: sha256_hex(&bytes),
-        daemon_bytes: bytes,
+        worker_bytes: bytes,
         protocol_version: future_protocol(),
         artifact_requests: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
     };
     let app = Router::new()
         .route("/internal/ws", get(fake_ws))
         .route("/install/version", get(fake_version))
-        .route("/install/loom-daemon", get(fake_artifact))
+        .route("/install/loom-worker", get(fake_artifact))
         .with_state(state.clone());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -98,7 +98,7 @@ async fn spawn_fake_server(bytes: Vec<u8>) -> (String, FakeServer) {
 }
 
 /// The `hello` frame a newer server sends: accepted as the first frame, then
-/// refused by the daemon before it enrolls.
+/// refused by the worker before it enrolls.
 async fn fake_ws(upgrade: WebSocketUpgrade, State(state): State<FakeServer>) -> Response {
     upgrade.on_upgrade(move |socket| fake_ws_session(socket, state))
 }
@@ -110,7 +110,7 @@ async fn fake_ws_session(mut socket: WebSocket, state: FakeServer) {
         "protocol_version": state.protocol_version,
     });
     let _ = socket.send(Message::Text(hello.to_string().into())).await;
-    // The daemon drops the socket itself on the refusal; this only keeps the
+    // The worker drops the socket itself on the refusal; this only keeps the
     // task alive long enough for the frame to flush.
     let _ = socket.recv().await;
 }
@@ -169,15 +169,15 @@ async fn fake_artifact(
     (
         axum::http::StatusCode::OK,
         response_headers,
-        state.daemon_bytes.clone(),
+        state.worker_bytes.clone(),
     )
         .into_response()
 }
 
-/// Installs the stale variant of the real daemon at `path` and makes it
+/// Installs the stale variant of the real worker at `path` and makes it
 /// executable. Appended bytes are invisible to the ELF loader, so this runs.
 fn install_stale_variant(path: &Path) {
-    let mut stale = std::fs::read(BINARY).expect("the built daemon binary");
+    let mut stale = std::fs::read(BINARY).expect("the built worker binary");
     stale.extend_from_slice(STALE_MARKER);
     std::fs::write(path, &stale).unwrap();
     #[cfg(unix)]
@@ -254,29 +254,29 @@ async fn eventually(mut predicate: impl FnMut() -> bool) -> bool {
     predicate()
 }
 
-/// Runs a daemon binary to completion, returning `(status, stderr)`.
+/// Runs a worker binary to completion, returning `(status, stderr)`.
 async fn run_to_completion(binary: &Path, args: &[&str]) -> (std::process::ExitStatus, String) {
     let output = tokio::process::Command::new(binary)
-        .arg(DAEMON_ROLE)
+        .arg(WORKER_ROLE)
         .args(args)
         .output()
         .await
-        .expect("the daemon binary must be runnable");
+        .expect("the worker binary must be runnable");
     (
         output.status,
         String::from_utf8_lossy(&output.stderr).into_owned(),
     )
 }
 
-/// Spawns a daemon that should stay up, returning it and its stderr log task.
-async fn spawn_daemon(
+/// Spawns a worker that should stay up, returning it and its stderr log task.
+async fn spawn_worker(
     binary: &Path,
     server_url: &str,
     state_path: &Path,
 ) -> (tokio::process::Child, tokio::task::JoinHandle<String>) {
     std::fs::create_dir_all(state_path.parent().unwrap()).unwrap();
     let mut child = tokio::process::Command::new(binary)
-        .arg(DAEMON_ROLE)
+        .arg(WORKER_ROLE)
         .arg("--server-url")
         .arg(server_url)
         .arg("--state")
@@ -286,7 +286,7 @@ async fn spawn_daemon(
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped())
         .spawn()
-        .expect("the daemon binary must be runnable");
+        .expect("the worker binary must be runnable");
     let stderr = child.stderr.take().unwrap();
     let log = tokio::spawn(async move {
         use tokio::io::AsyncReadExt;
@@ -301,7 +301,7 @@ async fn spawn_daemon(
 /// The acceptance scenario, in one process:
 /// mismatch → update → reconnect → the run is handled correctly.
 #[tokio::test]
-async fn a_v3_daemon_fails_fast_when_deployed_before_a_v2_server() {
+async fn a_v3_worker_fails_fast_when_deployed_before_a_v2_server() {
     let app = Router::new().route("/ws", get(|| async { "legacy websocket" }));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -309,13 +309,13 @@ async fn a_v3_daemon_fails_fast_when_deployed_before_a_v2_server() {
         let _ = axum::serve(listener, app).await;
     });
 
-    let config = DaemonConfig::new(format!("http://{addr}"), "new-daemon");
-    let result = tokio::time::timeout(Duration::from_secs(2), Daemon::connect(config))
+    let config = WorkerConfig::new(format!("http://{addr}"), "new-worker");
+    let result = tokio::time::timeout(Duration::from_secs(2), Worker::connect(config))
         .await
         .expect("a missing internal endpoint must fail rather than hang");
     let error = match result {
         Err(error) => error,
-        Ok(_) => panic!("a v3 daemon must not enroll against a v2-only server"),
+        Ok(_) => panic!("a v3 worker must not enroll against a v2-only server"),
     };
     let detail = error.to_string();
     assert!(
@@ -325,23 +325,23 @@ async fn a_v3_daemon_fails_fast_when_deployed_before_a_v2_server() {
 }
 
 #[tokio::test]
-#[ignore = "runs a real daemon binary and a fake network endpoint"]
-async fn a_protocol_mismatch_updates_the_daemon_and_the_new_binary_runs_a_turn() {
+#[ignore = "runs a real worker binary and a fake network endpoint"]
+async fn a_protocol_mismatch_updates_the_worker_and_the_new_binary_runs_a_turn() {
     let staging = tempfile::tempdir().unwrap();
     let install_dir = tempfile::tempdir().unwrap();
-    let install_path: PathBuf = install_dir.path().join("loom-daemon");
+    let install_path: PathBuf = install_dir.path().join("loom-worker");
     install_stale_variant(&install_path);
     let stale_bytes = std::fs::read(&install_path).unwrap();
 
-    // The bytes the server hosts are the real daemon this repository built, so
+    // The bytes the server hosts are the real worker this repository built, so
     // the "new binary" the supervisor starts is a production executable.
-    let real_binary = std::fs::read(BINARY).expect("the built daemon binary");
+    let real_binary = std::fs::read(BINARY).expect("the built worker binary");
     let (fake_url, fake) = spawn_fake_server(real_binary.clone()).await;
     assert_eq!(fake.protocol_version, PROTOCOL_VERSION + 1);
 
     let state_path = install_dir.path().join("state").join("host-id");
 
-    // 1. The stale daemon connects to a server that speaks a newer protocol. It
+    // 1. The stale worker connects to a server that speaks a newer protocol. It
     //    is refused, fetches the matching binary, installs it over itself, and
     //    exits 0 for the supervisor.
     let (status, stderr) = run_to_completion(
@@ -433,15 +433,15 @@ async fn a_protocol_mismatch_updates_the_daemon_and_the_new_binary_runs_a_turn()
     // A fresh state path: the file the update run used is the misconfigured
     // server's, and reusing it would only test the identity path.
     let child_state = install_dir.path().join("state2").join("host-id");
-    let (mut child, log) = spawn_daemon(&install_path, &real_url, &child_state).await;
+    let (mut child, log) = spawn_worker(&install_path, &real_url, &child_state).await;
 
     assert!(
         eventually(|| !server_state.registry.hosts().is_empty()).await,
-        "the reinstalled daemon must enrol against the real server"
+        "the reinstalled worker must enrol against the real server"
     );
     let host = server_state.registry.hosts().into_iter().next().unwrap();
 
-    // 4. A real provider turn, dispatched through the relay to that daemon.
+    // 4. A real provider turn, dispatched through the relay to that worker.
     let (environment, _) = server_state
         .registry
         .create_environment(
@@ -487,7 +487,7 @@ async fn a_protocol_mismatch_updates_the_daemon_and_the_new_binary_runs_a_turn()
             assert_eq!(
                 status,
                 ThreadStatus::Idle,
-                "the reinstalled daemon must complete the turn"
+                "the reinstalled worker must complete the turn"
             );
             break;
         }
@@ -524,7 +524,7 @@ async fn a_protocol_mismatch_updates_the_daemon_and_the_new_binary_runs_a_turn()
     let log = log.await.unwrap_or_default();
     assert!(
         log.contains("enrolled as"),
-        "the reinstalled daemon should have enrolled; stderr:\n{log}"
+        "the reinstalled worker should have enrolled; stderr:\n{log}"
     );
     server_state.shutdown();
 }
@@ -532,12 +532,12 @@ async fn a_protocol_mismatch_updates_the_daemon_and_the_new_binary_runs_a_turn()
 /// A second attempt against an unchanged server must be a conditional request
 /// answered `304`, and it must **still** exit for the restart.
 #[tokio::test]
-#[ignore = "runs a real daemon binary and a fake network endpoint"]
+#[ignore = "runs a real worker binary and a fake network endpoint"]
 async fn a_second_update_against_an_unchanged_artifact_is_a_304_and_a_restart() {
     let install_dir = tempfile::tempdir().unwrap();
-    let install_path: PathBuf = install_dir.path().join("loom-daemon");
+    let install_path: PathBuf = install_dir.path().join("loom-worker");
     install_stale_variant(&install_path);
-    let real_binary = std::fs::read(BINARY).expect("the built daemon binary");
+    let real_binary = std::fs::read(BINARY).expect("the built worker binary");
     let (fake_url, fake) = spawn_fake_server(real_binary.clone()).await;
     let state_path = install_dir.path().join("state").join("host-id");
 
@@ -599,20 +599,20 @@ async fn a_second_update_against_an_unchanged_artifact_is_a_304_and_a_restart() 
 /// The operator switch: with self-update off, a mismatched server is refused and
 /// retried, never fetched, and the process keeps running its current binary.
 #[tokio::test]
-#[ignore = "runs a real daemon binary and a fake network endpoint"]
-async fn a_daemon_with_self_update_disabled_never_fetches_and_keeps_running() {
+#[ignore = "runs a real worker binary and a fake network endpoint"]
+async fn a_worker_with_self_update_disabled_never_fetches_and_keeps_running() {
     let install_dir = tempfile::tempdir().unwrap();
-    let install_path: PathBuf = install_dir.path().join("loom-daemon");
+    let install_path: PathBuf = install_dir.path().join("loom-worker");
     install_stale_variant(&install_path);
     let stale = std::fs::read(&install_path).unwrap();
-    let real_binary = std::fs::read(BINARY).expect("the built daemon binary");
+    let real_binary = std::fs::read(BINARY).expect("the built worker binary");
     let (fake_url, fake) = spawn_fake_server(real_binary).await;
     let state_path = install_dir.path().join("state").join("host-id");
 
-    // A real daemon process with self-update disabled. It must not exit: a
+    // A real worker process with self-update disabled. It must not exit: a
     // refused connection is retried, and the reason is logged.
     let mut child = tokio::process::Command::new(&install_path)
-        .arg(DAEMON_ROLE)
+        .arg(WORKER_ROLE)
         .arg("--server-url")
         .arg(&fake_url)
         .arg("--state")
@@ -623,7 +623,7 @@ async fn a_daemon_with_self_update_disabled_never_fetches_and_keeps_running() {
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped())
         .spawn()
-        .expect("the daemon binary must be runnable");
+        .expect("the worker binary must be runnable");
 
     // Give it well past the first reconnect delay (1 s) to prove it stays up.
     tokio::time::sleep(Duration::from_millis(1800)).await;

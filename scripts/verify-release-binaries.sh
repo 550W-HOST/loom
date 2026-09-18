@@ -6,7 +6,7 @@
 #
 #   1. the binary runs on the machine it targets at all — a static musl build is
 #      where a glibc assumption surfaces, and it surfaces at run time
-#   2. the artifact in its daemon role enrols against the same file in its server
+#   2. the artifact in its worker role enrols against the same file in its server
 #      role, which is the protocol handshake a mismatched build would refuse
 #   3. the two roles together accept a contract-shaped write: the server creates
 #      a project on the enrolled host and reads it back from the list
@@ -211,7 +211,7 @@ release_protocol="$PROTOCOL"
 # so each role has to answer with the same stamp as the file it was started from.
 # A role that reported a different version, target, protocol or commit would once
 # have been a bad pair of artifacts; it is the same defect read off one file.
-for role in server daemon; do
+for role in server worker; do
   read_version "loom-$role" "$binary" "$role"
   [[ "$VERSION" == "$release_version" ]] ||
     die "loom $role reports $VERSION, but the file is $release_version"
@@ -229,11 +229,11 @@ done
 
 tmp="$(mktemp -d)"
 server_pid=""
-daemon_pid=""
+worker_pid=""
 
 # The artifact as `deploy/install.sh` leaves an install: the file, plus the two
 # relative names it answers to as symlinks beside it. The layout matters here
-# rather than being cosmetic — the server hosts `/install/loom-daemon` out of
+# rather than being cosmetic — the server hosts `/install/loom-worker` out of
 # the directory holding its own executable, so the symlink next to `loom` is what
 # the self-update check below serves, exactly as a deployment does. A copy, not a
 # symlink, because the kernel resolves `/proc/self/exe` through every link and the
@@ -242,13 +242,13 @@ install_dir="$tmp/install"
 install -d -m 0755 "$install_dir"
 install -m 0755 "$binary" "$install_dir/loom"
 ln -s loom "$install_dir/loom-server"
-ln -s loom "$install_dir/loom-daemon"
+ln -s loom "$install_dir/loom-worker"
 artifact="$install_dir/loom"
 
 # Both logs are printed on failure: a release check that fails without saying
 # why costs more than it saves.
 logs() {
-  for log in "$tmp/server.log" "$tmp/daemon.log"; do
+  for log in "$tmp/server.log" "$tmp/worker.log"; do
     [[ -s "$log" ]] || continue
     printf -- '--- %s\n' "$log" >&2
     tail -n 20 "$log" >&2
@@ -256,7 +256,7 @@ logs() {
 }
 
 cleanup() {
-  [[ -z "$daemon_pid" ]] || kill "$daemon_pid" 2>/dev/null || true
+  [[ -z "$worker_pid" ]] || kill "$worker_pid" 2>/dev/null || true
   [[ -z "$server_pid" ]] || kill "$server_pid" 2>/dev/null || true
   wait 2>/dev/null || true
   rm -rf "$tmp"
@@ -405,11 +405,11 @@ api() {
 # terminal.
 body() { head -c 400 "$1" | tr -d '\n'; }
 
-# Daemon self-update (docs/upgrades.md). The two `/install/*` routes are what a
-# daemon uses to follow a server whose protocol changed, so a release has to
+# Worker self-update (docs/upgrades.md). The two `/install/*` routes are what a
+# worker uses to follow a server whose protocol changed, so a release has to
 # prove them on its own artifact: the bytes served, and the digest served with
 # them, must both be the `loom` this directory was built from. The server was
-# started from the install-shaped directory above, so the `loom-daemon` symlink
+# started from the install-shaped directory above, so the `loom-worker` symlink
 # beside its own executable is the artifact directory by default — which is the
 # arrangement `deploy/install.sh` produces and the one this is here to hold true.
 api GET /install/version "$tmp/install-version.json"
@@ -419,9 +419,9 @@ served_protocol="$(jq -r '.protocolVersion' "$tmp/install-version.json")"
 note "/install/version ok (protocol $served_protocol)"
 
 served_digest=""
-curl -fsS -D "$tmp/artifact.headers" -o "$tmp/loom-daemon.served" \
-  "$base/install/loom-daemon?target=$release_target" ||
-  die "GET /install/loom-daemon failed"
+curl -fsS -D "$tmp/artifact.headers" -o "$tmp/loom-worker.served" \
+  "$base/install/loom-worker?target=$release_target" ||
+  die "GET /install/loom-worker failed"
 # Header names are case-insensitive; curl writes them as sent, so the lookup is
 # case-folded rather than trusting one spelling.
 served_digest="$(tr -d '\r' <"$tmp/artifact.headers" |
@@ -432,37 +432,37 @@ served_digest="$(tr -d '\r' <"$tmp/artifact.headers" |
 # The digest over the bytes the server actually sent, and the digest of the
 # artifact this directory was built from: both must equal the served header. The
 # second is the one that matters — it proves the server hosted *this release's*
-# file through the `loom-daemon` name, and not some other binary that happened to
+# file through the `loom-worker` name, and not some other binary that happened to
 # be in the directory.
-downloaded_digest="$(sha256sum "$tmp/loom-daemon.served" | cut -d ' ' -f 1)"
+downloaded_digest="$(sha256sum "$tmp/loom-worker.served" | cut -d ' ' -f 1)"
 [[ "$downloaded_digest" == "$served_digest" ]] ||
   die "the served artifact does not hash to its own header: header $served_digest, body $downloaded_digest"
 on_disk_digest="$(sha256sum "$binary" | cut -d ' ' -f 1)"
 [[ "$on_disk_digest" == "$served_digest" ]] ||
   die "the hosted artifact is not this release's loom: served $served_digest, $binary is $on_disk_digest"
-note "GET /install/loom-daemon -> 200, $served_digest (matches the built loom)"
+note "GET /install/loom-worker -> 200, $served_digest (matches the built loom)"
 
-# The conditional request: a daemon that already has this digest sends it back
+# The conditional request: a worker that already has this digest sends it back
 # and must get a 304 with no body, which is what keeps a fleet's reconnects from
 # re-downloading megabytes every time.
 conditional_code="$(curl -sS -o "$tmp/not-modified" -w '%{http_code}' \
   -H "If-None-Match: \"sha256-$served_digest\"" \
-  "$base/install/loom-daemon?target=$release_target")" ||
+  "$base/install/loom-worker?target=$release_target")" ||
   die "the conditional artifact request could not be reached"
 [[ "$conditional_code" == "304" ]] ||
   die "a conditional artifact request answered $conditional_code, expected 304"
 [[ ! -s "$tmp/not-modified" ]] || die "a 304 carried a body"
-note "GET /install/loom-daemon (If-None-Match) -> 304"
+note "GET /install/loom-worker (If-None-Match) -> 304"
 
-# The daemon and the server refuse to work together unless their protocol
+# The worker and the server refuse to work together unless their protocol
 # versions match, so an enrolled host is that handshake succeeding on real
 # sockets — with the one file in both roles on this machine, which is the
 # arrangement a single-box deployment has. It enrols before the project write
 # because `projects.create` takes the contract's body — a name plus the source
-# the project starts with — and the only host on this machine is the daemon's.
-"$artifact" daemon --server-url "$base" --name "release-verification" \
-  --state "$tmp/host-id" >"$tmp/daemon.log" 2>&1 &
-daemon_pid=$!
+# the project starts with — and the only host on this machine is the worker's.
+"$artifact" worker --server-url "$base" --name "release-verification" \
+  --state "$tmp/host-id" >"$tmp/worker.log" 2>&1 &
+worker_pid=$!
 enrolled=""
 for _ in $(seq 1 150); do
   curl -fsS "$base/api/v1/hosts" 2>/dev/null |
@@ -470,12 +470,12 @@ for _ in $(seq 1 150); do
     enrolled=yes
     break
   }
-  kill -0 "$daemon_pid" 2>/dev/null || break
+  kill -0 "$worker_pid" 2>/dev/null || break
   sleep 0.2
 done
 if [[ -z "$enrolled" ]]; then
   logs
-  die "the artifact's daemon role did not enrol against its server role"
+  die "the artifact's worker role did not enrol against its server role"
 fi
 # A bare array, like every list route: the shapes here are `projects.list`'s and
 # `hosts.list`'s. Each value is read only after the shape it is read from is
@@ -485,7 +485,7 @@ jq -e 'type == "array"' "$tmp/hosts.json" >/dev/null ||
   die "GET /api/v1/hosts did not answer an array: $(body "$tmp/hosts.json")"
 host_id="$(jq -r '[.[] | select(.status == "connected")][0].id // empty' "$tmp/hosts.json")"
 [[ -n "$host_id" ]] || die "no connected host in $(body "$tmp/hosts.json")"
-note "daemon enrolled as $host_id"
+note "worker enrolled as $host_id"
 
 # `projects.create` takes `{ name, source }` and answers 201 with the project
 # itself. Both halves of the old assumption are gone: the request carried no

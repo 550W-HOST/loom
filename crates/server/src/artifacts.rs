@@ -1,10 +1,10 @@
-//! Hosted daemon artifacts: the server side and the client side of the
+//! Hosted worker artifacts: the server side and the client side of the
 //! self-update source of truth.
 //!
-//! A server hosts the daemon binaries that match **its own** protocol version,
-//! and a daemon fetches the one for its target triple when the two disagree on
+//! A server hosts the worker binaries that match **its own** protocol version,
+//! and a worker fetches the one for its target triple when the two disagree on
 //! the wire. Both halves live here so the path, the headers and the digest
-//! format cannot drift apart: the daemon depends on `loom-server` for
+//! format cannot drift apart: the worker depends on `loom-server` for
 //! [`PROTOCOL_VERSION`] already, so the same module that serves the bytes
 //! defines what fetching them means.
 //!
@@ -13,20 +13,20 @@
 //! | Route | Answer |
 //! | --- | --- |
 //! | `GET /install/version` | `{"version":"0.1.0","protocolVersion":3}` |
-//! | `GET /install/loom-daemon?target=<triple>` | the binary, its SHA-256 in `ETag` and `X-Loom-Artifact-Sha256` |//!
+//! | `GET /install/loom-worker?target=<triple>` | the binary, its SHA-256 in `ETag` and `X-Loom-Artifact-Sha256` |//!
 //! The artifact directory defaults to the directory the running
 //! `loom-server` was started from — `deploy/install.sh` puts
-//! `/usr/local/bin/loom-server` and `/usr/local/bin/loom-daemon` side by side,
-//! so the default deployment hosts the daemon with no configuration at all.
-//! `LOOM_ARTIFACT_DIR` overrides it. Either `loom-daemon-<triple>` (the release
-//! page's name) or `loom-daemon` (the installed name, for the server's own
+//! `/usr/local/bin/loom-server` and `/usr/local/bin/loom-worker` side by side,
+//! so the default deployment hosts the worker with no configuration at all.
+//! `LOOM_ARTIFACT_DIR` overrides it. Either `loom-worker-<triple>` (the release
+//! page's name) or `loom-worker` (the installed name, for the server's own
 //! triple) is accepted.
 //!
 //! # Authentication
 //!
 //! None, like every other route: the control plane has no authentication layer
 //! and the network boundary is the security model (`docs/remote-access.md`).
-//! Serving the daemon binary adds no exposure the API did not already have —
+//! Serving the worker binary adds no exposure the API did not already have —
 //! the API already dispatches arbitrary command execution to every enrolled
 //! machine — and the bytes are public software. See `docs/upgrades.md`.
 //!
@@ -34,7 +34,7 @@
 //!
 //! `X-Loom-Artifact-Sha256` is computed by the serving host from the file it
 //! read. It proves the download was not truncated or corrupted in transit, and
-//! it gives a daemon a stable identity for "the artifact I already installed"
+//! it gives a worker a stable identity for "the artifact I already installed"
 //! (the `ETag` a conditional request is made against). It does **not** protect
 //! against a compromised server, because the server is also what serves the
 //! digest. That is the same trust root the dispatch path already rests on;
@@ -58,11 +58,11 @@ use serde_json::json;
 
 use crate::state::AppState;
 
-/// Where a daemon asks the server about itself.
+/// Where a worker asks the server about itself.
 pub const INSTALL_VERSION_PATH: &str = "/install/version";
 
-/// Where a daemon asks for the binary for a target triple.
-pub const INSTALL_DAEMON_PATH: &str = "/install/loom-daemon";
+/// Where a worker asks for the binary for a target triple.
+pub const INSTALL_WORKER_PATH: &str = "/install/loom-worker";
 
 /// Query parameter naming the target triple.
 pub const TARGET_QUERY: &str = "target";
@@ -70,14 +70,14 @@ pub const TARGET_QUERY: &str = "target";
 /// Response header carrying the artifact's SHA-256 as lowercase hex.
 pub const DIGEST_HEADER: &str = "x-loom-artifact-sha256";
 
-/// The version and protocol a server reports to a daemon that is deciding
+/// The version and protocol a server reports to a worker that is deciding
 /// whether it needs to update.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct InstallVersion {
     /// The server's crate version, for the log line.
     pub version: String,
-    /// The server's protocol version: the number the daemon compares against
+    /// The server's protocol version: the number the worker compares against
     /// its own.
     pub protocol_version: u32,
 }
@@ -179,7 +179,7 @@ impl ArtifactError {
             // A malformed target is the client's mistake.
             ArtifactError::UnknownTarget(_) => StatusCode::BAD_REQUEST,
             // Everything else is "this server does not have that binary",
-            // which is a plain 404 a daemon retries on a later attempt.
+            // which is a plain 404 a worker retries on a later attempt.
             ArtifactError::NotConfigured | ArtifactError::Missing { .. } => StatusCode::NOT_FOUND,
             ArtifactError::Io(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
@@ -205,13 +205,13 @@ impl std::fmt::Display for ArtifactError {
                 )
             }
             ArtifactError::NotConfigured => f.write_str(
-                "this server hosts no artifacts: LOOM_ARTIFACT_DIR (or a loom-daemon next to \
-                 loom-server) is required for daemon self-update",
+                "this server hosts no artifacts: LOOM_ARTIFACT_DIR (or a loom-worker next to \
+                 loom-server) is required for worker self-update",
             ),
             ArtifactError::Missing { target, dir } => write!(
                 f,
-                "no daemon binary for {target} under {}; expected loom-daemon-{target} or \
-                 loom-daemon",
+                "no worker binary for {target} under {}; expected loom-worker-{target} or \
+                 loom-worker",
                 dir.display()
             ),
             ArtifactError::Io(message) => f.write_str(message),
@@ -219,7 +219,7 @@ impl std::fmt::Display for ArtifactError {
     }
 }
 
-/// The directory a server hosts daemon binaries from, with a digest cache.
+/// The directory a server hosts worker binaries from, with a digest cache.
 #[derive(Debug)]
 pub struct Artifacts {
     dir: Option<PathBuf>,
@@ -240,7 +240,7 @@ impl Artifacts {
     ///
     /// The fallback is the whole reason a default deployment self-updates:
     /// `install.sh` installs both binaries into one prefix, so the sibling
-    /// `loom-daemon` is the artifact that matches this server.
+    /// `loom-worker` is the artifact that matches this server.
     pub fn from_config(dir: Option<PathBuf>) -> Self {
         let dir = dir.or_else(|| {
             std::env::current_exe()
@@ -263,18 +263,18 @@ impl Artifacts {
     pub fn describe(&self) -> String {
         match &self.dir {
             Some(dir) => format!(
-                "daemon artifacts from {} (target {})",
+                "worker artifacts from {} (target {})",
                 dir.display(),
                 self.server_target
             ),
-            None => "no daemon artifacts (self-update unavailable)".into(),
+            None => "no worker artifacts (self-update unavailable)".into(),
         }
     }
 
-    /// Finds the daemon binary for `target` and digests it.
+    /// Finds the worker binary for `target` and digests it.
     ///
     /// The digest is cached against the file's length and mtime, so a fleet of
-    /// daemons polling does not re-hash the same megabytes, while a redeployed
+    /// workers polling does not re-hash the same megabytes, while a redeployed
     /// binary is noticed immediately.
     pub fn resolve(&self, target: &str) -> Result<ResolvedArtifact, ArtifactError> {
         if !valid_target(target) {
@@ -322,16 +322,16 @@ impl Artifacts {
 
 /// The file for a target, preferring the release page's named asset.
 ///
-/// `loom-daemon-<triple>` is how a release publishes it; the unnamed
-/// `loom-daemon` is how `install.sh` lays it down, and it is only a valid answer
+/// `loom-worker-<triple>` is how a release publishes it; the unnamed
+/// `loom-worker` is how `install.sh` lays it down, and it is only a valid answer
 /// for the triple this server itself runs on.
 fn locate(dir: &Path, target: &str, server_target: &str) -> Option<PathBuf> {
-    let named = dir.join(format!("loom-daemon-{target}"));
+    let named = dir.join(format!("loom-worker-{target}"));
     if named.is_file() {
         return Some(named);
     }
     if target == server_target {
-        let unnamed = dir.join("loom-daemon");
+        let unnamed = dir.join("loom-worker");
         if unnamed.is_file() {
             return Some(unnamed);
         }
@@ -363,13 +363,13 @@ pub async fn install_version() -> Json<InstallVersion> {
     })
 }
 
-/// Serves one daemon binary, or a `304` when the caller already has it.
+/// Serves one worker binary, or a `304` when the caller already has it.
 ///
-/// The conditional request is the point: a daemon reconnects whenever it likes,
+/// The conditional request is the point: a worker reconnects whenever it likes,
 /// and without `If-None-Match` every reconnect of every machine would move
-/// megabytes. The daemon remembers the digest it installed and sends it; an
+/// megabytes. The worker remembers the digest it installed and sends it; an
 /// unchanged artifact costs a `304` and no body.
-pub async fn install_daemon(
+pub async fn install_worker(
     State(state): State<AppState>,
     Query(query): Query<InstallQuery>,
     headers: HeaderMap,
@@ -425,7 +425,7 @@ pub async fn install_daemon(
 /* Client side                                                         */
 /* ------------------------------------------------------------------ */
 
-/// What `GET /install/loom-daemon` returned.
+/// What `GET /install/loom-worker` returned.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ArtifactDownload {
     /// The server's artifact is the digest the caller already has: no body.
@@ -441,7 +441,7 @@ pub enum ArtifactDownload {
 
 /// A minimal HTTP client for the two install routes.
 ///
-/// Plain `http://` only, like the daemon's WebSocket transport: neither binary
+/// Plain `http://` only, like the worker's WebSocket transport: neither binary
 /// is built with a TLS client, and the deployment shape puts TLS in front
 /// (`docs/remote-access.md`). Asking for `https://` says so rather than failing
 /// somewhere less obvious.
@@ -484,7 +484,7 @@ impl ArtifactClient {
             .map_err(|error| format!("GET {INSTALL_VERSION_PATH} returned invalid JSON: {error}"))
     }
 
-    /// `GET /install/loom-daemon?target=<target>`, optionally conditional.
+    /// `GET /install/loom-worker?target=<target>`, optionally conditional.
     pub async fn artifact(
         &self,
         target: &str,
@@ -495,7 +495,7 @@ impl ArtifactClient {
         }
         let url = format!(
             "{}{}?{TARGET_QUERY}={target}",
-            self.origin, INSTALL_DAEMON_PATH
+            self.origin, INSTALL_WORKER_PATH
         );
         let response = self.get(&url, if_none_match).await?;
         let status = response.status();
@@ -568,11 +568,11 @@ fn http_origin(server_url: &str) -> Result<String, String> {
     if origin.starts_with("https://") {
         return Err(
             "this binary has no TLS client, so it cannot fetch an artifact over https; put the \
-             server behind a tailnet or a proxy that speaks plain http to the daemon"
+             server behind a tailnet or a proxy that speaks plain http to the worker"
                 .into(),
         );
     }
-    // A bare `host:port` is what `DaemonConfig::websocket_url` also accepts, so
+    // A bare `host:port` is what `WorkerConfig::websocket_url` also accepts, so
     // an operator who typed one for `--server-url` is not asked to type it
     // twice.
     if origin.contains("://") {
@@ -654,10 +654,10 @@ mod tests {
         // The unnamed binary answers only for the running server's own triple,
         // whichever triple the test binary was built for.
         let server_target = Artifacts::from_config(None).server_target();
-        std::fs::write(dir.path().join("loom-daemon"), b"installed").unwrap();
+        std::fs::write(dir.path().join("loom-worker"), b"installed").unwrap();
         assert_eq!(
             locate(dir.path(), server_target, server_target),
-            Some(dir.path().join("loom-daemon"))
+            Some(dir.path().join("loom-worker"))
         );
         assert_eq!(
             locate(dir.path(), "aarch64-unknown-linux-musl", server_target),
@@ -666,13 +666,13 @@ mod tests {
         );
 
         std::fs::write(
-            dir.path().join("loom-daemon-aarch64-unknown-linux-musl"),
+            dir.path().join("loom-worker-aarch64-unknown-linux-musl"),
             b"arm",
         )
         .unwrap();
         assert_eq!(
             locate(dir.path(), "aarch64-unknown-linux-musl", server_target),
-            Some(dir.path().join("loom-daemon-aarch64-unknown-linux-musl"))
+            Some(dir.path().join("loom-worker-aarch64-unknown-linux-musl"))
         );
     }
 
@@ -683,7 +683,7 @@ mod tests {
         // binary itself was built for.
         let assets = Artifacts::from_config(Some(dir.path().to_path_buf()));
         let target = assets.server_target();
-        let path = dir.path().join(format!("loom-daemon-{target}"));
+        let path = dir.path().join(format!("loom-worker-{target}"));
         std::fs::write(&path, b"first").unwrap();
 
         let first = assets.resolve(target).unwrap();
@@ -709,7 +709,7 @@ mod tests {
         let message = error.to_string();
         assert!(message.contains("aarch64-unknown-linux-musl"), "{message}");
         assert!(
-            message.contains("loom-daemon-aarch64-unknown-linux-musl"),
+            message.contains("loom-worker-aarch64-unknown-linux-musl"),
             "{message}"
         );
     }

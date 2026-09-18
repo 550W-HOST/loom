@@ -1,18 +1,17 @@
 //! Provider execution end to end, over real sockets and real processes.
 //!
-//! Each test starts a real server, enrolls a real daemon, and runs a real
+//! Each test starts a real server, enrolls a real worker, and runs a real
 //! provider process — a small stub that speaks ACP over JSON-RPC. The ACP
 //! client and translator are exercised directly in the crate's unit tests; here
 //! the point is the path around them: dispatch through the relay, provider
 //! output reported back, and the thread leaving `working` with exactly one
-//! terminal event, including when the provider crashes, hangs or the daemon
+//! terminal event, including when the provider crashes, hangs or the worker
 //! disappears.
 
 use std::path::Path;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use loom_daemon::{Daemon, DaemonConfig};
 use loom_domain::{
     EnvironmentKind, EnvironmentStatus, HostId, HostStatus, MessageRole, ThreadId, ThreadStatus,
 };
@@ -20,6 +19,7 @@ use loom_provider_protocol::ProviderSpec;
 use loom_server::http::router;
 use loom_server::state::{AppConfig, AppState};
 use loom_server::PROTOCOL_VERSION;
+use loom_worker::{Worker, WorkerConfig};
 use serde_json::Value;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -86,15 +86,15 @@ done
     ProviderSpec::acp(path.to_string_lossy().into_owned(), Vec::new())
 }
 
-/// Connects and enrolls a daemon, then drives it on a background task.
-async fn enroll_daemon(
+/// Connects and enrolls a worker, then drives it on a background task.
+async fn enroll_worker(
     url: &str,
     data_dir: Option<PathBuf>,
     host_id: Option<HostId>,
     provider: Option<ProviderSpec>,
     run_timeout: Duration,
 ) -> (HostId, tokio::task::JoinHandle<()>) {
-    let mut config = DaemonConfig::new(url, "test-daemon");
+    let mut config = WorkerConfig::new(url, "test-worker");
     if let Some(data_dir) = data_dir {
         config.data_dir = data_dir;
     }
@@ -102,10 +102,10 @@ async fn enroll_daemon(
     config.provider = provider;
     config.run_timeout = run_timeout;
     config.heartbeat_interval = Duration::from_millis(50);
-    let mut daemon = Daemon::connect(config).await.unwrap();
-    let host_id = daemon.enroll().await.unwrap();
+    let mut worker = Worker::connect(config).await.unwrap();
+    let host_id = worker.enroll().await.unwrap();
     let handle = tokio::spawn(async move {
-        let _ = daemon.run().await;
+        let _ = worker.run().await;
     });
     (host_id, handle)
 }
@@ -113,7 +113,7 @@ async fn enroll_daemon(
 /// Creates a thread bound to an unmanaged environment at `workspace`, appends a
 /// user message, and dispatches the resulting run.
 ///
-/// The workspace must exist: the daemon refuses a dispatch whose directory is
+/// The workspace must exist: the worker refuses a dispatch whose directory is
 /// missing, which is exactly the validation these tests exercise.
 fn start_turn(state: &AppState, workspace: &Path, content: &str) -> ThreadId {
     let host_id = state
@@ -305,8 +305,8 @@ printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":
         ..AppConfig::default()
     })
     .await;
-    let (host_id, daemon) =
-        enroll_daemon(&url, None, None, Some(provider), Duration::from_secs(10)).await;
+    let (host_id, worker) =
+        enroll_worker(&url, None, None, Some(provider), Duration::from_secs(10)).await;
     assert!(
         eventually(|| state
             .registry
@@ -356,7 +356,7 @@ printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":
     // No run is left in flight.
     assert!(state.runs.is_empty());
 
-    daemon.abort();
+    worker.abort();
     state.shutdown();
 }
 
@@ -379,8 +379,8 @@ printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":
         ..AppConfig::default()
     })
     .await;
-    let (_host_id, daemon) =
-        enroll_daemon(&url, None, None, Some(provider), Duration::from_secs(10)).await;
+    let (_host_id, worker) =
+        enroll_worker(&url, None, None, Some(provider), Duration::from_secs(10)).await;
     assert!(
         eventually(|| state
             .registry
@@ -422,7 +422,7 @@ printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":
 
     let events = thread_events(&state, &thread_id);
     assert_eq!(output_texts(&events), vec!["fresh", "resumed"]);
-    daemon.abort();
+    worker.abort();
     state.shutdown();
 }
 
@@ -430,7 +430,7 @@ printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":
 async fn a_provider_runs_in_the_environment_workspace() {
     let dir = tempfile::tempdir().unwrap();
     // The workspace is deliberately a *different* directory from the stub's, so
-    // the assertion cannot pass by accident from the daemon's own cwd.
+    // the assertion cannot pass by accident from the worker's own cwd.
     let workspace = tempfile::tempdir().unwrap();
     let provider = write_stub(
         dir.path(),
@@ -444,8 +444,8 @@ async fn a_provider_runs_in_the_environment_workspace() {
         ..AppConfig::default()
     })
     .await;
-    let (host_id, daemon) =
-        enroll_daemon(&url, None, None, Some(provider), Duration::from_secs(10)).await;
+    let (host_id, worker) =
+        enroll_worker(&url, None, None, Some(provider), Duration::from_secs(10)).await;
     assert!(
         eventually(|| state
             .registry
@@ -462,7 +462,7 @@ async fn a_provider_runs_in_the_environment_workspace() {
     );
 
     // The provider wrote its cwd where it actually ran. It must be the
-    // environment's workspace, not the daemon's process cwd.
+    // environment's workspace, not the worker's process cwd.
     let recorded = std::fs::read_to_string(workspace.path().join("pwd.out")).unwrap();
     assert_eq!(
         std::fs::canonicalize(recorded.trim()).unwrap(),
@@ -470,7 +470,7 @@ async fn a_provider_runs_in_the_environment_workspace() {
     );
     assert_ne!(recorded.trim(), dir.path().to_string_lossy());
 
-    daemon.abort();
+    worker.abort();
     state.shutdown();
 }
 
@@ -480,7 +480,7 @@ async fn a_dispatch_to_a_missing_workspace_fails_with_a_clear_reason() {
     let provider = write_stub(
         dir.path(),
         "never-runs.sh",
-        r#"# The daemon refuses before the ACP agent is started.
+        r#"# The worker refuses before the ACP agent is started.
 "#,
     );
 
@@ -489,8 +489,8 @@ async fn a_dispatch_to_a_missing_workspace_fails_with_a_clear_reason() {
         ..AppConfig::default()
     })
     .await;
-    let (host_id, daemon) =
-        enroll_daemon(&url, None, None, Some(provider), Duration::from_secs(10)).await;
+    let (host_id, worker) =
+        enroll_worker(&url, None, None, Some(provider), Duration::from_secs(10)).await;
     assert!(
         eventually(|| state
             .registry
@@ -501,7 +501,7 @@ async fn a_dispatch_to_a_missing_workspace_fails_with_a_clear_reason() {
     );
 
     // A path that exists on the server's filesystem but is deliberately removed
-    // before the daemon sees it: the daemon must refuse, not fall back to its
+    // before the worker sees it: the worker must refuse, not fall back to its
     // own cwd.
     let missing = dir.path().join("gone");
     let thread_id = start_turn(&state, &missing, "nowhere to run");
@@ -525,7 +525,7 @@ async fn a_dispatch_to_a_missing_workspace_fails_with_a_clear_reason() {
     );
     assert!(state.runs.is_empty());
 
-    daemon.abort();
+    worker.abort();
     state.shutdown();
 }
 
@@ -545,8 +545,8 @@ exit 7
         ..AppConfig::default()
     })
     .await;
-    let (host_id, daemon) =
-        enroll_daemon(&url, None, None, Some(provider), Duration::from_secs(10)).await;
+    let (host_id, worker) =
+        enroll_worker(&url, None, None, Some(provider), Duration::from_secs(10)).await;
     assert!(
         eventually(|| state
             .registry
@@ -577,7 +577,7 @@ exit 7
     );
     assert!(state.runs.is_empty());
 
-    daemon.abort();
+    worker.abort();
     state.shutdown();
 }
 
@@ -593,13 +593,13 @@ async fn a_hanging_provider_is_killed_and_reported_as_timed_out() {
 
     let (url, state) = spawn_server(AppConfig {
         provider_spec: provider.clone(),
-        // A long server deadline, so the daemon's own timeout is what fires.
+        // A long server deadline, so the worker's own timeout is what fires.
         run_timeout: Duration::from_secs(60),
         ..AppConfig::default()
     })
     .await;
-    let (host_id, daemon) =
-        enroll_daemon(&url, None, None, Some(provider), Duration::from_millis(200)).await;
+    let (host_id, worker) =
+        enroll_worker(&url, None, None, Some(provider), Duration::from_millis(200)).await;
     assert!(
         eventually(|| state
             .registry
@@ -619,7 +619,7 @@ async fn a_hanging_provider_is_killed_and_reported_as_timed_out() {
     assert_eq!(terminal_outcome(&events), Some("timed_out".into()));
     assert!(state.runs.is_empty());
 
-    daemon.abort();
+    worker.abort();
     state.shutdown();
 }
 
@@ -639,11 +639,11 @@ async fn a_dispatch_missed_while_disconnected_is_replayed_on_reconnect() {
     })
     .await;
 
-    // First daemon enrolls, so the dispatcher has a connected host, but it is
+    // First worker enrolls, so the dispatcher has a connected host, but it is
     // never driven: the dispatch below is written to its scope and not read.
-    let mut first_config = DaemonConfig::new(&url, "test-daemon");
+    let mut first_config = WorkerConfig::new(&url, "test-worker");
     first_config.provider = Some(provider.clone());
-    let mut first = Daemon::connect(first_config).await.unwrap();
+    let mut first = Worker::connect(first_config).await.unwrap();
     let host_id = first.enroll().await.unwrap();
 
     let thread_id = start_turn(&state, dir.path(), "will you catch up?");
@@ -657,12 +657,12 @@ async fn a_dispatch_missed_while_disconnected_is_replayed_on_reconnect() {
             .map(|host| host.status == HostStatus::Disconnected)
             .unwrap_or(false))
         .await,
-        "the first daemon should be detached before the reconnect"
+        "the first worker should be detached before the reconnect"
     );
 
-    // A restarted daemon presents the same identity and replays its room. The
+    // A restarted worker presents the same identity and replays its room. The
     // dispatch it missed is delivered late and executed.
-    let (reconnected, daemon) = enroll_daemon(
+    let (reconnected, worker) = enroll_worker(
         &url,
         None,
         Some(host_id.clone()),
@@ -681,12 +681,12 @@ async fn a_dispatch_missed_while_disconnected_is_replayed_on_reconnect() {
     assert_eq!(output_texts(&events), vec!["caught up"]);
     assert!(state.runs.is_empty());
 
-    daemon.abort();
+    worker.abort();
     state.shutdown();
 }
 
 #[tokio::test]
-async fn a_run_on_a_silent_daemon_is_reaped_by_the_stale_heartbeat_sweep() {
+async fn a_run_on_a_silent_worker_is_reaped_by_the_stale_heartbeat_sweep() {
     let dir = tempfile::tempdir().unwrap();
     let provider = write_stub(dir.path(), "never.sh", "sleep 30\n");
 
@@ -701,10 +701,10 @@ async fn a_run_on_a_silent_daemon_is_reaped_by_the_stale_heartbeat_sweep() {
 
     // Enroll, but never start `run`: the socket stays open while no heartbeat
     // is ever sent. The host is "connected" and then goes silent.
-    let mut config = DaemonConfig::new(&url, "silent");
+    let mut config = WorkerConfig::new(&url, "silent");
     config.provider = Some(provider);
-    let mut daemon = Daemon::connect(config).await.unwrap();
-    let host_id = daemon.enroll().await.unwrap();
+    let mut worker = Worker::connect(config).await.unwrap();
+    let host_id = worker.enroll().await.unwrap();
 
     let thread_id = start_turn(&state, dir.path(), "nobody is listening");
     assert_eq!(
@@ -720,8 +720,8 @@ async fn a_run_on_a_silent_daemon_is_reaped_by_the_stale_heartbeat_sweep() {
     );
     assert!(state.runs.is_empty());
 
-    // Keep the socket (and so the daemon) alive until the assertions are done.
-    let _ = daemon.host_id();
+    // Keep the socket (and so the worker) alive until the assertions are done.
+    let _ = worker.host_id();
     state.shutdown();
 }
 
@@ -732,17 +732,17 @@ fn the_protocol_version_is_pinned() {
 }
 
 #[tokio::test]
-async fn a_managed_environment_is_provisioned_by_the_daemon() {
+async fn a_managed_environment_is_provisioned_by_the_worker() {
     let root = tempfile::tempdir().unwrap();
     let (url, state) = spawn_server(AppConfig::default()).await;
 
-    let mut config = DaemonConfig::new(&url, "test-daemon");
+    let mut config = WorkerConfig::new(&url, "test-worker");
     config.environment_root = root.path().to_path_buf();
     config.heartbeat_interval = Duration::from_millis(50);
-    let mut daemon = Daemon::connect(config).await.unwrap();
-    let host_id = daemon.enroll().await.unwrap();
+    let mut worker = Worker::connect(config).await.unwrap();
+    let host_id = worker.enroll().await.unwrap();
     let handle = tokio::spawn(async move {
-        let _ = daemon.run().await;
+        let _ = worker.run().await;
     });
 
     let (environment, _) = state
@@ -767,7 +767,7 @@ async fn a_managed_environment_is_provisioned_by_the_daemon() {
             .map(|environment| environment.status == EnvironmentStatus::Ready)
             .unwrap_or(false))
         .await,
-        "the daemon should provision the workspace"
+        "the worker should provision the workspace"
     );
 
     let stored = state.registry.environment(&environment.id).unwrap();
@@ -788,20 +788,20 @@ async fn a_managed_environment_is_provisioned_by_the_daemon() {
 }
 
 #[tokio::test]
-async fn a_failing_provision_records_the_daemon_reason() {
+async fn a_failing_provision_records_the_worker_reason() {
     let root = tempfile::tempdir().unwrap();
     // A regular file where the workspace root should be: every create fails.
     let not_a_dir = root.path().join("not-a-dir");
     std::fs::write(&not_a_dir, "x").unwrap();
 
     let (url, state) = spawn_server(AppConfig::default()).await;
-    let mut config = DaemonConfig::new(&url, "test-daemon");
+    let mut config = WorkerConfig::new(&url, "test-worker");
     config.environment_root = not_a_dir;
     config.heartbeat_interval = Duration::from_millis(50);
-    let mut daemon = Daemon::connect(config).await.unwrap();
-    let host_id = daemon.enroll().await.unwrap();
+    let mut worker = Worker::connect(config).await.unwrap();
+    let host_id = worker.enroll().await.unwrap();
     let handle = tokio::spawn(async move {
-        let _ = daemon.run().await;
+        let _ = worker.run().await;
     });
 
     let (environment, _) = state
@@ -831,7 +831,7 @@ async fn a_failing_provision_records_the_daemon_reason() {
             .error
             .as_deref()
             .is_some_and(|error| error.contains("not-a-dir")),
-        "the daemon's reason should survive: {:?}",
+        "the worker's reason should survive: {:?}",
         stored.error
     );
 
@@ -845,7 +845,7 @@ async fn a_failing_provision_records_the_daemon_reason() {
 /// terminal guarantee and that real Pi frames reached the bridge; it does not
 /// require a model to answer, so it passes on a machine with no credentials
 /// (the run simply ends `timed_out`). Run it explicitly with
-/// `cargo test -p loom-daemon --test provider_e2e -- --ignored`.
+/// `cargo test -p loom-worker --test provider_e2e -- --ignored`.
 ///
 /// **A model that answered must not end in `timed_out`.** The run timeout is a
 /// backstop for a provider that never reports completion; a turn that produced
@@ -862,7 +862,7 @@ async fn the_real_pi_process_streams_through_the_bridge() {
     // A minute is long enough for Pi's startup and a model round trip on a
     // machine with credentials, and short enough that a model-less environment
     // still ends the turn by itself.
-    let (host_id, daemon) = enroll_daemon(&url, None, None, None, Duration::from_secs(60)).await;
+    let (host_id, worker) = enroll_worker(&url, None, None, None, Duration::from_secs(60)).await;
     assert!(
         eventually(|| state
             .registry
@@ -904,7 +904,7 @@ async fn the_real_pi_process_streams_through_the_bridge() {
     // not against a hand-written expectation.
     assert_contract_conformant(&events);
 
-    daemon.abort();
+    worker.abort();
     state.shutdown();
 }
 
@@ -912,7 +912,7 @@ async fn the_real_pi_process_streams_through_the_bridge() {
 /// receive every one of them.
 ///
 /// The server pages a cursor replay from the **oldest** frame after the cursor
-/// precisely so this works. The daemon advances its persisted resume cursor as
+/// precisely so this works. The worker advances its persisted resume cursor as
 /// it applies frames, so a single-page replay would move that cursor to the
 /// newest frame and silently strand every dispatch in between — they would
 /// never be retried. Here `replay_limit` is 4 and 10 runs are queued after the
@@ -934,15 +934,15 @@ async fn a_reconnect_recovers_more_dispatches_than_one_replay_page() {
     })
     .await;
 
-    // A daemon enrolls so the dispatcher has a host, but it never runs its
+    // A worker enrolls so the dispatcher has a host, but it never runs its
     // event loop: every dispatch lands in its room and is left unread.
-    let mut first_config = DaemonConfig::new(&url, "test-daemon");
+    let mut first_config = WorkerConfig::new(&url, "test-worker");
     first_config.provider = Some(provider.clone());
-    let mut first = Daemon::connect(first_config).await.unwrap();
+    let mut first = Worker::connect(first_config).await.unwrap();
     let host_id = first.enroll().await.unwrap();
     let host_scope = loom_relay::Scope::Host(host_id.to_string());
 
-    // A warm-up dispatch establishes the point a restarting daemon would have
+    // A warm-up dispatch establishes the point a restarting worker would have
     // cursored past before it went away.
     start_turn(&state, dir.path(), "warm-up");
     let cursor = state
@@ -971,16 +971,16 @@ async fn a_reconnect_recovers_more_dispatches_than_one_replay_page() {
     );
 
     // Restart with the persisted cursor and a page limit far below the backlog.
-    let mut resume_config = DaemonConfig::new(&url, "test-daemon");
+    let mut resume_config = WorkerConfig::new(&url, "test-worker");
     resume_config.host_id = Some(host_id.clone());
     resume_config.provider = Some(provider);
     resume_config.run_timeout = Duration::from_secs(60);
     resume_config.heartbeat_interval = Duration::from_millis(50);
     resume_config.resume_cursor = Some(cursor);
     resume_config.replay_limit = 4;
-    let mut resumed = Daemon::connect(resume_config).await.unwrap();
+    let mut resumed = Worker::connect(resume_config).await.unwrap();
     assert_eq!(resumed.enroll().await.unwrap(), host_id);
-    let daemon = tokio::spawn(async move {
+    let worker = tokio::spawn(async move {
         let _ = resumed.run().await;
     });
 
@@ -995,7 +995,7 @@ async fn a_reconnect_recovers_more_dispatches_than_one_replay_page() {
         assert_eq!(terminal_outcome(&events), Some("completed".into()));
     }
 
-    daemon.abort();
+    worker.abort();
     state.shutdown();
 }
 
@@ -1004,7 +1004,7 @@ async fn a_reconnect_recovers_more_dispatches_than_one_replay_page() {
 /// A minimal HTTP client for the two routes the permission tests use.
 ///
 /// The B3 conformance suite has the same helper; it is duplicated here because
-/// these tests are about the *daemon* path and must not depend on the server's
+/// these tests are about the *worker* path and must not depend on the server's
 /// test crate.
 async fn http(addr: &str, method: &str, path: &str, body: Option<&Value>) -> (u16, Value) {
     let payload = body.map(Value::to_string);
@@ -1059,7 +1059,7 @@ printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":
 /// The permission request reaches the interaction routes, and the recorded
 /// resolution reaches the blocked agent.
 ///
-/// This is the whole bridge, end to end: an ACP agent asks, the daemon forwards
+/// This is the whole bridge, end to end: an ACP agent asks, the worker forwards
 /// the question up its socket, the control plane records a durable interaction,
 /// a client answers over HTTP, and the answer travels back through the relay to
 /// the agent's own request.
@@ -1073,8 +1073,8 @@ async fn a_permission_request_is_answered_through_the_interaction_routes() {
         ..AppConfig::default()
     })
     .await;
-    let (host_id, daemon) =
-        enroll_daemon(&url, None, None, Some(provider), Duration::from_secs(30)).await;
+    let (host_id, worker) =
+        enroll_worker(&url, None, None, Some(provider), Duration::from_secs(30)).await;
     assert!(
         eventually(|| state
             .registry
@@ -1087,7 +1087,7 @@ async fn a_permission_request_is_answered_through_the_interaction_routes() {
     let thread_id = start_turn(&state, dir.path(), "do the thing");
 
     // The question must appear on the thread, in `pending`, while the turn is
-    // still blocked. Nothing may answer it on the daemon's behalf.
+    // still blocked. Nothing may answer it on the worker's behalf.
     let addr = url.trim_start_matches("http://").to_string();
     let listed = eventually_async(|| {
         let addr = addr.clone();
@@ -1164,7 +1164,7 @@ async fn a_permission_request_is_answered_through_the_interaction_routes() {
     }));
     assert_contract_conformant(&events);
 
-    daemon.abort();
+    worker.abort();
     state.shutdown();
 }
 
@@ -1180,8 +1180,8 @@ async fn a_denied_permission_selects_the_agents_rejecting_option() {
         ..AppConfig::default()
     })
     .await;
-    let (host_id, daemon) =
-        enroll_daemon(&url, None, None, Some(provider), Duration::from_secs(30)).await;
+    let (host_id, worker) =
+        enroll_worker(&url, None, None, Some(provider), Duration::from_secs(30)).await;
     assert!(
         eventually(|| state
             .registry
@@ -1235,7 +1235,7 @@ async fn a_denied_permission_selects_the_agents_rejecting_option() {
         "a denial must not contain an allowing option: {decision}"
     );
 
-    daemon.abort();
+    worker.abort();
     state.shutdown();
 }
 
@@ -1251,8 +1251,8 @@ async fn a_client_cancelled_permission_unblocks_the_agent() {
         ..AppConfig::default()
     })
     .await;
-    let (host_id, daemon) =
-        enroll_daemon(&url, None, None, Some(provider), Duration::from_secs(30)).await;
+    let (host_id, worker) =
+        enroll_worker(&url, None, None, Some(provider), Duration::from_secs(30)).await;
     assert!(
         eventually(|| state
             .registry
@@ -1314,7 +1314,7 @@ async fn a_client_cancelled_permission_unblocks_the_agent() {
         "cancellation must not select an allow or deny option: {decision}"
     );
 
-    daemon.abort();
+    worker.abort();
     state.shutdown();
 }
 
@@ -1335,8 +1335,8 @@ async fn an_unanswered_permission_is_cancelled_when_the_run_ends() {
         ..AppConfig::default()
     })
     .await;
-    let (host_id, daemon) =
-        enroll_daemon(&url, None, None, Some(provider), Duration::from_millis(150)).await;
+    let (host_id, worker) =
+        enroll_worker(&url, None, None, Some(provider), Duration::from_millis(150)).await;
     assert!(
         eventually(|| state
             .registry
@@ -1395,7 +1395,7 @@ async fn an_unanswered_permission_is_cancelled_when_the_run_ends() {
         );
     }
 
-    daemon.abort();
+    worker.abort();
     state.shutdown();
 }
 
@@ -1508,8 +1508,8 @@ async fn a_scheduled_automation_run_becomes_a_real_turn() {
         ..AppConfig::default()
     })
     .await;
-    let (host_id, daemon) =
-        enroll_daemon(&url, None, None, Some(provider), Duration::from_secs(10)).await;
+    let (host_id, worker) =
+        enroll_worker(&url, None, None, Some(provider), Duration::from_secs(10)).await;
     assert!(
         eventually(|| state
             .registry
@@ -1586,7 +1586,7 @@ async fn a_scheduled_automation_run_becomes_a_real_turn() {
         .unwrap();
     assert_eq!(runs.len(), 1);
 
-    daemon.abort();
+    worker.abort();
     state.shutdown();
 }
 
@@ -1606,8 +1606,8 @@ async fn a_manual_automation_run_dispatches_and_closes_with_its_thread() {
         ..AppConfig::default()
     })
     .await;
-    let (host_id, daemon) =
-        enroll_daemon(&url, None, None, Some(provider), Duration::from_secs(10)).await;
+    let (host_id, worker) =
+        enroll_worker(&url, None, None, Some(provider), Duration::from_secs(10)).await;
     assert!(
         eventually(|| state
             .registry
@@ -1671,7 +1671,7 @@ async fn a_manual_automation_run_dispatches_and_closes_with_its_thread() {
     assert_eq!(terminal_outcome(&events), Some("completed".into()));
     assert_eq!(output_texts(&events), vec!["manual run complete"]);
 
-    daemon.abort();
+    worker.abort();
     state.shutdown();
 }
 
@@ -1765,14 +1765,14 @@ async fn wait_for_automation_run_over_http(addr: &str, project: &str, run_id: &s
 }
 
 #[tokio::test]
-async fn a_script_automation_runs_on_the_daemon_and_records_its_output() {
+async fn a_script_automation_runs_on_the_worker_and_records_its_output() {
     let dir = tempfile::tempdir().unwrap();
     let (url, state) = spawn_server(AppConfig {
         schedule_interval: Duration::ZERO,
         ..AppConfig::default()
     })
     .await;
-    let (host_id, daemon) = enroll_daemon(
+    let (host_id, worker) = enroll_worker(
         &url,
         Some(dir.path().join("data")),
         None,
@@ -1828,13 +1828,13 @@ async fn a_script_automation_runs_on_the_daemon_and_records_its_output() {
         .unwrap_or_else(|| panic!("the script path should be recorded: {stored}"));
     assert!(stored_path.ends_with(".sh"), "{stored_path}");
     assert!(std::path::Path::new(stored_path).exists());
-    // …and it is on the daemon's machine, under the daemon's data directory.
+    // …and it is on the worker's machine, under the worker's data directory.
     assert!(
         stored_path.contains("/automation-scripts/"),
         "{stored_path}"
     );
 
-    daemon.abort();
+    worker.abort();
     state.shutdown();
 }
 
@@ -1846,7 +1846,7 @@ async fn a_non_zero_script_exit_fails_the_run_with_its_code() {
         ..AppConfig::default()
     })
     .await;
-    let (host_id, daemon) = enroll_daemon(
+    let (host_id, worker) = enroll_worker(
         &url,
         Some(dir.path().join("data")),
         None,
@@ -1883,7 +1883,7 @@ async fn a_non_zero_script_exit_fails_the_run_with_its_code() {
         .as_str()
         .is_some_and(|o| o.contains("failing")));
 
-    daemon.abort();
+    worker.abort();
     state.shutdown();
 }
 
@@ -1895,7 +1895,7 @@ async fn a_script_that_outlives_its_timeout_is_killed_and_reported() {
         ..AppConfig::default()
     })
     .await;
-    let (host_id, daemon) = enroll_daemon(
+    let (host_id, worker) = enroll_worker(
         &url,
         Some(dir.path().join("data")),
         None,
@@ -1929,7 +1929,7 @@ async fn a_script_that_outlives_its_timeout_is_killed_and_reported() {
     assert_eq!(run["error"], "Script timed out");
     assert!(run["finishedAt"].is_u64());
 
-    daemon.abort();
+    worker.abort();
     state.shutdown();
 }
 
@@ -1941,7 +1941,7 @@ async fn pausing_an_automation_stops_its_running_script() {
         ..AppConfig::default()
     })
     .await;
-    let (host_id, daemon) = enroll_daemon(
+    let (host_id, worker) = enroll_worker(
         &url,
         Some(dir.path().join("data")),
         None,
@@ -2001,7 +2001,7 @@ async fn pausing_an_automation_stops_its_running_script() {
         loom_domain::automation::AutomationRunState::Cancelled
     );
 
-    daemon.abort();
+    worker.abort();
     state.shutdown();
 }
 
@@ -2013,7 +2013,7 @@ async fn a_script_path_outside_the_workspace_is_refused_by_the_host() {
         ..AppConfig::default()
     })
     .await;
-    let (host_id, daemon) = enroll_daemon(
+    let (host_id, worker) = enroll_worker(
         &url,
         Some(dir.path().join("data")),
         None,
@@ -2053,6 +2053,6 @@ async fn a_script_path_outside_the_workspace_is_refused_by_the_host() {
         "{run}"
     );
 
-    daemon.abort();
+    worker.abort();
     state.shutdown();
 }

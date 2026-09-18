@@ -27,7 +27,7 @@ cannot be labelled with a version its own files do not report.
 | --- | --- | --- |
 | `ui` | `pnpm install --frozen-lockfile`, `typecheck`, `test`, `pnpm --filter @bb/app run build`, `pnpm run check:bundle`, then the provenance and port-plan checks | the bundle every Rust job compiles into the binary is built from the tag's own source, holds its budget, and the app tree still matches its manifest |
 | `build` (matrix: x86_64, aarch64) | `cargo build --release --locked -p loom --target <triple>` | the binary compiles from the tag with the pinned lockfile |
-| `build` → verify | `scripts/verify-release-binaries.sh` | the x86_64 binary runs both roles, answers `/health`, serves the UI it carries with no UI variable set, hosts the artifact it is itself with a matching digest and a `304` for a conditional request, creates a project and enrols a daemon; the aarch64 binary is a self-contained aarch64 artifact carrying the tag's commit |
+| `build` → verify | `scripts/verify-release-binaries.sh` | the x86_64 binary runs both roles, answers `/health`, serves the UI it carries with no UI variable set, hosts the artifact it is itself with a matching digest and a `304` for a conditional request, creates a project and enrols a worker; the aarch64 binary is a self-contained aarch64 artifact carrying the tag's commit |
 | `build` → package | `scripts/package-release.sh` | the release page's files exist, with the layout `deploy/install.sh` expects |
 | `assemble` | `sha256sum`, version and tag check, `RELEASE_NOTES.md` | one checksum file covering both targets, notes that name the protocol version, and no mislabelled tag |
 | `images` | `docker buildx create --driver docker-container`, `scripts/build-container-images.sh` | both container images build from the checksummed file, are pushed as one manifest list each, and the `linux/amd64` halves run and report the version above |
@@ -82,18 +82,18 @@ in the workflow.
 
 Both results are self-contained, and they are not the same ELF shape. These were
 recorded before the client was compiled in **and** before the two roles became
-one file: `loom-server` and `loom-daemon` were separate artifacts then, so the
+one file: `loom-server` and `loom-worker` were separate artifacts then, so the
 list below holds two of each. Today's artifact is one `loom` per target, in the
 same two shapes (static PIE on x86_64, static `ET_EXEC` on aarch64) and larger
-than the old `loom-server` line by the bundle it carries; the old `loom-daemon`
+than the old `loom-server` line by the bundle it carries; the old `loom-worker`
 line is the closest thing to a floor for it. The four lines are kept as the
 record of that run.
 
 ```
 loom-server  6.4 MB   x86_64   static PIE     (no interpreter, no NEEDED)
-loom-daemon  2.4 MB   x86_64   static PIE
+loom-worker  2.4 MB   x86_64   static PIE
 loom-server  6.3 MB   aarch64  static, ET_EXEC (no dynamic section at all)
-loom-daemon  2.4 MB   aarch64  static, ET_EXEC
+loom-worker  2.4 MB   aarch64  static, ET_EXEC
 ```
 
 A static PIE carries a dynamic section so it can relocate itself, and `file`
@@ -150,12 +150,12 @@ carries what `sha256sum -c SHA256SUMS` accepted:
 | Image | What it is |
 | --- | --- |
 | `ghcr.io/550w-host/loom-server:<version>` | the control plane, running as uid/gid 1000, relay log in a volume |
-| `ghcr.io/550w-host/loom-daemon:<version>` | the execution daemon, the same user, no port |
+| `ghcr.io/550w-host/loom-worker:<version>` | the execution worker, the same user, no port |
 
 Each is a manifest list covering both platforms, tagged `<version>`, `v<version>`
 and — unless the tag is a pre-release — `latest`. [`containers.md`](containers.md)
-has the volumes, the port publishing, how a provider gets into the daemon image,
-and an honest account of what a containerised daemon cannot do.
+has the volumes, the port publishing, how a provider gets into the worker image,
+and an honest account of what a containerised worker cannot do.
 
 ## Verifying an artifact
 
@@ -169,26 +169,26 @@ is:
 
 ```
   loom-server 0.1.0 (x86_64-unknown-linux-musl, protocol 1, commit 0e74262f…)
-  loom-daemon 0.1.0 (x86_64-unknown-linux-musl, protocol 1, commit 0e74262f…)
+  loom-worker 0.1.0 (x86_64-unknown-linux-musl, protocol 1, commit 0e74262f…)
   /health ok (protocol 1, node release-verification)
   GET / -> 200 text/html, 1476 bytes
   GET /app.js -> 200 text/javascript; charset=utf-8, 1191514 bytes
   GET /style.css -> 200 text/css; charset=utf-8, 8801 bytes
-  daemon enrolled as host_01M29YZ0TA2KCGQ399DA1RW47K
+  worker enrolled as host_01M29YZ0TA2KCGQ399DA1RW47K
   created project proj_01M29YZ0QT1G3S055KX08W6N4A and read it back from the list
 ```
 
 Four things there are worth naming. The artifact is *executed*, which is the
-only way a musl/glibc difference appears. The daemon *enrols*, which is the
-protocol handshake a mismatched server and daemon would refuse. The project write
-follows it, naming the host that daemon enrolled as — `projects.create` takes a
+only way a musl/glibc difference appears. The worker *enrols*, which is the
+protocol handshake a mismatched server and worker would refuse. The project write
+follows it, naming the host that worker enrolled as — `projects.create` takes a
 source — so the claim is that the two roles work together, not that each half
 works alone. And the file is asked about itself rather than read from the
 source tree, so what is checked is the file that will be downloaded.
 
 That block was recorded when each role was its own file, which is why it prints
 two version lines; today the script asks the one binary three ways — bare, then
-`server`, then `daemon` — and all three lines name the same build and commit.
+`server`, then `worker` — and all three lines name the same build and commit.
 The two asset lines in it are **historical** in the other sense too: `/app.js`
 and `/style.css`
 are the buildless reference client, which no longer exists, and the run predates
@@ -210,14 +210,14 @@ change replaces them with runner values:
 
 ```
   /install/version ok (protocol 1)
-  GET /install/loom-daemon -> 200, 4dc62cff848bcede47b495b83c54314996ff8b1fee047949c56b7d2bfc218040 (matches the built loom-daemon)
-  GET /install/loom-daemon (If-None-Match) -> 304
+  GET /install/loom-worker -> 200, 4dc62cff848bcede47b495b83c54314996ff8b1fee047949c56b7d2bfc218040 (matches the built loom-worker)
+  GET /install/loom-worker (If-None-Match) -> 304
 ```
 
 These are the self-update source of truth (`docs/upgrades.md`). The script lays
 the binary out the way `deploy/install.sh` does — `loom` plus the relative
-`loom-server` and `loom-daemon` symlinks — and starts it from there, so the
-artifact it hosts is resolved through the `loom-daemon` symlink beside the
+`loom-server` and `loom-worker` symlinks — and starts it from there, so the
+artifact it hosts is resolved through the `loom-worker` symlink beside the
 server's executable. What is served is compared **against the built binary**:
 the served digest must equal both the digest of the body that came over the
 socket and the digest of the `loom` the script started from. A release that
@@ -226,7 +226,7 @@ here rather than on a customer's
 machine. The conditional request is checked in the same breath, because a `304`
 is what keeps a fleet's reconnects from re-downloading the binary. The middle
 line was recorded before the two roles became one file, when the hosted
-`loom-daemon` was a separate build; the digest it names is that build's.
+`loom-worker` was a separate build; the digest it names is that build's.
 
 The two routes also have a shape guard in
 `crates/server/tests/release_verification.rs`, which is the W-554 lesson applied
@@ -305,7 +305,7 @@ differs between them:
 
 ```
 loom-server 0.1.0 (x86_64-unknown-linux-musl, protocol 1, commit 0e74262f23475e4f3e5bf32ba41c08a33d26af47)
-loom-daemon 0.1.0 (x86_64-unknown-linux-musl, protocol 1, commit 0e74262f23475e4f3e5bf32ba41c08a33d26af47)
+loom-worker 0.1.0 (x86_64-unknown-linux-musl, protocol 1, commit 0e74262f23475e4f3e5bf32ba41c08a33d26af47)
 ```
 
 The version is `CARGO_PKG_VERSION`. The other three fields are stamped at build
@@ -323,9 +323,9 @@ with `env!`:
   whether it is the musl artifact or a local development build; a plain `cargo
   build` prints `x86_64-unknown-linux-gnu`.
 - **protocol** — `loom_server::PROTOCOL_VERSION`, the same constant the server
-  reports on `/api/v1/version` and the daemon refuses to connect without
+  reports on `/api/v1/version` and the worker refuses to connect without
   ([`upgrades.md`](upgrades.md)). Seeing it in `--version` means an operator can
-  find a version mismatch before a daemon reports one for them.
+  find a version mismatch before a worker reports one for them.
 
 The commit, target and protocol come from one build, so the two lines can never
 disagree: there is one file, and it is upgraded as a whole.
@@ -375,14 +375,14 @@ The first `v*` tag is what replaces these estimates with runner numbers.
 
 Deliberately, and with the issues that own them:
 
-- **daemon self-update from the release page**: a running daemon fetches the
-  matching binary from the **server** it is joined to (`/install/loom-daemon`),
+- **worker self-update from the release page**: a running worker fetches the
+  matching binary from the **server** it is joined to (`/install/loom-worker`),
   not from this release page — see [`upgrades.md`](upgrades.md). The release's
   `SHA256SUMS` is what a human or `deploy/install.sh` verifies a download with;
-  the daemon verifies the server's own digest. Both are integrity checks against
+  the worker verifies the server's own digest. Both are integrity checks against
   transit, not provenance.
 - **signing**: `SHA256SUMS` gives integrity against a corrupted download, not
-  against a compromised release page — and the daemon's digest has the same gap,
+  against a compromised release page — and the worker's digest has the same gap,
   since the server serves both the binary and its digest. A signature (minisign,
   sigstore) would move that trust root, and is the next step if artifacts ever
   come from anywhere other than the server that dispatches the work.

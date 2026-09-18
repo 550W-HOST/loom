@@ -4,12 +4,12 @@
 # binary and the units and leaves existing environment files and data alone.
 #
 #   sudo deploy/install.sh server
-#   sudo deploy/install.sh daemon <server-key> <server-url> [<host-name>]
+#   sudo deploy/install.sh worker <server-key> <server-url> [<host-name>]
 #   sudo deploy/install.sh all    <server-key> <server-url> [<host-name>]
 #
 # `<server-key>` is the systemd instance name from deploy/README.md: the name of
 # the machine that runs the control plane (a hostname, not a URL). It names the
-# daemon instance and its data directory.
+# worker instance and its data directory.
 #
 # The script never builds. The binary comes from one of two places:
 #
@@ -22,9 +22,9 @@
 # release artifact, and a machine with a checkout keeps building locally.
 #
 # An install is that one file, the two names it answers to and the units, and
-# nothing else: `loom` is the artifact, and `loom-server` / `loom-daemon` are
+# nothing else: `loom` is the artifact, and `loom-server` / `loom-worker` are
 # relative symlinks to it, so one process can be started as either role and the
-# server hosts the sibling `loom-daemon` name a self-updating daemon fetches. The
+# server hosts the sibling `loom-worker` name a self-updating worker fetches. The
 # server carries the product app compiled into it (`crates/server/build.rs`), so
 # there is no bundle to place beside the binary or to point a variable at.
 #
@@ -65,13 +65,13 @@ Commands:
       build (`cargo build --release -p loom`) or from `--release <version>`,
       and the server is left on loopback unless LOOM_BIND is edited.
 
-  daemon <server-key> <server-url> [<host-name>]
-      Install and start one execution-daemon instance joined to <server-url>.
+  worker <server-key> <server-url> [<host-name>]
+      Install and start one execution-worker instance joined to <server-url>.
       <server-key> names the instance; <host-name> is the display name shown in
       the UI (defaults to <server-key>).
 
   all <server-key> <server-url> [<host-name>]
-      server, then a daemon on the same machine, for a single-box deployment.
+      server, then a worker on the same machine, for a single-box deployment.
 
   help
       Print this text.
@@ -357,8 +357,8 @@ install_binaries() {
     # re-running over the names an older install left as real files replaces
     # them instead of following them.
     ln -sfn loom "$INSTALL_PREFIX/bin/loom-server"
-    ln -sfn loom "$INSTALL_PREFIX/bin/loom-daemon"
-    log "installed $INSTALL_PREFIX/bin/loom (loom-server, loom-daemon)"
+    ln -sfn loom "$INSTALL_PREFIX/bin/loom-worker"
+    log "installed $INSTALL_PREFIX/bin/loom (loom-server, loom-worker)"
 }
 
 install_unit() {
@@ -410,22 +410,22 @@ sed_replacement() {
     printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/&/\\&/g' -e 's/|/\\|/g'
 }
 
-install_daemon() {
+install_worker() {
     local key="${1:-}" server_url="${2:-}" host_name="${3:-}"
-    [ -n "$key" ] || die "daemon needs a <server-key> instance name"
-    [ -n "$server_url" ] || die "daemon needs a <server-url>"
+    [ -n "$key" ] || die "worker needs a <server-key> instance name"
+    [ -n "$server_url" ] || die "worker needs a <server-url>"
     host_name="$(default_host_name "$host_name")"
     require_root
     install_binaries
     ensure_service_user
-    install_unit loom-host-daemon@.service
-    local env_file="$ETC_DIR/daemon/$key.env"
+    install_unit loom-worker@.service
+    local env_file="$ETC_DIR/worker/$key.env"
     if [ ! -e "$env_file" ]; then
-        install -d -m 0755 "$ETC_DIR/daemon"
+        install -d -m 0755 "$ETC_DIR/worker"
         sed -e "s|^LOOM_SERVER_URL=.*|LOOM_SERVER_URL=$(sed_replacement "$server_url")|" \
             -e "s|^LOOM_HOST_NAME=.*|LOOM_HOST_NAME=$(sed_replacement "$host_name")|" \
             -e "s|/var/lib/loom/machines/builder-1|$(sed_replacement "$STATE_DIR")/machines/$(sed_replacement "$key")|g" \
-            "$SCRIPT_DIR/env/loom-host-daemon.env" > "$env_file"
+            "$SCRIPT_DIR/env/loom-worker.env" > "$env_file"
         chmod 0640 "$env_file"
         log "created $env_file (server $server_url, host name $host_name)"
     else
@@ -433,10 +433,10 @@ install_daemon() {
     fi
     install -d -o "$SERVICE_USER" -g "$SERVICE_USER" -m 0750 "$STATE_DIR/machines/$key"
     log "created $STATE_DIR/machines/$key"
-    systemctl_do enable "loom-host-daemon@$key.service"
-    [ "${LOOM_NO_START:-0}" = "1" ] || systemctl_do restart "loom-host-daemon@$key.service"
+    systemctl_do enable "loom-worker@$key.service"
+    [ "${LOOM_NO_START:-0}" = "1" ] || systemctl_do restart "loom-worker@$key.service"
     if ! service_manager; then
-        printf '\nStart the daemon by hand with:\n  set -a; . %s; set +a\n  %s/bin/loom daemon\n' \
+        printf '\nStart the worker by hand with:\n  set -a; . %s; set +a\n  %s/bin/loom worker\n' \
             "$env_file" "$INSTALL_PREFIX"
     fi
 }
@@ -490,11 +490,11 @@ command="${1:-help}"
 shift || true
 case "$command" in
     server) install_server ;;
-    daemon) install_daemon "$@" ;;
+    worker) install_worker "$@" ;;
     all)
         key="${1:-}"; url="${2:-}"; name="${3:-}"
         install_server
-        install_daemon "$key" "$url" "$name"
+        install_worker "$key" "$url" "$name"
         ;;
     help | --help | -h) usage ;;
     *) usage >&2; die "unknown command: $command" ;;

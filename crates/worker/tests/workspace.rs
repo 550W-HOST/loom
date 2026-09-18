@@ -1,14 +1,14 @@
-//! Real Git coverage for the daemon half of the B6 workspace contract.
+//! Real Git coverage for the worker half of the B6 workspace contract.
 
 use std::path::Path;
 use std::process::{Command, Output};
 
-use loom_daemon::workspace::answer;
 use loom_domain::{EnvironmentId, HostId};
 use loom_provider_protocol::{
     HostRpcOperation, HostRpcOutcome, HostRpcReport, HostRpcRequest, WorkspaceContext,
     WorkspaceDiffFileSide, WorkspaceDiffTarget,
 };
+use loom_worker::workspace::answer;
 use serde_json::Value;
 use tempfile::{tempdir, TempDir};
 
@@ -278,7 +278,7 @@ async fn listing_commands_reports_the_projects_and_the_agents_own() {
         .expect("the project prompt was not listed");
     assert_eq!(review["origin"], "project");
     // pi-acp appends the `(source)` label to a file command's description, which
-    // is bb's own convention; the daemon passes it through unchanged.
+    // is bb's own convention; the worker passes it through unchanged.
     assert!(
         review["description"]
             .as_str()

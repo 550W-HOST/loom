@@ -11,11 +11,11 @@ without reading the source:
                   └──────────────┬─────────────┘
         ┌──────────────┬─────────┼──────────┬──────────────┐
         ▼              ▼         ▼          ▼              ▼
-    daemon 1       daemon 2   daemon 3   PWA (phone)   desktop (webview)
+    worker 1       worker 2   worker 3   PWA (phone)   desktop (webview)
 ```
 
-The server and every daemon are separate services with separate data
-directories and separate resource domains. A daemon makes outbound connections
+The server and every worker are separate services with separate data
+directories and separate resource domains. A worker makes outbound connections
 only, so it works behind NAT and needs no inbound port.
 
 | Document | Read it for |
@@ -27,7 +27,7 @@ only, so it works behind NAT and needs no inbound port.
 | [`../docs/remote-access.md`](../docs/remote-access.md) | reaching the server from outside its host |
 | [`../docs/mobile.md`](../docs/mobile.md) | using a phone as a client |
 | [`../docs/upgrades.md`](../docs/upgrades.md) | version consistency, updates, rollback |
-| [`../docs/process-model.md`](../docs/process-model.md) | why server and daemon are independent |
+| [`../docs/process-model.md`](../docs/process-model.md) | why server and worker are independent |
 
 ## Prerequisites
 
@@ -43,7 +43,7 @@ only, so it works behind NAT and needs no inbound port.
   the product app built first — the server compiles `apps/app/dist` into the
   binary, so `cargo build` fails without it. A release has already done that.
   The install puts `loom` in `/usr/local/bin` and links `loom-server` and
-  `loom-daemon` to it: one file, one role per invocation.
+  `loom-worker` to it: one file, one role per invocation.
 - root (or sudo) on each machine. The install script creates a dedicated `loom`
   system user and never runs a service as root.
 
@@ -68,13 +68,13 @@ On each execution machine, where `builder-1` is this machine and
 # a checkout builds the same way, and needs the same app build first
 pnpm install --frozen-lockfile && pnpm --filter @bb/app run build
 cargo build --release -p loom
-sudo deploy/install.sh daemon builder-1 https://loom.example.com
-$EDITOR /etc/loom/daemon/builder-1.env   # server URL, host name, data paths
-sudo systemctl restart loom-host-daemon@builder-1
+sudo deploy/install.sh worker builder-1 https://loom.example.com
+$EDITOR /etc/loom/worker/builder-1.env   # server URL, host name, data paths
+sudo systemctl restart loom-worker@builder-1
 ```
 
 For a single-box deployment, `sudo deploy/install.sh all builder-1 https://loom.example.com`
-installs the server and one daemon on the same machine.
+installs the server and one worker on the same machine.
 
 Every `cargo build --release -p loom` above needs `pnpm --filter @bb/app run
 build` first: the product app is compiled into the server, so a checkout that has
@@ -105,7 +105,7 @@ target triple:
 
 | Asset | |
 | --- | --- |
-| `loom-<target>` | the binary: `loom server` or `loom daemon` |
+| `loom-<target>` | the binary: `loom server` or `loom worker` |
 | `SHA256SUMS` | the SHA-256 of every asset in the release |
 | `loom-0.1.0-<target>.tar.gz` | the same binary, `deploy/` and the README |
 
@@ -126,7 +126,7 @@ sudo deploy/install.sh --release v0.1.0 all builder-1 https://loom.example.com
 
 This path needs no JavaScript toolchain either: this binary was built with
 the product app compiled into the server, so `install.sh` installs `loom`, links
-`loom-server` and `loom-daemon` to it, writes the units and the environment
+`loom-server` and `loom-worker` to it, writes the units and the environment
 template, and there is nothing else to fetch.
 
 `--release latest` takes the newest published release, and `v0.1.0` and `0.1.0`
@@ -134,12 +134,12 @@ name the same tag. The installer detects `x86_64` against `aarch64` itself and
 refuses any machine type the release does not publish; `LOOM_TARGET` overrides
 the detection.
 
-`--release` is for the **server**, and for a daemon with self-update turned off.
-A daemon in the default configuration never needs it: when the server speaks a
-newer protocol the daemon fetches the artifact that server hosts — the
-`loom-daemon` name `install.sh` leaves beside `loom` — verifies it and restarts
-itself ([`../docs/upgrades.md`](../docs/upgrades.md) § Daemon self-update).
-`install.sh` puts `loom` in `/usr/local/bin` with `loom-daemon` as a symlink to
+`--release` is for the **server**, and for a worker with self-update turned off.
+A worker in the default configuration never needs it: when the server speaks a
+newer protocol the worker fetches the artifact that server hosts — the
+`loom-worker` name `install.sh` leaves beside `loom` — verifies it and restarts
+itself ([`../docs/upgrades.md`](../docs/upgrades.md) § Worker self-update).
+`install.sh` puts `loom` in `/usr/local/bin` with `loom-worker` as a symlink to
 it, which is also how the server knows what to host: the artifact directory
 defaults to the directory holding the server's own executable, so a name beside
 it is hosted with nothing to configure.
@@ -162,7 +162,7 @@ through the GitHub API, because `github.com/.../releases/download/...` answers
 `404` for a private repository even when a token is attached:
 
 ```bash
-sudo GITHUB_TOKEN=ghp_… deploy/install.sh --release v0.1.0 daemon builder-1 https://loom.example.com
+sudo GITHUB_TOKEN=ghp_… deploy/install.sh --release v0.1.0 worker builder-1 https://loom.example.com
 ```
 
 `GH_TOKEN` works too. `LOOM_RELEASE_REPO` (default `550W-HOST/loom`) selects
@@ -181,13 +181,13 @@ loom opens exactly one port, and only on the server:
 | --- | --- | --- | --- |
 | Server HTTP + WebSocket + UI | `127.0.0.1:38886` | `LOOM_BIND` | the API, the socket and the UI share it |
 | Redis (optional shared relay log) | `127.0.0.1:6379` | `LOOM_REDIS_URL` | only when the shared backend is enabled |
-| Execution daemon | *none* | — | outbound WebSocket to the server only |
+| Execution worker | *none* | — | outbound WebSocket to the server only |
 
-bb reserved a port per *execution machine* because every daemon ran a local
-server. loom does not: the daemon dials out and binds nothing, so port
+bb reserved a port per *execution machine* because every worker ran a local
+server. loom does not: the worker dials out and binds nothing, so port
 allocation is a server-side concern again. Two `loom-server` instances on one
 host need two distinct `LOOM_BIND` values (for example `127.0.0.1:38886` and
-`127.0.0.1:38887`); two daemons on one host need no ports at all and are
+`127.0.0.1:38887`); two workers on one host need no ports at all and are
 distinguished only by their instance name and data directory.
 
 Keep `LOOM_BIND` on loopback. `LOOM_BIND=0.0.0.0:38886` publishes an
@@ -196,18 +196,18 @@ unauthenticated, command-executing API to every interface — see
 
 ## Data directories
 
-Each unit owns its data; nothing is shared between the server and a daemon.
+Each unit owns its data; nothing is shared between the server and a worker.
 
 | Path | owner | Contents |
 | --- | --- | --- |
 | `/etc/loom/loom-server.env` | root, mode 0640 | server configuration |
-| `/etc/loom/daemon/<server-key>.env` | root, mode 0640 | one daemon instance's configuration |
+| `/etc/loom/worker/<server-key>.env` | root, mode 0640 | one worker instance's configuration |
 | `/var/lib/loom/server/` | `loom` | server relay log: `shard-0.log` … `shard-7.log` (durable backend) |
 | `/var/lib/loom/machines/<server-key>/host-id` | `loom` | enrolled host identity, persisted on first enroll |
 | `/var/lib/loom/machines/<server-key>/host-id.cursor` | `loom` | host-scope replay cursor |
 | `/var/lib/loom/machines/<server-key>/sessions/` | `loom` | per-thread provider sessions |
 
-The daemon directory is keyed by the *server*, which is what makes "one
+The worker directory is keyed by the *server*, which is what makes "one
 instance per server" work: a machine that joins two servers gets two instances,
 two data directories and two host identities, and stopping one leaves the other
 connected. This is the loom shape of bb's `~/.bb-machines/<server-host>`.
@@ -226,14 +226,14 @@ script.
 ```bash
 # 1. user and directories
 sudo useradd --system --home-dir /var/lib/loom --shell /usr/sbin/nologin loom
-sudo install -d -m 0755 /etc/loom /etc/loom/daemon
+sudo install -d -m 0755 /etc/loom /etc/loom/worker
 sudo install -d -o loom -g loom -m 0750 /var/lib/loom/server
 sudo install -d -o loom -g loom -m 0750 /var/lib/loom/machines/builder-1
 
 # 2. the binary, and the two names it answers to
 sudo install -m 0755 target/release/loom /usr/local/bin/loom
 sudo ln -sfn loom /usr/local/bin/loom-server
-sudo ln -sfn loom /usr/local/bin/loom-daemon
+sudo ln -sfn loom /usr/local/bin/loom-worker
 
 # 3. units and environment (server machine)
 sudo install -m 0644 deploy/systemd/loom-server.service /etc/systemd/system/
@@ -242,11 +242,11 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now loom-server
 
 # 4. units and environment (each execution machine)
-sudo install -m 0644 deploy/systemd/loom-host-daemon@.service /etc/systemd/system/
-sudo install -m 0640 deploy/env/loom-host-daemon.env /etc/loom/daemon/builder-1.env
-$EDITOR /etc/loom/daemon/builder-1.env
+sudo install -m 0644 deploy/systemd/loom-worker@.service /etc/systemd/system/
+sudo install -m 0640 deploy/env/loom-worker.env /etc/loom/worker/builder-1.env
+$EDITOR /etc/loom/worker/builder-1.env
 sudo systemctl daemon-reload
-sudo systemctl enable --now loom-host-daemon@builder-1
+sudo systemctl enable --now loom-worker@builder-1
 ```
 
 ## Operating
@@ -256,9 +256,9 @@ sudo systemctl enable --now loom-host-daemon@builder-1
 systemctl status loom-server
 journalctl -u loom-server -f
 
-# one daemon instance
-systemctl status 'loom-host-daemon@builder-1'
-journalctl -u 'loom-host-daemon@builder-1' -f
+# one worker instance
+systemctl status 'loom-worker@builder-1'
+journalctl -u 'loom-worker@builder-1' -f
 
 # what the server sees
 curl -s http://127.0.0.1:38886/health
@@ -267,8 +267,8 @@ curl -s http://127.0.0.1:38886/api/v1/hosts/primary
 ```
 
 `GET /api/v1/hosts/primary` always answers `200`, with
-`source: "local" | "remote" | "no_host"`. A server with no daemon connected
-answers `no_host`; it does not error, and it never exits because a daemon is
+`source: "local" | "remote" | "no_host"`. A server with no worker connected
+answers `no_host`; it does not error, and it never exits because a worker is
 missing.
 
 ## Resource limits
@@ -277,7 +277,7 @@ The units ship with suggested cgroup caps. They are deliberately asymmetric,
 and the asymmetry is the point of the fork: one execution machine exhausting
 itself must not take the control plane with it.
 
-| | server | daemon |
+| | server | worker |
 | --- | --- | --- |
 | `MemoryMax` | 2G | 8G |
 | `CPUQuota` | 200% | 400% |
@@ -285,33 +285,33 @@ itself must not take the control plane with it.
 | `OOMScoreAdjust` | — | 200 |
 
 Size them to the machine: the server is CPU-light and bounded by its relay log;
-the daemon's ceiling is however much an agent legitimately needs. `OOMScoreAdjust=200`
-makes the kernel kill the daemon before the server or the OS. The server unit
+the worker's ceiling is however much an agent legitimately needs. `OOMScoreAdjust=200`
+makes the kernel kill the worker before the server or the OS. The server unit
 additionally runs under `ProtectSystem=strict`, `NoNewPrivileges` and a closed
-capability set because it executes no provider or tool; the daemon unit does
+capability set because it executes no provider or tool; the worker unit does
 not, because a sandbox that forbids writing outside a fixed root would break
-every workspace edit an agent makes. The daemon's isolation is its dedicated
+every workspace edit an agent makes. The worker's isolation is its dedicated
 user and its machine.
 
 ## Uninstall
 
 ```bash
-sudo deploy/uninstall.sh daemon builder-1          # stop, disable, keep data
+sudo deploy/uninstall.sh worker builder-1          # stop, disable, keep data
 sudo deploy/uninstall.sh server                    # stop, disable, keep data
-sudo deploy/uninstall.sh daemon builder-1 --purge  # also delete host id + cursor
+sudo deploy/uninstall.sh worker builder-1 --purge  # also delete host id + cursor
 sudo deploy/uninstall.sh server --purge            # also delete the relay log
 ```
 
 Without `--purge` the relay log, the enrolled host id and the replay cursor are
 left in place, so a reinstall resumes the same identity and window instead of
 minting a new host. Reinstalling the same binary and environment is the
-rollback path in [`../docs/upgrades.md`](../docs/upgrades.md). The daemon's two
+rollback path in [`../docs/upgrades.md`](../docs/upgrades.md). The worker's two
 self-update state files live in the same data directory and are safe to delete:
-`host-daemon-update-attempt.json` (the backoff counter) and
+`worker-update-attempt.json` (the backoff counter) and
 `host-artifact.sha256` (the digest the next fetch is conditional on).
 
 ## Verification
 
-The recorded clean-machine run — server up, a daemon joined, the UI opened, a
+The recorded clean-machine run — server up, a worker joined, the UI opened, a
 task dispatched and its events replayed — is in
 [`../docs/deployment-verification.md`](../docs/deployment-verification.md).

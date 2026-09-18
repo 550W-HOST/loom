@@ -1,4 +1,4 @@
-//! Environment lifecycle: provisioning dispatch and daemon reports.
+//! Environment lifecycle: provisioning dispatch and worker reports.
 //!
 //! This is the control plane's half of [`EnvironmentProvision`]. It mirrors
 //! [`crate::runs`] deliberately:
@@ -6,10 +6,10 @@
 //! 1. **Provisioning goes through the relay.** [`AppState::provision_environment`]
 //!    moves a managed environment to `provisioning` and publishes an
 //!    [`EnvironmentProvision`] to `host:{id}`. The handler never touches a
-//!    daemon socket, so a daemon that is momentarily disconnected still gets the
+//!    worker socket, so a worker that is momentarily disconnected still gets the
 //!    request on reconnect.
 //! 2. **Reports become environment events.** [`AppState::apply_environment_report`]
-//!    turns the daemon's observation into the `environment_status_changed` event
+//!    turns the worker's observation into the `environment_status_changed` event
 //!    (and records the workspace path on success), published to the project
 //!    scope where clients can replay it.
 //!
@@ -47,7 +47,7 @@ pub enum ProvisionOutcome {
     },
 }
 
-/// Whether a daemon's provisioning report was applied.
+/// Whether a worker's provisioning report was applied.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum EnvironmentReportOutcome {
     /// The status event was published.
@@ -116,7 +116,7 @@ impl AppState {
         let payload =
             serde_json::to_vec(&provision).expect("an EnvironmentProvision always serializes");
         if let Err(error) = self.publish(Scope::Host(environment.host_id.to_string()), payload) {
-            // Nothing reached the log, so no daemon can report. Record the
+            // Nothing reached the log, so no worker can report. Record the
             // failure rather than leaving the environment stuck provisioning.
             let environment = self
                 .registry
@@ -134,12 +134,12 @@ impl AppState {
         ProvisionOutcome::Dispatched(environment)
     }
 
-    /// Applies one daemon provisioning report.
+    /// Applies one worker provisioning report.
     ///
     /// A report for an environment this host does not own is rejected, so one
     /// machine cannot provision another's workspace. A report for an
     /// environment that is no longer `provisioning` is stale under redelivery
-    /// and dropped, which keeps the daemon's at-least-once delivery idempotent.
+    /// and dropped, which keeps the worker's at-least-once delivery idempotent.
     pub fn apply_environment_report(
         &self,
         host_id: &HostId,
@@ -227,7 +227,7 @@ mod tests {
         };
         assert_eq!(provisioning.status, EnvironmentStatus::Provisioning);
 
-        // The request is in the host room, so a reconnecting daemon replays it.
+        // The request is in the host room, so a reconnecting worker replays it.
         let scope = Scope::Host(host_id.to_string());
         let frames = state.relay.replay_scope(&scope, 10).unwrap();
         assert_eq!(frames.len(), 1);

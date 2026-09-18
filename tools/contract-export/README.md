@@ -14,7 +14,7 @@ that contract is not a plan, so this tool extracts it and the Rust
 | --- | --- | --- |
 | `server-api.json` | `packages/server-contract/src/public-api.ts` + `api/*` | 167 HTTP routes: path, method, request JSON Schema (zod), response JSON Schema (resolved TypeScript type) |
 | `client-ws.json` | `packages/domain/src/change-kinds.ts`, `api/terminals.ts` | UI and terminal WebSocket messages, subscription targets, change kinds |
-| `host-daemon.json` | `packages/host-daemon-contract/src/*` | daemon commands, results, WebSocket messages, enrollment/session/event HTTP shapes |
+| `host-daemon.json` | `packages/host-daemon-contract/src/*` | worker commands, results, WebSocket messages, enrollment/session/event HTTP shapes |
 | `error-codes.json` | `apps/server/src/**` throw sites | error code -> HTTP status inventory |
 | `thread-event.json` | `packages/domain/src/provider-event.ts` | complete `ThreadEvent` union and schemas indexed by `type` |
 | `manifest.json` | — | format version, bb revision, counts, file hashes |
@@ -25,7 +25,7 @@ that contract is not a plan, so this tool extracts it and the Rust
    symlinks that a plain `git clone` does not have. The exporter copies the
    contract packages into `tools/contract-export/.work/node_modules/@bb/*` and
    drops in the pinned `zod`/`hono` runtime, so no install happens inside bb.
-2. **Runtime load.** `bun` imports `publicApiRoutes` and the daemon/WS schemas
+2. **Runtime load.** `bun` imports `publicApiRoutes` and the worker/WS schemas
    directly. Request bodies are converted with `z.toJSONSchema` — exact, not
    inferred.
 3. **Type resolution.** Response shapes are types, not runtime values. The

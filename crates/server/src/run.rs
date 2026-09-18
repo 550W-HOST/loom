@@ -1,7 +1,7 @@
 //! The **server role**, as a library entry point.
 //!
 //! Reached through `loom server` (or the `loom-server` name the same binary
-//! answers to), and server-only by construction: it never launches a daemon,
+//! answers to), and server-only by construction: it never launches a worker,
 //! never waits for one, and does not exit when none is present. The other role
 //! is a separate process — see `docs/process-model.md`.
 //!
@@ -39,7 +39,7 @@ pub async fn run(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     };
     // Optional: declare which enrolled host runs on this machine. Unset (the
     // default) is the server-only shape — primary-host queries fall to
-    // connected remote hosts instead of an absent local daemon.
+    // connected remote hosts instead of an absent local worker.
     let local_host_id = match std::env::var("LOOM_LOCAL_HOST_ID") {
         Ok(raw) if !raw.trim().is_empty() => Some(raw.parse::<HostId>()?),
         _ => None,
@@ -62,9 +62,9 @@ pub async fn run(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         Ok(url) if !url.trim().is_empty() => Some(url),
         _ => None,
     };
-    // Where the daemon binaries this server hosts live. Unset (the default)
+    // Where the worker binaries this server hosts live. Unset (the default)
     // falls back to the directory holding this executable, which is exactly
-    // where `deploy/install.sh` puts the matching `loom-daemon`, so a default
+    // where `deploy/install.sh` puts the matching `loom-worker`, so a default
     // deployment hosts its own artifacts with no configuration.
     let artifact_dir = std::env::var_os("LOOM_ARTIFACT_DIR").map(std::path::PathBuf::from);
 
@@ -86,7 +86,7 @@ pub async fn run(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
             "loom-server (server-only) listening on http://{bind} (node {node_id}, local host {host_id})"
         ),
         None => eprintln!(
-            "loom-server (server-only) listening on http://{bind} (node {node_id}, no local daemon)"
+            "loom-server (server-only) listening on http://{bind} (node {node_id}, no local worker)"
         ),
     }
     eprintln!("UI served from {} at http://{bind}/", state.ui.describe());

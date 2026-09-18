@@ -22,7 +22,7 @@ pub type ShardId = u8;
 /// The routing key for an event.
 ///
 /// The variants are the rooms the product actually fans out to:
-/// `Thread` for a conversation, `Host` for server-to-daemon dispatch,
+/// `Thread` for a conversation, `Host` for server-to-worker dispatch,
 /// `Client` for a single connection, `Project` and `User` for list-level
 /// invalidation, and `Global` for events with no narrower room.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
@@ -34,7 +34,7 @@ pub enum Scope {
     Project(String),
     /// One conversation.
     Thread(String),
-    /// One execution machine's daemon connection.
+    /// One execution machine's worker connection.
     Host(String),
     /// One client connection.
     Client(String),

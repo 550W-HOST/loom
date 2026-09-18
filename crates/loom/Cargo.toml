@@ -7,7 +7,7 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
-loom-daemon.workspace = true
+loom-worker.workspace = true
 loom-server.workspace = true
 tokio.workspace = true
 

@@ -4,7 +4,7 @@ The relay can keep its log in Redis Streams instead of in process memory or in
 local files. This is the backend for one specific requirement:
 
 > **restarting or upgrading `loom-server` must not disconnect connected
-> daemons, and a second server node must be able to attach to the same window.**
+> workers, and a second server node must be able to attach to the same window.**
 
 Everything else — replay, idempotence, per-scope ordering, decoupled producers
 and consumers — the in-process backend already provides. This page is the
@@ -12,7 +12,7 @@ deployment contract for the case where the log must outlive the server process
 *and* be shared.
 
 The problem this solves is the one bb's inherited stdio transport caused
-(bb #3143): when a daemon's transport is owned by the process being replaced,
+(bb #3143): when a worker's transport is owned by the process being replaced,
 every self-update kills the in-flight work. Here the server becomes stateless
 with respect to delivery: it appends to and reads from a log that a peer
 process owns.
@@ -111,7 +111,7 @@ sharing a Redis must not share a prefix, or they will merge their logs.
   availability of *writes* for availability of the *window across nodes*.
 - **Upgrading a server.** Stop the node, start the new binary with the same
   `LOOM_REDIS_URL`, and its readers replay from the shared window. Connected
-  daemons have their own last-seen `EventId` and deduplicate the overlap, so a
+  workers have their own last-seen `EventId` and deduplicate the overlap, so a
   replayed frame is delivered once.
 - **Resetting.** `RedisBackend::purge` deletes exactly the eight shard keys;
   `DEL <prefix>:shard:*` does the same from `redis-cli`.

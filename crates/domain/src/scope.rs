@@ -42,7 +42,7 @@ pub enum DomainScope {
     Project(ProjectId),
     /// One conversation.
     Thread(ThreadId),
-    /// One execution machine's daemon room.
+    /// One execution machine's worker room.
     Host(HostId),
     /// One user's clients. Reserved: no user entity exists yet.
     User(UserId),

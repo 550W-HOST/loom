@@ -1,7 +1,7 @@
 //! Versioned WebSocket protocols.
 //!
-//! The public `/ws` surface and the daemon `/internal/ws` surface are separate
-//! protocols. The relay stores the daemon event envelope so replay remains
+//! The public `/ws` surface and the worker `/internal/ws` surface are separate
+//! protocols. The relay stores the worker event envelope so replay remains
 //! byte-identical; public connections project those domain events into bb's
 //! `changed` invalidation messages at the last possible boundary.
 
@@ -70,7 +70,7 @@ impl SubscriptionTarget {
     }
 }
 
-/// Messages a public client may send. There are deliberately no daemon
+/// Messages a public client may send. There are deliberately no worker
 /// commands in this union.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
@@ -308,7 +308,7 @@ pub struct ThreadChangeMetadata {
 }
 
 /// Messages a public client may receive. Subscribe acknowledgements, relay
-/// envelopes, daemon acks and errors are intentionally absent.
+/// envelopes, worker acks and errors are intentionally absent.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ServerMessage {
@@ -406,13 +406,13 @@ impl ServerMessage {
 }
 
 // -----------------------------------------------------------------------------
-// Internal daemon protocol (`/internal/ws`)
+// Internal worker protocol (`/internal/ws`)
 // -----------------------------------------------------------------------------
 
-/// Messages a loom daemon may send on the internal endpoint.
+/// Messages a loom worker may send on the internal endpoint.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
-pub enum DaemonClientMessage {
+pub enum WorkerClientMessage {
     Subscribe {
         scope: Scope,
     },
@@ -465,11 +465,11 @@ pub enum DaemonClientMessage {
     },
 }
 
-/// Messages the server sends to an internal daemon connection.
+/// Messages the server sends to an internal worker connection.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "type", rename_all = "snake_case")]
-pub enum DaemonServerMessage {
-    /// First frame on `/internal/ws`; no daemon may enroll before checking it.
+pub enum WorkerServerMessage {
+    /// First frame on `/internal/ws`; no worker may enroll before checking it.
     Hello {
         protocol_version: u32,
     },
@@ -539,16 +539,16 @@ pub fn build_event_frame(
     event_id: EventId,
     created_at_ms: u64,
 ) -> Bytes {
-    let frame = DaemonServerMessage::Event {
+    let frame = WorkerServerMessage::Event {
         event_id: event_id.to_string(),
         scope: scope.clone(),
         payload: String::from_utf8_lossy(payload).into_owned(),
         created_at_ms,
     };
-    Bytes::from(serde_json::to_vec(&frame).expect("a daemon frame always serializes to JSON"))
+    Bytes::from(serde_json::to_vec(&frame).expect("a worker frame always serializes to JSON"))
 }
 
-/// Converts a stored envelope into the daemon frame it contains.
+/// Converts a stored envelope into the worker frame it contains.
 pub fn frame_from_envelope(envelope: &Envelope) -> Bytes {
     envelope.payload.clone()
 }
@@ -782,11 +782,11 @@ fn changed(
     }
 }
 
-/// Turns an internal relay frame into public messages, dropping raw daemon
+/// Turns an internal relay frame into public messages, dropping raw worker
 /// traffic and payloads with no bb representation.
 pub fn public_messages_from_frame(frame: &[u8]) -> Vec<ServerMessage> {
-    if let Ok(DaemonServerMessage::Event { payload, .. }) =
-        serde_json::from_slice::<DaemonServerMessage>(frame)
+    if let Ok(WorkerServerMessage::Event { payload, .. }) =
+        serde_json::from_slice::<WorkerServerMessage>(frame)
     {
         if let Ok(event) = serde_json::from_str::<DomainEvent>(&payload) {
             return project_domain_event(&event);
@@ -959,8 +959,8 @@ mod tests {
     }
 
     #[test]
-    fn daemon_handshake_is_distinct_from_the_public_protocol() {
-        let hello = DaemonServerMessage::Hello {
+    fn worker_handshake_is_distinct_from_the_public_protocol() {
+        let hello = WorkerServerMessage::Hello {
             protocol_version: 3,
         };
         assert_eq!(

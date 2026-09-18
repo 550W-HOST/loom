@@ -104,7 +104,7 @@ bb UI 用契约格式发起写请求时会 422，而 CI 与一致性测试全绿
 - `GET /ws`
 - `GET /internal/ws`
 - `GET /install/version`
-- `GET /install/loom-daemon`
+- `GET /install/loom-worker`
 
 其中 `/health`, `/ws`, `/internal/ws`, `/api/v1/publish` 和 `/api/v1/replay` 属于 loom relay/control 面；
 `/api/v1/version` 与契约的 `/api/v1/system/version` 路径不同；其余是当前

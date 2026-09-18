@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build the loom-server and loom-daemon container images.
+# Build the loom-server and loom-worker container images.
 #
 # The two images are the one `loom` binary in its two roles, and the input is the
 # *packaged* binary — what `scripts/package-release.sh` writes as
@@ -131,7 +131,7 @@ fi
 IFS=',' read -r -a tag_list <<<"$tags"
 [[ -n "${tag_list[0]}" ]] || die "--tags is empty"
 
-for image in loom-server loom-daemon; do
+for image in loom-server loom-worker; do
   refs=()
   for tag in "${tag_list[@]}"; do
     refs+=(--tag "${registry:+$registry/}$image:$tag")

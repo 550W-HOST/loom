@@ -56,7 +56,7 @@ pub mod ws;
 
 pub use artifacts::{
     ArtifactClient, ArtifactDownload, Artifacts, InstallVersion, DIGEST_HEADER,
-    INSTALL_DAEMON_PATH, INSTALL_VERSION_PATH,
+    INSTALL_WORKER_PATH, INSTALL_VERSION_PATH,
 };
 pub use automation_execution::AutomationExecutionReport;
 pub use automations::{AutomationState, AutomationsRegistry, AUTOMATIONS_VERSION};
@@ -72,7 +72,7 @@ pub use hub_actor::{HubCommand, HubHandle};
 pub use interactions::DeliverOutcome;
 pub use persistence::{DomainSnapshot, SnapshotError, SNAPSHOT_FILE};
 pub use protocol::{
-    ClientMessage, DaemonClientMessage, DaemonServerMessage, ServerMessage, SubscriptionTarget,
+    ClientMessage, WorkerClientMessage, WorkerServerMessage, ServerMessage, SubscriptionTarget,
 };
 pub use pump::{Pump, PumpConfig};
 pub use queue::{DeliveryOutcome, WaitingOn};
@@ -83,16 +83,16 @@ pub use state::{relay_scope, AppState, BuildStateError};
 pub use terminals::{TerminalBroker, TerminalSessions, TerminalTransportError, TERMINAL_TIMEOUT};
 pub use transport::ChannelTransport;
 
-/// Protocol version reported by `/api/v1/version` and negotiated by daemons.
+/// Protocol version reported by `/api/v1/version` and negotiated by workers.
 ///
-/// Version 3 separates the public bb `/ws` protocol from the daemon
-/// `/internal/ws` protocol and introduces the daemon `hello` handshake. Server
-/// and daemon must upgrade together (or use the existing daemon self-update
+/// Version 3 separates the public bb `/ws` protocol from the worker
+/// `/internal/ws` protocol and introduces the worker `hello` handshake. Server
+/// and worker must upgrade together (or use the existing worker self-update
 /// path).
 pub const PROTOCOL_VERSION: u32 = 3;
 
 /// Explicit transport negotiation token for the public bb realtime protocol.
 ///
-/// Connections without this token are handled only by the temporary v2 daemon
+/// Connections without this token are handled only by the temporary v2 worker
 /// migration shim; client role is never inferred from `Origin`.
 pub const PUBLIC_WS_SUBPROTOCOL: &str = "loom-bb-realtime-v1";

@@ -40,7 +40,7 @@ ancestor symlink 仍会失败。设置 `BB_SRC` 或传入 `--upstream` 后，检
 更新由当前 checkout 推导的 hash；source commit、路径和迁移 disposition 仍由
 清单中的审阅字段决定。contract 内容本身仍由
 `scripts/export-bb-contract.sh` 从该 commit 导出并由 CI 做 byte-for-byte
-检查；本检查不会修改 HTTP、WS 或 daemon 协议。
+检查；本检查不会修改 HTTP、WS 或 worker 协议。
 
 ## App 闭包
 
@@ -59,7 +59,7 @@ issue、owner、reason，以及 upstream/local 的 path、SHA-256 和 git mode�
 从 `BB_SRC` 的 pinned clean checkout 和本地树重新计算 diff，逐一匹配 ledger，
 因此未登记、重复、重叠、glob、路径、hash 或 mode 漂移都会失败。上游的通用 plugin
 SDK/host/marketplace 不进入发布 runtime；一方 Automations 产品能力则保留 UI，
-并由 loom-native typed API、scheduler、daemon 和 ACP 边界替代其 generic plugin
+并由 loom-native typed API、scheduler、worker 和 ACP 边界替代其 generic plugin
 RPC。首次 app adaptation 必须把 app 状态从 `exact-snapshot` 切换为
 `source-port`/`adapted-source`；该状态强制提供 `BB_SRC` 并验证非空 ledger。
 后续 source port 必须在独立提交中通过同一个 ledger 记录每一个删除或适配；
@@ -102,10 +102,10 @@ action registry 中删除，不能留下 dead navigation。
 | 项目、线程侧栏与 thread sections | 保留 | 使用 server contract 的 project/thread API；状态由 client-core 管理 |
 | timeline、assistant/tool rows、reasoning 与 turn 状态 | 保留 | 使用 thread-view projection；不在 UI 伪造 provider event |
 | prompt、queued messages、interaction/permission | 保留 | 通过 loom server 的既有 contract；不支持的能力明确返回拒绝 |
-| Pi、ACP provider | loom-native 替代 | provider 是一等 provider ID，经 ACP/daemon，不走 plugin registry |
-| 项目环境、分支、diff、PR 状态 | 保留 | 使用 loom server/daemon 的 environment surface |
-| workspace files、attachments、file preview | 保留 | 通过 server/daemon boundary；控制面不直接碰主机磁盘 |
-| terminal | 保留 | 使用 daemon terminal contract 和 relay；不嵌入 app 内本地执行 |
+| Pi、ACP provider | loom-native 替代 | provider 是一等 provider ID，经 ACP/worker，不走 plugin registry |
+| 项目环境、分支、diff、PR 状态 | 保留 | 使用 loom server/worker 的 environment surface |
+| workspace files、attachments、file preview | 保留 | 通过 server/worker boundary；控制面不直接碰主机磁盘 |
+| terminal | 保留 | 使用 worker terminal contract 和 relay；不嵌入 app 内本地执行 |
 | 外观、键盘、实验项、主题、UI 偏好 | 保留 | 使用 system settings surface；provider logo 采用固定 provider 数据 |
 | Automations | 保留并原生化 | 保留 get-bb overview/detail/editor、导航与交互；loom 原生实现 cron/once、agent/script、run history、恢复与 realtime，不开放通用 plugin runtime |
 | plugin/extension marketplace | 移除 | 删除导航、页面、加载器、registry 请求和 plugin lifecycle |

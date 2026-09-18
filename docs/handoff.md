@@ -15,7 +15,7 @@ guessing.
 | Working tree | clean |
 | Tests | **624 passing**, 0 failing (`cargo test --workspace --locked`) |
 | Route coverage | **105 / 149** (70.5%) — `docs/api-coverage.md` |
-| Crates | `relay`, `relay-hub`, `server`, `daemon`, `domain`, `provider-protocol`, `contract` |
+| Crates | `relay`, `relay-hub`, `server`, `worker`, `domain`, `provider-protocol`, `contract` |
 | UI | `ui/` workspace, 18 tests, typecheck clean |
 | CI | fmt + clippy `-D warnings` + test + MSRV + contract reproducibility + UI + pi |
 | Test count history | 253 → 416 (B2) → 461 (B3) → … → **624** (B7) |
@@ -210,7 +210,7 @@ backend, two cancelled. The fifth attempt succeeded. Worth knowing because the
 failure mode is "issue looks stuck", not "issue looks wrong".
 
 Independently verified by building release binaries, running a real server and a
-real daemon, and calling all fourteen routes by hand. Results:
+real worker, and calling all fourteen routes by hand. Results:
 
 | Route | Result |
 | --- | --- |
@@ -263,7 +263,7 @@ interaction to serve**.
 
 What I got wrong when this was first written: I recorded that ACP would supply
 the producer, as if it were future work. **It already exists, and loom is
-actively suppressing it.** `crates/daemon/src/provider.rs` declines these
+actively suppressing it.** `crates/worker/src/provider.rs` declines these
 requests on the Pi path:
 
 ```rust
@@ -330,7 +330,7 @@ and calls the result a thread's file. See `docs/contract.md` ("B5") for the
 permission scopes and the two-half traversal defence.
 
 B7 applies the same rule to a project: its workspace files are read from the
-project's source host, and an upload is a `HostFileOperation::Write` the daemon
+project's source host, and an upload is a `HostFileOperation::Write` the worker
 confines to the host's own `project-attachments/<project_id>` directory. It also
 made `Project` orderable (`sort_key`), `Project` deletable (a tombstone) and
 `ThreadSection` a real entity; see `docs/contract.md` ("B7").
@@ -374,7 +374,7 @@ The server stores the opaque id with the thread and includes it in the next
 `RunDispatch`; loom never reads an agent session file. The adapter serializes
 construction/report ordering, checks `loadSession` before resuming, and treats a
 missing workspace or unsupported restore as an explicit run failure. A real
-second-run regression test is in `crates/daemon/tests/acp_session.rs`.
+second-run regression test is in `crates/worker/tests/acp_session.rs`.
 
 The ACP v2 schema and negotiation are not enabled in this checkout yet. The
 stable v1 path is deliberate: it is the default protocol implemented by the
@@ -387,15 +387,15 @@ Open questions carried forward:
 - Version policy for the `agent-client-protocol` crate (distinct axis from the
   protocol version).
 - Does the embedded `pi-acp` need process isolation? A panic in the translator
-  would take the daemon with it; a spawned process would not.
+  would take the worker with it; a spawned process would not.
 
 ## Environment notes
 
 - `LOOM_BIND` is the env var for the server's listen address (not
   `LOOM_LISTEN`); default `127.0.0.1:38886`. Others: `LOOM_DATA_DIR`,
   `LOOM_NODE_ID`, `LOOM_REDIS_URL`, `LOOM_UI_PROXY`, `LOOM_ARTIFACT_DIR`
-- daemon: `LOOM_SERVER_URL`, `LOOM_HOST_NAME`, `LOOM_DAEMON_STATE`,
-  `LOOM_AUTO_UPDATE`, and others listed at the top of `crates/daemon/src/run.rs`
+- worker: `LOOM_SERVER_URL`, `LOOM_HOST_NAME`, `LOOM_WORKER_STATE`,
+  `LOOM_AUTO_UPDATE`, and others listed at the top of `crates/worker/src/run.rs`
 - A stale `target/debug/loom server` from an earlier session held the default
   port. Check `ss -tln` before assuming a startup failure is a code problem
 - `sccache` occasionally fails with `exit status: 254`; `sccache --stop-server`

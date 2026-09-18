@@ -125,7 +125,7 @@ pub enum DomainEvent {
         /// The host.
         host: Host,
     },
-    /// A host's daemon attached or detached.
+    /// A host's worker attached or detached.
     HostStatusChanged {
         /// The host.
         host_id: HostId,

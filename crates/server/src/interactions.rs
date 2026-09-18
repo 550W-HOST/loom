@@ -2,7 +2,7 @@
 //! answer.
 //!
 //! This mirrors [`crate::runs`] in shape, and the parallel is the point: a
-//! provider's request for input is *observed* by the daemon on the same stream
+//! provider's request for input is *observed* by the worker on the same stream
 //! as everything else, and the control plane turns the observation into a
 //! durable entity exactly as it turns a terminal frame into a thread status
 //! change.
@@ -10,16 +10,16 @@
 //! # Why the control plane owns this at all
 //!
 //! A question is not a runtime concern, because the answer has to survive a
-//! disconnect: the daemon may report a question, lose its socket, and only
+//! disconnect: the worker may report a question, lose its socket, and only
 //! receive the answer after a restart. So the interaction lives in the entity
 //! view ([`crate::domain_state`]) and its changes travel through the relay's
-//! thread scope like every other fact. The daemon never holds a question open
+//! thread scope like every other fact. The worker never holds a question open
 //! on a socket.
 //!
 //! # Delivery protocol
 //!
 //! The provider protocol carries an [`InteractionResolutionFrame`] back to the
-//! daemon. Delivery is two-phase: accepting an answer moves the durable row to
+//! worker. Delivery is two-phase: accepting an answer moves the durable row to
 //! `resolving`, the host-scoped frame is appended to the replayable relay, and
 //! only then does the row become `resolved` (or `interrupted` for cancellation).
 //! A relay failure therefore leaves a durable delivery intent instead of a
@@ -39,7 +39,7 @@ use loom_relay::{Result as RelayResult, Scope};
 use crate::domain_state::CommandError;
 use crate::state::AppState;
 
-/// What happened when a daemon reported a permission request.
+/// What happened when a worker reported a permission request.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RecordOutcome {
     /// The question was recorded (or was already known) and is now visible to
@@ -109,7 +109,7 @@ impl AppState {
     }
 
     /// Accepts an answer, persists its delivery intent, and finishes only after
-    /// the daemon frame is replayable.
+    /// the worker frame is replayable.
     pub fn deliver_interaction_resolution(
         &self,
         interaction_id: &InteractionId,
@@ -339,7 +339,7 @@ impl AppState {
     /// Idempotent on `request_id`: the interaction id is derived from it, so a
     /// redelivered frame lands on the same row. An already-known request returns
     /// the existing interaction unchanged — including when it is already
-    /// settled, which is exactly what a daemon replaying its held requests
+    /// settled, which is exactly what a worker replaying its held requests
     /// after a reconnect needs.
     pub fn record_interaction_request(
         &self,
@@ -369,7 +369,7 @@ impl AppState {
             provider_request_id: request.request_id.clone(),
         };
         // The dedup key is scoped by run: ACP's request ids are unique only
-        // within a session, and a daemon that restarts would otherwise be able
+        // within a session, and a worker that restarts would otherwise be able
         // to collide a fresh question with a settled row from an earlier run.
         // The provider's own id stays verbatim in `origin`, so the answer frame
         // can name it.
@@ -456,7 +456,7 @@ impl AppState {
         };
         let Some(record) = self.runs.get(&run_id) else {
             // Interactions can also be created by non-provider API/plugin
-            // paths. With no in-flight run there is no daemon waiter to unblock.
+            // paths. With no in-flight run there is no worker waiter to unblock.
             return Ok(());
         };
         let frame = InteractionResolutionFrame {
@@ -726,7 +726,7 @@ mod tests {
         assert_eq!(again.id, outcome.id, "one provider request is one row");
         assert_eq!(state.registry.pending_interactions(&thread.id).len(), 1);
 
-        // The answer travels to the host scope, naming the daemon's own request
+        // The answer travels to the host scope, naming the worker's own request
         // id so it can match the request it is holding open.
         let delivered = state.deliver_interaction_resolution(
             &outcome.id,
@@ -1021,7 +1021,7 @@ mod tests {
         assert_eq!(
             host_frames(&state, &host_id).len(),
             before,
-            "an answer for an ended run must not reach the daemon"
+            "an answer for an ended run must not reach the worker"
         );
         state.shutdown();
     }

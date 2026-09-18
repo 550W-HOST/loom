@@ -133,7 +133,7 @@ loom never scans or opens a provider session file.
 | `session/list` | `crate::acp::sessions::list_sessions` | capability-gated; `Unsupported` is distinct from an empty list |
 | capability probe | same module, `initialize` | `load_session` and `list_sessions`, never inferred |
 
-The import **surface** is the daemon's `list_sessions` returning
+The import **surface** is the worker's `list_sessions` returning
 `SessionListOutcome`. The control plane has no route for it yet: the exported bb
 contract declares no session-import endpoint (`grep -c session` over
 `contracts/bb/server-api.json`'s route ids is 0), so there is nothing to conform
@@ -221,7 +221,7 @@ record of what the survey could not settle, with how each was resolved.
 - **Does `--session-id <loom thread id>` conflict with Pi's own id format?** —
   *Resolved by removal.* The `--session-id` rewriting is part of the Pi-specific
   path that the ACP migration deletes (`effective_argv` in
-  `crates/daemon/src/provider.rs`). With `pi-acp` owning session identity, loom
+  `crates/worker/src/provider.rs`). With `pi-acp` owning session identity, loom
   no longer passes a thread id where a Pi UUIDv7 is expected, so the conflict
   cannot arise. The inconclusive probe no longer blocks anything.
 - **What is the right behaviour when a resumed session's cwd is gone?** —
@@ -240,4 +240,4 @@ record of what the survey could not settle, with how each was resolved.
 - bb `packages/provider-bridge-acp/src/wire.ts` — capability declaration
 - bb `plugins/provider-pi/src/bridge/bridge.ts` — `thread/resume` and the
   missing-cwd guard
-- `crates/daemon/src/provider.rs` — loom's current Pi-only session arguments
+- `crates/worker/src/provider.rs` — loom's current Pi-only session arguments

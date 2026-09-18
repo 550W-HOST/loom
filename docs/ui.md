@@ -7,10 +7,10 @@ client needs is the URL:
 ```
 UI (browser / PWA / desktop webview) ── HTTP + WS ──▶ loom-server ── relay ──▶ frames
                                                           ▲
-                                                       daemon (separate process)
+                                                       worker (separate process)
 ```
 
-A UI never talks to a daemon, and a daemon never talks to a UI. Pointing a
+A UI never talks to a worker, and a worker never talks to a UI. Pointing a
 client at a URL is the whole configuration.
 
 The UI is the product app in [`../apps/app`](../apps/app), built to a static
@@ -122,7 +122,7 @@ that owns them, because the pinned client's targets and event names are fixed
 
 ### The internal relay, for debugging
 
-`/internal/ws` is the relay's own socket, the one a daemon and the relay speak —
+`/internal/ws` is the relay's own socket, the one a worker and the relay speak —
 not a client protocol, and the app never opens it. It is what to reach for when
 a frame is missing: connect to `/internal/ws`, send
 `{"type":"subscribe","scope":{"kind":"thread","id":"<id>"}}` for the same scope a
@@ -173,8 +173,8 @@ a phone.
 
 The client is the one part of this repository whose defects are only visible in a
 browser, so it has a suite that runs it as one: [`e2e/`](../e2e) is a pnpm
-workspace package whose Playwright specs start `loom server` and `loom daemon`
-from `target/debug`, point the daemon at an ACP stub, and drive the app in a
+workspace package whose Playwright specs start `loom server` and `loom worker`
+from `target/debug`, point the worker at an ACP stub, and drive the app in a
 desktop and a phone viewport.
 
 It is the acceptance checklist, executable: the shell renders from the server's
@@ -182,7 +182,7 @@ own origin, an unreachable server is reported rather than rendered as an empty
 app, a thread is created from the composer, answers, and survives a reload, a
 permission request blocks the turn until it is answered (allow *and* deny, with
 the decision asserted at the agent), automations list, run and report, and a
-machine reports going offline and recovers when its daemon returns.
+machine reports going offline and recovers when its worker returns.
 
 ```bash
 # from a checkout, with apps/app/dist built (see "Building the bundle")
@@ -254,17 +254,17 @@ for still stands, and is what a shell must satisfy if one is added back:
 * window/tray lifecycle and global shortcuts;
 * native file dialogs and "open in editor" for a workspace on *this* machine;
 * supervisoring a local `loom-server` and an independently stoppable
-  `loom-daemon`;
+  `loom-worker`;
 * auto-update and code signing.
 
 Those are a few hundred lines around a webview that points at a URL. The rest —
-the bundled UI, the local database, the daemon lifecycle entangled with the
+the bundled UI, the local database, the worker lifecycle entangled with the
 window, the in-process API server — is exactly what the fork removes, and
 duplicating it in Electron would reintroduce the coupling the relay layer was
 built to break.
 
 Concretely: the shell is `{ url }` plus two supervision switches (start a local
-server, start a local daemon) as specified in
+server, start a local worker) as specified in
 [`process-model.md`](process-model.md). An installed PWA already covers the
 read-and-steer case for every platform, so a shell must justify each feature it
 keeps — which is why nothing here needs one, and why adding one back means

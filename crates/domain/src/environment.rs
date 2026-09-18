@@ -28,7 +28,7 @@ pub enum EnvironmentKind {
 pub enum EnvironmentStatus {
     /// The record exists; provisioning has not been dispatched.
     Creating,
-    /// A daemon is preparing the workspace.
+    /// A worker is preparing the workspace.
     Provisioning,
     /// The workspace is usable.
     Ready,
@@ -104,7 +104,7 @@ pub struct Environment {
     pub status: EnvironmentStatus,
     /// Why the last provisioning attempt failed, when `status` is `error`.
     ///
-    /// Carried so the daemon's reason reaches a client instead of being
+    /// Carried so the worker's reason reaches a client instead of being
     /// reduced to a bare status. Cleared by the next legal transition out of
     /// `error`.
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -1,21 +1,21 @@
-# loom-host-daemon@<server-key> — one execution machine joined to one server.
+# loom-worker@<server-key> — one execution machine joined to one server.
 #
-# Install to /etc/systemd/system/loom-host-daemon@.service.
+# Install to /etc/systemd/system/loom-worker@.service.
 #
 # Naming convention (kept from bb): the instance name is the *server key*, the
 # systemd-escaped host of the server this machine joins. A machine that joins
 # two servers (a lab box serving two control planes, or a migration) runs two
 # independent instances, each with its own environment file and data directory:
 #
-#   loom-host-daemon@loom.example.com.service
-#     /etc/loom/daemon/loom.example.com.env
+#   loom-worker@loom.example.com.service
+#     /etc/loom/worker/loom.example.com.env
 #     /var/lib/loom/machines/loom.example.com/
-#   loom-host-daemon@lab.internal.service
-#     /etc/loom/daemon/lab.internal.env
+#   loom-worker@lab.internal.service
+#     /etc/loom/worker/lab.internal.env
 #     /var/lib/loom/machines/lab.internal/
 #
 # Derive the instance name with `systemd-escape <server-host>`; do not hand-edit
-# a `/` or a scheme into it. The daemon only makes outbound connections, so a
+# a `/` or a scheme into it. The worker only makes outbound connections, so a
 # machine behind NAT needs no inbound port and no port reservation here — ports
 # are a server-side concern (see deploy/README.md § Ports).
 #
@@ -23,7 +23,7 @@
 # on another machine, and losing it must leave this unit running (and
 # reconnecting) rather than stopped.
 [Unit]
-Description=loom execution daemon for server %i
+Description=loom execution worker for server %i
 Documentation=file:/usr/share/doc/loom/deploy/README.md https://github.com/550W-HOST/loom/blob/main/deploy/README.md
 After=network-online.target
 Wants=network-online.target
@@ -32,14 +32,14 @@ Wants=network-online.target
 Type=simple
 User=loom
 Group=loom
-EnvironmentFile=/etc/loom/daemon/%i.env
-ExecStart=/usr/local/bin/loom daemon
+EnvironmentFile=/etc/loom/worker/%i.env
+ExecStart=/usr/local/bin/loom worker
 WorkingDirectory=/var/lib/loom/machines/%i
 
-# A daemon's whole job is to stay attached. It must come back after a crash, a
+# A worker's whole job is to stay attached. It must come back after a crash, a
 # server restart, a network blip and a clean socket close alike. `Restart=always`
-# also covers the daemon's **self-update**: after a successful install it exits 0
-# and this starts the new file. Without a supervisor the daemon simply exits
+# also covers the worker's **self-update**: after a successful install it exits 0
+# and this starts the new file. Without a supervisor the worker simply exits
 # after an update, which is why the unit is the supported shape
 # (docs/upgrades.md § The supervisor is required).
 Restart=always
@@ -48,7 +48,7 @@ RestartSec=5s
 # --- isolation ----------------------------------------------------------
 # Deliberately light. The execution plane runs provider CLIs and tools that
 # modify workspaces, so filesystem sandboxing (ProtectSystem=strict) would break
-# the thing the daemon exists to do. The boundary is the dedicated `loom` user
+# the thing the worker exists to do. The boundary is the dedicated `loom` user
 # plus the machine, not a systemd sandbox. Only the cheap, always-safe switches
 # are set here.
 NoNewPrivileges=true
@@ -60,7 +60,7 @@ ProtectControlGroups=true
 
 # --- resource limits (suggestions; size to the machine) -----------------
 # This is the process that can genuinely exhaust a host. Cap it hard and let it
-# be OOM-killed first: OOMScoreAdjust makes the kernel choose the daemon (and
+# be OOM-killed first: OOMScoreAdjust makes the kernel choose the worker (and
 # its provider children) before the control plane or the OS.
 MemoryAccounting=true
 MemoryMax=8G

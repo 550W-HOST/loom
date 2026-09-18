@@ -4,7 +4,7 @@
 //! property: a restart is invisible only if the log outlives the process *and*
 //! a second node can attach to it. This backend is that shared log. It is the
 //! one that makes a rolling upgrade of `loom-server` not disconnect connected
-//! daemons, because a fresh server process reads the same window a dead one
+//! workers, because a fresh server process reads the same window a dead one
 //! was reading.
 //!
 //! # Shape

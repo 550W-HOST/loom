@@ -1,5 +1,5 @@
 # loom on one machine, as containers: the control plane and one execution
-# daemon. The systemd equivalent is `deploy/install.sh all` (deploy/README.md);
+# worker. The systemd equivalent is `deploy/install.sh all` (deploy/README.md);
 # this file is for a host that has docker and no reason to install either
 # binary into the host's filesystem.
 #
@@ -10,7 +10,7 @@
 # The images come from the release; to use ones built from a checkout instead,
 # see docs/containers.md § Building an image. Nothing here is loom-specific
 # beyond the two images and their data directories — the server starts no
-# daemon, and the daemon does not depend on the server's process.
+# worker, and the worker does not depend on the server's process.
 name: loom
 
 services:
@@ -46,26 +46,26 @@ services:
       # exclusive with LOOM_DATA_DIR, which the image sets.
       # LOOM_REDIS_URL: redis://redis:6379
 
-  daemon:
-    image: ghcr.io/550w-host/loom-daemon:${LOOM_IMAGE_TAG:-latest}
-    # The daemon exits when it loses the server and has no internal reconnect,
+  worker:
+    image: ghcr.io/550w-host/loom-worker:${LOOM_IMAGE_TAG:-latest}
+    # The worker exits when it loses the server and has no internal reconnect,
     # so this is what the unit's `Restart=always` turns into. It is also what
     # makes `depends_on` below sufficient: an attempt that lands before the
     # server is listening fails and is retried by this policy. And it is what
-    # starts a daemon's self-updated binary after the update exits 0
-    # (docs/upgrades.md § Daemon self-update).
+    # starts a worker's self-updated binary after the update exits 0
+    # (docs/upgrades.md § Worker self-update).
     restart: unless-stopped
     depends_on:
       - server
     environment:
       # The server's service name on this network, not a URL a browser would
       # open. Plain http:// because the binary carries no TLS client: a
-      # containerised daemon reaches the server over a network that is itself
+      # containerised worker reaches the server over a network that is itself
       # trusted (this compose network, a tailnet, a VPN), and TLS is terminated
       # for the browsers by something in front (docs/remote-access.md).
       LOOM_SERVER_URL: http://server:38886
       # What the UI shows in the host list. Keep it stable and human-readable.
-      LOOM_HOST_NAME: ${LOOM_HOST_NAME:-loom-daemon}
+      LOOM_HOST_NAME: ${LOOM_HOST_NAME:-loom-worker}
       # How to run a dispatched provider, when the default is not it. A `pi`
       # inside this image needs a derived image (docs/containers.md § Providers).
       # LOOM_PROVIDER_CMD: /usr/local/bin/pi
@@ -74,7 +74,7 @@ services:
       # `scratch`-free side of the pair, so a replaced file has somewhere to
       # land. What it needs is a server that hosts one — the server image runs
       # the same `loom` file as the server role, and hosts an artifact only from
-      # a directory holding a `loom-daemon` name (the layout `deploy/install.sh`
+      # a directory holding a `loom-worker` name (the layout `deploy/install.sh`
       # leaves, or a LOOM_ARTIFACT_DIR set to one). Set that, or leave this off
       # and rebuild the image, which is the same "replace the file, restart the
       # process" with the container runtime as the supervisor (docs/upgrades.md).
@@ -84,12 +84,12 @@ services:
       # configuration ($HOME/.pi and friends). All three have to survive a
       # rebuild or the machine changes identity, replays from the beginning, or
       # asks a provider to log in again.
-      - daemon-state:/var/lib/loom
-      # The only part of the host this daemon can edit. A bind mount, because
+      - worker-state:/var/lib/loom
+      # The only part of the host this worker can edit. A bind mount, because
       # the whole point of an execution machine is that its work lands
       # somewhere its owner can see — and because everything outside these two
       # mounts is the container's own filesystem, which is what
-      # docs/containers.md § What a containerised daemon cannot do is about.
+      # docs/containers.md § What a containerised worker cannot do is about.
       - ${LOOM_WORKSPACE:-./workspace}:/workspace
       # A provider configuration that already exists on the host, instead of
       # logging in inside the volume:
@@ -97,4 +97,4 @@ services:
 
 volumes:
   server-data:
-  daemon-state:
+  worker-state:

@@ -8,9 +8,9 @@
 //!
 //! The two constants that are not in `Cargo.toml` are stamped by
 //! `crates/server/build.rs`; the protocol version is the same constant the
-//! server reports on the wire and the daemon refuses to connect without
+//! server reports on the wire and the worker refuses to connect without
 //! (`docs/upgrades.md`), so `--version` is where an operator sees the mismatch
-//! before the daemon reports it for them.
+//! before the worker reports it for them.
 
 /// Crate version, from the workspace manifest.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

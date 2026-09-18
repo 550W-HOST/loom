@@ -5,8 +5,8 @@
 //! plane does neither itself:
 //!
 //! ```text
-//!   files.*     ── HostFileRequest ──▶ relay host:{id} ──▶ daemon
-//!   terminals.* ── TerminalRequest ──▶ relay host:{id} ──▶ daemon
+//!   files.*     ── HostFileRequest ──▶ relay host:{id} ──▶ worker
+//!   terminals.* ── TerminalRequest ──▶ relay host:{id} ──▶ worker
 //! ```
 //!
 //! That is the property these handlers exist to preserve: a file read never
@@ -17,9 +17,9 @@
 //! Three scopes, and they are not interchangeable:
 //!
 //! * **Root-confined** (`mkdir`, `write`, `move`, `remove`, `read`) — every
-//!   path is re-checked against `rootPath` on the daemon, on the *resolved*
+//!   path is re-checked against `rootPath` on the worker, on the *resolved*
 //!   path, so a symlink cannot leave the root. A request that names no root is
-//!   refused by these routes rather than sent unbounded; the daemon would allow
+//!   refused by these routes rather than sent unbounded; the worker would allow
 //!   it, but the route's job is to require the boundary.
 //! * **Absolute-path** (`list`, `listPaths`, `read` without a root, preview) —
 //!   the client names a path it already knows. It is still executed on the
@@ -40,9 +40,9 @@
 //! anything is published, because a request into a room nobody is in would only
 //! time out.
 //!
-//! # Output is bounded on the daemon, not here
+//! # Output is bounded on the worker, not here
 //!
-//! `terminals.output` reads a window from a cursor. The daemon owns a bounded
+//! `terminals.output` reads a window from a cursor. The worker owns a bounded
 //! ring per session and reports `truncated` when it dropped older chunks; this
 //! handler never accumulates output, which is what keeps a `yes` from growing
 //! the control plane's memory.
@@ -70,7 +70,7 @@ use crate::{b5::validate_absolute_path, b5::validate_relative_path};
 /// The largest file `files.read` will serve.
 ///
 /// The same ceiling B5 uses for a content route. One bound is easier to reason
-/// about than two, and the daemon enforces it from the request it receives.
+/// about than two, and the worker enforces it from the request it receives.
 pub const MAX_FILE_OPERATION_BYTES: u64 = 25 * 1024 * 1024;
 
 /// The largest attachment/file a `files.write` may carry.
@@ -82,7 +82,7 @@ const FILE_LIST_LIMIT_DEFAULT: usize = 1_000;
 const FILE_LIST_LIMIT_MAX: usize = 10_000;
 
 /// bb's terminal column/row bounds, mirrored so a request is refused here
-/// rather than at the daemon after a round trip.
+/// rather than at the worker after a round trip.
 const MAX_TERMINAL_COLS: u16 = 500;
 const MAX_TERMINAL_ROWS: u16 = 200;
 
@@ -149,9 +149,9 @@ fn terminal_transport_error(error: TerminalTransportError) -> Response {
     }
 }
 
-/// Maps a daemon file failure onto the contract's status codes.
+/// Maps a worker file failure onto the contract's status codes.
 ///
-/// The daemon's codes are the vocabulary the HTTP layer already uses; an
+/// The worker's codes are the vocabulary the HTTP layer already uses; an
 /// unrecognised one becomes the generic `host_unavailable` rather than a code
 /// no client can branch on.
 fn host_file_failure(code: &str, message: &str) -> Response {
@@ -168,7 +168,7 @@ fn host_file_failure(code: &str, message: &str) -> Response {
     api_error(status, public_code, message)
 }
 
-/// Maps a daemon terminal failure onto the contract's status codes.
+/// Maps a worker terminal failure onto the contract's status codes.
 fn terminal_failure(code: &str, message: &str) -> Response {
     let (status, public_code) = match code {
         "terminal_not_found" => (StatusCode::NOT_FOUND, "terminal_not_found"),
@@ -510,7 +510,7 @@ fn file_scope(
 ///
 /// With a root, the path is treated as **root-relative** and validated as such;
 /// without one, it must be absolute. That split is what keeps a traversal out of
-/// the request: the daemon re-checks containment on the resolved path, but a
+/// the request: the worker re-checks containment on the resolved path, but a
 /// `..` segment never reaches it.
 #[allow(clippy::result_large_err)]
 fn resolve_path(path: &str, root: Option<&str>) -> Result<String, Response> {
@@ -986,9 +986,9 @@ pub async fn files_write(
     match outcome {
         Err(error) => transport_error(error),
         Ok(HostFileOutcome::Written(written)) => {
-            // The daemon hashes the bytes it wrote, so the contract's
+            // The worker hashes the bytes it wrote, so the contract's
             // `sha256` is reported from what is actually on disk rather than
-            // recomputed here from a request body the daemon already bounded.
+            // recomputed here from a request body the worker already bounded.
             let Some(sha256) = written.sha256.clone() else {
                 return api_error(
                     StatusCode::BAD_GATEWAY,
@@ -1376,9 +1376,9 @@ pub async fn terminals_create(
     }
 }
 
-/// Normalises the daemon's session into the record the control plane stores.
+/// Normalises the worker's session into the record the control plane stores.
 ///
-/// The daemon owns the process and reports the resolved cwd; the server trusts
+/// The worker owns the process and reports the resolved cwd; the server trusts
 /// those, but re-stamps the ownership fields from the plan it resolved so the
 /// two can never disagree about which thread or environment a session belongs
 /// to.
@@ -1684,7 +1684,7 @@ fn terminal_session_outcome(
         Err(error) => terminal_transport_error(error),
         Ok(TerminalOutcome::Session { session }) => {
             if session.id.is_empty() {
-                // A daemon that omitted the id still answered about the session
+                // A worker that omitted the id still answered about the session
                 // it was asked about; adopting the requested id keeps the
                 // control-plane index keyed the way the client addresses it.
                 let mut session = session;
@@ -1733,7 +1733,7 @@ fn session_value(session: &TerminalSession) -> Value {
             loom_provider_protocol::TerminalCloseReason::User => "user",
             loom_provider_protocol::TerminalCloseReason::ThreadDeleted => "thread-deleted",
             loom_provider_protocol::TerminalCloseReason::ProcessExit => "process-exit",
-            loom_provider_protocol::TerminalCloseReason::DaemonDisconnect => "daemon-disconnect",
+            loom_provider_protocol::TerminalCloseReason::WorkerDisconnect => "daemon-disconnect",
             loom_provider_protocol::TerminalCloseReason::EnvironmentDestroyed => "environment-destroyed",
             loom_provider_protocol::TerminalCloseReason::ThreadArchived => "thread-archived",
             loom_provider_protocol::TerminalCloseReason::OpenTimeout => "open-timeout",

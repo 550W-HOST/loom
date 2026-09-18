@@ -215,5 +215,5 @@ contract shape to match. The remaining unimplemented project routes are skills
 
 Archive is one of the loom-native control endpoints that
 [`contract.md`](contract.md) says must move off the `/api/v1/*` prefix bb's
-routes are reserved to once the client/daemon protocol split lands; until then
+routes are reserved to once the client/worker protocol split lands; until then
 it is knowingly divergent and uncovered by the contract tests.

@@ -2,13 +2,13 @@
 //!
 //! Every other ACP test in this crate uses a stub, which is what makes them
 //! deterministic. This one is the opposite: it is the end-to-end evidence that
-//! the real `pi` binary, driven through `pi-acp` linked into the daemon, streams
+//! the real `pi` binary, driven through `pi-acp` linked into the worker, streams
 //! a real turn and that a second run continues the same conversation. It needs a
 //! model (or rather, credentials for whatever provider `pi` is configured with),
 //! so it is `#[ignore]`d by default and run explicitly:
 //!
 //! ```text
-//! cargo test -p loom-daemon --test real_pi -- --ignored --nocapture
+//! cargo test -p loom-worker --test real_pi -- --ignored --nocapture
 //! ```
 //!
 //! `PI_BIN` overrides the executable; the default is `pi` on `PATH`, which is
@@ -23,11 +23,11 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use loom_daemon::acp::permission::PermissionRegistry;
-use loom_daemon::acp::session::{drive, Transport};
-use loom_daemon::provider::ProviderRun;
 use loom_domain::{ProviderEvent, RunOutcome};
 use loom_provider_protocol::ProviderSpec;
+use loom_worker::acp::permission::PermissionRegistry;
+use loom_worker::acp::session::{drive, Transport};
+use loom_worker::provider::ProviderRun;
 use tokio::sync::mpsc;
 
 /// How long one real turn may take. A cold Pi process plus a model round trip
@@ -207,7 +207,7 @@ async fn real_pi_runs_a_first_turn_and_resumes_it() {
     );
 }
 
-/// The paths a daemon actually depends on, against the real agent: no session
+/// The paths a worker actually depends on, against the real agent: no session
 /// reported for a failed run, and one terminal event when an agent that cannot
 /// be started is dispatched.
 #[tokio::test(flavor = "multi_thread")]

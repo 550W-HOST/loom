@@ -457,10 +457,10 @@ impl AppState {
     /// One script run: resolve where it runs, then hand it to that machine.
     ///
     /// Nothing here executes anything. The request travels through the relay to
-    /// the host's scope — so a daemon that was reconnecting still receives it
+    /// the host's scope — so a worker that was reconnecting still receives it
     /// on replay — and the host's report is what ends the run.
     ///
-    /// A script has no environment in the contract, so what "the owning daemon"
+    /// A script has no environment in the contract, so what "the owning worker"
     /// means is not a project's workspace but the machine the server already
     /// prefers for work it cannot place (the primary host, which on a
     /// single-machine deployment is the enrolled local machine). The workspace
@@ -478,7 +478,7 @@ impl AppState {
             .registry
             .primary_host(self.local_host_id())
             .ok_or_else(|| {
-                "no connected machine can run this automation's script; start a daemon on the \
+                "no connected machine can run this automation's script; start a worker on the \
                  machine that owns it"
                     .to_owned()
             })?;
@@ -1015,12 +1015,12 @@ mod tests {
         );
 
         // The prompt is in the thread as a user message and the thread moved to
-        // `working`. The turn's own events come from the daemon: the server
+        // `working`. The turn's own events come from the worker: the server
         // publishes the dispatch to the host's scope and waits.
         assert_eq!(
             thread_timeline(&state, &thread_id),
             vec!["thread_message_added", "thread_status_changed"],
-            "the message and the transition to working, and nothing the daemon has not reported"
+            "the message and the transition to working, and nothing the worker has not reported"
         );
 
         // The mapping is durable in both directions.
@@ -1718,7 +1718,7 @@ mod tests {
         (dispatched_to, run)
     }
 
-    /// Applies one exit report the way the daemon's socket would.
+    /// Applies one exit report the way the worker's socket would.
     fn report_exited(
         state: &AppState,
         host: &loom_domain::HostId,

@@ -1,9 +1,9 @@
 //! Host filesystem reads and listings, for the control plane.
 //!
-//! This is the daemon's half of [`HostFileRequest`]. It exists so the control
+//! This is the worker's half of [`HostFileRequest`]. It exists so the control
 //! plane can show a thread's files without ever reading its own disk: a request
 //! arrives, the machine that actually owns the path performs it, and the answer
-//! goes back up the daemon's socket.
+//! goes back up the worker's socket.
 //!
 //! # Containment is checked here too
 //!
@@ -36,7 +36,7 @@ use loom_provider_protocol::{
 use sha2::{Digest, Sha256};
 use std::path::{Component, Path, PathBuf};
 
-use crate::Daemon;
+use crate::Worker;
 
 /// Names never listed, whatever the caller asks for.
 ///
@@ -47,10 +47,10 @@ const ALWAYS_EXCLUDED_NAMES: [&str; 1] = [".git"];
 /// How many files one copy may take.
 const MAX_COPY_FILES: usize = 100;
 
-/// The daemon's answer, ready to be sent up the socket.
+/// The worker's answer, ready to be sent up the socket.
 ///
 /// A free function rather than a method so it can run on the blocking pool
-/// without borrowing the daemon.
+/// without borrowing the worker.
 pub fn answer(request: HostFileRequest) -> HostFileReport {
     let outcome = match &request.operation {
         HostFileOperation::Read {
@@ -1288,7 +1288,7 @@ fn mime_type_for(path: &Path) -> Option<String> {
     Some(mime.to_owned())
 }
 
-/// Standard base64 (RFC 4648) with padding, hand-rolled so the daemon needs no
+/// Standard base64 (RFC 4648) with padding, hand-rolled so the worker needs no
 /// encoding dependency for one field.
 fn base64_encode(bytes: &[u8]) -> String {
     const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -1313,14 +1313,14 @@ fn base64_encode(bytes: &[u8]) -> String {
     encoded
 }
 
-impl Daemon {
+impl Worker {
     /// Handles one host file request arriving on the host scope.
     ///
     /// The filesystem work runs on the blocking pool, so a large listing or a
     /// multi-megabyte read cannot stall the socket loop that everything else on
-    /// this daemon shares.
+    /// this worker shares.
     pub(crate) fn start_host_file_request(&self, request: HostFileRequest) {
-        // A request addressed to a different host is not this daemon's. The
+        // A request addressed to a different host is not this worker's. The
         // relay room should make that impossible, but a panic on an unexpected
         // frame would take the whole connection down.
         if self.host_id.as_ref() != Some(&request.host_id) {
@@ -1334,9 +1334,9 @@ impl Daemon {
                 Ok(report) => report,
                 // A panicking read has nowhere to attribute itself; answer the
                 // one request with a failure rather than dropping the whole
-                // daemon, which is what an unwrap here would do.
+                // worker, which is what an unwrap here would do.
                 Err(error) => {
-                    eprintln!("loom-daemon: host file request panicked: {error}");
+                    eprintln!("loom-worker: host file request panicked: {error}");
                     HostFileReport {
                         host_id,
                         request_id,

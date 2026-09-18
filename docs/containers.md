@@ -1,42 +1,42 @@
 # Containers
 
-`loom-server` and `loom-daemon` are published as container images, one each, for
+`loom-server` and `loom-worker` are published as container images, one each, for
 `linux/amd64` and `linux/arm64`:
 
 ```
 ghcr.io/550w-host/loom-server:<version>
-ghcr.io/550w-host/loom-daemon:<version>
+ghcr.io/550w-host/loom-worker:<version>
 ```
 
 Each image carries the **same one binary** — the one `deploy/install.sh` installs
 — and runs it in one role: `/usr/local/bin/loom server` in the `loom-server`
-image, `/usr/local/bin/loom daemon` in the `loom-daemon` image. They have the
+image, `/usr/local/bin/loom worker` in the `loom-worker` image. They have the
 same environment variables and the same data layout as the units, and the same
-split between server and daemon: the server never starts a daemon, and the daemon
+split between server and worker: the server never starts a worker, and the worker
 never needs the server's process — only its socket. Two images and one file is
 not a contradiction, it is the two roles named separately so `docker run` and
 compose can start one each. What a container changes is where the
-filesystem boundary is, and for the daemon that boundary is the whole question
-([§ What a containerised daemon cannot do](#what-a-containerised-daemon-cannot-do)).
+filesystem boundary is, and for the worker that boundary is the whole question
+([§ What a containerised worker cannot do](#what-a-containerised-worker-cannot-do)).
 
-| | `loom-server` | `loom-daemon` |
+| | `loom-server` | `loom-worker` |
 | --- | --- | --- |
 | Base | `scratch` | `alpine:3.22` (digest-pinned) |
 | File | `/usr/local/bin/loom`, and nothing else | the same file, at the same path |
-| Runs | `loom server` (`ENTRYPOINT`) | `loom daemon` (`ENTRYPOINT`) |
-| Image size | the one binary, client inside; 6.9 MB before the client was compiled in | the same binary plus its base; 10.7 MB when it was a separate daemon |
+| Runs | `loom server` (`ENTRYPOINT`) | `loom worker` (`ENTRYPOINT`) |
+| Image size | the one binary, client inside; 6.9 MB before the client was compiled in | the same binary plus its base; 10.7 MB when it was a separate worker |
 | Runs as | `1000:1000` | `1000:1000` |
 | Listens on | `0.0.0.0:38886` (`EXPOSE`d) | nothing |
 | Data volume | `/var/lib/loom/server` | `/var/lib/loom` |
 | Workspace | — | `/workspace` (bind-mounted) |
-| UI | served by the server role | the same bytes embed it; the daemon role never serves it |
+| UI | served by the server role | the same bytes embed it; the worker role never serves it |
 | Provider CLIs | none, and none needed | none — [§ Providers](#providers) |
 
 `scratch` and not a distribution for the server because it needs nothing: the
 binary is a static musl build and the process executes no provider and no tool,
 so a userland it never calls would only be attack surface. What else the image
 carries is a copied placeholder, which needs no base to copy it. `alpine` and not
-`scratch` for the daemon for the opposite reason — it exists to execute provider
+`scratch` for the worker for the opposite reason — it exists to execute provider
 CLIs, and a provider is usually not a static binary (`pi` is a Node program), so
 the image has to be a base something can be added to.
 
@@ -51,9 +51,9 @@ only) is the only UI override the image's process accepts; a `LOOM_UI_DIR` left
 in an environment file by the bundle-on-disk shape is ignored, with one line
 saying so.
 
-The images carry no `loom-server` / `loom-daemon` symlinks, because each is
+The images carry no `loom-server` / `loom-worker` symlinks, because each is
 already started in one named role by its `ENTRYPOINT`; that also means the server
-image hosts no daemon artifact for self-update unless `LOOM_ARTIFACT_DIR` points
+image hosts no worker artifact for self-update unless `LOOM_ARTIFACT_DIR` points
 at one ([§ Upgrading](#upgrading)).
 
 Neither image carries a Rust toolchain, or anything else that was needed to
@@ -72,15 +72,15 @@ curl -s http://127.0.0.1:38886/health
 {"status":"ok","protocol_version":1,"node_id":"loom-server","uptime_ms":42,"readers":8,"retained_events":0}
 ```
 
-That is the all-in-one shape: one server, one daemon on the same machine, each
+That is the all-in-one shape: one server, one worker on the same machine, each
 with its own volume. `LOOM_IMAGE_TAG` pins the version pulled, `LOOM_PORT`,
 `LOOM_HOST_NAME` and `LOOM_WORKSPACE` move the published port, the name in the
-host list and the directory the daemon works in. A private repository needs
+host list and the directory the worker works in. A private repository needs
 `docker login ghcr.io` with a token that can read packages before any of this.
 
 The workspace directory has to exist and be writable by uid 1000 *before* compose
 starts: docker creates a missing bind-mount source as `root:root`, and the
-daemon then cannot write into the very directory it exists to work in. This is the
+worker then cannot write into the very directory it exists to work in. This is the
 container form of the systemd install's `install -d -o loom -g loom`.
 
 ## Running them by hand
@@ -102,39 +102,39 @@ An execution machine joining it — here, the same docker host, on a network whe
 
 ```bash
 docker network create loom
-docker volume create loom-daemon-state
-docker run -d --name loom-daemon --restart unless-stopped \
+docker volume create loom-worker-state
+docker run -d --name loom-worker --restart unless-stopped \
   --network loom \
-  -v loom-daemon-state:/var/lib/loom \
+  -v loom-worker-state:/var/lib/loom \
   -v "$PWD/workspace:/workspace" \
   -e LOOM_SERVER_URL=http://loom-server:38886 \
   -e LOOM_HOST_NAME=builder-1 \
-  ghcr.io/550w-host/loom-daemon:0.1.0
+  ghcr.io/550w-host/loom-worker:0.1.0
 ```
 
 An execution machine joining a server somewhere else is the same command with
 that server's address in `LOOM_SERVER_URL` and no `--network` requirement:
 
 ```bash
-docker run -d --name loom-daemon --restart unless-stopped \
-  -v loom-daemon-state:/var/lib/loom \
+docker run -d --name loom-worker --restart unless-stopped \
+  -v loom-worker-state:/var/lib/loom \
   -v "$PWD/workspace:/workspace" \
   -e LOOM_SERVER_URL=http://10.0.0.5:38886 \
   -e LOOM_HOST_NAME=builder-1 \
-  ghcr.io/550w-host/loom-daemon:0.1.0
+  ghcr.io/550w-host/loom-worker:0.1.0
 ```
 
-`LOOM_SERVER_URL` has no default in either the image or the binary. A daemon
+`LOOM_SERVER_URL` has no default in either the image or the binary. A worker
 container started without it exits immediately:
 
 ```
 Error: "--server-url (or LOOM_SERVER_URL) is required"
 ```
 
-which is the failure worth having: an unconfigured daemon that guessed would
+which is the failure worth having: an unconfigured worker that guessed would
 enrol somewhere nobody expected.
 
-Everything else in `deploy/env/loom-server.env` and `deploy/env/loom-host-daemon.env`
+Everything else in `deploy/env/loom-server.env` and `deploy/env/loom-worker.env`
 works as `docker run --env-file`. Those files are written for a host — a
 loopback bind, absolute paths a systemd unit created — so a container wants
 `LOOM_BIND=0.0.0.0:38886`, and neither the data paths nor `HOME` need setting at
@@ -150,40 +150,40 @@ in both images, in a volume and on a bind mount.
 | Volume | Holds | Survives a rebuild |
 | --- | --- | --- |
 | `loom-server-data:/var/lib/loom/server` | the relay log (`shard-0.log` … `shard-7.log`) and `domain.snapshot` | the replay window and the domain state |
-| `loom-daemon-state:/var/lib/loom` | `host-id`, `host-id.cursor`, `sessions/`, and the provider's own `$HOME` configuration | the machine's identity and its place in the log |
+| `loom-worker-state:/var/lib/loom` | `host-id`, `host-id.cursor`, `sessions/`, and the provider's own `$HOME` configuration | the machine's identity and its place in the log |
 | `./workspace:/workspace` | whatever a task writes | it is the host directory, so it never went anywhere |
 
 The two volumes are declared `VOLUME`s in the images, so a container started
 without `-v` still gets somewhere to write — an anonymous volume, which `docker rm`
 takes with it. Name them.
 
-The daemon's identity is the reason its volume exists:
+The worker's identity is the reason its volume exists:
 
 ```
-$ docker logs loom-daemon
-loom-daemon "compose-verify" enrolled as host_01M2A68EPZA2D90GF854KN38Z5 with http://server:38886
-$ docker rm -f loom-daemon && docker compose ... up -d
-$ docker logs loom-daemon
-loom-daemon "compose-verify" enrolled as host_01M2A68EPZA2D90GF854KN38Z5 with http://server:38886
+$ docker logs loom-worker
+loom-worker "compose-verify" enrolled as host_01M2A68EPZA2D90GF854KN38Z5 with http://server:38886
+$ docker rm -f loom-worker && docker compose ... up -d
+$ docker logs loom-worker
+loom-worker "compose-verify" enrolled as host_01M2A68EPZA2D90GF854KN38Z5 with http://server:38886
 ```
 
 The same host id, so the UI's host list and any dispatch aimed at that machine
 still mean the same machine. Without the volume it would enrol a second host on
 every rebuild, and the old one would sit in the list forever.
 
-**Ownership is the one thing to get right.** The daemon writes as uid 1000, so a
+**Ownership is the one thing to get right.** The worker writes as uid 1000, so a
 bind-mounted workspace must be writable by uid 1000 — and everything it creates
 lands on the host owned by uid 1000. On a single-user Linux host that is usually
 already true (the first user *is* 1000); elsewhere pick one of:
 
 ```bash
-sudo chown -R 1000:1000 ./workspace        # the daemon's user owns the workspace
+sudo chown -R 1000:1000 ./workspace        # the worker's user owns the workspace
 ```
 
 ```bash
 # or run as your own uid, and give the volumes that uid as well
 docker run --user "$(id -u):$(id -g)" ...
-docker run --rm -v loom-daemon-state:/data alpine:3 sh -c 'chown -R 501:20 /data'
+docker run --rm -v loom-worker-state:/data alpine:3 sh -c 'chown -R 501:20 /data'
 ```
 
 `--user` alone is not enough: it changes the process, not the volume, and the
@@ -208,53 +208,53 @@ what decides who can reach it, and the rule in
 | --- | --- |
 | `-p 127.0.0.1:38886:38886` | reachable from that host only — the container form of the default `LOOM_BIND` |
 | `-p 38886:38886` | every interface the docker host has — the unauthenticated, command-executing API on a public address, which `remote-access.md` forbids |
-| a compose network + `expose`, or `--network` only | reachable by the daemons on that network, by nothing else |
+| a compose network + `expose`, or `--network` only | reachable by the workers on that network, by nothing else |
 
 With `network_mode: host` there is no namespace boundary left, and `0.0.0.0` is
 the host's own interfaces: set `LOOM_BIND=127.0.0.1:38886` there and publish
 nothing.
 
-The daemon image has no `EXPOSE` because the daemon binds no port — it dials out,
+The worker image has no `EXPOSE` because the worker binds no port — it dials out,
 which is what lets it run behind NAT:
 
 ```bash
-$ docker inspect loom-daemon --format '{{json .NetworkSettings.Ports}}'
+$ docker inspect loom-worker --format '{{json .NetworkSettings.Ports}}'
 {}
 ```
 
-A daemon container reaches the server over `http://` (or `ws://`). The binary
+A worker container reaches the server over `http://` (or `ws://`). The binary
 is built without a TLS client, and asking for one says so:
 
 ```
-$ docker run --rm ghcr.io/550w-host/loom-daemon:0.1.0 --server-url https://example.com
+$ docker run --rm ghcr.io/550w-host/loom-worker:0.1.0 --server-url https://example.com
 Error: WebSocket("URL error: TLS support not compiled in")
 ```
 
-So a containerised daemon does not go through a TLS-terminating proxy; it joins a
+So a containerised worker does not go through a TLS-terminating proxy; it joins a
 network that is already trusted and encrypted — the compose network, a tailnet, a
 WireGuard interface — and talks plain HTTP inside it. `remote-access.md`'s
 Tailscale setup is still exactly right for browsers and for the UI: it is the
-daemon's URL that cannot be an `https://` one.
+worker's URL that cannot be an `https://` one.
 
 ## Providers
 
-The daemon runs whatever provider the control plane dispatches, so the image that
+The worker runs whatever provider the control plane dispatches, so the image that
 has one is a deployment decision. Three ways, in the order worth considering.
 
 **1. A derived image.** Reproducible, and the only one that survives a rebuild
 without hand-work:
 
 ```dockerfile
-FROM ghcr.io/550w-host/loom-daemon:0.1.0
+FROM ghcr.io/550w-host/loom-worker:0.1.0
 USER root
 RUN apk add --no-cache nodejs npm git \
  && npm install -g @earendil-works/pi-coding-agent@0.85.1
 USER 1000:1000
 ```
 
-Then `docker build -t loom-daemon-pi:0.1.0 .` and point the compose service (or
+Then `docker build -t loom-worker-pi:0.1.0 .` and point the compose service (or
 `docker run`) at that tag. `apk add` needs a network, so this image is built where
-there is one and then shipped; it does not make the daemon need the network at
+there is one and then shipped; it does not make the worker need the network at
 start-up beyond reaching its server.
 
 **2. Mounting the host's provider in.** Works for a self-contained provider
@@ -265,7 +265,7 @@ binary and for nothing else:
 ```
 
 A Node-installed `pi` is not self-contained — the mount also implies the `node`
-interpreter and its module tree — and the daemon ends up coupled to the exact
+interpreter and its module tree — and the worker ends up coupled to the exact
 layout of the host's installation. Mount a *configuration* this way, rather than
 the program (`-v ~/.pi:/var/lib/loom/.pi:ro`), and it is a good fit.
 
@@ -274,14 +274,14 @@ finding out whether something works, and wrong as a deployment: it is invisible 
 the Dockerfile, gone on the next rebuild, and not reproducible from a tag.
 
 Whichever way, an ACP provider also needs *configuration* — for the embedded
-Pi adapter, `$HOME/.pi/agent` has to exist. `HOME` in the daemon image is
+Pi adapter, `$HOME/.pi/agent` has to exist. `HOME` in the worker image is
 `/var/lib/loom`, the state volume, so the adapter and Pi configuration survive a
 container rebuild. Mounting the host's `~/.pi` over it reuses one that already
 exists.
 
-## What a containerised daemon cannot do
+## What a containerised worker cannot do
 
-The daemon's job is to run providers and tools *on the machine the work is for*
+The worker's job is to run providers and tools *on the machine the work is for*
 and to change *that machine's* files. Inside a container, "the machine" is the
 container's filesystem plus whatever is mounted into it, so the boundary is not a
 packaging detail — it is the answer to "what can this execution machine do".
@@ -305,18 +305,18 @@ benefit.
 
 * the **server** containerises freely. It executes nothing, its state is two
   files, and its whole interface is one port. Nothing is lost.
-* the **daemon** containerises when the workspace *is* the environment the task
+* the **worker** containerises when the workspace *is* the environment the task
   needs: CI-style jobs, a task that operates on a checked-out tree, a dedicated
   single-tenant box whose workspace is bind-mounted and owned by uid 1000. Then
   the container is a better boundary than a system user, and the mounts say
   exactly what the work can touch.
-* the daemon on a machine whose whole point is that an agent can touch *the
+* the worker on a machine whose whole point is that an agent can touch *the
   machine* — a laptop with a toolchain and credentials on it — is what the
   systemd install is for. That is not a limitation to route around; it is the
   deployment that matches the job.
 
-Nothing here is specific to containers: a systemd daemon sandboxed to one
-directory has the same property, which is why the daemon unit in
+Nothing here is specific to containers: a systemd worker sandboxed to one
+directory has the same property, which is why the worker unit in
 `deploy/systemd/` is deliberately the laxer of the two.
 
 ## Compared with the systemd install
@@ -327,7 +327,7 @@ directory has the same property, which is why the daemon unit in
 | Identity | `loom` system user, uid chosen at install | `USER 1000:1000`, fixed |
 | Data | `/var/lib/loom` owned by `loom` | a named volume owned by 1000 |
 | Restart | `Restart=always` / `on-failure` | `restart: unless-stopped` |
-| Sandbox | `ProtectSystem=strict`, `NoNewPrivileges`, empty capability set (server); deliberately light (daemon) | namespaces, the image's userland, read-only-where-mounted |
+| Sandbox | `ProtectSystem=strict`, `NoNewPrivileges`, empty capability set (server); deliberately light (worker) | namespaces, the image's userland, read-only-where-mounted |
 | Limits | `MemoryMax`, `CPUQuota`, `TasksMax`, `OOMScoreAdjust` | `--memory`, `--cpus`, `--pids-limit`, `--oom-score-adj` |
 | Upgrade | install the new binary, restart the unit | pull a new tag, recreate the container |
 | What the process sees | the host | the container's filesystem + mounts |
@@ -377,7 +377,7 @@ mkdir -p dist/context
 install -m 0755 dist/loom-x86_64-unknown-linux-musl dist/context/loom-amd64
 install -m 0644 deploy/containers/keep dist/context/.keep
 docker build -f deploy/containers/loom-server.Dockerfile -t loom-server:dev dist/context
-docker build -f deploy/containers/loom-daemon.Dockerfile -t loom-daemon:dev dist/context
+docker build -f deploy/containers/loom-worker.Dockerfile -t loom-worker:dev dist/context
 ```
 
 A **multi-platform** build additionally needs a builder with the container driver
@@ -403,38 +403,38 @@ window, the enrolled host id and the provider's configuration all survive — th
 is what makes a restart an upgrade rather than a new machine.
 
 The protocol rule is unchanged and is the thing to plan around: a server and a
-daemon connect only when their protocol versions are **equal**, so server and
-daemon images are upgraded together. A daemon image that moves second has a
+worker connect only when their protocol versions are **equal**, so server and
+worker images are upgraded together. A worker image that moves second has a
 choice, and it is the same one a bare binary has (see
-[`upgrades.md`](upgrades.md) § Daemon self-update):
+[`upgrades.md`](upgrades.md) § Worker self-update):
 
-- **In-container self-update** works if the server hosts a daemon artifact for
-  this container's architecture. The daemon image already runs the loop, so all
+- **In-container self-update** works if the server hosts a worker artifact for
+  this container's architecture. The worker image already runs the loop, so all
   that is needed is `LOOM_ARTIFACT_DIR` on the server pointing at a directory
-  holding `loom-daemon-<triple>` — a copy of the release's `loom-<triple>`, which
+  holding `loom-worker-<triple>` — a copy of the release's `loom-<triple>`, which
   is the same binary the image runs — and the container restart policy then
   starts the new file exactly as `Restart=always` would. The public images are
   not laid out for it — `loom-server` is `scratch` and carries no
-  `loom-daemon`-named file — so this is
+  `loom-worker`-named file — so this is
   an explicit choice, not the default path.
 - **Rebuild the image**, which is the container-native equivalent: the
   replacement arrives as a new image and the runtime's restart policy is the
-  supervisor. Set `LOOM_AUTO_UPDATE=0` in the daemon service's environment so the
+  supervisor. Set `LOOM_AUTO_UPDATE=0` in the worker service's environment so the
   two mechanisms cannot both act on the same container.
 
-The dispatches that would have run on a daemon while its container was being
+The dispatches that would have run on a worker while its container was being
 replaced are reaped by the server (`host_stale` or `timed_out`) exactly as for a
 binary restart; the thread leaves `working` and the turn is re-issued.
 Pinning both to the same version is the safe shape:
 
 ```yaml
 image: ghcr.io/550w-host/loom-server:0.1.0
-image: ghcr.io/550w-host/loom-daemon:0.1.0
+image: ghcr.io/550w-host/loom-worker:0.1.0
 ```
 
 Rolling back is the same move in reverse: pin the tag that was working and
 recreate. The volumes are not part of the image, so they are not replaced by it.
-Because a daemon never installs an artifact older than the protocol it already
+Because a worker never installs an artifact older than the protocol it already
 speaks (§ Failure modes), a rollback is `docker run` with the older tag, never an
 in-container one.
 
@@ -447,20 +447,20 @@ image, and the version lines below keep their shape:
 
 ```
 loom-server 0.1.0 (x86_64-unknown-linux-musl, protocol 1, commit d982b2da4df3…)
-loom-daemon 0.1.0 (x86_64-unknown-linux-musl, protocol 1, commit d982b2da4df3…)
+loom-worker 0.1.0 (x86_64-unknown-linux-musl, protocol 1, commit d982b2da4df3…)
 /health ok (protocol 1, node loom-server)
 GET / -> 200 text/html, 1476 bytes
 GET /app.js -> 200 text/javascript; charset=utf-8, 1191514 bytes
 created project proj_01M2A65T2V4PWKZDA3QKS9CRMC
 published 01M2A66KC78X4J0R73EHMXRDKT to project:proj_containercheck
 replayed it byte-identically after the container was destroyed and recreated
-daemon enrolled as host_01M2A670F85BSDSZENS8FPPNE5
+worker enrolled as host_01M2A670F85BSDSZENS8FPPNE5
 enrolled as the same host_01M2A670F85BSDSZENS8FPPNE5 after a rebuild
-docker compose up: server healthy, daemon connected, no ports on the daemon
+docker compose up: server healthy, worker connected, no ports on the worker
 ```
 
 Image metadata was checked rather than assumed: `User` is `1000:1000` in both,
-the server's `Volumes` is `/var/lib/loom/server`, the daemon's `ExposedPorts` is
+the server's `Volumes` is `/var/lib/loom/server`, the worker's `ExposedPorts` is
 empty, and the data directories inside both images are owned by 1000 — which is
 what a declared volume copies into a fresh named volume. A `linux/amd64` and a
 `linux/arm64` manifest list were built and pushed for each image from the two

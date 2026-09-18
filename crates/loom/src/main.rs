@@ -1,17 +1,17 @@
 //! The one binary both roles are built from.
 //!
-//! `loom-server` and `loom-daemon` are *roles*, not artifacts: they are two
+//! `loom-server` and `loom-worker` are *roles*, not artifacts: they are two
 //! processes with one protocol between them (`docs/process-model.md`), and the
 //! thing you install is a single file that can be either. Which role it takes is
 //! decided by how it was invoked, so every existing path keeps working:
 //!
 //! ```text
-//! loom server            loom daemon --server-url http://127.0.0.1:38886
-//! loom-server            loom-daemon --server-url http://127.0.0.1:38886
+//! loom server            loom worker --server-url http://127.0.0.1:38886
+//! loom-server            loom-worker --server-url http://127.0.0.1:38886
 //! ```
 //!
 //! The second form is what the installed symlinks give you, and it is why
-//! systemd units, the daemon's self-update and anything that spawns a binary by
+//! systemd units, the worker's self-update and anything that spawns a binary by
 //! name need no changes. What this does **not** do is merge the two processes:
 //! one file can be started twice, as two supervisors expecting different
 //! lifetimes, and neither start depends on the other. `install.sh` links the
@@ -24,7 +24,7 @@ use std::process::ExitCode;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Role {
     Server,
-    Daemon,
+    Worker,
 }
 
 fn main() -> ExitCode {
@@ -51,12 +51,12 @@ fn main() -> ExitCode {
     };
 
     // The role word belongs to this dispatcher, not to a role's own parser, so
-    // it is consumed here — whether it named the role (`loom daemon …`) or
-    // repeats what the invocation name already said (`loom-daemon daemon …`,
+    // it is consumed here — whether it named the role (`loom worker …`) or
+    // repeats what the invocation name already said (`loom-worker worker …`,
     // which a supervisor copying a binary into place can produce).
     let role_word = match role {
         Role::Server => "server",
-        Role::Daemon => "daemon",
+        Role::Worker => "worker",
     };
     let mut role_args: Vec<String> = if named_by_argv0.is_some() {
         rest.clone()
@@ -80,7 +80,7 @@ fn main() -> ExitCode {
 
     // `loom server --help` must not start a server: the role has no flags of
     // its own to document, so it shows the shared usage — the same text a bare
-    // `loom` prints. The daemon documents its own flags, so it keeps them.
+    // `loom` prints. The worker documents its own flags, so it keeps them.
     if role == Role::Server
         && role_args
             .iter()
@@ -92,7 +92,7 @@ fn main() -> ExitCode {
 
     let outcome = match role {
         Role::Server => runtime.block_on(loom_server::run::run(&role_args)),
-        Role::Daemon => runtime.block_on(loom_daemon::run::run(&role_args)),
+        Role::Worker => runtime.block_on(loom_worker::run::run(&role_args)),
     };
 
     match outcome {
@@ -107,8 +107,8 @@ fn main() -> ExitCode {
 /// The role the binary was invoked under, from its own name.
 ///
 /// A symlink is how one file answers to two names: `loom-server` starts the
-/// control plane and `loom-daemon` the execution plane. This is checked before
-/// the arguments, so `loom-daemon --server-url …` and `loom daemon
+/// control plane and `loom-worker` the execution plane. This is checked before
+/// the arguments, so `loom-worker --server-url …` and `loom worker
 /// --server-url …` are the same command.
 fn role_from_argv0(argv0: &str) -> Option<Role> {
     let name = Path::new(argv0)
@@ -120,8 +120,8 @@ fn role_from_argv0(argv0: &str) -> Option<Role> {
     if name.ends_with("loom-server") {
         return Some(Role::Server);
     }
-    if name.ends_with("loom-daemon") {
-        return Some(Role::Daemon);
+    if name.ends_with("loom-worker") {
+        return Some(Role::Worker);
     }
     None
 }
@@ -136,7 +136,7 @@ fn role_from_args(args: &[String]) -> Result<Option<Role>, String> {
     };
     match first.as_str() {
         "server" => Ok(Some(Role::Server)),
-        "daemon" => Ok(Some(Role::Daemon)),
+        "worker" => Ok(Some(Role::Worker)),
         "-h" | "--help" | "help" | "-v" | "--version" | "version" => Ok(None),
         other => Err(other.to_owned()),
     }
@@ -156,7 +156,7 @@ fn print_usage(argv0: &str) {
     println!("server: the control plane. Reads LOOM_BIND, LOOM_DATA_DIR, LOOM_NODE_ID,");
     println!("        LOOM_REDIS_URL, LOOM_LOCAL_HOST_ID, LOOM_UI_PROXY,");
     println!("        LOOM_ARTIFACT_DIR and LOOM_GIT_COMMIT from the environment.");
-    println!("daemon: the execution plane on one machine. Run `loom daemon --help` for its");
+    println!("worker: the execution plane on one machine. Run `loom worker --help` for its");
     println!("        flags (--server-url, --name, --state, --provider-cmd, …).");
     println!();
     println!("The two are separate processes with one protocol between them; one role never");
@@ -177,10 +177,10 @@ mod tests {
             role_from_argv0("/usr/local/bin/loom-server"),
             Some(Role::Server)
         );
-        assert_eq!(role_from_argv0("./loom-daemon"), Some(Role::Daemon));
+        assert_eq!(role_from_argv0("./loom-worker"), Some(Role::Worker));
         // The layout `install.sh` creates: one file, two names.
         assert_eq!(role_from_argv0("loom-server"), Some(Role::Server));
-        assert_eq!(role_from_argv0("loom-daemon.exe"), Some(Role::Daemon));
+        assert_eq!(role_from_argv0("loom-worker.exe"), Some(Role::Worker));
         // The plain name carries no role: the subcommand does.
         assert_eq!(role_from_argv0("/usr/local/bin/loom"), None);
         assert_eq!(role_from_argv0("something-else"), None);
@@ -190,8 +190,8 @@ mod tests {
     fn the_first_argument_decides_the_role_when_the_name_does_not() {
         assert_eq!(role_from_args(&args(&["server"])), Ok(Some(Role::Server)));
         assert_eq!(
-            role_from_args(&args(&["daemon", "--name", "x"])),
-            Ok(Some(Role::Daemon))
+            role_from_args(&args(&["worker", "--name", "x"])),
+            Ok(Some(Role::Worker))
         );
         // No argument asks for the usage rather than guessing a role.
         assert_eq!(role_from_args(&args(&[])), Ok(None));
@@ -203,8 +203,8 @@ mod tests {
     #[test]
     fn a_name_that_ends_in_a_role_wins_over_an_argument() {
         // A symlink is explicit about the role; the arguments behind it are the
-        // role's own, so `loom-daemon server` must not turn into a server.
-        assert_eq!(role_from_argv0("loom-daemon"), Some(Role::Daemon));
+        // role's own, so `loom-worker server` must not turn into a server.
+        assert_eq!(role_from_argv0("loom-worker"), Some(Role::Worker));
         assert_eq!(role_from_args(&args(&["server"])), Ok(Some(Role::Server)));
     }
 }

@@ -14,7 +14,7 @@
 //!
 //! The stream always ends in exactly one [`ProviderEvent::TurnCompleted`]:
 //! that is the invariant that keeps a thread from being stuck in `working`
-//! forever after a provider crash, a daemon that vanished or a timeout.
+//! forever after a provider crash, a worker that vanished or a timeout.
 //!
 //! [`ProviderEvent::TurnCompleted`]: crate::ProviderEvent::TurnCompleted
 
@@ -39,7 +39,7 @@ pub enum RunOutcome {
     Failed,
     /// The run exceeded its deadline and was killed.
     TimedOut,
-    /// The daemon holding the run stopped heartbeating; the run was reaped.
+    /// The worker holding the run stopped heartbeating; the run was reaped.
     HostStale,
     /// The operator or a client cancelled the run.
     Cancelled,

@@ -9,12 +9,12 @@ What reaching the server grants an attacker:
 
 - `POST /api/v1/publish` writes any frame into any scope, and
   `GET /api/v1/replay` reads the whole retained window of every scope;
-- `GET /internal/ws` is the daemon/raw relay endpoint and can subscribe to
+- `GET /internal/ws` is the worker/raw relay endpoint and can subscribe to
   internal scopes, including `host:{id}`, which carries execution dispatches;
 - `GET /ws` is the schema-checked public UI invalidation protocol and does not
-  accept daemon commands or raw scopes;
+  accept worker commands or raw scopes;
 - `POST /api/v1/threads/{id}/messages` starts a run, which is dispatched to a
-  daemon — and a daemon runs provider CLIs and tools and reads files, as its own
+  worker — and a worker runs provider CLIs and tools and reads files, as its own
   user, on its own machine.
 
 So "who can open the port" is "who can execute commands and read data on every
@@ -76,13 +76,13 @@ Restrict *which* tailnet devices may reach it with tailnet ACLs. Being on the
 tailnet is authorization for the API's purposes; the tailnet must therefore be
 trusted, or scoped by ACL.
 
-For a daemon on another machine, point it at the tailnet HTTPS URL:
+For a worker on another machine, point it at the tailnet HTTPS URL:
 
 ```
 LOOM_SERVER_URL=https://<machine>.<tailnet>.ts.net
 ```
 
-The daemon only makes outbound connections, so it needs no inbound rule at all.
+The worker only makes outbound connections, so it needs no inbound rule at all.
 
 ## Alternative: a reverse proxy that terminates TLS and authentication
 
@@ -95,7 +95,7 @@ Requirements for any proxy:
 
 - **WebSocket upgrade** on both `/ws` and `/internal/ws`. A proxy that strips
   the upgrade or `Sec-WebSocket-Protocol` headers breaks public realtime and
-  daemon connectivity. Verify `Upgrade`, `Connection` and
+  worker connectivity. Verify `Upgrade`, `Connection` and
   `Sec-WebSocket-Protocol` are forwarded.
 - **No buffering of the socket**, or a long read timeout, so idle connections
   are not reaped mid-stream.

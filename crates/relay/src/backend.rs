@@ -11,7 +11,7 @@
 //! process restart in one crash-safe append-only file per shard.
 //!
 //! A third, [`redis::RedisBackend`], moves the log into Redis Streams so that
-//! a restart is transparent to connected daemons *and* a second node can
+//! a restart is transparent to connected workers *and* a second node can
 //! attach to the same window. It is optional configuration, not a dependency:
 //! the default build still needs no external service.
 

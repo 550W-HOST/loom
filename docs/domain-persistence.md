@@ -168,7 +168,7 @@ Reasoning:
 - the invariant the server owns is *"no thread is stuck in `working`, and every
   run ends in exactly one terminal event"*. Failing is the only outcome that
   preserves it;
-- a daemon that did keep running and later reports a terminal event is handled
+- a worker that did keep running and later reports a terminal event is handled
   idempotently: the run is no longer in the table, so the report is an accepted
   no-op (`ReportOutcome::Unknown`).
 
@@ -206,9 +206,9 @@ simply does not claim a second one while it waits.
 - **Retention is untouched.** `replay_grace` / `trim_horizon` / `ttl` and the
   per-shard cap keep exactly the semantics they had. The snapshot only decides
   how far back replay *needs* to look.
-- **Host status** is restored as recorded. No daemon can be attached to a
+- **Host status** is restored as recorded. No worker can be attached to a
   process that just started, so the first reconciliation pass marks a host that
-  is not heartbeating as disconnected and reaps its runs; a daemon that
+  is not heartbeating as disconnected and reaps its runs; a worker that
   reconnects re-enrols under its existing id and becomes connected again.
 
 If the per-shard cap evicts events newer than a snapshot's watermark (a very

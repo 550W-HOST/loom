@@ -1,6 +1,6 @@
-//! Hosts: the identity a daemon registers.
+//! Hosts: the identity a worker registers.
 //!
-//! A host is a *machine*, not a connection. Its status tracks whether a daemon
+//! A host is a *machine*, not a connection. Its status tracks whether a worker
 //! is currently attached; the id survives reconnects. There is deliberately no
 //! provider or plugin registration on a host — providers are first-class
 //! elsewhere, and hosts only say "this machine can run work".
@@ -18,7 +18,7 @@ use crate::id::HostId;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum HostKind {
-    /// A long-lived machine that daemons enroll.
+    /// A long-lived machine that workers enroll.
     #[default]
     Persistent,
 }
@@ -60,13 +60,13 @@ impl HostPermissionMode {
     }
 }
 
-/// Whether a daemon is currently attached to this host.
+/// Whether a worker is currently attached to this host.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum HostStatus {
-    /// A daemon holds an active connection.
+    /// A worker holds an active connection.
     Connected,
-    /// No daemon is attached; the host still exists.
+    /// No worker is attached; the host still exists.
     Disconnected,
 }
 
@@ -79,7 +79,7 @@ pub struct Host {
     pub name: String,
     /// Machine kind.
     pub kind: HostKind,
-    /// Whether a daemon is attached.
+    /// Whether a worker is attached.
     pub status: HostStatus,
     /// Wall-clock milliseconds of the last heartbeat, if ever seen.
     pub last_seen_at_ms: Option<u64>,
@@ -90,17 +90,17 @@ pub struct Host {
     /// The maximum ACP permission mode allowed on this host.
     #[serde(default)]
     pub max_permission_mode: HostPermissionMode,
-    /// The daemon's own data directory on this machine, as it reported at
+    /// The worker's own data directory on this machine, as it reported at
     /// enrollment.
     ///
-    /// Thread storage is a directory the **daemon** owns
+    /// Thread storage is a directory the **worker** owns
     /// (`<data_dir>/thread-storage/<thread_id>`), so the control plane can only
     /// name it if the machine told it where its data lives. Recorded at
     /// enrollment and kept across a disconnect on purpose: a
     /// `threads.storageLocation` read is a question about the layout, and it
-    /// should not start failing merely because the daemon is briefly away.
+    /// should not start failing merely because the worker is briefly away.
     ///
-    /// `None` means the host never reported one — an older daemon, or a host
+    /// `None` means the host never reported one — an older worker, or a host
     /// enrolled through a test or the reference HTTP endpoint. A storage route
     /// then answers `501 not_configured` rather than inventing a path.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -110,9 +110,9 @@ pub struct Host {
 impl Host {
     /// Registers a host and returns the event it produces.
     ///
-    /// Registration happens when a daemon first announces itself, so the
+    /// Registration happens when a worker first announces itself, so the
     /// initial status is `connected` and `last_seen_at_ms` is set. The id is
-    /// freshly minted; a daemon that wants to keep its identity across
+    /// freshly minted; a worker that wants to keep its identity across
     /// reconnects uses [`Host::register_as`].
     pub fn register(
         name: impl Into<String>,
@@ -123,7 +123,7 @@ impl Host {
 
     /// Registers a host under an identity the caller already knows.
     ///
-    /// A daemon presents the id it was enrolled with so that a reconnect is a
+    /// A worker presents the id it was enrolled with so that a reconnect is a
     /// status change on the same host, not a second machine. `None` mints a
     /// fresh id, exactly like [`Host::register`].
     pub fn register_as(
@@ -134,7 +134,7 @@ impl Host {
         Self::register_with_data_dir(id, name, None, now_ms)
     }
 
-    /// Registers a host together with the data directory its daemon reported.
+    /// Registers a host together with the data directory its worker reported.
     ///
     /// Separate from [`Host::register_as`] so the many existing callers that
     /// do not know (or care) where a machine keeps its data stay unchanged.
@@ -175,10 +175,10 @@ impl Host {
         self.updated_at_ms = now_ms;
     }
 
-    /// Records the data directory a daemon reported, returning whether it
+    /// Records the data directory a worker reported, returning whether it
     /// changed.
     ///
-    /// An enrollment is where a daemon describes itself, and a daemon that
+    /// An enrollment is where a worker describes itself, and a worker that
     /// moves its data directory (a new `--state` path on the same machine)
     /// re-enrolls with the new value. Clearing it is not possible: an absent
     /// report leaves the recorded one alone, so a transient enrollment that
@@ -209,19 +209,19 @@ impl Host {
         Ok(())
     }
 
-    /// Changes the permission ceiling without changing the daemon connection.
+    /// Changes the permission ceiling without changing the worker connection.
     pub fn set_permission_ceiling(&mut self, mode: HostPermissionMode, now_ms: u64) {
         self.max_permission_mode = mode;
         self.updated_at_ms = now_ms;
     }
 
-    /// Marks the daemon attached, returning an event on an actual change.
+    /// Marks the worker attached, returning an event on an actual change.
     pub fn mark_connected(&mut self, now_ms: u64) -> Option<DomainEvent> {
         self.last_seen_at_ms = Some(now_ms);
         self.transition(HostStatus::Connected, now_ms)
     }
 
-    /// Marks the daemon detached, returning an event on an actual change.
+    /// Marks the worker detached, returning an event on an actual change.
     pub fn mark_disconnected(&mut self, now_ms: u64) -> Option<DomainEvent> {
         self.transition(HostStatus::Disconnected, now_ms)
     }
@@ -246,17 +246,17 @@ impl Host {
 /// Chooses the host that a `"primary host"` query should use.
 ///
 /// The rule exists to make server-only operation safe. bb's server falls back
-/// to the *local* daemon's id file, so a machine with no daemon leaves file
+/// to the *local* worker's id file, so a machine with no worker leaves file
 /// browsing and host lookups stranded on a host that is intentionally absent.
 /// Here the local host is only a *preference*:
-/// 1. the declared local host, but only while a daemon is actually attached to
+/// 1. the declared local host, but only while a worker is actually attached to
 ///    it (status `connected`);
 /// 2. otherwise the most recently seen connected host of any kind — the
 ///    primary simply falls to a remote execution machine;
 /// 3. otherwise `None`, which is a normal "no host enrolled yet" answer.
 ///
 /// It deliberately cannot fail, so no caller can surface a
-/// `host_unavailable` error merely because this machine has no local daemon.
+/// `host_unavailable` error merely because this machine has no local worker.
 pub fn select_primary_host<'a>(
     hosts: &'a [Host],
     local_host_id: Option<&HostId>,
@@ -285,7 +285,7 @@ mod tests {
     }
 
     #[test]
-    fn register_as_keeps_a_daemon_supplied_identity() {
+    fn register_as_keeps_a_worker_supplied_identity() {
         let id = HostId::mint();
         let (host, _) = Host::register_as(Some(id.clone()), "laptop", 3).unwrap();
         assert_eq!(host.id, id);
@@ -368,7 +368,7 @@ mod tests {
         assert!(!host.record_data_dir(Some("/var/lib/loom"), 3));
         assert_eq!(host.updated_at_ms, 2);
 
-        // A daemon that moved its data directory re-enrolls with the new value.
+        // A worker that moved its data directory re-enrolls with the new value.
         assert!(host.record_data_dir(Some("/srv/loom"), 4));
         assert_eq!(host.data_dir.as_deref(), Some("/srv/loom"));
 
