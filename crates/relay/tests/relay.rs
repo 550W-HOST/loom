@@ -267,6 +267,53 @@ fn custom_retention_is_honoured() {
     }
 }
 
+/// History is not the replay window.
+///
+/// The window is what a reader that has just attached is *guaranteed*; the
+/// retained log is what the backend still holds. Reading a thread's timeline
+/// through the window is what made a conversation disappear from it five
+/// minutes after the last event, while every record was still there.
+#[test]
+fn the_retained_log_outlives_the_replay_window() {
+    for case in cases() {
+        let relay = case.relay(100);
+        let scope = Scope::Thread("thr_history".into());
+        let now = 1_000_000u64;
+
+        // Ten minutes old: well outside the five-minute default grace window,
+        // and still inside the backend's per-shard cap.
+        relay
+            .publish_at(scope.clone(), "{\"old\":1}", now - 600_000)
+            .unwrap();
+        relay
+            .publish_at(scope.clone(), "{\"recent\":1}", now - 10)
+            .unwrap();
+
+        let windowed = relay.replay_scope_from(&scope, now, 10).unwrap();
+        assert_eq!(
+            windowed.len(),
+            1,
+            "the window keeps only what it guarantees for {:?}",
+            case.kind
+        );
+
+        let retained = relay.retained_scope(&scope, 10).unwrap();
+        assert_eq!(
+            retained.len(),
+            2,
+            "the retained log still holds the history for {:?}",
+            case.kind
+        );
+        assert_eq!(retained[0].payload, Bytes::from_static(b"{\"old\":1}"));
+        assert_eq!(retained[1].payload, Bytes::from_static(b"{\"recent\":1}"));
+
+        // Like the windowed read, it is a tail: a limit keeps the newest.
+        let tail = relay.retained_scope(&scope, 1).unwrap();
+        assert_eq!(tail.len(), 1);
+        assert_eq!(tail[0].payload, Bytes::from_static(b"{\"recent\":1}"));
+    }
+}
+
 /// The property the durable backends exist for: a write, a clean shutdown, a
 /// fresh process over the same storage, and the grace window still replays.
 #[test]

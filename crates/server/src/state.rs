@@ -718,7 +718,10 @@ impl AppState {
     /// a previous turn's terminal event.
     fn latest_active_run_id(&self, thread_id: &ThreadId) -> Option<RunId> {
         let scope = Scope::Thread(thread_id.to_string());
-        let Ok(envelopes) = self.relay.replay_scope(&scope, usize::MAX) else {
+        // Recovery reads history, so it must not be bounded by the replay
+        // window: after a downtime longer than the grace window, a windowed
+        // read would find no boundary and mis-recover the run.
+        let Ok(envelopes) = self.relay.retained_scope(&scope, usize::MAX) else {
             return None;
         };
         let mut active = false;
@@ -756,7 +759,7 @@ impl AppState {
     /// outcome when that terminal has already been committed.
     fn recover_run_flags(&self, record: &mut RunRecord) -> Option<RunOutcome> {
         let scope = Scope::Thread(record.thread_id.to_string());
-        let Ok(envelopes) = self.relay.replay_scope(&scope, usize::MAX) else {
+        let Ok(envelopes) = self.relay.retained_scope(&scope, usize::MAX) else {
             return record.terminal_outcome;
         };
         let mut terminal = None;

@@ -1508,9 +1508,12 @@ pub(crate) fn thread_domain_events(
     thread_id: &ThreadId,
 ) -> Result<Vec<(String, u64, u64, DomainEvent)>, Response> {
     let scope = Scope::Thread(thread_id.to_string());
+    // The **retained** log, not the replay window: a timeline is history. The
+    // window is for a reader that just attached, and reading history through it
+    // hid every conversation whose thread had been quiet for five minutes.
     let envelopes = state
         .relay
-        .replay_scope(&scope, usize::MAX)
+        .retained_scope(&scope, usize::MAX)
         .map_err(|error| error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
     Ok(envelopes
         .into_iter()

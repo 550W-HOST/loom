@@ -44,8 +44,10 @@ const UNKNOWN_QUEUED_MESSAGE: &str = "qmsg_01M27Y6Q0J8V4W2C7K5N3P1R9Z";
 
 // --- harness ----------------------------------------------------------------
 
-async fn spawn_server() -> (String, AppState) {
-    let state = AppState::build(AppConfig::default()).unwrap();
+/// A server under a caller-chosen configuration, so a test can shrink a
+/// retention horizon to the point where an ordinary publish is already history.
+async fn spawn_server_with(config: AppConfig) -> (String, AppState) {
+    let state = AppState::build(config).unwrap();
     let app = router(state.clone());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -144,7 +146,11 @@ struct Fixture {
 }
 
 async fn fixture() -> Fixture {
-    let (addr, state) = spawn_server().await;
+    fixture_with(AppConfig::default()).await
+}
+
+async fn fixture_with(config: AppConfig) -> Fixture {
+    let (addr, state) = spawn_server_with(config).await;
     let now = loom_relay::now_ms();
     let (project, _) = state
         .registry
@@ -1644,6 +1650,59 @@ async fn assistant_rows(fixture: &Fixture) -> Vec<Value> {
         .into_iter()
         .filter(|row| row["kind"] == "conversation" && row["role"] == "assistant")
         .collect()
+}
+
+/// A timeline is history, not the replay window.
+///
+/// `threads.timeline` used to read the relay through its *replay window* — the
+/// last five minutes a freshly attached reader is guaranteed. A thread quiet for
+/// longer than that returned no rows at all, `maxSeq` fell to zero, and
+/// refreshing the page showed an empty conversation while every event was still
+/// in the log.
+///
+/// The window here is two milliseconds, which puts an ordinary publish outside
+/// it without the test waiting five minutes for the default to pass.
+#[tokio::test]
+async fn a_timeline_row_outlives_the_replay_window() {
+    let fixture = fixture_with(AppConfig {
+        retention: loom_relay::retention::Retention {
+            replay_grace_ms: 2,
+            trim_horizon_ms: 4,
+            ttl_ms: 6,
+            maintenance_interval_ms: 1,
+            ..Default::default()
+        },
+        ..AppConfig::default()
+    })
+    .await;
+
+    let run_id = loom_domain::RunId::mint();
+    publish_delta(&fixture, &run_id, "assistant-1", "still here");
+    tokio::time::sleep(Duration::from_millis(20)).await;
+
+    // The windowed read the route used to make has nothing left for this
+    // thread, so the assertion below can only pass on the retained log.
+    let scope = loom_relay::Scope::Thread(fixture.thread_id.clone());
+    assert!(
+        fixture
+            .state
+            .relay
+            .replay_scope(&scope, usize::MAX)
+            .unwrap()
+            .is_empty(),
+        "the event must be outside the replay window for this test to mean anything"
+    );
+
+    let rows = assistant_rows(&fixture).await;
+    assert_eq!(
+        rows.len(),
+        1,
+        "a timeline row older than the replay window must still render: {}",
+        serde_json::to_string_pretty(&rows).unwrap()
+    );
+    assert_eq!(rows[0]["text"], "still here");
+
+    fixture.state.shutdown();
 }
 
 /// A streamed answer is one timeline row, not one row per chunk.

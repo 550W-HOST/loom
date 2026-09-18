@@ -228,6 +228,30 @@ impl Relay {
         Ok(matching)
     }
 
+    /// Every frame a scope still has, oldest first, capped at `limit`.
+    ///
+    /// Unlike [`Relay::replay_scope`] this is **not** bounded by the replay
+    /// grace window. The window answers "what is a fresh reader guaranteed to
+    /// see"; this answers "what does the backend still hold". A thread's
+    /// timeline is history and needs the latter: reading it through the window
+    /// made a conversation disappear from `threads.timeline` five minutes after
+    /// its last event, while every record was still there.
+    pub fn retained_scope(&self, scope: &Scope, limit: usize) -> Result<Vec<Envelope>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let mut matching: Vec<Envelope> = self
+            .read_shard_after(scope.shard(), None, usize::MAX)?
+            .into_iter()
+            .filter(|envelope| &envelope.scope == scope)
+            .collect();
+        if matching.len() > limit {
+            let start = matching.len() - limit;
+            matching = matching.split_off(start);
+        }
+        Ok(matching)
+    }
+
     /// One forward page of a scope's retained frames, strictly after `after`.
     ///
     /// This is the **resume** view, and the distinction from
