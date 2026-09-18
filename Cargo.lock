@@ -1167,11 +1167,11 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "loom-contract",
- "loom-worker",
  "loom-domain",
  "loom-provider-protocol",
  "loom-relay",
  "loom-server",
+ "loom-worker",
  "serde",
  "serde_json",
  "tempfile",
@@ -1185,30 +1185,6 @@ dependencies = [
  "loom-domain",
  "serde",
  "serde_json",
-]
-
-[[package]]
-name = "loom-worker"
-version = "0.1.0"
-dependencies = [
- "agent-client-protocol",
- "agent-client-protocol-schema",
- "axum",
- "base64 0.22.1",
- "futures-util",
- "loom-contract",
- "loom-domain",
- "loom-provider-protocol",
- "loom-relay",
- "loom-server",
- "pi-acp",
- "portable-pty",
- "serde",
- "serde_json",
- "sha2",
- "tempfile",
- "tokio",
- "tokio-tungstenite",
 ]
 
 [[package]]
@@ -1273,6 +1249,30 @@ dependencies = [
  "tokio",
  "tokio-tungstenite",
  "tower",
+]
+
+[[package]]
+name = "loom-worker"
+version = "0.1.0"
+dependencies = [
+ "agent-client-protocol",
+ "agent-client-protocol-schema",
+ "axum",
+ "base64 0.22.1",
+ "futures-util",
+ "loom-contract",
+ "loom-domain",
+ "loom-provider-protocol",
+ "loom-relay",
+ "loom-server",
+ "pi-acp",
+ "portable-pty",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "tokio",
+ "tokio-tungstenite",
 ]
 
 [[package]]
@@ -1438,7 +1438,7 @@ dependencies = [
 [[package]]
 name = "pi-acp"
 version = "0.4.0"
-source = "git+https://github.com/AndPuQing/pi-acp?rev=b3e7e8f#b3e7e8f51b00e3aefc951367c81337ed5c01faab"
+source = "git+https://github.com/AndPuQing/pi-acp?branch=main#02965179683b5ce541387834541cc6b1b1ef3eec"
 dependencies = [
  "agent-client-protocol",
  "agent-client-protocol-schema",
