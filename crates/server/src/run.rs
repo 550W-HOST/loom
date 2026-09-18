@@ -1,26 +1,25 @@
-//! `loom-server` binary.
+//! The **server role**, as a library entry point.
 //!
-//! This is the **server-only** path. Starting it starts the control plane and
-//! nothing else: it never launches a daemon, never waits for one, and does not
-//! exit when none is present. A full-stack convenience launcher, if any, is a
-//! separate process that supervises this one and a daemon independently.
+//! Reached through `loom server` (or the `loom-server` name the same binary
+//! answers to), and server-only by construction: it never launches a daemon,
+//! never waits for one, and does not exit when none is present. The other role
+//! is a separate process — see `docs/process-model.md`.
 //!
 //! Deliberately thin: parse configuration, wire the state, serve. Every
-//! decision worth testing lives in the library.
+//! decision worth testing lives in the rest of this library.
 
+use crate::http::router;
+use crate::state::{AppConfig, AppState};
 use loom_domain::HostId;
-use loom_server::http::router;
-use loom_server::state::{AppConfig, AppState};
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+pub async fn run(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     // Before anything else: `--version` has to answer on a machine with nothing
     // to configure. The server reads every setting from the environment
     // (`deploy/env/loom-server.env`), so this one flag is its whole command
     // line surface, and the release verification runs it before it trusts a
     // downloaded binary.
-    if std::env::args().skip(1).any(|arg| arg == "--version") {
-        println!("{}", loom_server::version_line("loom-server"));
+    if args.iter().any(|arg| arg == "--version") {
+        println!("{}", crate::version_line("loom-server"));
         return Ok(());
     }
 

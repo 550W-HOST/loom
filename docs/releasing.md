@@ -5,8 +5,8 @@ Two workflows, with one responsibility each.
 [`ci.yml`](../.github/workflows/ci.yml) validates every push and pull request
 and ships nothing — that split is deliberate, and [`ci.md`](ci.md) explains it.
 [`release.yml`](../.github/workflows/release.yml) runs on a tag, builds the
-static binaries for two architectures, verifies the artifacts it is about to
-publish, attaches them to a GitHub Release, and pushes the matching container
+static binary for each of two architectures, verifies the artifacts it is about
+to publish, attaches them to a GitHub Release, and pushes the matching container
 images to GitHub Container Registry.
 
 | You want to | Do this | What you get |
@@ -16,7 +16,7 @@ images to GitHub Container Registry.
 | rehearse without publishing | Actions → **Release** → *Run workflow* | the same build, verification and packaging, uploaded as workflow artifacts; no release is created |
 | re-run a failed tag run | re-run the workflow for that tag | the release is refreshed in place (`gh release edit` + `gh release upload --clobber`), not duplicated |
 
-The tag has to name the version the binaries carry: `v` plus the `version` in
+The tag has to name the version the binary carries: `v` plus the `version` in
 [`Cargo.toml`](../Cargo.toml) (`[workspace.package]`), optionally with a suffix
 such as `-rc.1`. The `assemble` job fails on anything else, so a release page
 cannot be labelled with a version its own files do not report.
@@ -25,23 +25,23 @@ cannot be labelled with a version its own files do not report.
 
 | Job | Runs | What it proves |
 | --- | --- | --- |
-| `ui` | `pnpm install --frozen-lockfile`, `typecheck`, `test`, `pnpm --filter @bb/app run build`, `pnpm run check:bundle`, then the provenance and port-plan checks | the bundle every Rust job compiles into the server is built from the tag's own source, holds its budget, and the app tree still matches its manifest |
-| `build` (matrix: x86_64, aarch64) | `cargo build --release --locked --target <triple>` | the binaries compile from the tag with the pinned lockfile |
-| `build` → verify | `scripts/verify-release-binaries.sh` | the x86_64 pair runs, answers `/health`, serves the UI it carries with no UI variable set, hosts its own `loom-daemon` with a matching digest and a `304` for a conditional request, creates a project and enrols a daemon; the aarch64 pair is a self-contained aarch64 artifact carrying the tag's commit |
+| `ui` | `pnpm install --frozen-lockfile`, `typecheck`, `test`, `pnpm --filter @bb/app run build`, `pnpm run check:bundle`, then the provenance and port-plan checks | the bundle every Rust job compiles into the binary is built from the tag's own source, holds its budget, and the app tree still matches its manifest |
+| `build` (matrix: x86_64, aarch64) | `cargo build --release --locked -p loom --target <triple>` | the binary compiles from the tag with the pinned lockfile |
+| `build` → verify | `scripts/verify-release-binaries.sh` | the x86_64 binary runs both roles, answers `/health`, serves the UI it carries with no UI variable set, hosts the artifact it is itself with a matching digest and a `304` for a conditional request, creates a project and enrols a daemon; the aarch64 binary is a self-contained aarch64 artifact carrying the tag's commit |
 | `build` → package | `scripts/package-release.sh` | the release page's files exist, with the layout `deploy/install.sh` expects |
 | `assemble` | `sha256sum`, version and tag check, `RELEASE_NOTES.md` | one checksum file covering both targets, notes that name the protocol version, and no mislabelled tag |
-| `images` | `docker buildx create --driver docker-container`, `scripts/build-container-images.sh` | both container images build from the checksummed files, are pushed as one manifest list each, and the `linux/amd64` halves run and report the version above |
+| `images` | `docker buildx create --driver docker-container`, `scripts/build-container-images.sh` | both container images build from the checksummed file, are pushed as one manifest list each, and the `linux/amd64` halves run and report the version above |
 | `release` | `sha256sum -c`, `gh release create`/`edit`/`upload` | the checksummed bytes reached the release page (tag runs only) |
 
 `release` is the only job that needs `contents: write`, `images` the only one that
 needs `packages: write`, and `release` the only job that is skipped on a manual
 run.
 
-## Why the app is built before the binaries are built
+## Why the app is built before the binary is built
 
-The client is compiled into the server binary: `crates/server/build.rs` walks
-`apps/app/dist` and embeds every file, so a release ships one artifact per
-process, with no UI directory to stage, point at or get wrong
+The client is compiled into the binary: `crates/server/build.rs` walks
+`apps/app/dist` and embeds every file, so a release ships one artifact with no
+UI directory to stage, point at or get wrong
 ([`ui.md`](ui.md)). The bundle is therefore an *input* to the Rust jobs rather
 than something shipped beside them, which is why the workflow builds the app
 itself first, hands it to the target jobs as an artifact, and gates every Rust
@@ -80,7 +80,14 @@ anywhere in this pipeline. The cross toolchain is the toolchain
 are built by the same `cargo build --target <triple>` with no per-target flags
 in the workflow.
 
-Both results are self-contained, and they are not the same ELF shape:
+Both results are self-contained, and they are not the same ELF shape. These were
+recorded before the client was compiled in **and** before the two roles became
+one file: `loom-server` and `loom-daemon` were separate artifacts then, so the
+list below holds two of each. Today's artifact is one `loom` per target, in the
+same two shapes (static PIE on x86_64, static `ET_EXEC` on aarch64) and larger
+than the old `loom-server` line by the bundle it carries; the old `loom-daemon`
+line is the closest thing to a floor for it. The four lines are kept as the
+record of that run.
 
 ```
 loom-server  6.4 MB   x86_64   static PIE     (no interpreter, no NEEDED)
@@ -88,11 +95,6 @@ loom-daemon  2.4 MB   x86_64   static PIE
 loom-server  6.3 MB   aarch64  static, ET_EXEC (no dynamic section at all)
 loom-daemon  2.4 MB   aarch64  static, ET_EXEC
 ```
-
-These were recorded before the client was compiled into the server: the app's
-dist is now inside `loom-server`, so that binary is larger by the size of the
-bundle it carries, while `loom-daemon` is unchanged. The four lines above are
-kept as the record of that run.
 
 A static PIE carries a dynamic section so it can relocate itself, and `file`
 therefore calls it "dynamically linked"; `ldd` calls the same file statically
@@ -106,15 +108,14 @@ dynamic section.
 
 | Asset | Contents |
 | --- | --- |
-| `loom-<version>-<target>.tar.gz` | the two binaries, `deploy/` and `README.md` |
-| `loom-server-<target>` | the control plane alone |
-| `loom-daemon-<target>` | the execution daemon alone |
-| `SHA256SUMS` | checksums for every file above, with relative names |
+| `loom-<version>-<target>.tar.gz` | the binary, `deploy/` and `README.md` |
+| `loom-<target>` | the one binary, both roles |
+| `SHA256SUMS` | checksums for both files above, with relative names |
 
-The archive's top directory holds the binaries *unnamed* —
-`loom-0.1.0-x86_64-unknown-linux-musl/loom-server`, not `…/loom-server-x86_64-…`
-— because that is the name `deploy/install.sh` looks for under its
-`LOOM_BIN_SOURCE`. An extracted archive is therefore installable with the
+The archive's top directory holds the binary *named for its target* —
+`loom-0.1.0-x86_64-unknown-linux-musl/loom-x86_64-unknown-linux-musl` — which is
+a name `deploy/install.sh` accepts under its `LOOM_BIN_SOURCE` (a local build's
+`loom` is the other). An extracted archive is therefore installable with the
 directory itself as the source:
 
 ```bash
@@ -123,14 +124,15 @@ cd loom-0.1.0-x86_64-unknown-linux-musl
 sudo LOOM_BIN_SOURCE=. ./deploy/install.sh server
 ```
 
-There is no UI beside the binaries, and nothing for an install to place: the
-product app is inside `loom-server` ([`ui.md`](ui.md)). The archive is therefore
-just the two binaries, `deploy/` and `README.md`, so `SHA256SUMS` naming
-`loom-server-*`, `loom-daemon-*` and `*.tar.gz` covers the whole download, and
+There is no UI beside the binary, and nothing for an install to place: the
+product app is inside it ([`ui.md`](ui.md)). The archive is therefore
+just the binary, `deploy/` and `README.md`, so `SHA256SUMS` naming
+`loom-<target>` and `*.tar.gz` covers the whole download, and
 verifying the tarball verifies the client too.
 
-`deploy/install.sh server` installs the binaries, the units and the environment
-template; there is no bundle to copy and no UI variable to fill in, because the
+`deploy/install.sh server` installs the binary and its role symlinks, the units
+and the environment template; there is no bundle to copy and no UI variable to
+fill in, because the
 client arrives in the binary. That reverses the old rule — an install that
 placed no bundle used to be a failure — and an environment file from an earlier
 release may still carry a `LOOM_UI_DIR` line: it is inert, the server serves the
@@ -140,8 +142,8 @@ client in its binary and says once that it is ignoring the variable
 `SHA256SUMS` names its files without a directory prefix, so `sha256sum -c
 SHA256SUMS` works in whatever directory a downloader put them in.
 
-The same two binaries are also published as container images — one per process,
-for `linux/amd64` and `linux/arm64` — built by the `images` job from the files
+The same one binary is also published as container images — one per role,
+for `linux/amd64` and `linux/arm64` — built by the `images` job from the file
 above rather than from a second build of the same commit, so a `docker pull`
 carries what `sha256sum -c SHA256SUMS` accepted:
 
@@ -160,9 +162,10 @@ and an honest account of what a containerised daemon cannot do.
 The pipeline verifies what it publishes; a downloader verifies what they
 received. Neither step is optional, and they are different steps.
 
-**In the pipeline**, `scripts/verify-release-binaries.sh` runs the x86_64 pair
-the way a deployment does — a durable data directory, a real port, real sockets.
-The recorded output of the pipeline run that published `0e74262f` is:
+**In the pipeline**, `scripts/verify-release-binaries.sh` runs the x86_64 binary
+in both roles the way a deployment does — a durable data directory, a real port,
+real sockets. The recorded output of the pipeline run that published `0e74262f`
+is:
 
 ```
   loom-server 0.1.0 (x86_64-unknown-linux-musl, protocol 1, commit 0e74262f…)
@@ -175,15 +178,19 @@ The recorded output of the pipeline run that published `0e74262f` is:
   created project proj_01M29YZ0QT1G3S055KX08W6N4A and read it back from the list
 ```
 
-Four things there are worth naming. The artifacts are *executed*, which is the
+Four things there are worth naming. The artifact is *executed*, which is the
 only way a musl/glibc difference appears. The daemon *enrols*, which is the
-protocol handshake a mismatched pair of artifacts would refuse. The project write
+protocol handshake a mismatched server and daemon would refuse. The project write
 follows it, naming the host that daemon enrolled as — `projects.create` takes a
-source — so the claim is that the pair works together, not that each half works
-alone. And the binaries are asked about themselves rather than read from the
+source — so the claim is that the two roles work together, not that each half
+works alone. And the file is asked about itself rather than read from the
 source tree, so what is checked is the file that will be downloaded.
 
-The two asset lines in that block are **historical**: `/app.js` and `/style.css`
+That block was recorded when each role was its own file, which is why it prints
+two version lines; today the script asks the one binary three ways — bare, then
+`server`, then `daemon` — and all three lines name the same build and commit.
+The two asset lines in it are **historical** in the other sense too: `/app.js`
+and `/style.css`
 are the buildless reference client, which no longer exists, and the run predates
 the product app. What the script checks now is the client inside the binary: it
 starts the server with no UI variable set, which is the whole configuration a
@@ -191,9 +198,10 @@ release needs, and asserts that `/` answers `200` with an HTML shell naming its
 `/assets/*.js`, that that asset answers `200` as `text/javascript`, that a deep
 client route answers the same document (so history routing works), that an
 unknown `/api/v1` route is a JSON `404` rather than the shell, and that starting
-the same binary with `LOOM_UI_DIR` set exits non-zero with the error naming the
-removal. The historical `/app.js` and `/style.css` are what a bundle-on-disk
-release served; the served paths today are the app's own hashed assets.
+the same binary with `LOOM_UI_DIR` set still serves the embedded app and says
+once that it is ignoring the variable. The historical `/app.js` and
+`/style.css` are what a bundle-on-disk release served; the served paths today are
+the app's own hashed assets.
 
 R3 added three lines to that output. They were recorded on a **local rehearsal**
 from a checkout rather than by a tag run, which is why the digests and the
@@ -206,22 +214,26 @@ change replaces them with runner values:
   GET /install/loom-daemon (If-None-Match) -> 304
 ```
 
-These are the self-update source of truth (`docs/upgrades.md`). The server was
-started from `$bin_dir/loom-server`, so `$bin_dir` is its artifact directory by
-default — the arrangement `deploy/install.sh` produces — and the daemon it hosts
-is compared **against the `loom-daemon` in that same directory**: the served
-digest must equal both the digest of the body that came over the socket and the
-digest of the built binary. A release that hosted the wrong daemon, or served a
-digest that did not match its bytes, fails here rather than on a customer's
+These are the self-update source of truth (`docs/upgrades.md`). The script lays
+the binary out the way `deploy/install.sh` does — `loom` plus the relative
+`loom-server` and `loom-daemon` symlinks — and starts it from there, so the
+artifact it hosts is resolved through the `loom-daemon` symlink beside the
+server's executable. What is served is compared **against the built binary**:
+the served digest must equal both the digest of the body that came over the
+socket and the digest of the `loom` the script started from. A release that
+hosted the wrong binary, or served a digest that did not match its bytes, fails
+here rather than on a customer's
 machine. The conditional request is checked in the same breath, because a `304`
-is what keeps a fleet's reconnects from re-downloading every binary.
+is what keeps a fleet's reconnects from re-downloading the binary. The middle
+line was recorded before the two roles became one file, when the hosted
+`loom-daemon` was a separate build; the digest it names is that build's.
 
 The two routes also have a shape guard in
 `crates/server/tests/release_verification.rs`, which is the W-554 lesson applied
 here: the script runs only on a `v*` tag, so a response shape that stopped
 matching what it parses would stay invisible until a release.
 
-The aarch64 pair cannot be executed on an x86_64 runner, so it is verified with
+The aarch64 binary cannot be executed on an x86_64 runner, so it is verified with
 `--elf-only`: the same script, checking everything a foreign machine can — the
 ELF is a 64-bit ARM aarch64 object, it has no interpreter and no `NEEDED`
 library, and the tag's commit is stamped in the file. Running it under qemu
@@ -233,14 +245,15 @@ same source.
 
 ```bash
 sha256sum -c SHA256SUMS
-./loom-server --version
+./loom-x86_64-unknown-linux-musl server --version
 ```
 
 The second line is the same self-description the pipeline checked, and it is
 what tells you which release and which commit you are holding before you
 install it. A maintainer with an arm64 machine can additionally run
-`scripts/verify-release-binaries.sh <extracted-dir>` there — the script is not
-x86_64-specific, only native.
+`scripts/verify-release-binaries.sh <dir>` there — the script is not
+x86_64-specific, only native. It expects the file as `<dir>/loom`, and also
+accepts a downloaded `loom-<target>` when `--expect-target <triple>` names it.
 
 ## Reproducing a release locally
 
@@ -248,15 +261,15 @@ Every step the pipeline runs, run by hand from the repository root. The same
 commands, in the same order:
 
 ```bash
-# 1. the bundle the Rust jobs compile into the server
+# 1. the bundle the Rust jobs compile into the binary
 pnpm install --frozen-lockfile
 pnpm run typecheck && pnpm run test
 pnpm --filter @bb/app run build
 pnpm run check:bundle
 
-# 2. both targets, into target/<triple>/release
-cargo build --release --locked --target x86_64-unknown-linux-musl
-cargo build --release --locked --target aarch64-unknown-linux-musl
+# 2. the one binary for both targets, into target/<triple>/release
+cargo build --release --locked -p loom --target x86_64-unknown-linux-musl
+cargo build --release --locked -p loom --target aarch64-unknown-linux-musl
 
 # 3. run the one this machine can run; check the other is what it claims
 scripts/verify-release-binaries.sh target/x86_64-unknown-linux-musl/release \
@@ -264,12 +277,12 @@ scripts/verify-release-binaries.sh target/x86_64-unknown-linux-musl/release \
 scripts/verify-release-binaries.sh target/aarch64-unknown-linux-musl/release --elf-only \
   --expect-target aarch64-unknown-linux-musl --expect-commit "$(git rev-parse HEAD)"
 
-# 4. dist/: the two bare binaries and the archive, per target
+# 4. dist/: the bare binary and the archive, per target
 scripts/package-release.sh x86_64-unknown-linux-musl
 scripts/package-release.sh aarch64-unknown-linux-musl
 
 # 5. what the assemble job does
-cd dist && sha256sum -- loom-server-* loom-daemon-* *.tar.gz >SHA256SUMS && sha256sum -c SHA256SUMS
+cd dist && sha256sum -- loom-* >SHA256SUMS && sha256sum -c SHA256SUMS
 
 # 6. what the images job does, from the same dist/ (docker with buildx)
 scripts/build-container-images.sh --platform linux/amd64,linux/arm64 \
@@ -282,15 +295,17 @@ loom-server:dev --version`.
 
 `scripts/package-release.sh` reads the version from `cargo metadata`, so it
 names the archive the same way the pipeline does without running anything, and
-it never reads the binaries — which is what lets it package an aarch64 pair on
+it never reads the binary — which is what lets it package an aarch64 artifact on
 an x86_64 machine.
 
 ## Where the version comes from
 
-`--version` is a single line:
+Asking either role of the binary prints a single line, and only the role name
+differs between them:
 
 ```
 loom-server 0.1.0 (x86_64-unknown-linux-musl, protocol 1, commit 0e74262f23475e4f3e5bf32ba41c08a33d26af47)
+loom-daemon 0.1.0 (x86_64-unknown-linux-musl, protocol 1, commit 0e74262f23475e4f3e5bf32ba41c08a33d26af47)
 ```
 
 The version is `CARGO_PKG_VERSION`. The other three fields are stamped at build
@@ -312,8 +327,8 @@ with `env!`:
   ([`upgrades.md`](upgrades.md)). Seeing it in `--version` means an operator can
   find a version mismatch before a daemon reports one for them.
 
-Both binaries print the same line, and the verification fails if the two
-disagree: they ship as one set and are upgraded together.
+The commit, target and protocol come from one build, so the two lines can never
+disagree: there is one file, and it is upgraded as a whole.
 
 ## Measured duration
 
@@ -337,8 +352,9 @@ on a fresh runner they are not.
 
 The bundle row measured the reference client's esbuild step and its
 committed-bytes check; the job now runs the app's Vite build and its budget
-check, which is not what those 5.3 s measured. Everything else in the table is
-unchanged work.
+check, which is not what those 5.3 s measured. The two `cargo build` rows
+measured the whole workspace before the build narrowed to the one binary
+(`-p loom`); everything else in the table is unchanged work.
 
 | | |
 | --- | --- |

@@ -175,8 +175,11 @@ which skips on a runner with no configured `pi`.
 The `self-update` job was added after those two runs, so it has no runner number
 here. Measured locally, busy otherwise idle: **20.7 s** for all three tests
 (`--ignored --test-threads=1`), of which the acceptance scenario is ~18 s —
-downloading ~2.4 MB, replacing the binary, and running a provider turn — and
-1.8 s is the deliberate wait proving the disabled switch keeps running. It has
+downloading the artifact, replacing the binary, and running a provider turn —
+and 1.8 s is the deliberate wait proving the disabled switch keeps running. That
+run downloaded a 2.4 MB daemon-only artifact; the artifact is the one binary
+now, so the download is larger by the client it carries and the timing is a
+record rather than today's number. It has
 no network dependency, so on a runner it is bounded by the cargo build it shares
 with the other jobs.
 
@@ -275,7 +278,7 @@ server. None of it ran on a push or a pull request before this job:
 to it was sound was to run pnpm by hand.
 
 The app is also the compile-time input of every Rust job. `crates/server/build.rs`
-walks `apps/app/dist` and embeds it in the server binary, so a client that does
+walks `apps/app/dist` and embeds it in the binary, so a client that does
 not build is not a degraded server — it is a server that does not build at all.
 That is what makes this job required rather than advisory, and why it ends by
 uploading the bundle as `ui-dist` for the jobs below to download.
@@ -401,24 +404,24 @@ upstream release cannot turn the job red without a commit here.
 
 ## The `self-update` job
 
-`crates/daemon/tests/self_update.rs` covers the acceptance scenario from
+`crates/loom/tests/self_update.rs` covers the acceptance scenario from
 [`upgrades.md`](upgrades.md) — *protocol mismatch → update → reconnect → the run
 is handled correctly* — and like the `pi` job it is `#[ignore]`d because it
 executes real processes. Unlike the `pi` job it needs **nothing external**: the
-artifact the fake server serves is the `loom-daemon` this repository just built
-(`CARGO_BIN_EXE_loom-daemon`), so the job is allowed to fail and is a candidate
-for the required set.
+artifact the fake server serves is the binary this repository just built
+(`CARGO_BIN_EXE_loom`), driven in its daemon role, so the job is allowed to fail
+and is a candidate for the required set.
 
 What it does, in one process:
 
 1. starts a fake server that answers `welcome` with `PROTOCOL_VERSION + 1` and
 exposes the two `/install/*` routes;
-2. runs the real daemon binary against it — the daemon refuses, fetches the
+2. runs the real binary as a daemon against it — the daemon refuses, fetches the
 artifact, verifies its SHA-256, `rename`s it over its own executable, and exits
 **0**;
 3. asserts the file on disk is now the served bytes (whole-file comparison, not
 a marker), executable, with the digest recorded;
-4. starts the **installed file** against a **real** `loom-server`, dispatches a
+4. starts the **installed file** against a **real** control plane, dispatches a
 real provider turn through the relay, and asserts the thread reaches `idle` with
 the expected streamed output in the replayable log.
 
@@ -441,8 +444,8 @@ Two properties of the harness are worth knowing before editing it:
 Run it locally with the same commands the job uses:
 
 ```bash
-cargo build -p loom-daemon -p loom-server --locked
-cargo test -p loom-daemon --test self_update --locked -- --ignored --test-threads=1
+cargo build -p loom --locked
+cargo test -p loom --test self_update --locked -- --ignored --test-threads=1
 ```
 
 `--test-threads=1` is not required by the logic (each test uses its own

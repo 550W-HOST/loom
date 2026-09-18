@@ -244,12 +244,12 @@ Only the embedded `pi-acp` library speaks that private protocol internally.
 
 ```bash
 # Server-only, as usual.
-cargo run -p loom-server
+cargo run -p loom -- server
 
 # A daemon that runs the provider the control plane dispatched. The built-in Pi
 # provider is ACP through embedded `pi-acp`; a custom command must be an ACP
 # agent speaking stdio.
-cargo run -p loom-daemon -- --server-url http://127.0.0.1:38886 --name laptop
+cargo run -p loom -- daemon --server-url http://127.0.0.1:38886 --name laptop
 
 # Create a workspace pointing at an existing project directory, bind a thread
 # to it, then post a message. The provider runs in that directory. Both the

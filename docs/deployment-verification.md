@@ -18,14 +18,14 @@ claims in [`upgrades.md`](upgrades.md).
 | --- | --- |
 | Host | Ubuntu 20.04.6 LTS, x86_64, kernel 5.15 (clean workspace) |
 | Revision | `a0f8730` + this change set |
-| Toolchain | `rustc 1.98.0`, build profile `release` (`cargo build --release`) |
-| Binaries | `target/release/loom-server`, `target/release/loom-daemon` |
+| Toolchain | `rustc 1.98.0`, build profile `release` (`cargo build --release -p loom`) |
+| Binary | `target/release/loom`, run once as `loom server` and once as `loom daemon` (the recorded run below predates the one-binary change and used `target/release/loom-server` and `target/release/loom-daemon`) |
 | Server bind | `127.0.0.1:38899` (a test port; the unit default is `38886`) |
 | UI source | the reference client embedded in the binary — **superseded**, see § 1 |
 | Relay backend | `LOOM_DATA_DIR` (durable disk) |
 | Provider | a stub ACP agent speaking JSON-RPC, because the built-in Pi adapter is not needed for this socket-path check |
 
-The provider stub is worth stating plainly: `loom-daemon` now drives ACP, and
+The provider stub is worth stating plainly: the daemon role now drives ACP, and
 the stub speaks the same ACP JSON-RPC requests and `session/update` notifications
 as a native agent. The stub is only there to stand in for the agent binary; the
 dispatch, relay, report and replay path under test is the production one.
@@ -56,16 +56,20 @@ done
 ## 1. Server, daemon, UI, dispatch
 
 Commands from `deploy/README.md` § Quick start and `docs/provider-protocol.md`
-§ Running it, with the release binaries.
+§ Running it, with a release build of the binary.
 
 ```bash
 LOOM_BIND=127.0.0.1:38899 LOOM_DATA_DIR=…/verify/server LOOM_NODE_ID=verify-node \
-  target/release/loom-server
+  target/release/loom server
 
-target/release/loom-daemon --server-url http://127.0.0.1:38899 \
+target/release/loom daemon --server-url http://127.0.0.1:38899 \
   --name verify-machine --state …/verify/machine/host-id \
   --provider-cmd …/verify/fake-acp.sh
 ```
+
+The commands above are the ones a rerun uses. The recorded output below is from
+the run as it happened, when the two roles were two files — so the log lines it
+quotes keep the older names, which the one binary still prints.
 
 Recorded output:
 
@@ -124,7 +128,7 @@ What this proves, item by item:
 > reference client, which was compiled into the binary with `include_bytes!` and
 > was the default UI. That client is still gone, and the product app has taken
 > its place *inside* the same binary: `crates/server/build.rs` embeds
-> `apps/app/dist` and `loom-server` serves it, so there is nothing to configure —
+> `apps/app/dist` and the server role serves it, so there is nothing to configure —
 > `LOOM_UI_DIR`, the variable the bundle-on-disk shape used, is simply not read
 > any more. The recorded command in this step named it, so a rerun starts the
 > server without it and checks the served shell and its `/assets/*.js` and
@@ -135,7 +139,7 @@ What this proves, item by item:
 
 ## 2. Restart: replay window and host identity
 
-Commands from `docs/upgrades.md` § What a restart does not lose. Same binaries,
+Commands from `docs/upgrades.md` § What a restart does not lose. The one binary,
 restarting the server against the same `LOOM_DATA_DIR` and the daemon against
 the same state file.
 
@@ -192,6 +196,12 @@ loom-host-daemon@i.service: Command /usr/local/bin/loom-daemon is not executable
 # parsed; the only finding is the expected pre-install missing binary
 ```
 
+Both units now name a role of the one binary — `ExecStart=/usr/local/bin/loom
+server` and `ExecStart=/usr/local/bin/loom daemon` — so a rerun of those two
+`systemd-analyze verify` lines reports the same single finding against
+`/usr/local/bin/loom`. The quoted lines above are the run as recorded, when the
+units started two files.
+
 ## 4. Installing from a release
 
 The path in [`../deploy/README.md`](../deploy/README.md) § Install from a
@@ -204,7 +214,7 @@ behaviour rather than ours were then checked against real GitHub, read-only.
 | --- | --- |
 | Server | the machine that ran the control plane, `127.0.0.1:38911` |
 | Clean machine | `alpine:3.20` amd64 container: no `cargo`/`rustc`, `deploy/` obtained from the release archive |
-| Artifacts | `loom-server-x86_64-unknown-linux-musl` 6.4 MB, `loom-daemon-x86_64-unknown-linux-musl` 2.4 MB (both static), `SHA256SUMS`, `loom-0.1.0-x86_64-unknown-linux-musl.tar.gz` |
+| Artifacts | `loom-server-x86_64-unknown-linux-musl` 6.4 MB, `loom-daemon-x86_64-unknown-linux-musl` 2.4 MB (both static), `SHA256SUMS`, `loom-0.1.0-x86_64-unknown-linux-musl.tar.gz` — the record of a run before the two files became one, which a release now publishes as the single asset `loom-x86_64-unknown-linux-musl` |
 
 ```bash
 # on the clean machine: the archive, then one install command
@@ -238,10 +248,11 @@ What this proves, item by item:
   network.
 - The archive's own SHA-256 was checked against the release's `SHA256SUMS`
   (`…: OK`) before it was unpacked — that step is the operator's, the installer
-  checks the binaries it fetches itself.
+  checks the binary it fetches itself.
 - The installer named the assets it fetched and the digests it checked, then
-  installed `/usr/local/bin/loom-{server,daemon}`; both hashes equal the
-  published ones.
+  installed them at `/usr/local/bin/loom-server` and `/usr/local/bin/loom-daemon`;
+  both hashes equal the published ones. (A rerun of the same command installs
+  the one `loom` and links those two names to it.)
 - The daemon enrolled as `host_01M29Z…`, and the server reported **that** host id
   `connected` while the container was still running: not just installed, joined.
 
@@ -249,7 +260,7 @@ Failure modes, against the same staged release:
 
 | Scenario | Recorded result |
 | --- | --- |
-| digest does not match | `SHA-256 mismatch for loom-server-…: SHA256SUMS says dead2f89…, the download is 56a02f89…`, non-zero exit, pre-existing `/usr/local/bin/loom-server` byte-identical, daemon never fetched |
+| digest does not match | `SHA-256 mismatch for loom-server-…: SHA256SUMS says dead2f89…, the download is 56a02f89…`, non-zero exit, the pre-existing installed binary byte-identical, daemon never fetched (recorded when the release published two assets) |
 | asset not in the release | `cannot download <url> — set GITHUB_TOKEN if … is private`, nothing installed |
 | unpublished architecture (`armv7l`) | `no release binary for machine type armv7l: …`, no download attempted |
 | non-Linux host | `release binaries are Linux-only`, no download attempted |
@@ -280,7 +291,7 @@ Honest boundaries, so the next run knows where to start:
   not exercised here. The relevant host-side invariant is checkable anywhere:
   `ss -ltnp | grep 38886` must show `127.0.0.1:38886`, never `0.0.0.0:38886`.
 - **The Node execution plane.** bb's `apps/host-daemon` is not checked in yet;
-  `loom-daemon` was verified as the reference implementation of the same
+  the daemon role was verified as the reference implementation of the same
   contract.
 - **Daemon self-update.** This run predates it. The acceptance scenario from
   [`upgrades.md`](upgrades.md) — *protocol mismatch → update → reconnect → the

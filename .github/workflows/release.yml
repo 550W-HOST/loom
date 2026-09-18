@@ -137,15 +137,21 @@ jobs:
           # shared key would restore the wrong one.
           prefix-key: release-${{ matrix.target }}
 
-      - name: cargo build --release --locked --target ${{ matrix.target }}
-        run: cargo build --release --locked --target "${{ matrix.target }}"
+      # `-p loom` is the whole artifact: one package, one file in
+      # `target/<triple>/release`, with the server library the app is compiled
+      # into and the daemon library as its dependencies — so this is the only
+      # build the release needs.
+      - name: cargo build --release --locked -p loom --target ${{ matrix.target }}
+        run: cargo build --release --locked -p loom --target "${{ matrix.target }}"
 
-      # The x86_64 artifact is started, `/health` answered, the app it serves out
-      # of the binary checked (entry document, its asset, a client route fallen
-      # back to it, an unknown API path answered as a JSON 404), a `LOOM_UI_DIR`
-      # refused, a project created and a daemon enrolled against it. `GITHUB_SHA`
-      # is the commit the build stamped, so a mismatch fails here.
-      - name: Verify the x86_64 binaries end to end
+      # The x86_64 artifact is started in both roles, `/health` answered, the app
+      # it serves out of the binary checked (entry document, its asset, a client
+      # route fallen back to it, an unknown API path answered as a JSON 404), a
+      # `LOOM_UI_DIR` left in the environment ignored, the artifact the server
+      # hosts checked against the bytes that were built, a project created and a
+      # daemon enrolled against it. `GITHUB_SHA` is the commit the build stamped,
+      # so a mismatch fails here.
+      - name: Verify the x86_64 binary end to end
         if: matrix.target == 'x86_64-unknown-linux-musl'
         run: |
           scripts/verify-release-binaries.sh "target/${{ matrix.target }}/release" \
@@ -157,7 +163,7 @@ jobs:
       # release path. Everything a foreign machine can still check is checked —
       # the ELF machine, the absence of a loader and of shared libraries, and
       # the commit the build stamped into the file.
-      - name: Verify the aarch64 binaries are self-contained aarch64 artifacts
+      - name: Verify the aarch64 binary is a self-contained aarch64 artifact
         if: matrix.target == 'aarch64-unknown-linux-musl'
         run: |
           scripts/verify-release-binaries.sh "target/${{ matrix.target }}/release" \
@@ -206,25 +212,28 @@ jobs:
           # covered without touching this line. Every file the release page
           # offers is named here, which is what makes `sha256sum -c SHA256SUMS`
           # a check a downloader can run over the whole download.
-          sha256sum -- loom-server-* loom-daemon-* *.tar.gz >SHA256SUMS
+          sha256sum -- loom-*-unknown-linux-musl *.tar.gz >SHA256SUMS
           sha256sum -c SHA256SUMS
 
-      # The x86_64 binary is the only artifact this runner can execute, and it
-      # is where the version, the protocol version and the commit in the notes
-      # come from — the published artifact's own claim rather than a second
-      # reading of the source.
-      - name: Read the version the artifacts report
+      # The x86_64 artifact is the only one this runner can execute, and it is
+      # where the version, the protocol version and the commit in the notes come
+      # from — the published artifact's own claim rather than a second reading of
+      # the source.
+      - name: Read the version the artifact reports
         id: release
         run: |
           set -euo pipefail
           # The executable bit does not survive an artifact round trip, hence
           # the chmod before asking the binary anything.
-          chmod +x dist/loom-server-x86_64-unknown-linux-musl
-          server_line="$(dist/loom-server-x86_64-unknown-linux-musl --version)"
-          echo "$server_line"
-          version="$(awk '{print $2}' <<<"$server_line")"
-          protocol="$(sed -nE 's/.*protocol ([0-9]+).*/\1/p' <<<"$server_line")"
-          commit="$(sed -nE 's/.*commit ([0-9a-f]+).*/\1/p' <<<"$server_line")"
+          chmod +x dist/loom-x86_64-unknown-linux-musl
+          # Started with no role, the file answers with its identity line first
+          # and the usage text after it; the identity is the first line.
+          line="$(dist/loom-x86_64-unknown-linux-musl --version)"
+          line="${line%%$'\n'*}"
+          echo "$line"
+          version="$(awk '{print $2}' <<<"$line")"
+          protocol="$(sed -nE 's/.*protocol ([0-9]+).*/\1/p' <<<"$line")"
+          commit="$(sed -nE 's/.*commit ([0-9a-f]+).*/\1/p' <<<"$line")"
           [[ -n "$version" && -n "$protocol" && -n "$commit" ]]
 
           # A tag that disagrees with the version inside the binary is a release
@@ -259,30 +268,29 @@ jobs:
           cat >dist/RELEASE_NOTES.md <<'NOTES'
           # loom __VERSION__
 
-          Static musl binaries for Linux, x86_64 and aarch64. Both are
+          A static musl binary for Linux, x86_64 and aarch64. It is
           self-contained: no glibc, no dynamic loader to find, no shared library
           to install.
 
           **Protocol version: __PROTOCOL__.** A server and a daemon connect only
-          when their protocol versions are equal, so upgrade them together.
-          Both binaries are version __VERSION__, and the commit they were built
+          when their protocol versions are equal, so upgrade them together. The
+          file is version __VERSION__ in either role, and the commit it was built
           from is `__COMMIT__`.
 
           ## Downloads
 
           | Asset | What it is |
           | --- | --- |
-          | `loom-__VERSION__-x86_64-unknown-linux-musl.tar.gz` | server and daemon for x86_64, with `deploy/` |
-          | `loom-__VERSION__-aarch64-unknown-linux-musl.tar.gz` | server and daemon for aarch64, with `deploy/` |
-          | `loom-server-<target>` | the control plane alone |
-          | `loom-daemon-<target>` | the execution daemon alone |
+          | `loom-__VERSION__-x86_64-unknown-linux-musl.tar.gz` | `loom` for x86_64, with `deploy/` |
+          | `loom-__VERSION__-aarch64-unknown-linux-musl.tar.gz` | `loom` for aarch64, with `deploy/` |
+          | `loom-<target>` | the binary alone: `loom server` or `loom daemon` |
           | `SHA256SUMS` | checksums for every file above |
 
           ## Container images
 
-          The same two binaries, built from these files and published to GitHub
+          The same binary, built from these files and published to GitHub
           Container Registry for `linux/amd64` and `linux/arm64`, running as
-          uid/gid 1000:1000:
+          uid/gid 1000:1000 — one file, one role per image:
 
           ```
           docker pull __REGISTRY__/loom-server:__VERSION__
@@ -302,16 +310,18 @@ jobs:
           ```
 
           `LOOM_BIN_SOURCE=.` is the extracted directory itself: the archive
-          holds the two binaries unnamed at its top level for exactly that. There
-          is nothing else to install — the server carries the product app
-          compiled into it, so it serves its own client. `deploy/README.md` has
-          the rest.
+          holds the binary under this release's own `loom-<target>` name, which
+          is what `deploy/install.sh` installs. It places `loom` in
+          `/usr/local/bin` and `loom-server` / `loom-daemon` as symlinks to it, so
+          one file is both processes. There is nothing else to install — the
+          server carries the product app compiled into it, so it serves its own
+          client. `deploy/README.md` has the rest.
 
           ## Verify before you install
 
           ```
           sha256sum -c SHA256SUMS
-          ./loom-server --version
+          ./loom-<target> --version
           ```
 
           The second line prints the version, the target triple, the protocol
@@ -319,23 +329,25 @@ jobs:
 
           ## What was verified before publishing
 
-          * the x86_64 pair was started with no UI configuration at all: the app
-            it serves out of the binary answered on `/` with its entry document,
-            that document's script was served, a client route fell back to the
-            document, an unknown `/api` path was a JSON 404, a `LOOM_UI_DIR` in
-            the environment was refused, a project was created and read back, and
-            a daemon enrolled against it (`scripts/verify-release-binaries.sh`)
-          * the product app was built from source here and compiled into both
-            binaries (`crates/server/build.rs`), so the client an installing
+          * the x86_64 artifact was started in both roles with no UI
+            configuration at all: the app it serves out of the binary answered on
+            `/` with its entry document, that document's script was served, a
+            client route fell back to the document, an unknown `/api` path was a
+            JSON 404, a `LOOM_UI_DIR` left in the environment was ignored, the
+            artifact the server hosts for self-update hashed to the built file, a
+            project was created and read back, and the same file in its daemon
+            role enrolled against it (`scripts/verify-release-binaries.sh`)
+          * the product app was built from source here and compiled into the
+            binary (`crates/server/build.rs`), so the client an installing
             operator gets is the one this run typechecked, tested and built —
             `cargo build` fails rather than shipping a server without it
-          * both pairs were checked as self-contained artifacts: 64-bit ELF of
+          * both artifacts were checked as self-contained files: 64-bit ELF of
             the target machine, no interpreter, no `NEEDED` shared library, and
             the commit above stamped into the file
           * both container images were built from the checksummed files above,
-            pushed, and the x86_64 pair was pulled back and started: `--version`
-            matched the version in this page, and the server image served the
-            app compiled into its binary
+            pushed, and their x86_64 images were pulled back and started:
+            `--version` matched the version in this page, and the server image
+            served the app compiled into its binary
           NOTES
           # `|` as the delimiter for the registry: a repository path contains
           # slashes. `${REGISTRY,,}` is the lowercase form GHCR requires.
@@ -433,6 +445,11 @@ jobs:
       # list is pulled back (or taken from what was loaded) and asked what it is:
       # a push that carried somebody else's bytes, or an image built from the
       # wrong architecture's binary, fails here rather than in a user's terminal.
+      # Each image's entrypoint is what names its role, so the `--version` below
+      # is answered by `loom server` or `loom daemon` — the same file, started in
+      # the role its image is for, and checked against the version this page
+      # names.
+      #
       # The server image is asked a second question — whether it serves the app —
       # because `--version` alone cannot tell a server built with the app
       # compiled in from one built against a stale `apps/app/dist`: a missing
@@ -513,7 +530,7 @@ jobs:
           # these are the bytes that are about to be published.
           sha256sum -c SHA256SUMS
 
-          assets=(loom-server-* loom-daemon-* *.tar.gz SHA256SUMS)
+          assets=(loom-*-unknown-linux-musl *.tar.gz SHA256SUMS)
           # A tag with a suffix is a pre-release by its own naming, which is how
           # `v0.2.0-rc.1` is published without becoming "the latest release".
           case "$GITHUB_REF_NAME" in

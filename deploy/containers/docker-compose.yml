@@ -59,7 +59,7 @@ services:
       - server
     environment:
       # The server's service name on this network, not a URL a browser would
-      # open. Plain http:// because the binaries carry no TLS client: a
+      # open. Plain http:// because the binary carries no TLS client: a
       # containerised daemon reaches the server over a network that is itself
       # trusted (this compose network, a tailnet, a VPN), and TLS is terminated
       # for the browsers by something in front (docs/remote-access.md).
@@ -70,12 +70,14 @@ services:
       # inside this image needs a derived image (docs/containers.md § Providers).
       # LOOM_PROVIDER_CMD: /usr/local/bin/pi
       #
-      # Self-update is on by default. Here the artifact it would fetch must come
-      # from a server that hosts one; the image is `scratch`-free only on the
-      # daemon side, and a containerised server carries no daemon binary. Set
-      # LOOM_ARTIFACT_DIR on the server, or leave this off and rebuild the image,
-      # which is the same "replace the file, restart the process" with the
-      # container runtime as the supervisor (docs/upgrades.md).
+      # Self-update is on by default, and this image could do it: it is the
+      # `scratch`-free side of the pair, so a replaced file has somewhere to
+      # land. What it needs is a server that hosts one — the server image runs
+      # the same `loom` file as the server role, and hosts an artifact only from
+      # a directory holding a `loom-daemon` name (the layout `deploy/install.sh`
+      # leaves, or a LOOM_ARTIFACT_DIR set to one). Set that, or leave this off
+      # and rebuild the image, which is the same "replace the file, restart the
+      # process" with the container runtime as the supervisor (docs/upgrades.md).
       # LOOM_AUTO_UPDATE: "0"
     volumes:
       # The host identity, the replay cursor and the provider's own

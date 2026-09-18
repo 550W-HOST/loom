@@ -50,7 +50,13 @@ use loom_server::PROTOCOL_VERSION;
 use serde_json::json;
 
 /// The real daemon binary, built by cargo for this integration test.
-const DAEMON_BINARY: &str = env!("CARGO_BIN_EXE_loom-daemon");
+/// The one installed binary, driven in its daemon role.
+///
+/// `cargo` sets this for the crate whose binary is under test, which is why
+/// this file lives beside the binary it starts: the daemon has no artifact of
+/// its own any more.
+const BINARY: &str = env!("CARGO_BIN_EXE_loom");
+const DAEMON_ROLE: &str = "daemon";
 
 /// The marker appended to make the stale variant distinguishable.
 const STALE_MARKER: &[u8] = b"\n# a stale daemon, awaiting self-update\n";
@@ -171,7 +177,7 @@ async fn fake_artifact(
 /// Installs the stale variant of the real daemon at `path` and makes it
 /// executable. Appended bytes are invisible to the ELF loader, so this runs.
 fn install_stale_variant(path: &Path) {
-    let mut stale = std::fs::read(DAEMON_BINARY).expect("the built daemon binary");
+    let mut stale = std::fs::read(BINARY).expect("the built daemon binary");
     stale.extend_from_slice(STALE_MARKER);
     std::fs::write(path, &stale).unwrap();
     #[cfg(unix)]
@@ -251,6 +257,7 @@ async fn eventually(mut predicate: impl FnMut() -> bool) -> bool {
 /// Runs a daemon binary to completion, returning `(status, stderr)`.
 async fn run_to_completion(binary: &Path, args: &[&str]) -> (std::process::ExitStatus, String) {
     let output = tokio::process::Command::new(binary)
+        .arg(DAEMON_ROLE)
         .args(args)
         .output()
         .await
@@ -269,6 +276,7 @@ async fn spawn_daemon(
 ) -> (tokio::process::Child, tokio::task::JoinHandle<String>) {
     std::fs::create_dir_all(state_path.parent().unwrap()).unwrap();
     let mut child = tokio::process::Command::new(binary)
+        .arg(DAEMON_ROLE)
         .arg("--server-url")
         .arg(server_url)
         .arg("--state")
@@ -327,7 +335,7 @@ async fn a_protocol_mismatch_updates_the_daemon_and_the_new_binary_runs_a_turn()
 
     // The bytes the server hosts are the real daemon this repository built, so
     // the "new binary" the supervisor starts is a production executable.
-    let real_binary = std::fs::read(DAEMON_BINARY).expect("the built daemon binary");
+    let real_binary = std::fs::read(BINARY).expect("the built daemon binary");
     let (fake_url, fake) = spawn_fake_server(real_binary.clone()).await;
     assert_eq!(fake.protocol_version, PROTOCOL_VERSION + 1);
 
@@ -529,7 +537,7 @@ async fn a_second_update_against_an_unchanged_artifact_is_a_304_and_a_restart() 
     let install_dir = tempfile::tempdir().unwrap();
     let install_path: PathBuf = install_dir.path().join("loom-daemon");
     install_stale_variant(&install_path);
-    let real_binary = std::fs::read(DAEMON_BINARY).expect("the built daemon binary");
+    let real_binary = std::fs::read(BINARY).expect("the built daemon binary");
     let (fake_url, fake) = spawn_fake_server(real_binary.clone()).await;
     let state_path = install_dir.path().join("state").join("host-id");
 
@@ -597,13 +605,14 @@ async fn a_daemon_with_self_update_disabled_never_fetches_and_keeps_running() {
     let install_path: PathBuf = install_dir.path().join("loom-daemon");
     install_stale_variant(&install_path);
     let stale = std::fs::read(&install_path).unwrap();
-    let real_binary = std::fs::read(DAEMON_BINARY).expect("the built daemon binary");
+    let real_binary = std::fs::read(BINARY).expect("the built daemon binary");
     let (fake_url, fake) = spawn_fake_server(real_binary).await;
     let state_path = install_dir.path().join("state").join("host-id");
 
     // A real daemon process with self-update disabled. It must not exit: a
     // refused connection is retried, and the reason is logged.
     let mut child = tokio::process::Command::new(&install_path)
+        .arg(DAEMON_ROLE)
         .arg("--server-url")
         .arg(&fake_url)
         .arg("--state")

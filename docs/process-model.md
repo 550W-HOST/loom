@@ -5,14 +5,21 @@ question the current code layout cannot answer on its own: **loom's control
 plane is Rust, but bb's daemon — the part that actually runs provider CLIs — is
 Node.** How do the two relate?
 
+The two are **roles of one binary** (`loom`, built by `cargo build --release -p
+loom`) and *two processes*. Which role a start takes is decided by the
+invocation name — `loom server` / `loom daemon`, or the installed `loom-server`
+/ `loom-daemon` symlinks onto the same file — and nothing else about the
+boundary below changed with that: no lifetime, no resource domain and no
+supervision relationship was merged.
+
 ## The decision
 
 They are two processes with one protocol between them, and neither owns the
 other.
 
-- **`loom-server` (Rust)** is the control plane: state, HTTP, WebSocket, the
+- **`loom-server` (Rust)** is the control plane role: state, HTTP, WebSocket, the
   relay. It never starts, supervises, waits for, or requires a daemon.
-- **`loom-daemon`** is the execution plane: it runs on a machine, dials the
+- **`loom-daemon`** is the execution plane role: it runs on a machine, dials the
   server *outbound*, enrolls as a host, and executes work. It never starts,
   supervises, or requires the server to be co-located or in the same process
   tree.
@@ -42,16 +49,16 @@ Three, and the first two are the primitives; the third is a convenience.
 
 | Path | Command | What it starts | What it assumes |
 | --- | --- | --- | --- |
-| **server-only** | `loom-server` | the control plane | nothing. No daemon, no data dir |
-| **daemon-only** | `loom-daemon --server-url <URL>` | one execution machine | a reachable server URL |
+| **server-only** | `loom server` (installed as `loom-server`) | the control plane | nothing. No daemon, no data dir |
+| **daemon-only** | `loom daemon --server-url <URL>` (installed as `loom-daemon`) | one execution machine | a reachable server URL |
 | **full stack** | a supervisor starting both as *separate children* | both | a local server URL |
 
-`loom-server` is server-only by construction. It does not probe for a daemon,
+The server role is server-only by construction. It does not probe for a daemon,
 and it does not exit when none connects — see the test
 `a_server_with_no_daemon_is_up_and_a_remote_daemon_becomes_primary`. The
 full-stack path is retained as "single-machine convenience", but it is a
-supervisor over the same two binaries: it starts two independent children and
-can stop either alone.
+supervisor over the same binary started twice: it starts two independent
+children and can stop either alone.
 
 ## The daemon contract
 
@@ -125,8 +132,8 @@ The desktop shell is a UI plus, optionally, two process switches:
 
 | Switch | Starts | Stopping it |
 | --- | --- | --- |
-| **local server** | a `loom-server` child | the UI disconnects from that URL |
-| **local execution daemon** | a `loom-daemon` child pointed at the current server URL | the host is marked disconnected; the window is untouched |
+| **local server** | a control-plane child (`loom server`, or the installed `loom-server` name) | the UI disconnects from that URL |
+| **local execution daemon** | an execution-plane child (`loom daemon`, or `loom-daemon`) pointed at the current server URL | the host is marked disconnected; the window is untouched |
 
 The two switches are independent. Turning the daemon off must not reload the
 window, because a daemon is a property of the *machine* and the UI is a client
@@ -135,18 +142,23 @@ machine A.
 
 ## What is in this repository today
 
-- `loom-server` — server-only control plane, with host enrollment, heartbeats,
-  disconnects and primary-host resolution.
-- `loom-daemon` — the reference daemon-only entry point. It enrolls, follows its
-  `host:{id}` room through the relay with replay on reconnect, and runs the
-  provider the control plane dispatches.
+- **`loom`** — the one artifact: a single binary (`cargo build --release -p
+  loom`) that carries both roles, plus the `loom-server` / `loom-daemon`
+  symlinks an install adds beside it. Which role a start takes comes from the
+  invocation name, so `loom server` and `loom-server` are the same start, and so
+  are `loom daemon` and `loom-daemon`. Nothing starts the other role.
+- **The server role** — server-only control plane, with host enrollment,
+  heartbeats, disconnects and primary-host resolution.
+- **The daemon role** — the reference daemon-only entry point. It enrolls,
+  follows its `host:{id}` room through the relay with replay on reconnect, and
+  runs the provider the control plane dispatches.
 - `loom-provider-protocol` — the dispatch/report contract between the two. ACP
   framing and provider-specific translation stay in the daemon, not in the
   control plane; the terminal-state guarantee is specified in
   [`provider-protocol.md`](provider-protocol.md).
 - The bb Node sources (`apps/`, `packages/`) are **not yet checked in**; they
   land beside the Rust workspace as a separate step. Until then the Node-facing
-  acceptance items are specified here and exercised through `loom-daemon`,
+  acceptance items are specified here and exercised through the daemon role,
   which implements the ACP execution boundary and embeds `pi-acp`.
 
 ## Deploying it
@@ -159,7 +171,7 @@ Server-only, as its own unit:
 ```bash
 # /etc/systemd/system/loom-server.service
 [Service]
-ExecStart=/usr/local/bin/loom-server
+ExecStart=/usr/local/bin/loom server
 Environment=LOOM_BIND=127.0.0.1:38886
 Environment=LOOM_DATA_DIR=/var/lib/loom/server
 ```
@@ -169,14 +181,17 @@ Daemon-only, on a different machine, as its own unit (one instance per server):
 ```bash
 # /etc/systemd/system/loom-host-daemon@builder-1.service
 [Service]
-ExecStart=/usr/local/bin/loom-daemon
+ExecStart=/usr/local/bin/loom daemon
 Environment=LOOM_SERVER_URL=https://loom.example.com
 Environment=LOOM_HOST_NAME=builder-1
 Environment=LOOM_DAEMON_STATE=/var/lib/loom/machines/builder-1/host-id
 ```
 
-The two units have separate resource domains and separate lifetimes. Stopping
-the daemon cannot stop `loom-server`, and vice versa.
+Both units start the same installed file in a different role — the
+`/usr/local/bin/loom-server` and `/usr/local/bin/loom-daemon` names a unit may
+use instead are symlinks onto it — and they have separate resource domains and
+separate lifetimes. Stopping the daemon cannot stop the control plane, and vice
+versa.
 
 Keep `LOOM_BIND` on loopback. The API has no authentication and a daemon
 executes commands and reads files on its machine, so binding it to a public

@@ -8,22 +8,28 @@ ghcr.io/550w-host/loom-server:<version>
 ghcr.io/550w-host/loom-daemon:<version>
 ```
 
-They are the same processes as the binaries `deploy/install.sh` installs, with
-the same environment variables, the same data layout and the same split between
-server and daemon: the server never starts a daemon, and the daemon never needs
-the server's process — only its socket. What a container changes is where the
+Each image carries the **same one binary** — the one `deploy/install.sh` installs
+— and runs it in one role: `/usr/local/bin/loom server` in the `loom-server`
+image, `/usr/local/bin/loom daemon` in the `loom-daemon` image. They have the
+same environment variables and the same data layout as the units, and the same
+split between server and daemon: the server never starts a daemon, and the daemon
+never needs the server's process — only its socket. Two images and one file is
+not a contradiction, it is the two roles named separately so `docker run` and
+compose can start one each. What a container changes is where the
 filesystem boundary is, and for the daemon that boundary is the whole question
 ([§ What a containerised daemon cannot do](#what-a-containerised-daemon-cannot-do)).
 
 | | `loom-server` | `loom-daemon` |
 | --- | --- | --- |
 | Base | `scratch` | `alpine:3.22` (digest-pinned) |
-| Image size | one binary, client inside; 6.9 MB before the client was compiled in | 10.7 MB |
+| File | `/usr/local/bin/loom`, and nothing else | the same file, at the same path |
+| Runs | `loom server` (`ENTRYPOINT`) | `loom daemon` (`ENTRYPOINT`) |
+| Image size | the one binary, client inside; 6.9 MB before the client was compiled in | the same binary plus its base; 10.7 MB when it was a separate daemon |
 | Runs as | `1000:1000` | `1000:1000` |
 | Listens on | `0.0.0.0:38886` (`EXPOSE`d) | nothing |
 | Data volume | `/var/lib/loom/server` | `/var/lib/loom` |
 | Workspace | — | `/workspace` (bind-mounted) |
-| UI | embedded in the `loom-server` binary | — |
+| UI | served by the server role | the same bytes embed it; the daemon role never serves it |
 | Provider CLIs | none, and none needed | none — [§ Providers](#providers) |
 
 `scratch` and not a distribution for the server because it needs nothing: the
@@ -37,12 +43,18 @@ the image has to be a base something can be added to.
 The server image is the static binary and nothing else: the product app is
 compiled into it ([`ui.md`](ui.md)), so there is no directory to copy, no
 `LOOM_UI_DIR` to set and no second artifact that could disagree with the binary.
-The 6.9 MB in the size column was measured before the client was embedded, so
-today's image is larger by the bundle it carries — but it is still one file, and
-one thing to pull, tag and roll back. `LOOM_UI_PROXY` (development only) is the
-only UI override the image's process accepts; a `LOOM_UI_DIR` left in an
-environment file by the bundle-on-disk shape is ignored, with one line saying
-so.
+The 6.9 MB and 10.7 MB in the size column were measured before the client was
+embedded and before the two roles became one file, so today's images are the same
+one binary with or without the `alpine` base under it — but each is still one
+file, and one thing to pull, tag and roll back. `LOOM_UI_PROXY` (development
+only) is the only UI override the image's process accepts; a `LOOM_UI_DIR` left
+in an environment file by the bundle-on-disk shape is ignored, with one line
+saying so.
+
+The images carry no `loom-server` / `loom-daemon` symlinks, because each is
+already started in one named role by its `ENTRYPOINT`; that also means the server
+image hosts no daemon artifact for self-update unless `LOOM_ARTIFACT_DIR` points
+at one ([§ Upgrading](#upgrading)).
 
 Neither image carries a Rust toolchain, or anything else that was needed to
 build it.
@@ -210,8 +222,8 @@ $ docker inspect loom-daemon --format '{{json .NetworkSettings.Ports}}'
 {}
 ```
 
-A daemon container reaches the server over `http://` (or `ws://`). The binaries
-are built without a TLS client, and asking for one says so:
+A daemon container reaches the server over `http://` (or `ws://`). The binary
+is built without a TLS client, and asking for one says so:
 
 ```
 $ docker run --rm ghcr.io/550w-host/loom-daemon:0.1.0 --server-url https://example.com
@@ -317,7 +329,7 @@ directory has the same property, which is why the daemon unit in
 | Restart | `Restart=always` / `on-failure` | `restart: unless-stopped` |
 | Sandbox | `ProtectSystem=strict`, `NoNewPrivileges`, empty capability set (server); deliberately light (daemon) | namespaces, the image's userland, read-only-where-mounted |
 | Limits | `MemoryMax`, `CPUQuota`, `TasksMax`, `OOMScoreAdjust` | `--memory`, `--cpus`, `--pids-limit`, `--oom-score-adj` |
-| Upgrade | install new binaries, restart the unit | pull a new tag, recreate the container |
+| Upgrade | install the new binary, restart the unit | pull a new tag, recreate the container |
 | What the process sees | the host | the container's filesystem + mounts |
 
 The resource limits are suggestions in both cases and have to be sized to the
@@ -325,26 +337,29 @@ machine; the asymmetry `deploy/README.md` describes — a bounded control plane,
 execution plane allowed to exhaust a host and be OOM-killed first — carries over
 unchanged.
 
-`alpine` is musl, and the binaries are musl-static, so nothing is being
+`alpine` is musl, and the binary is musl-static, so nothing is being
 translated: the same file runs on any glibc or musl host, with or without this
 image.
 
 ## Building an image
 
-The images are built from the **packaged** binaries, the ones the release page
+The images are built from the **packaged** binary, the one the release page
 publishes, so an image and a download carry the same bytes:
 
 ```bash
-pnpm --filter @bb/app run build              # the bundle cargo compiles into the server
-cargo build --release --locked --target x86_64-unknown-linux-musl
+pnpm --filter @bb/app run build              # the bundle cargo compiles into the binary
+cargo build --release -p loom --locked --target x86_64-unknown-linux-musl
 scripts/package-release.sh x86_64-unknown-linux-musl
 scripts/build-container-images.sh --platform linux/amd64 --tags dev
 docker run --rm loom-server:dev --version
 ```
 
-`build-container-images.sh` stages a small build context — one binary per Docker
-architecture name, plus a `.keep` placeholder the Dockerfiles copy to create
-their data directories owned by 1000 — and hands it to `docker buildx`. The
+`build-container-images.sh` stages a small build context — the one binary per
+Docker architecture name (`loom-amd64`, `loom-arm64`), plus a `.keep` placeholder
+the Dockerfiles copy to create their data directories owned by 1000 — and hands
+it to `docker buildx`. Each Dockerfile copies that file to
+`/usr/local/bin/loom` and names its role in the `ENTRYPOINT`, which is why one
+context serves both images. The
 placeholders exist because a `RUN` is what would otherwise be needed to create
 and `chown` a directory, and a `RUN` is what drags an emulator into a
 cross-platform build. Neither Dockerfile executes anything, so one invocation
@@ -359,8 +374,7 @@ By hand, without the script, a single platform:
 
 ```bash
 mkdir -p dist/context
-install -m 0755 dist/loom-server-x86_64-unknown-linux-musl dist/context/loom-server-amd64
-install -m 0755 dist/loom-daemon-x86_64-unknown-linux-musl dist/context/loom-daemon-amd64
+install -m 0755 dist/loom-x86_64-unknown-linux-musl dist/context/loom-amd64
 install -m 0644 deploy/containers/keep dist/context/.keep
 docker build -f deploy/containers/loom-server.Dockerfile -t loom-server:dev dist/context
 docker build -f deploy/containers/loom-daemon.Dockerfile -t loom-daemon:dev dist/context
@@ -397,9 +411,11 @@ choice, and it is the same one a bare binary has (see
 - **In-container self-update** works if the server hosts a daemon artifact for
   this container's architecture. The daemon image already runs the loop, so all
   that is needed is `LOOM_ARTIFACT_DIR` on the server pointing at a directory
-  holding `loom-daemon-<triple>`, and the container restart policy then starts
-  the new binary exactly as `Restart=always` would. The public images are not
-  laid out for it — `loom-server` is `scratch` and carries no daemon — so this is
+  holding `loom-daemon-<triple>` — a copy of the release's `loom-<triple>`, which
+  is the same binary the image runs — and the container restart policy then
+  starts the new file exactly as `Restart=always` would. The public images are
+  not laid out for it — `loom-server` is `scratch` and carries no
+  `loom-daemon`-named file — so this is
   an explicit choice, not the default path.
 - **Rebuild the image**, which is the container-native equivalent: the
   replacement arrives as a new image and the runtime's restart policy is the
@@ -425,7 +441,9 @@ in-container one.
 ## What was verified
 
 A clean-machine run of the images built from this tree's `x86_64-unknown-linux-musl`
-artifacts, on a host whose `docker` had no loom installed:
+artifacts, on a host whose `docker` had no loom installed. It was recorded when
+each role was a separate file; the same commands now run the one file in each
+image, and the version lines below keep their shape:
 
 ```
 loom-server 0.1.0 (x86_64-unknown-linux-musl, protocol 1, commit d982b2da4df3…)
@@ -446,6 +464,6 @@ the server's `Volumes` is `/var/lib/loom/server`, the daemon's `ExposedPorts` is
 empty, and the data directories inside both images are owned by 1000 — which is
 what a declared volume copies into a fresh named volume. A `linux/amd64` and a
 `linux/arm64` manifest list were built and pushed for each image from the two
-targets' artifacts, and the aarch64 binaries inside the arm64 images were checked
+targets' artifacts, and the aarch64 binary inside the arm64 images was checked
 against the artifacts' SHA-256 — but only the amd64 halves are ever executed, here
 or in the pipeline.

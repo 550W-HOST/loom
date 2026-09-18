@@ -9,13 +9,13 @@
 #
 # The build context is not the repository: it is the staged directory
 # `scripts/build-container-images.sh` writes (docs/containers.md), which holds
-# one binary per architecture named for the Docker architecture, plus `.keep`:
+# one binary per architecture, named for the Docker architecture, plus `.keep`:
 #
 #   scripts/package-release.sh x86_64-unknown-linux-musl
 #   scripts/build-container-images.sh --platform linux/amd64
 #
 # so a hand-built image is those two commands over a context of a few megabytes,
-# and the binaries the image carries are the ones the release page publishes.
+# and the bytes the image carries are the ones the release page publishes.
 FROM scratch
 
 # `amd64` or `arm64`, set by BuildKit for the platform being built. One
@@ -31,14 +31,14 @@ ARG TARGETARCH
 # 1000:1000 then cannot create `shard-0.log` in it. Copying a placeholder is how
 # an owned directory is made without a `RUN`, which is the one instruction that
 # would need emulation.
-COPY --chown=1000:1000 loom-server-${TARGETARCH} /usr/local/bin/loom-server
+COPY --chown=1000:1000 loom-${TARGETARCH} /usr/local/bin/loom
 COPY --chown=1000:1000 .keep /var/lib/loom/server/.keep
 
 # The `loom` identity, as a number. Numeric rather than a name because a name
 # needs an /etc/passwd this image deliberately does not carry, and because
 # 1000:1000 has to mean the same thing in both images and on a bind-mounted
-# workspace. Both binaries are statically linked, so nothing here needs a
-# passwd entry to resolve a user; the process simply is that uid.
+# workspace. The binary is statically linked, so nothing here needs a passwd
+# entry to resolve a user; the process simply is that uid.
 USER 1000:1000
 
 # The defaults are the environment file's values, adjusted for a container:
@@ -77,4 +77,7 @@ EXPOSE 38886
 # starting an empty one.
 VOLUME /var/lib/loom/server
 
-ENTRYPOINT ["/usr/local/bin/loom-server"]
+# The one binary, in its server role. `loom server` rather than a `loom-server`
+# symlink: the image carries a single file, and the ENTRYPOINT is where a
+# container's role is written down.
+ENTRYPOINT ["/usr/local/bin/loom", "server"]

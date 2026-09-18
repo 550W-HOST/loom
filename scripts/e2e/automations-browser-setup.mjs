@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 /**
- * Boots the stack the browser acceptance run drives: a real `loom-server`, a
- * real `loom-daemon` with an ACP stub provider, and the product app built as a
- * static bundle.
+ * Boots the stack the browser acceptance run drives: a real server role, a
+ * real daemon role with an ACP stub provider, and the product app compiled into
+ * the binary.
  *
  * The browser talks to **the server's origin**, serving the same bundle a
  * release ships (`LOOM_UI_DIR`) — not a dev server, so the acceptance run
@@ -123,7 +123,7 @@ function shutdown() {
 process.on("SIGINT", shutdown);
 process.on("SIGTERM", shutdown);
 
-for (const binary of ["loom-server", "loom-daemon"]) {
+for (const binary of ["loom"]) {
   const path = join(repoRoot, "target", "debug", binary);
   if (!existsSync(path)) {
     process.stderr.write(`[e2e] ${path} is missing: run \`cargo build -p ${binary}\` first\n`);
@@ -137,7 +137,7 @@ if (!existsSync(join(uiDir, "index.html"))) {
   process.exit(1);
 }
 
-start("server", join(repoRoot, "target", "debug", "loom-server"), [], {
+start("server", join(repoRoot, "target", "debug", "loom"), ["server"], {
   LOOM_BIND: `127.0.0.1:${serverPort}`,
   LOOM_DATA_DIR: serverDataDir,
   LOOM_UI_DIR: uiDir,
@@ -145,8 +145,8 @@ start("server", join(repoRoot, "target", "debug", "loom-server"), [], {
 
 start(
   "daemon",
-  join(repoRoot, "target", "debug", "loom-daemon"),
-  ["--server-url", apiOrigin, "--name", "e2e"],
+  join(repoRoot, "target", "debug", "loom"),
+  ["daemon", "--server-url", apiOrigin, "--name", "e2e"],
   {
     LOOM_DATA_DIR: daemonDataDir,
     LOOM_PROVIDER_CMD: stubPath,

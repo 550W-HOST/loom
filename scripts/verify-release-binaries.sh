@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
-# Verify a set of release binaries, before anyone downloads them.
+# Verify a release binary, before anyone downloads it.
 #
 # A release makes five claims that only running the artifact can settle, and the
 # ones that need a live server are why this is a file rather than a build step:
 #
 #   1. the binary runs on the machine it targets at all — a static musl build is
 #      where a glibc assumption surfaces, and it surfaces at run time
-#   2. `loom-daemon` enrols against `loom-server`, which is the protocol
-#      handshake a mismatched pair of artifacts would refuse
-#   3. the two together accept a contract-shaped write: the server creates a
-#      project on the enrolled host and reads it back from the list
+#   2. the artifact in its daemon role enrols against the same file in its server
+#      role, which is the protocol handshake a mismatched build would refuse
+#   3. the two roles together accept a contract-shaped write: the server creates
+#      a project on the enrolled host and reads it back from the list
 #   4. the server serves the product app compiled into it: `/` is the app's index
 #      document, the entry script that document names is present, a client route
 #      falls back to it, and an unknown `/api` path is a JSON 404 rather than the
@@ -18,8 +18,8 @@
 #      from disk is inert: the binary carries the client, so the variable has
 #      nothing to point at and the server still serves its embedded app
 #
-# The pipeline runs this on the x86_64 artifacts, and a maintainer can run it
-# against a downloaded release. The aarch64 artifacts cannot be executed on an
+# The pipeline runs this on the x86_64 artifact, and a maintainer can run it
+# against a downloaded release. The aarch64 artifact cannot be executed on an
 # x86_64 machine, so for those the pipeline runs the same script with
 # `--elf-only`: every check a foreign machine can still make — the ELF is the
 # target architecture, it is statically linked, and the commit the build stamped
@@ -28,17 +28,20 @@
 # Usage:
 #   scripts/verify-release-binaries.sh <bin-dir> [options]
 #
-#   <bin-dir>                directory holding `loom-server` and `loom-daemon`
+#   <bin-dir>                directory holding `loom`, the one artifact both
+#                            roles are; a downloaded release asset, named
+#                            `loom-<target>`, is taken too when
+#                            `--expect-target` names it
 #   --expect-commit SHA      require that commit, the one the tag names
 #   --expect-target TRIPLE   require that target triple
-#   --elf-only               do not execute the binaries (foreign architecture)
+#   --elf-only               do not execute the binary (foreign architecture)
 #   -h, --help               this text
 #
-# Needs curl, jq, file, readelf, and coreutils (`mktemp`, `shuf`, `seq`,
-# `timeout`). Nothing here reads the source tree: the binaries are asked, never
-# the checkout. The UI is compiled into the server, so it is asked for what a
-# deployment gives it — nothing: the server is started with no UI environment
-# variable at all.
+# Needs curl, jq, file, readelf, and coreutils (`install`, `ln`, `sha256sum`,
+# `mktemp`, `shuf`, `seq`, `timeout`). Nothing here reads the source tree: the
+# binary is asked, never the checkout. The UI is compiled into the server, so it
+# is asked for what a deployment gives it — nothing: the server is started with
+# no UI environment variable at all.
 
 set -euo pipefail
 
@@ -84,10 +87,17 @@ done
   exit 2
 }
 
-server="$bin_dir/loom-server"
-daemon="$bin_dir/loom-daemon"
-[[ -x "$server" ]] || die "$server is missing or not executable"
-[[ -x "$daemon" ]] || die "$daemon is missing or not executable"
+# The artifact's name in a build output is `loom`; the release page publishes the
+# same file as `loom-<target>`, and an extracted archive keeps that name, so a
+# downloaded asset is checked without being renamed first — `--expect-target` is
+# what names it, and it is required for the second spelling because a directory
+# can hold one asset per target.
+binary="$bin_dir/loom"
+if [[ ! -x "$binary" && -n "$expect_target" && -x "$bin_dir/loom-$expect_target" ]]; then
+  binary="$bin_dir/loom-$expect_target"
+fi
+[[ -x "$binary" ]] ||
+  die "no executable artifact in $bin_dir (looked for loom${expect_target:+ and loom-$expect_target})"
 tools=(file readelf)
 [[ "$elf_only" -eq 1 ]] || tools+=(curl jq)
 for tool in "${tools[@]}"; do
@@ -140,8 +150,9 @@ check_elf() {
   fi
 }
 
-check_elf "$server"
-check_elf "$daemon"
+# The one artifact, checked once: there is no second file for a set to disagree
+# with, and both roles are this same ELF.
+check_elf "$binary"
 
 if [[ "$elf_only" -eq 1 ]]; then
   # No `--version` here: the binary cannot be executed on this machine. The
@@ -149,30 +160,33 @@ if [[ "$elf_only" -eq 1 ]]; then
   # never landed — a failure that would otherwise reach a user as `commit
   # unknown`.
   if [[ -n "$expect_commit" ]]; then
-    for binary in "$server" "$daemon"; do
-      grep -q -- "$expect_commit" "$binary" || die "$binary does not carry commit $expect_commit"
-    done
-    note "commit $expect_commit is stamped in both binaries"
+    grep -q -- "$expect_commit" "$binary" || die "$binary does not carry commit $expect_commit"
+    note "commit $expect_commit is stamped in the binary"
   fi
   printf 'checked %s (not executed: foreign architecture)\n' "$bin_dir"
   exit 0
 fi
 
 ####################################################################
-# What the binaries say about themselves
+# What the binary says about itself
 ####################################################################
 
 # `<name> <version> (<target>, protocol <n>, commit <sha>)`. Parsed rather than
 # matched loosely, because a release that cannot name its commit is the defect
 # this whole section exists to catch, and a parse that yielded empty fields
 # silently would make every comparison below pass.
-read_version() {
+read_version() { # <name> <binary> [role]
   local name="$1" binary="$2" line parsed
-  line="$("$binary" --version)" || die "$binary --version failed"
+  shift 2
+  line="$("$binary" "$@" --version)" || die "$binary ${*:-}--version failed"
+  # The file's own identity is asked for by starting it with no role, and that
+  # answers with the identity line first and the usage text after it; a role
+  # answers with the one line. Either way the claim is read off the first line.
+  line="${line%%$'\n'*}"
   parsed="$(printf '%s\n' "$line" |
     sed -E "s/^$name ([^ ]+) \(([^,]+), protocol ([0-9]+), commit ([^)]+)\)$/\1\t\2\t\3\t\4/")"
   # An unmatched line passes through unchanged, which is the shape check.
-  [[ "$parsed" != "$line" ]] || die "$binary --version printed an unexpected shape: $line"
+  [[ "$parsed" != "$line" ]] || die "$binary ${*:-}--version printed an unexpected shape: $line"
   IFS=$'\t' read -r VERSION TARGET PROTOCOL COMMIT <<<"$parsed"
   note "$line"
   [[ "$COMMIT" != "unknown" ]] ||
@@ -185,31 +199,51 @@ read_version() {
   fi
 }
 
-read_version loom-server "$server"
+# The file's own identity, which is what the release page's one asset claims.
+read_version loom "$binary"
 release_version="$VERSION"
 release_commit="$COMMIT"
 release_target="$TARGET"
 release_protocol="$PROTOCOL"
 
-# The two binaries ship as one set and are upgraded together, so a set that
-# disagrees with itself is a broken release even though each half looks fine.
-read_version loom-daemon "$daemon"
-[[ "$VERSION" == "$release_version" ]] ||
-  die "loom-server is $release_version but loom-daemon is $VERSION"
-[[ "$COMMIT" == "$release_commit" ]] ||
-  die "loom-server is built from $release_commit but loom-daemon from $COMMIT"
-[[ "$TARGET" == "$release_target" ]] ||
-  die "loom-server is built for $release_target but loom-daemon for $TARGET"
-[[ "$PROTOCOL" == "$release_protocol" ]] ||
-  die "loom-server speaks protocol $release_protocol but loom-daemon speaks $PROTOCOL"
+# One file, two roles, and the roles are started as such: the units and the
+# containers both pass a role word, and the symlinks take it from their own name,
+# so each role has to answer with the same stamp as the file it was started from.
+# A role that reported a different version, target, protocol or commit would once
+# have been a bad pair of artifacts; it is the same defect read off one file.
+for role in server daemon; do
+  read_version "loom-$role" "$binary" "$role"
+  [[ "$VERSION" == "$release_version" ]] ||
+    die "loom $role reports $VERSION, but the file is $release_version"
+  [[ "$COMMIT" == "$release_commit" ]] ||
+    die "loom $role is built from $COMMIT, but the file is built from $release_commit"
+  [[ "$TARGET" == "$release_target" ]] ||
+    die "loom $role is built for $TARGET, but the file is built for $release_target"
+  [[ "$PROTOCOL" == "$release_protocol" ]] ||
+    die "loom $role speaks protocol $PROTOCOL, but the file speaks protocol $release_protocol"
+done
 
 ####################################################################
-# Running them
+# Running it
 ####################################################################
 
 tmp="$(mktemp -d)"
 server_pid=""
 daemon_pid=""
+
+# The artifact as `deploy/install.sh` leaves an install: the file, plus the two
+# relative names it answers to as symlinks beside it. The layout matters here
+# rather than being cosmetic — the server hosts `/install/loom-daemon` out of
+# the directory holding its own executable, so the symlink next to `loom` is what
+# the self-update check below serves, exactly as a deployment does. A copy, not a
+# symlink, because the kernel resolves `/proc/self/exe` through every link and the
+# server would then be hosting the build directory instead.
+install_dir="$tmp/install"
+install -d -m 0755 "$install_dir"
+install -m 0755 "$binary" "$install_dir/loom"
+ln -s loom "$install_dir/loom-server"
+ln -s loom "$install_dir/loom-daemon"
+artifact="$install_dir/loom"
 
 # Both logs are printed on failure: a release check that fails without saying
 # why costs more than it saves.
@@ -244,7 +278,7 @@ for _ in 1 2 3; do
   # refuses to start (`env -u` below).
   env -u LOOM_UI_DIR -u LOOM_UI_PROXY \
     LOOM_BIND="127.0.0.1:$port" LOOM_DATA_DIR="$tmp/server" LOOM_NODE_ID="release-verification" \
-    "$server" >"$tmp/server.log" 2>&1 &
+    "$artifact" server >"$tmp/server.log" 2>&1 &
   server_pid=$!
   for _ in $(seq 1 100); do
     curl -fsS --max-time 1 "$base/health" >"$tmp/health.json" 2>/dev/null && break
@@ -258,7 +292,7 @@ for _ in 1 2 3; do
 done
 if [[ -z "$server_pid" || ! -s "$tmp/health.json" ]]; then
   logs
-  die "loom-server never answered /health on $base"
+  die "the artifact's server role never answered /health on $base"
 fi
 
 health_status="$(jq -r '.status' "$tmp/health.json")"
@@ -327,7 +361,7 @@ note "GET /api/v1/definitely-not-a-route -> 404 application/json"
 # cannot disturb the run above.
 env -u LOOM_UI_PROXY LOOM_BIND="127.0.0.1:$((port + 1))" \
   LOOM_DATA_DIR="$tmp/server-ui-dir-set" LOOM_NODE_ID="release-verification" \
-  LOOM_UI_DIR="$tmp/ui" "$server" >"$tmp/loom-ui-dir-set.log" 2>&1 &
+  LOOM_UI_DIR="$tmp/ui" "$artifact" server >"$tmp/loom-ui-dir-set.log" 2>&1 &
 ui_dir_pid=$!
 trap 'kill "$ui_dir_pid" 2>/dev/null || true' EXIT
 for _ in $(seq 1 100); do
@@ -373,15 +407,15 @@ body() { head -c 400 "$1" | tr -d '\n'; }
 
 # Daemon self-update (docs/upgrades.md). The two `/install/*` routes are what a
 # daemon uses to follow a server whose protocol changed, so a release has to
-# prove them on its own artifacts: the binary served, and the digest served with
-# it, must both be `loom-daemon` from this build directory. The server was
-# started as `$bin_dir/loom-server`, so `$bin_dir` is the artifact directory by
-# default — which is the arrangement `deploy/install.sh` produces and the one
-# this is here to hold true.
+# prove them on its own artifact: the bytes served, and the digest served with
+# them, must both be the `loom` this directory was built from. The server was
+# started from the install-shaped directory above, so the `loom-daemon` symlink
+# beside its own executable is the artifact directory by default — which is the
+# arrangement `deploy/install.sh` produces and the one this is here to hold true.
 api GET /install/version "$tmp/install-version.json"
 served_protocol="$(jq -r '.protocolVersion' "$tmp/install-version.json")"
 [[ "$served_protocol" == "$release_protocol" ]] ||
-  die "/install/version reports protocol $served_protocol, but --version reports $release_protocol"
+  die "/install/version reports protocol $served_protocol, but the file reports $release_protocol"
 note "/install/version ok (protocol $served_protocol)"
 
 served_digest=""
@@ -396,16 +430,17 @@ served_digest="$(tr -d '\r' <"$tmp/artifact.headers" |
 [[ "$served_digest" =~ ^[0-9a-f]{64}$ ]] || die "the served digest is not lowercase hex: $served_digest"
 
 # The digest over the bytes the server actually sent, and the digest of the
-# `loom-daemon` in this build directory: both must equal the served header. The
+# artifact this directory was built from: both must equal the served header. The
 # second is the one that matters — it proves the server hosted *this release's*
-# daemon and not some other binary that happened to be in the directory.
+# file through the `loom-daemon` name, and not some other binary that happened to
+# be in the directory.
 downloaded_digest="$(sha256sum "$tmp/loom-daemon.served" | cut -d ' ' -f 1)"
 [[ "$downloaded_digest" == "$served_digest" ]] ||
   die "the served artifact does not hash to its own header: header $served_digest, body $downloaded_digest"
-on_disk_digest="$(sha256sum "$daemon" | cut -d ' ' -f 1)"
+on_disk_digest="$(sha256sum "$binary" | cut -d ' ' -f 1)"
 [[ "$on_disk_digest" == "$served_digest" ]] ||
-  die "the hosted artifact is not this release's loom-daemon: served $served_digest, $daemon is $on_disk_digest"
-note "GET /install/loom-daemon -> 200, $served_digest (matches the built loom-daemon)"
+  die "the hosted artifact is not this release's loom: served $served_digest, $binary is $on_disk_digest"
+note "GET /install/loom-daemon -> 200, $served_digest (matches the built loom)"
 
 # The conditional request: a daemon that already has this digest sends it back
 # and must get a 304 with no body, which is what keeps a fleet's reconnects from
@@ -421,10 +456,11 @@ note "GET /install/loom-daemon (If-None-Match) -> 304"
 
 # The daemon and the server refuse to work together unless their protocol
 # versions match, so an enrolled host is that handshake succeeding on real
-# sockets. It enrols before the project write because `projects.create` takes
-# the contract's body — a name plus the source the project starts with — and the
-# only host on this machine is the daemon's.
-"$daemon" --server-url "$base" --name "release-verification" \
+# sockets — with the one file in both roles on this machine, which is the
+# arrangement a single-box deployment has. It enrols before the project write
+# because `projects.create` takes the contract's body — a name plus the source
+# the project starts with — and the only host on this machine is the daemon's.
+"$artifact" daemon --server-url "$base" --name "release-verification" \
   --state "$tmp/host-id" >"$tmp/daemon.log" 2>&1 &
 daemon_pid=$!
 enrolled=""
@@ -439,7 +475,7 @@ for _ in $(seq 1 150); do
 done
 if [[ -z "$enrolled" ]]; then
   logs
-  die "loom-daemon did not enrol against the server"
+  die "the artifact's daemon role did not enrol against its server role"
 fi
 # A bare array, like every list route: the shapes here are `projects.list`'s and
 # `hosts.list`'s. Each value is read only after the shape it is read from is

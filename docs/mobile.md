@@ -27,7 +27,7 @@ the server:
 
 ```bash
 pnpm --filter @bb/app run build          # → apps/app/dist, embedded by cargo build
-cargo run -p loom-server                 # or install the release binary
+cargo run -p loom -- server              # or install the release binary
 ```
 
 There is nothing to configure on the server side — the client is compiled into

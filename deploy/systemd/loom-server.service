@@ -18,7 +18,11 @@ Type=simple
 User=loom
 Group=loom
 EnvironmentFile=/etc/loom/loom-server.env
-ExecStart=/usr/local/bin/loom-server
+# The role is explicit here. `/usr/local/bin/loom-server` — the symlink
+# `deploy/install.sh` leaves beside this file — still works, because that is what
+# anything spawning a binary by name uses (the daemon's self-update restarts
+# itself by its own path), but a unit is the one place the role is written down.
+ExecStart=/usr/local/bin/loom server
 
 # The relay log is the only thing the server needs from the filesystem: the
 # binary carries the product app compiled into it, so there is no bundle path in

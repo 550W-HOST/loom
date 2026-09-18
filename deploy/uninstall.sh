@@ -27,7 +27,7 @@ Commands:
   server [--purge]            stop and remove the control plane unit
   daemon <server-key> [--purge]  stop and remove one daemon instance
   all    <server-key> [--purge]  server plus one daemon instance
-  binaries                    remove /usr/local/bin/loom-{server,daemon}
+  binaries                    remove /usr/local/bin/loom and its two names
   help                        print this text
 
 --purge also deletes the data directory:
@@ -96,7 +96,9 @@ uninstall_daemon() {
 }
 
 uninstall_binaries() {
-    for binary in loom-server loom-daemon; do
+    # The two names first, then the file they point at, so nothing is ever left
+    # dangling over the file being already gone.
+    for binary in loom-server loom-daemon loom; do
         rm -f "$INSTALL_PREFIX/bin/$binary"
         log "removed $INSTALL_PREFIX/bin/$binary"
     done

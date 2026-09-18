@@ -26,7 +26,7 @@ different lifetimes and different failure modes.
 
 ```
                  ┌───────────────────────────────┐
-   control plane │  loom-server (Rust)           │
+   control plane │  loom, server role (Rust)     │
    publishes ───▶│  relay.publish(scope, frame)   │
                  └───────────────┬───────────────┘
                                  │  Envelope { event_id, scope, payload, ... }
@@ -73,7 +73,7 @@ The event id therefore appears both in the envelope and inside the frame. That
 duplication is deliberate: the envelope needs the id for ordering, trimming and
 dedup; the frame needs it as the client's resume cursor.
 
-At runtime `loom-server` wires the three layers together with one fixed reader
+At runtime the server role wires the three layers together with one fixed reader
 task per shard:
 
 ```text
@@ -259,15 +259,15 @@ count are all present with the in-process backend.
 ### A. Single machine
 
 ```
-desktop shell → loom-server (loopback) → loom-relay (in-process) → UI + local daemon
+desktop shell → loom server (loopback) → loom-relay (in-process) → UI + local daemon
 ```
 
 ### B. Server plus execution machines
 
 ```
                   ┌────────────────────────────┐
-                  │ loom-server (systemd unit)    │
-                  │ loom-relay (in-process)       │
+                  │ loom server (systemd unit) │
+                  │ loom-relay (in-process)    │
                   └──────────────┬─────────────┘
         ┌──────────────┬─────────┼──────────┬──────────────┐
         ▼              ▼         ▼          ▼              ▼
@@ -292,11 +292,11 @@ must attach to the same log, point the server at Redis Streams instead:
 
 ```
                   ┌────────────────────────────┐
-                  │ loom-server  (node A)      │
+                  │ loom server  (node A)      │
                   └──────────────┬─────────────┘
                                  │  XADD / XRANGE, one stream per shard
                   ┌──────────────▼─────────────┐
-                  │ loom-server  (node B)      │
+                  │ loom server  (node B)      │
                   └──────────────┬─────────────┘
                                  │
                   ┌──────────────▼─────────────┐
@@ -306,7 +306,7 @@ must attach to the same log, point the server at Redis Streams instead:
 ```
 
 ```bash
-LOOM_REDIS_URL=redis://127.0.0.1:6379 loom-server
+LOOM_REDIS_URL=redis://127.0.0.1:6379 loom server
 ```
 
 Only the [`RelayBackend`] implementation changes: `loom-relay`, the fixed
@@ -335,11 +335,11 @@ configuration.
 That makes these three genuinely the same client, which is why the native
 mobile app is not maintained here.
 
-This is implemented. `loom-server` serves the UI from the same origin as the
+This is implemented. The server role serves the UI from the same origin as the
 API. The UI is the product app in `apps/app`, built with
 `pnpm --filter @bb/app run build` and compiled into the binary by
-`crates/server/build.rs`, so a server is one artifact: no bundle path to
-configure, and no way for a server's client to differ from its release.
+`crates/server/build.rs`, so a server deployment is one artifact: no bundle path
+to configure, and no way for a server's client to differ from its release.
 `LOOM_UI_PROXY` reverse-proxies to a dev server instead, and is development
 only. The client contract — typed `/api/v1` routes, the public `/ws`
 subprotocol with bb targets answered by `changed`/`pong`, and a reconnect that
@@ -358,10 +358,12 @@ UI. Two consequences drive the implementation:
    daemon's id file. With no local daemon, that fallback must not strand file
    browsing and host lookups on a host that is intentionally absent.
 
-Both are now implemented: `loom-server` is server-only, `loom-daemon` is the
+Both are now implemented: the server role is server-only, the daemon role is the
 independent execution-plane entry point, and primary-host resolution degrades
-instead of failing. The boundary contract — the wire protocol, the primary
-policy, and the desktop shell's two supervision switches — is specified in
+instead of failing. They are `loom server` and `loom daemon` — one binary, two
+roles, still two processes. The boundary contract — the wire protocol, the
+primary policy, and the desktop shell's two supervision switches — is specified
+in
 [`process-model.md`](process-model.md).
 
 ## Open questions

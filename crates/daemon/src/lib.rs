@@ -46,6 +46,7 @@
 pub mod acp;
 pub mod host_files;
 pub mod provider;
+pub mod run;
 pub mod scripts;
 pub mod session;
 pub mod terminal;
