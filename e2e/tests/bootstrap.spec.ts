@@ -20,8 +20,9 @@ test.describe("bootstrap", () => {
     // The sidebar is a drawer on a phone and a column on a desktop; on the
     // phone the shell has to be able to open it before anything in it counts.
     const drawer = page.getByRole("button", { name: "Toggle Sidebar" });
-    if (await drawer.isVisible()) {
+    if (await drawer.isVisible() && (await drawer.getAttribute("aria-expanded")) !== "true") {
       await drawer.click();
+      await expect(drawer).toHaveAttribute("aria-expanded", "true");
     }
     await expect(page.getByRole("button", { name: "New thread", exact: true })).toBeVisible();
     await expect(page.getByRole("link", { name: "Automations" })).toBeVisible();
