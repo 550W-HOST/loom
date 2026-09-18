@@ -22,6 +22,7 @@
 #![forbid(unsafe_code)]
 
 pub mod artifacts;
+pub mod assistant_timeline;
 pub mod automation_execution;
 pub mod automations;
 pub mod automations_contract;
@@ -56,7 +57,7 @@ pub mod ws;
 
 pub use artifacts::{
     ArtifactClient, ArtifactDownload, Artifacts, InstallVersion, DIGEST_HEADER,
-    INSTALL_WORKER_PATH, INSTALL_VERSION_PATH,
+    INSTALL_VERSION_PATH, INSTALL_WORKER_PATH,
 };
 pub use automation_execution::AutomationExecutionReport;
 pub use automations::{AutomationState, AutomationsRegistry, AUTOMATIONS_VERSION};
@@ -72,7 +73,7 @@ pub use hub_actor::{HubCommand, HubHandle};
 pub use interactions::DeliverOutcome;
 pub use persistence::{DomainSnapshot, SnapshotError, SNAPSHOT_FILE};
 pub use protocol::{
-    ClientMessage, WorkerClientMessage, WorkerServerMessage, ServerMessage, SubscriptionTarget,
+    ClientMessage, ServerMessage, SubscriptionTarget, WorkerClientMessage, WorkerServerMessage,
 };
 pub use pump::{Pump, PumpConfig};
 pub use queue::{DeliveryOutcome, WaitingOn};

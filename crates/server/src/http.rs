@@ -3,6 +3,8 @@
 //! Small on purpose. The interesting surface is the WebSocket; these routes
 //! exist so a server can be probed, identified and fed events.
 
+use std::collections::HashSet;
+
 use axum::body::Body;
 use axum::extract::{Path, Query, Request, State};
 use axum::http::StatusCode;
@@ -1661,45 +1663,37 @@ async fn thread_output(
         return response;
     }
 
-    let mut delta_output = String::new();
-    let mut saw_delta = false;
     let entries = match thread_domain_events(&state, &thread_id) {
         Ok(entries) => entries,
         Err(response) => return response,
     };
+    // The same fold the timeline uses, so `threads.output` and the rows a client
+    // renders cannot disagree about an assistant answer.
+    let assistant_messages = assistant_message_timeline(&entries);
     let mut completed_output = None;
-    for (_event_id, _sequence, _created_at_ms, event) in entries {
+    for (_event_id, _sequence, _created_at_ms, event) in &entries {
         let DomainEvent::ThreadRunEvent { run } = event else {
             continue;
         };
         let value = serde_json::to_value(&run.event).expect("ThreadEvent always serializes");
-        match value.get("type").and_then(Value::as_str) {
-            Some("item/agentMessage/delta") => {
-                if let Some(delta) = value.get("delta").and_then(Value::as_str) {
-                    saw_delta = true;
-                    delta_output.push_str(delta);
-                }
-            }
-            Some("item/completed")
-                if value
-                    .get("item")
-                    .and_then(|item| item.get("type"))
-                    .and_then(Value::as_str)
-                    == Some("agentMessage") =>
-            {
-                completed_output = value
-                    .get("item")
-                    .and_then(|item| item.get("text"))
-                    .and_then(Value::as_str)
-                    .map(str::to_owned);
-            }
-            _ => {}
+        if value.get("type").and_then(Value::as_str) == Some("item/completed")
+            && value
+                .get("item")
+                .and_then(|item| item.get("type"))
+                .and_then(Value::as_str)
+                == Some("agentMessage")
+        {
+            completed_output = value
+                .get("item")
+                .and_then(|item| item.get("text"))
+                .and_then(Value::as_str)
+                .map(str::to_owned);
         }
     }
-    let output = if saw_delta {
-        Some(delta_output)
-    } else {
+    let output = if assistant_messages.is_empty() {
         completed_output
+    } else {
+        Some(assistant_messages.concatenated_text())
     };
     Json(json!({ "output": output })).into_response()
 }
@@ -3299,6 +3293,52 @@ async fn stop_thread_route(
     }
 }
 
+/// Folds every run event of a thread into the assistant messages it carried.
+///
+/// The ordering rule lives in [`crate::assistant_timeline`]; this is only the
+/// adapter from the stored [`DomainEvent`] shape to it, so `threads.timeline`
+/// and `threads.output` share one accumulator.
+fn assistant_message_timeline(
+    entries: &[(String, u64, u64, DomainEvent)],
+) -> crate::assistant_timeline::AssistantMessageTimeline {
+    let mut timeline = crate::assistant_timeline::AssistantMessageTimeline::new();
+    for (_event_id, sequence, _created_at_ms, event) in entries {
+        if let DomainEvent::ThreadRunEvent { run } = event {
+            timeline.absorb(&run.run_id.to_string(), &run.event.body, *sequence);
+        }
+    }
+    timeline
+}
+
+/// One timeline row for a folded assistant message.
+///
+/// The row id is the provider's item id prefixed with the thread, matching the
+/// identity the client already keys a message on, and the row spans the first
+/// and last frame that contributed to it.
+fn assistant_timeline_row(
+    run_id: &str,
+    thread_id: &ThreadId,
+    created_at_ms: u64,
+    message: &crate::assistant_timeline::AssistantMessage,
+) -> Value {
+    let mut row = timeline_row_base(
+        format!("{thread_id}:{run_id}:{}", message.id.item_id),
+        thread_id,
+        Some(run_id.to_owned()),
+        message.start_sequence,
+        created_at_ms,
+    );
+    let object = row.as_object_mut().expect("a timeline row is an object");
+    object.insert(
+        "sourceSeqEnd".into(),
+        json!(message.end_sequence.max(message.start_sequence)),
+    );
+    for (key, value) in message.row_fields() {
+        object.insert(key.into(), value);
+    }
+    row
+}
+
 fn timeline_row_base(
     id: String,
     thread_id: &ThreadId,
@@ -3401,21 +3441,12 @@ fn timeline_row_for_event(
             let event_value =
                 serde_json::to_value(&run.event).expect("ThreadEvent always serializes");
             match event_value.get("type").and_then(Value::as_str) {
-                Some("item/agentMessage/delta") => {
-                    object.extend([
-                        ("kind".into(), json!("conversation")),
-                        (
-                            "text".into(),
-                            event_value
-                                .get("delta")
-                                .cloned()
-                                .unwrap_or_else(|| json!("")),
-                        ),
-                        ("attachments".into(), Value::Null),
-                        ("role".into(), json!("assistant")),
-                        ("turnRequest".into(), Value::Null),
-                    ]);
-                }
+                // An assistant delta is not a row: `threads.timeline` folds the
+                // deltas that share an item id into the message they spell, and
+                // emits that one row through
+                // `assistant_message_timeline`/`assistant_timeline_row`. A row
+                // per delta is what chopped a streamed answer into its chunks.
+                Some("item/agentMessage/delta") => return None,
                 Some("item/completed")
                     if event_value
                         .get("item")
@@ -3423,19 +3454,7 @@ fn timeline_row_for_event(
                         .and_then(Value::as_str)
                         == Some("agentMessage") =>
                 {
-                    object.extend([
-                        ("kind".into(), json!("conversation")),
-                        (
-                            "text".into(),
-                            event_value
-                                .pointer("/item/text")
-                                .cloned()
-                                .unwrap_or_else(|| json!("")),
-                        ),
-                        ("attachments".into(), Value::Null),
-                        ("role".into(), json!("assistant")),
-                        ("turnRequest".into(), Value::Null),
-                    ]);
+                    return None;
                 }
                 Some("provider/error") => {
                     let title = event_value
@@ -3493,12 +3512,62 @@ async fn thread_timeline(
         Ok(entries) => entries,
         Err(response) => return response,
     };
-    let all_rows = entries
+    // Assistant answers are folded per message *before* rows are built: the
+    // contract carries an answer as many deltas sharing one item, while a
+    // timeline row is one message. Folding at the row-building seam is what
+    // keeps a streamed answer from becoming one row per chunk.
+    //
+    // The folded rows are emitted *after* the per-event rows and then sorted by
+    // `sourceSeqStart`, so an assistant message sorts where it began streaming
+    // while every other row keeps its own sequence. A row is emitted by the
+    // first assistant frame that names a message the fold actually created —
+    // which is the frame carrying its first text, not an earlier empty delta,
+    // and which is exactly the set of messages the fold holds.
+    let assistant_messages = assistant_message_timeline(&entries);
+    let mut emitted: HashSet<(String, String)> = HashSet::new();
+    let mut assistant_rows: Vec<Value> = Vec::new();
+    let mut all_rows = entries
         .iter()
         .filter_map(|(_event_id, sequence, created_at_ms, event)| {
+            if let DomainEvent::ThreadRunEvent { run } = event {
+                let run_id = run.run_id.to_string();
+                let item_id = match &run.event.body {
+                    loom_domain::ProviderEvent::ItemAgentMessageDelta { item_id, .. } => {
+                        Some(item_id.as_str())
+                    }
+                    loom_domain::ProviderEvent::ItemCompleted {
+                        item: loom_domain::ThreadEventItem::AgentMessage { id, .. },
+                        ..
+                    } => Some(id.as_str()),
+                    _ => None,
+                };
+                if let Some(item_id) = item_id {
+                    // The frame belongs to the assistant projection either way,
+                    // so it never falls through to a generic row; it only
+                    // contributes one when it is the first frame of a message
+                    // the fold created.
+                    if emitted.insert((run_id.clone(), item_id.to_owned())) {
+                        if let Some(message) = assistant_messages.get(&run_id, item_id) {
+                            assistant_rows.push(assistant_timeline_row(
+                                &run_id,
+                                &thread_id,
+                                *created_at_ms,
+                                message,
+                            ));
+                        }
+                    }
+                    return None;
+                }
+            }
             timeline_row_for_event(&thread_id, *sequence, *created_at_ms, event)
         })
         .collect::<Vec<_>>();
+    all_rows.extend(assistant_rows);
+    all_rows.sort_by_key(|row| {
+        row.get("sourceSeqStart")
+            .and_then(Value::as_u64)
+            .unwrap_or_default()
+    });
     let before_id_sequence = query.before_anchor_id.as_ref().and_then(|anchor_id| {
         all_rows.iter().find_map(|row| {
             (row.get("id").and_then(Value::as_str) == Some(anchor_id.as_str()))

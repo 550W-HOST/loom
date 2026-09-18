@@ -1566,3 +1566,214 @@ async fn the_two_new_state_machines_refuse_illegal_transitions() {
 
     fixture.state.shutdown();
 }
+
+// --- assistant deltas are one message, not one row per chunk -----------------
+
+/// Publishes one `item/agentMessage/delta` the way a worker report would.
+fn publish_delta(fixture: &Fixture, run_id: &loom_domain::RunId, item_id: &str, delta: &str) {
+    fixture
+        .state
+        .publish_domain_event(&loom_domain::DomainEvent::ThreadRunEvent {
+            run: Box::new(loom_domain::RunEvent::new(
+                fixture.thread_id(),
+                fixture
+                    .state
+                    .registry
+                    .thread(&fixture.thread_id())
+                    .unwrap()
+                    .project_id,
+                run_id.clone(),
+                loom_relay::now_ms(),
+                loom_domain::ProviderEvent::ItemAgentMessageDelta {
+                    item_id: item_id.to_owned(),
+                    delta: delta.to_owned(),
+                    provider_thread_id: fixture.thread_id.clone(),
+                    parent_tool_call_id: None,
+                },
+            )),
+        })
+        .unwrap();
+}
+
+/// Publishes the completion the worker emits to close a streamed message.
+///
+/// The text is empty on purpose: the deltas already carried it, and both the
+/// timeline and the client join by item id, so restating it would either
+/// duplicate the content or add a second row.
+fn publish_agent_message_completed(fixture: &Fixture, run_id: &loom_domain::RunId, item_id: &str) {
+    fixture
+        .state
+        .publish_domain_event(&loom_domain::DomainEvent::ThreadRunEvent {
+            run: Box::new(loom_domain::RunEvent::new(
+                fixture.thread_id(),
+                fixture
+                    .state
+                    .registry
+                    .thread(&fixture.thread_id())
+                    .unwrap()
+                    .project_id,
+                run_id.clone(),
+                loom_relay::now_ms(),
+                loom_domain::ProviderEvent::ItemCompleted {
+                    item: loom_domain::ThreadEventItem::AgentMessage {
+                        id: item_id.to_owned(),
+                        text: String::new(),
+                        presentation: None,
+                        parent_tool_call_id: None,
+                    },
+                    provider_thread_id: fixture.thread_id.clone(),
+                },
+            )),
+        })
+        .unwrap();
+}
+
+async fn assistant_rows(fixture: &Fixture) -> Vec<Value> {
+    let timeline = fixture
+        .get(&format!("/api/v1/threads/{}/timeline", fixture.thread_id))
+        .await;
+    timeline.body["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|row| row["kind"] == "conversation" && row["role"] == "assistant")
+        .cloned()
+        .collect()
+}
+
+/// A streamed answer is one timeline row, not one row per chunk.
+///
+/// The provider contract carries an answer as many `item/agentMessage/delta`
+/// frames that share an `itemId`, while a timeline row is one message. A row per
+/// delta is what rendered a streamed answer as one bubble per word, so this is
+/// the regression that matters most.
+#[tokio::test]
+async fn streamed_deltas_are_folded_into_one_message_row() {
+    let fixture = fixture().await;
+    let run_id = loom_domain::RunId::mint();
+
+    // The shape a real adapter produces: a delta per chunk, all one item id.
+    for delta in ["Hi", ".", " What", " would", " you", " like"] {
+        publish_delta(&fixture, &run_id, "assistant-1", delta);
+    }
+    let rows = assistant_rows(&fixture).await;
+    assert_eq!(
+        rows.len(),
+        1,
+        "a streamed answer must be one row: {}",
+        serde_json::to_string_pretty(&rows).unwrap()
+    );
+    assert_eq!(rows[0]["text"], "Hi. What would you like");
+
+    // The completion for the same item must not add a second row.
+    publish_agent_message_completed(&fixture, &run_id, "assistant-1");
+    let rows = assistant_rows(&fixture).await;
+    assert_eq!(
+        rows.len(),
+        1,
+        "the completion must not add a row: {}",
+        serde_json::to_string_pretty(&rows).unwrap()
+    );
+    assert_eq!(rows[0]["text"], "Hi. What would you like");
+
+    // Every row is a contract `TimelineRow`: the client renders these directly.
+    let timeline = fixture
+        .get(&format!("/api/v1/threads/{}/timeline", fixture.thread_id))
+        .await;
+    assert_response("threads.timeline", 200, &timeline.body);
+
+    // `threads.output` is the same answer, from the same fold.
+    let output = fixture
+        .get(&format!("/api/v1/threads/{}/output", fixture.thread_id))
+        .await;
+    assert_eq!(
+        output.body["output"], "Hi. What would you like",
+        "{}",
+        output.body
+    );
+
+    fixture.state.shutdown();
+}
+
+/// The same item id in a later run is a *different* message.
+///
+/// The worker's ACP translator is constructed per run, so its item ids
+/// (`assistant-1`, `assistant-v2-pi-msg-2`) restart every turn. Keying the fold
+/// on the item id alone would merge two answers into one bubble; this pins the
+/// run into the identity.
+#[tokio::test]
+async fn the_same_item_id_in_a_later_run_is_a_separate_row() {
+    let fixture = fixture().await;
+
+    let first = loom_domain::RunId::mint();
+    publish_delta(&fixture, &first, "assistant-1", "first answer");
+    publish_agent_message_completed(&fixture, &first, "assistant-1");
+
+    let second = loom_domain::RunId::mint();
+    publish_delta(&fixture, &second, "assistant-1", "second answer");
+    publish_agent_message_completed(&fixture, &second, "assistant-1");
+
+    let rows = assistant_rows(&fixture).await;
+    assert_eq!(
+        rows.len(),
+        2,
+        "one answer per run: {}",
+        serde_json::to_string_pretty(&rows).unwrap()
+    );
+    assert_eq!(rows[0]["text"], "first answer");
+    assert_eq!(rows[1]["text"], "second answer");
+    assert_ne!(
+        rows[0]["id"], rows[1]["id"],
+        "two answers must not share a row id"
+    );
+
+    let output = fixture
+        .get(&format!("/api/v1/threads/{}/output", fixture.thread_id))
+        .await;
+    assert_eq!(
+        output.body["output"], "first answersecond answer",
+        "{}",
+        output.body
+    );
+
+    fixture.state.shutdown();
+}
+
+/// A tool call between two assistant messages keeps them separate.
+#[tokio::test]
+async fn a_tool_call_between_messages_does_not_merge_them() {
+    let fixture = fixture().await;
+    let run_id = loom_domain::RunId::mint();
+
+    publish_delta(&fixture, &run_id, "assistant-1", "before the tool");
+    publish_agent_message_completed(&fixture, &run_id, "assistant-1");
+    publish_delta(&fixture, &run_id, "assistant-2", "after the tool");
+
+    let rows = assistant_rows(&fixture).await;
+    assert_eq!(
+        rows.len(),
+        2,
+        "{}",
+        serde_json::to_string_pretty(&rows).unwrap()
+    );
+    let texts = rows
+        .iter()
+        .filter_map(|row| row["text"].as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(texts, vec!["before the tool", "after the tool"]);
+
+    fixture.state.shutdown();
+}
+
+/// An empty completion with nothing streamed adds no empty bubble.
+#[tokio::test]
+async fn an_empty_message_without_deltas_adds_no_row() {
+    let fixture = fixture().await;
+    let run_id = loom_domain::RunId::mint();
+    publish_agent_message_completed(&fixture, &run_id, "assistant-1");
+    assert!(
+        assistant_rows(&fixture).await.is_empty(),
+        "an empty message must not render a bubble"
+    );
+    fixture.state.shutdown();
+}
