@@ -169,6 +169,34 @@ budget (`apps/app/bundle-budget.json`) to the build's own `bundle-stats.json`, s
 a heavy dependency that creeps back onto the boot path fails a check rather than
 a phone.
 
+## Acceptance
+
+The client is the one part of this repository whose defects are only visible in a
+browser, so it has a suite that runs it as one: [`e2e/`](../e2e) is a pnpm
+workspace package whose Playwright specs start `loom server` and `loom daemon`
+from `target/debug`, point the daemon at an ACP stub, and drive the app in a
+desktop and a phone viewport.
+
+It is the acceptance checklist, executable: the shell renders from the server's
+own origin, an unreachable server is reported rather than rendered as an empty
+app, a thread is created from the composer, answers, and survives a reload, a
+permission request blocks the turn until it is answered (allow *and* deny, with
+the decision asserted at the agent), automations list, run and report, and a
+machine reports going offline and recovers when its daemon returns.
+
+```bash
+# from a checkout, with apps/app/dist built (see "Building the bundle")
+cargo build -p loom
+pnpm --filter @loom/e2e exec playwright install chromium
+pnpm --filter @loom/e2e test
+```
+
+Two viewports because the product is one client on a desktop and a phone: on a
+phone the sidebar is a drawer, and the suite opens it before asserting what is
+inside. `e2e/helpers/stack.ts` documents what the stack is and how a test takes
+the machine away and gives it back; [`ci.md`](ci.md#the-browser-acceptance-job)
+has the job that runs it on every push.
+
 ## The app, and what it adapted
 
 `apps/app` is bb's application source carrying loom's transport, loom's routes

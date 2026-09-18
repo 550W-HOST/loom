@@ -16,3 +16,10 @@ apps/app/bundle-stats.json
 *.log
 .DS_Store
 .bb-dev/
+
+# Playwright acceptance: reports, traces and the stack's own logs are run
+# output, never sources.
+e2e/test-results/
+e2e/playwright-report/
+e2e/blob-report/
+e2e/*.log

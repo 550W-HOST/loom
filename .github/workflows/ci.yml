@@ -278,6 +278,69 @@ jobs:
           git diff --exit-code -- ui/ apps/app/
           test -z "$(git status --porcelain -- ui/ apps/app/)"
 
+  # The `ui` job builds and measures the client; nothing there can say whether
+  # a browser can use it. This job runs the product the way a user meets it: the
+  # binary serving the app it was built with, and a daemon executing on the same
+  # machine. It needs `ui` for the same reason `checks` does — the app is
+  # compiled into the binary — and it is the only job that renders pixels.
+  e2e:
+    name: Browser acceptance
+    runs-on: ubuntu-24.04
+    needs: ui
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: pnpm install --frozen-lockfile
+        run: pnpm install --frozen-lockfile
+
+      - name: Download the app bundle
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: ui-dist
+          path: apps/app/dist
+
+      - name: Cache cargo registry and target
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+
+      # The suite starts this binary in both roles, so it is the only build
+      # step: `loom server` serves the embedded app, `loom daemon` executes.
+      - name: Build the binary the suite drives
+        run: cargo build -p loom --locked
+
+      # Chromium only, with the system libraries it needs. The version is pinned
+      # by the lockfile through @playwright/test.
+      - name: Install Chromium
+        run: pnpm --filter @loom/e2e exec playwright install --with-deps chromium
+
+      - name: Typecheck the suite
+        run: pnpm --filter @loom/e2e run typecheck
+
+      - name: pnpm --filter @loom/e2e test
+        run: pnpm --filter @loom/e2e test
+
+      # A browser failure is only diagnosable with the trace and the screenshots
+      # the run captured, so they outlive the job.
+      - name: Upload the Playwright report
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: playwright-report
+          path: |
+            e2e/playwright-report/
+            e2e/test-results/
+          if-no-files-found: ignore
+
   # `the_real_pi_process_streams_through_the_bridge` is `#[ignore]`d because it
   # runs the actual `pi` CLI through embedded `pi-acp`. It is the only automated
   # coverage of the real Pi adapter path, so it runs here rather than staying

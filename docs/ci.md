@@ -33,6 +33,7 @@ record of the runs that produced them, not of today's job set.
 | `msrv` | `MSRV` | the workspace still compiles on the `rust-version` floor in the manifests |
 | `contract` | `bb contract is reproducible` | re-exporting bb's contract yields the committed `contracts/bb` byte for byte |
 | `ui` | `UI typecheck, tests, bundle and provenance` | `pnpm install --frozen-lockfile`, `pnpm run typecheck`, `pnpm run test`, `pnpm --filter @bb/app run build` builds the bundle every Rust job below compiles into the server and uploads it as the `ui-dist` artifact, `pnpm run check:bundle` holds that build to the committed budget, `pnpm provenance:test` covers patch-ledger negative cases and `BB_SRC=... pnpm run provenance:check` verifies recomputed source/package/contract hashes and the import closure, and `BB_SRC=... pnpm run port-plan:test`/`port-plan:check` verifies the route-level port plan |
+| `e2e` | `Browser acceptance` | the Playwright suite in `e2e/` drives the real thing — the binary serving the app it was built with, a daemon on the same machine running an ACP stub — in a desktop and a mobile viewport: bootstrap, an unreachable server, a thread that answers and survives a reload, a permission request that blocks the turn until it is answered (allow and deny), automations running and reporting, and a machine going offline and coming back |
 | `pi` | `real pi provider (allowed to fail)` | the `#[ignore]`d provider tests against the real `pi` CLI — `provider_e2e` drives the streamed turn, `real_pi` adds the first-turn-plus-cross-run-resume property — skipped unless the runner has a configured `pi` |
 | `self-update` | `daemon self-update end to end` | the `#[ignore]`d self-update tests: a real daemon process, refused by a server that speaks a newer protocol, installing that server's binary over itself, and the reinstalled binary running a real turn |
 
@@ -358,6 +359,48 @@ single gate ahead of every Rust job. It costs wall-clock — a run is roughly th
 `ui` job plus the slowest Rust job — and the durations below are measured with
 that in place.
 
+## The browser acceptance job
+
+Every other job in this file runs *parts* of the product: the Rust workspace
+through its own crates, the client through `vitest` and `jsdom`. None of them can
+say whether a person with a browser can use the thing, which is how the
+acceptance of the porting issues was done by hand — a browser driven by whoever
+was working, screenshots pasted into the issue, and no way to notice a
+regression the next week.
+
+The `e2e` job is that acceptance, runnable. It needs `ui` for the same reason
+every other Rust job does: the app is compiled into the binary, so the suite
+downloads `ui-dist`, builds `loom`, and then *is* the deployment — `loom server`
+serving the app it was built with, and `loom daemon` enrolling against it from
+the same machine.
+
+```bash
+cargo build -p loom
+pnpm --filter @loom/e2e exec playwright install --with-deps chromium
+pnpm --filter @loom/e2e run typecheck
+pnpm --filter @loom/e2e test
+```
+
+`e2e/helpers/stack.ts` starts the stack once per run — a temporary data
+directory, a free-ish port, an ACP stub — and `stopStack` returns the machine to
+the state it was borrowed in. The stub answers a prompt with a fixed reply and
+asks for permission when the prompt mentions it, so a turn is deterministic and
+needs no credentials or model; `LOOM_E2E_PROVIDER_CMD` swaps in a real agent
+when a person wants one. The daemon is started with a state file, exactly as
+[`process-model.md`](process-model.md) has deployments start it, because
+without one every restart enrolls as a *new* machine and the machine list is
+where that accumulates.
+
+Two projects run the same specs: `desktop` at 1440×900 and `mobile` at a phone's
+viewport. The second one is not decoration — the shell's sidebar is a drawer
+there, and the first version of the suite found the difference immediately.
+
+The suite is deliberately small and grows with the porting stages: it covers the
+surfaces that exist (shell, threads, permissions, automations, machines) and not
+the ones still being ported (files, terminal, settings sections). A failure is
+reported with the trace, a screenshot, and the stack's own logs; the traces and
+screenshots are uploaded when the job fails.
+
 ## The `pi` job
 
 `the_real_pi_process_streams_through_the_bridge` is `#[ignore]`d because it runs
@@ -454,7 +497,7 @@ CPU, which makes a failure's timing legible.
 
 ## Branch protection
 
-Protect `main` and require these five checks:
+Protect `main` and require these six checks:
 
 | Required | Reason |
 | --- | --- |
@@ -463,9 +506,10 @@ Protect `main` and require these five checks:
 | `bb contract is reproducible` | the committed contract is what the exporter produces |
 | `UI typecheck, tests, bundle and provenance` | the client type-checks and passes its tests, the product app builds the bundle every Rust job embeds and holds it to its bundle budget, and the source/package/contract provenance and the port plan match their manifests |
 | `daemon self-update end to end` | a real daemon follows a newer-protocol server: fetch, verify, install over itself, restart, run a turn |
+| `Browser acceptance` | a real browser drives the real stack — server, daemon, an approval that blocks its turn — in a desktop and a phone viewport |
 
-The four jobs that declare `needs: ui` — `checks`, `msrv`, `pi` and
-`self-update` — are skipped when `ui` fails, which is not a hole: `ui` is itself
+The five jobs that declare `needs: ui` — `checks`, `msrv`, `pi`, `self-update`
+and `e2e` — are skipped when `ui` fails, which is not a hole: `ui` is itself
 required, so a red one blocks the merge and the skipped jobs only save runner
 time.
 
@@ -482,7 +526,7 @@ given a configured `pi`; it would then be worth requiring, since it is the only
 coverage of the production bridge.
 
 On GitHub: *Settings → Branches → Branch protection rules → `main`*, enable
-*Require status checks to pass before merging*, then select the three above. Two
+*Require status checks to pass before merging*, then select the six above. Two
 further settings are recommended and independent of this workflow:
 
 - *Require branches to be up to date before merging* — otherwise a pull request
@@ -547,6 +591,21 @@ before they call cargo.
 `/tmp/bb` is the pinned checkout the `contract` job's recipe above produces —
 provenance and the port plan read their commit from `ui/provenance.json`, which
 is the same bb revision.
+
+The `e2e` job needs the bundle and a Chromium of its own, then runs the suite
+against a stack it starts itself:
+
+```bash
+pnpm --filter @bb/app run build
+cargo build -p loom
+pnpm --filter @loom/e2e exec playwright install chromium
+pnpm --filter @loom/e2e test                # add --project=desktop to run one
+LOOM_E2E_KEEP=1 pnpm --filter @loom/e2e test  # keep the run's data and logs
+```
+
+A leftover stack from a killed run is refused rather than adopted — set
+`LOOM_E2E_PORT` to run beside it. `LOOM_E2E_PROVIDER_CMD` points the daemon at a
+real agent instead of the stub.
 
 The `pi` job needs `pi` installed *and configured*; the test is skipped in CI
 without the latter, so this is where it actually runs:
