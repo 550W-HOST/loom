@@ -25,9 +25,9 @@ cannot be labelled with a version its own files do not report.
 
 | Job | Runs | What it proves |
 | --- | --- | --- |
-| `ui` | `pnpm install --frozen-lockfile`, `typecheck`, `test`, `pnpm --filter @bb/app run build`, `pnpm run check:bundle`, then the provenance and port-plan checks | the bundle the archive stages is built from the tag's own source, holds its budget, and the app tree still matches its manifest |
+| `ui` | `pnpm install --frozen-lockfile`, `typecheck`, `test`, `pnpm --filter @bb/app run build`, `pnpm run check:bundle`, then the provenance and port-plan checks | the bundle every Rust job compiles into the server is built from the tag's own source, holds its budget, and the app tree still matches its manifest |
 | `build` (matrix: x86_64, aarch64) | `cargo build --release --locked --target <triple>` | the binaries compile from the tag with the pinned lockfile |
-| `build` → verify | `scripts/verify-release-binaries.sh` | the x86_64 pair runs, answers `/health`, serves the staged UI bundle from `LOOM_UI_DIR`, hosts its own `loom-daemon` with a matching digest and a `304` for a conditional request, creates a project and enrols a daemon; the aarch64 pair is a self-contained aarch64 artifact carrying the tag's commit |
+| `build` → verify | `scripts/verify-release-binaries.sh` | the x86_64 pair runs, answers `/health`, serves the UI it carries with no UI variable set, hosts its own `loom-daemon` with a matching digest and a `304` for a conditional request, creates a project and enrols a daemon; the aarch64 pair is a self-contained aarch64 artifact carrying the tag's commit |
 | `build` → package | `scripts/package-release.sh` | the release page's files exist, with the layout `deploy/install.sh` expects |
 | `assemble` | `sha256sum`, version and tag check, `RELEASE_NOTES.md` | one checksum file covering both targets, notes that name the protocol version, and no mislabelled tag |
 | `images` | `docker buildx create --driver docker-container`, `scripts/build-container-images.sh` | both container images build from the checksummed files, are pushed as one manifest list each, and the `linux/amd64` halves run and report the version above |
@@ -37,25 +37,26 @@ cannot be labelled with a version its own files do not report.
 needs `packages: write`, and `release` the only job that is skipped on a manual
 run.
 
-## Why the app is built before the binaries are packaged
+## Why the app is built before the binaries are built
 
-The UI is no longer inside the server binary. It is the product app's build
-output, staged into the archive as `ui/` and pointed at with `LOOM_UI_DIR`
-([`ui.md`](ui.md)), and a server started without it does not serve a fallback —
-it refuses to start. Nothing in a `cargo build` produces it, so the release
-workflow builds the app itself and gates every Rust job behind that, rather than
-trusting that the tag passed CI:
+The client is compiled into the server binary: `crates/server/build.rs` walks
+`apps/app/dist` and embeds every file, so a release ships one artifact per
+process, with no UI directory to stage, point at or get wrong
+([`ui.md`](ui.md)). The bundle is therefore an *input* to the Rust jobs rather
+than something shipped beside them, which is why the workflow builds the app
+itself first, hands it to the target jobs as an artifact, and gates every Rust
+job behind that — rather than trusting that the tag passed CI:
 
 ```bash
-pnpm --filter @bb/app run build     # → apps/app/dist
+pnpm --filter @bb/app run build     # → apps/app/dist, embedded by cargo build
 pnpm run check:bundle
 ```
 
-A tag that skipped this would publish an archive whose server cannot serve a UI
-at all — a defect visible only in a browser, and only after an operator had
-already deployed it. The budget check is the same ratchet CI applies
-([`ci.md`](ci.md#the-bundle-budget)), repeated here because a release is the one
-build nobody gets to re-run before it is used.
+A tag that skipped this would not publish a server without a UI; it would fail
+to build one, because a missing bundle is a build error rather than a runtime
+surprise. Catching it here keeps that failure off the tag. The budget check is
+the same ratchet CI applies ([`ci.md`](ci.md#the-bundle-budget)), repeated here
+because a release is the one build nobody gets to re-run before it is used.
 
 ## Targets, and how aarch64 links
 
@@ -88,6 +89,11 @@ loom-server  6.3 MB   aarch64  static, ET_EXEC (no dynamic section at all)
 loom-daemon  2.4 MB   aarch64  static, ET_EXEC
 ```
 
+These were recorded before the client was compiled into the server: the app's
+dist is now inside `loom-server`, so that binary is larger by the size of the
+bundle it carries, while `loom-daemon` is unchanged. The four lines above are
+kept as the record of that run.
+
 A static PIE carries a dynamic section so it can relocate itself, and `file`
 therefore calls it "dynamically linked"; `ldd` calls the same file statically
 linked, which is what it is — there is no loader to find and no shared library
@@ -100,7 +106,7 @@ dynamic section.
 
 | Asset | Contents |
 | --- | --- |
-| `loom-<version>-<target>.tar.gz` | the two binaries, `deploy/`, `README.md`, and the UI bundle at `ui/` |
+| `loom-<version>-<target>.tar.gz` | the two binaries, `deploy/` and `README.md` |
 | `loom-server-<target>` | the control plane alone |
 | `loom-daemon-<target>` | the execution daemon alone |
 | `SHA256SUMS` | checksums for every file above, with relative names |
@@ -117,25 +123,19 @@ cd loom-0.1.0-x86_64-unknown-linux-musl
 sudo LOOM_BIN_SOURCE=. ./deploy/install.sh server
 ```
 
-`ui/` beside the binaries is the product app's build output (`apps/app/dist`) —
-`index.html`, `assets/**` with content-hashed names, and the PWA manifest and
-icons. It is not listed in `SHA256SUMS` line by line: that file names
-`loom-server-*`, `loom-daemon-*` and `*.tar.gz`, so the bundle is covered through
-the archive's own digest, and verifying the tarball verifies everything inside
-it.
+There is no UI beside the binaries, and nothing for an install to place: the
+product app is inside `loom-server` ([`ui.md`](ui.md)). The archive is therefore
+just the two binaries, `deploy/` and `README.md`, so `SHA256SUMS` naming
+`loom-server-*`, `loom-daemon-*` and `*.tar.gz` covers the whole download, and
+verifying the tarball verifies the client too.
 
-`deploy/install.sh server` copies the bundle to `<prefix>/share/loom/ui` —
-`/usr/local/share/loom/ui` under the default prefix — and makes sure
-`LOOM_UI_DIR` in `/etc/loom/loom-server.env` names that path. It takes the
-bundle from `--ui-dir` if given, otherwise from a checkout's `apps/app/dist`,
-otherwise from the archive's own `ui/`, and it replaces the target rather than
-merging into it so an upgrade does not accumulate the previous release's
-content-hashed files. A freshly created environment file gets `LOOM_UI_DIR`
-filled in; an existing one without an uncommented `LOOM_UI_DIR=` line fails the
-install with the value to add, rather than being rewritten. A missing bundle
-fails with the command that produces one. The server itself is the last word on
-this: with no `LOOM_UI_DIR` and no development-only `LOOM_UI_PROXY` it exits at
-startup instead of serving nothing ([`ui.md`](ui.md)).
+`deploy/install.sh server` installs the binaries, the units and the environment
+template; there is no bundle to copy and no UI variable to fill in, because the
+client arrives in the binary. That reverses the old rule — an install that
+placed no bundle used to be a failure — and it is why an environment file from an
+earlier release should have its `LOOM_UI_DIR` line removed: the server refuses to
+start while that variable is set, so it exits with an error naming the removal
+rather than quietly serving its own client ([`upgrades.md`](upgrades.md)).
 
 `SHA256SUMS` names its files without a directory prefix, so `sha256sum -c
 SHA256SUMS` works in whatever directory a downloader put them in.
@@ -185,15 +185,15 @@ source tree, so what is checked is the file that will be downloaded.
 
 The two asset lines in that block are **historical**: `/app.js` and `/style.css`
 are the buildless reference client, which no longer exists, and the run predates
-the app bundle. What the script checks now is the staged bundle instead: it takes
-`--ui-dir DIR` (default `<bin-dir>/ui`, which is the archive's own `ui/` beside
-the binaries, or `apps/app/dist` from a checkout), starts the server with
-`LOOM_UI_DIR` — required, there is no embedded fallback — and then asserts that
-the served `index.html` names its `/assets/*.js` and `/assets/*.css`, that those
-two paths answer `200` with their own content types, that a deep client route
-answers the same bytes as the shell (so history routing works through the real
-static server), and that an unknown `/api/v1` route is a JSON `404` rather than
-the shell.
+the product app. What the script checks now is the client inside the binary: it
+starts the server with no UI variable set, which is the whole configuration a
+release needs, and asserts that `/` answers `200` with an HTML shell naming its
+`/assets/*.js`, that that asset answers `200` as `text/javascript`, that a deep
+client route answers the same document (so history routing works), that an
+unknown `/api/v1` route is a JSON `404` rather than the shell, and that starting
+the same binary with `LOOM_UI_DIR` set exits non-zero with the error naming the
+removal. The historical `/app.js` and `/style.css` are what a bundle-on-disk
+release served; the served paths today are the app's own hashed assets.
 
 R3 added three lines to that output. They were recorded on a **local rehearsal**
 from a checkout rather than by a tag run, which is why the digests and the
@@ -248,7 +248,7 @@ Every step the pipeline runs, run by hand from the repository root. The same
 commands, in the same order:
 
 ```bash
-# 1. the bundle the archive will carry
+# 1. the bundle the Rust jobs compile into the server
 pnpm install --frozen-lockfile
 pnpm run typecheck && pnpm run test
 pnpm --filter @bb/app run build
@@ -260,12 +260,11 @@ cargo build --release --locked --target aarch64-unknown-linux-musl
 
 # 3. run the one this machine can run; check the other is what it claims
 scripts/verify-release-binaries.sh target/x86_64-unknown-linux-musl/release \
-  --ui-dir apps/app/dist \
   --expect-commit "$(git rev-parse HEAD)" --expect-target x86_64-unknown-linux-musl
 scripts/verify-release-binaries.sh target/aarch64-unknown-linux-musl/release --elf-only \
   --expect-target aarch64-unknown-linux-musl --expect-commit "$(git rev-parse HEAD)"
 
-# 4. dist/: the two bare binaries and the archive, per target, with ui/ inside it
+# 4. dist/: the two bare binaries and the archive, per target
 scripts/package-release.sh x86_64-unknown-linux-musl
 scripts/package-release.sh aarch64-unknown-linux-musl
 

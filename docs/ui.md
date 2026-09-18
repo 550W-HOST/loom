@@ -14,28 +14,36 @@ A UI never talks to a daemon, and a daemon never talks to a UI. Pointing a
 client at a URL is the whole configuration.
 
 The UI is the product app in [`../apps/app`](../apps/app), built to a static
-bundle. It is the only client in this repository: the buildless `ui/` reference
-client that used to be served by default is gone, and what remains under `ui/`
-is `ui/packages/*` — the pinned bb packages the app builds against
-([`ui-baseline.md`](ui-baseline.md)).
+bundle and compiled into `loom-server`. It is the only client in this repository:
+the buildless `ui/` reference client that used to be served by default is gone,
+and what remains under `ui/` is `ui/packages/*` — the pinned bb packages the app
+builds against ([`ui-baseline.md`](ui-baseline.md)).
 
 ## Hosting
 
-`loom-server` answers the fallback route from one of two sources, chosen by
-environment. They are mutually exclusive, because two UI sources would make the
-result depend on evaluation order.
+`loom-server` serves the client from bytes inside its own binary:
+`crates/server/build.rs` walks `apps/app/dist` at build time and generates the
+table `crates/server/src/ui.rs` serves. Installing the server therefore installs
+the UI. There is one artifact, one thing to upgrade, no bundle path to
+configure, and no way to run a server whose client differs from its release.
+
+Because the bundle is a **build input**, `pnpm --filter @bb/app run build` is a
+prerequisite of any `cargo build`, `cargo test` or `cargo clippy` on a source
+checkout: with `apps/app/dist` missing, the build stops and names that command.
+The release pipeline and CI run it before the Rust jobs for the same reason
+([`releasing.md`](releasing.md), [`ci.md`](ci.md)).
 
 | Source | Selected by | Use |
 | --- | --- | --- |
-| Built bundle on disk | `LOOM_UI_DIR=/usr/local/share/loom/ui` | Production, and the only way a UI is served |
+| Embedded product app | nothing — always | Production |
 | Dev-server proxy | `LOOM_UI_PROXY=http://127.0.0.1:5173` | Frontend development with hot reload against the real server |
 
-There is no third source and no embedded fallback. A server started with neither
-variable set exits with an error naming both: a UI is a deployment input, not
-bytes compiled into the binary, so a `cargo build` carries no UI at all and a
-running server never serves a bundle nobody chose. `deploy/install.sh` puts the
-bundle at `<prefix>/share/loom/ui` — `/usr/local/share/loom/ui` under the default
-prefix — and sets `LOOM_UI_DIR` in `/etc/loom/loom-server.env` to match.
+The proxy is an override rather than the other half of a choice: nothing else
+replaces the embedded bundle, and the override is development only. `LOOM_UI_DIR`
+is **gone**: a server started with it set exits with an error naming the removal
+rather than ignoring it, because an environment file from the release that put a
+bundle beside the binary would otherwise look configured while the binary served
+its own client (`crates/server/src/main.rs`).
 
 Rules that apply to both:
 
@@ -54,8 +62,8 @@ Rules that apply to both:
 The proxy tunnels WebSocket upgrades as well as HTTP, so Vite's HMR socket keeps
 working while `/api`, `/ws` and `/internal/ws` stay on `loom-server`. During
 development the UI therefore still uses one origin and needs no CORS
-configuration. It is a development shape only: it makes the server depend on a
-second process being up, so no deployment uses it.
+configuration. It makes the server depend on a second process being up, so no
+deployment uses it.
 
 ## The client contract
 
@@ -140,20 +148,22 @@ contract the projection layer dispatches on. See
 
 ## Building the bundle
 
-The app is an ordinary pnpm workspace project, and the server serves the
-directory it is given without building, rewriting or templating anything:
+The app is an ordinary pnpm workspace project, and its build output is a build
+input of the server: `crates/server/build.rs` embeds `apps/app/dist`, and nothing
+in that directory is read, rewritten or templated at runtime.
 
 ```bash
 pnpm install --frozen-lockfile
-pnpm --filter @bb/app run build          # → apps/app/dist
-LOOM_UI_DIR=$PWD/apps/app/dist cargo run -p loom-server
+pnpm --filter @bb/app run build          # → apps/app/dist, the input to cargo build
+cargo run -p loom-server
 ```
 
 `apps/app/dist` holds `index.html`, `assets/**` with content-hashed names, and
 the PWA files (the manifest and its icon set). Every URL in it is absolute from
-the root, which is why the server can mount the directory at `/` and stop
-thinking about it; content-hashed assets are served immutable and everything else
-is revalidated, so a redeploy is picked up without a hard refresh.
+the root, which is why the server can serve the bundle at `/` and stop thinking
+about it; content-hashed assets are immutable, everything else carries a short
+`max-age`, and `index.html` is `no-cache`, so a new binary is picked up without a
+hard refresh.
 
 `pnpm --filter @bb/app run check:bundle` applies the committed boot and lazy-route
 budget (`apps/app/bundle-budget.json`) to the build's own `bundle-stats.json`, so

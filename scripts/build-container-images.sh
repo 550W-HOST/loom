@@ -9,14 +9,15 @@
 # aarch64 pair is still verified by `scripts/verify-release-binaries.sh`, which
 # is where the machine that can execute it lives.
 #
+# Nothing else is staged: the server's product app is compiled into the binary,
+# so the server image serves the client the packaged bytes were built with and
+# has no bundle to copy in or path to configure.
+#
 # What the build reads is a staged context, not the repository: one binary per
-# Docker architecture, named `<binary>-<amd64|arm64>`, the built product app as
-# `ui/` (the same bundle the release archive carries, since the server serves no
-# other client), plus the `.keep` placeholder the Dockerfiles copy into their
-# volumes. `--platform` selects which binaries the build needs, so a
-# one-platform build stages one platform; the bundle is one set of static files
-# either way. The Dockerfiles are handed to docker with `--file`, so they stay
-# in `deploy/`.
+# Docker architecture, named `<binary>-<amd64|arm64>`, plus the `.keep`
+# placeholder the Dockerfiles copy into their volumes. `--platform` selects which
+# binaries the build needs, so a one-platform build stages one platform. The
+# Dockerfiles are handed to docker with `--file`, so they stay in `deploy/`.
 #
 # Usage:
 #   scripts/build-container-images.sh [options]
@@ -27,7 +28,6 @@
 #   --registry REPO   repository prefix to tag under, e.g. ghcr.io/550w-host
 #                     default empty, i.e. `loom-server:<tag>`
 #   --dist-dir DIR    where the packaged binaries are  default dist
-#   --ui-dir DIR      built product app  default apps/app/dist
 #   --push            push to the registry; without it the images are loaded
 #                     into the local daemon, which takes a single platform
 #   -h, --help        this text
@@ -47,7 +47,6 @@ platforms=""
 tags="dev"
 registry=""
 dist_dir="$repo_root/dist"
-ui_dir=""
 push=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -69,10 +68,6 @@ while [[ $# -gt 0 ]]; do
       ;;
     --dist-dir)
       dist_dir="${2:-}"
-      shift 2
-      ;;
-    --ui-dir)
-      ui_dir="${2:-}"
       shift 2
       ;;
     --push)
@@ -112,14 +107,6 @@ context="$dist_dir/context"
 rm -rf "$context"
 mkdir -p "$context"
 install -m 0644 "$repo_root/deploy/containers/keep" "$context/.keep"
-[[ -n "$ui_dir" ]] || ui_dir="$repo_root/apps/app/dist"
-# Staged once, not per platform: the bundle is the same static files for both
-# architectures, and only the server image copies it. It is the caller's build
-# output — the release pipeline points this at the bundle it takes out of the
-# checksummed archive — so the image serves the app the archive carries.
-[[ -f "$ui_dir/index.html" ]] ||
-  die "no UI bundle at $ui_dir; build one with 'pnpm --filter @bb/app run build', or pass --ui-dir"
-cp -R "$ui_dir" "$context/ui"
 
 IFS=',' read -r -a platform_list <<<"$platforms"
 for platform in "${platform_list[@]}"; do

@@ -39,12 +39,9 @@ only, so it works behind NAT and needs no inbound port.
   container instead of a unit: [`../docs/containers.md`](../docs/containers.md).
 - The two binaries, from either a built checkout (`cargo build --release`) or a
   GitHub Release (`--release <version>`, no toolchain needed — see
-  [§ Install from a release](#install-from-a-release)).
-- The UI bundle for the server machine: `apps/app/dist` from
-  `pnpm --filter @bb/app run build`, or the `ui/` an extracted release archive
-  carries. The server serves the product app from disk and has no client
-  compiled into it, so `install.sh server` refuses to install without a bundle
-  rather than starting a server with nothing to serve.
+  [§ Install from a release](#install-from-a-release)). A build from source needs
+  the product app built first — the server compiles `apps/app/dist` into the
+  binary, so `cargo build` fails without it. A release has already done that.
 - root (or sudo) on each machine. The install script creates a dedicated `loom`
   system user and never runs a service as root.
 
@@ -53,9 +50,9 @@ only, so it works behind NAT and needs no inbound port.
 On the machine that will host the control plane:
 
 ```bash
-cargo build --release
 pnpm install --frozen-lockfile          # once per checkout
-pnpm --filter @bb/app run build         # the bundle install.sh installs as the UI
+pnpm --filter @bb/app run build         # cargo build compiles the app into the server
+cargo build --release
 sudo deploy/install.sh server
 $EDITOR /etc/loom/loom-server.env        # optional; loopback + local log is the default
 sudo systemctl restart loom-server
@@ -66,6 +63,8 @@ On each execution machine, where `builder-1` is this machine and
 `https://loom.example.com` is the server a browser would open:
 
 ```bash
+# a checkout builds the same way, and needs the same app build first
+pnpm install --frozen-lockfile && pnpm --filter @bb/app run build
 cargo build --release
 sudo deploy/install.sh daemon builder-1 https://loom.example.com
 $EDITOR /etc/loom/daemon/builder-1.env   # server URL, host name, data paths
@@ -75,31 +74,26 @@ sudo systemctl restart loom-host-daemon@builder-1
 For a single-box deployment, `sudo deploy/install.sh all builder-1 https://loom.example.com`
 installs the server and one daemon on the same machine.
 
-The two `cargo build --release` lines above are what a checkout needs, and the
-`pnpm --filter @bb/app run build` line is what the server machine needs: the UI
-bundle is installed from `apps/app/dist`. A machine with no toolchain at all
-needs none of them — a release archive carries both binaries and the built
-bundle, and `--release <version>` installs the binaries from the release — see
-[§ Install from a release](#install-from-a-release).
+Every `cargo build --release` above needs `pnpm --filter @bb/app run build`
+first: the product app is compiled into the server, so a checkout that has not
+built it cannot compile either binary. A machine with no toolchain needs neither
+— the release archive carries both binaries, and `--release <version>` installs
+them from the release — see [§ Install from a release](#install-from-a-release).
 
 The install script is idempotent and never overwrites an existing environment
-file, so re-running it refreshes binaries and units and keeps your edits. Two
-things it will not do quietly: it fails if the checkout has no built bundle
-(`--ui-dir <path>` installs one from elsewhere), and it fails if an existing
-`/etc/loom/loom-server.env` does not set `LOOM_UI_DIR`, naming the file and the
-value to add — a server with no UI source refuses to start, so an install that
-lost the value would look successful and then fail on the next restart. Set
+file, so re-running it refreshes binaries and units and keeps your edits. Set
 `LOOM_NO_START=1` to install without starting, and `LOOM_SERVICE_MANAGER=0` to
 skip `systemctl` and have the script print the hand-run commands (containers,
 CI). `deploy/install.sh help` lists every override.
 
-Open the UI at the server URL — the server hosts the built product app on the
-same origin as the API, so "point a client at a URL" is the whole configuration.
-What it serves is the bundle `LOOM_UI_DIR` names, installed at
-`<prefix>/share/loom/ui` (default `/usr/local/share/loom/ui`); there is no
-embedded client behind that, and `LOOM_UI_PROXY` — a frontend dev server,
-mutually exclusive with `LOOM_UI_DIR` — is the only alternative and is
-development only.
+Open the UI at the server URL — the server serves the product app on the same
+origin as the API, so "point a client at a URL" is the whole configuration. The
+app is compiled into the binary, so there is nothing to install beside it and no
+variable to point at one: an install, an upgrade and a rollback are the two
+binaries and nothing else. `LOOM_UI_PROXY` — a frontend dev server to proxy to —
+is the only override, it is for developing the app against a real server, and a
+`LOOM_UI_DIR` left in an environment file from an older release is refused at
+startup rather than ignored.
 
 ## Install from a release
 
@@ -112,7 +106,7 @@ target triple:
 | `loom-server-<target>` | the server binary |
 | `loom-daemon-<target>` | the daemon binary |
 | `SHA256SUMS` | the SHA-256 of every asset in the release |
-| `loom-0.1.0-<target>.tar.gz` | both binaries, the built UI bundle as `ui/`, `deploy/` and the README |
+| `loom-0.1.0-<target>.tar.gz` | both binaries, `deploy/` and the README |
 
 `<target>` is `x86_64-unknown-linux-musl` or `aarch64-unknown-linux-musl`. The
 binaries are statically linked, so one artifact runs on any glibc or musl host.
@@ -120,7 +114,7 @@ How these artifacts are built and verified before they are attached, and how to
 check a download yourself, is [`../docs/releasing.md`](../docs/releasing.md).
 
 ```bash
-# the scripts, units and UI (the archive carries deploy/ and ui/)
+# the scripts and units (the archive carries deploy/)
 curl -fsSLO https://github.com/550W-HOST/loom/releases/download/v0.1.0/loom-0.1.0-x86_64-unknown-linux-musl.tar.gz
 tar xzf loom-0.1.0-x86_64-unknown-linux-musl.tar.gz
 cd loom-0.1.0-x86_64-unknown-linux-musl
@@ -129,10 +123,10 @@ cd loom-0.1.0-x86_64-unknown-linux-musl
 sudo deploy/install.sh --release v0.1.0 all builder-1 https://loom.example.com
 ```
 
-The installer takes the UI bundle from the archive's `ui/`, next to the
-extracted `deploy/`, and installs it with the binaries — so this path needs no
-JavaScript toolchain either. `--ui-dir <path>` overrides where the bundle comes
-from.
+This path needs no JavaScript toolchain either: these binaries were built with
+the product app compiled into the server, so `install.sh` installs the two
+executables, the units and the environment template, and there is nothing else
+to fetch.
 
 `--release latest` takes the newest published release, and `v0.1.0` and `0.1.0`
 name the same tag. The installer detects `x86_64` against `aarch64` itself and
@@ -209,7 +203,6 @@ Each unit owns its data; nothing is shared between the server and a daemon.
 | `/var/lib/loom/machines/<server-key>/host-id` | `loom` | enrolled host identity, persisted on first enroll |
 | `/var/lib/loom/machines/<server-key>/host-id.cursor` | `loom` | host-scope replay cursor |
 | `/var/lib/loom/machines/<server-key>/sessions/` | `loom` | per-thread provider sessions |
-| `/usr/local/share/loom/ui/` | root, mode 0755 | the product app's built bundle, served read-only by the server and named by `LOOM_UI_DIR` |
 
 The daemon directory is keyed by the *server*, which is what makes "one
 instance per server" work: a machine that joins two servers gets two instances,
@@ -238,19 +231,13 @@ sudo install -d -o loom -g loom -m 0750 /var/lib/loom/machines/builder-1
 sudo install -m 0755 target/release/loom-server /usr/local/bin/loom-server
 sudo install -m 0755 target/release/loom-daemon /usr/local/bin/loom-daemon
 
-# 3. the UI bundle (server machine), where LOOM_UI_DIR will point
-sudo install -d -m 0755 /usr/local/share/loom
-sudo cp -R apps/app/dist /usr/local/share/loom/ui
-
-# 4. units and environment (server machine)
+# 3. units and environment (server machine)
 sudo install -m 0644 deploy/systemd/loom-server.service /etc/systemd/system/
-# the template sets LOOM_UI_DIR=/usr/local/share/loom/ui; edit it if the
-# bundle was installed somewhere else
 sudo install -m 0640 deploy/env/loom-server.env /etc/loom/loom-server.env
 sudo systemctl daemon-reload
 sudo systemctl enable --now loom-server
 
-# 5. units and environment (each execution machine)
+# 4. units and environment (each execution machine)
 sudo install -m 0644 deploy/systemd/loom-host-daemon@.service /etc/systemd/system/
 sudo install -m 0640 deploy/env/loom-host-daemon.env /etc/loom/daemon/builder-1.env
 $EDITOR /etc/loom/daemon/builder-1.env

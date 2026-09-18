@@ -18,37 +18,31 @@ filesystem boundary is, and for the daemon that boundary is the whole question
 | | `loom-server` | `loom-daemon` |
 | --- | --- | --- |
 | Base | `scratch` | `alpine:3.22` (digest-pinned) |
-| Image size | 6.9 MB, plus the UI bundle | 10.7 MB |
+| Image size | one binary, client inside; 6.9 MB before the client was compiled in | 10.7 MB |
 | Runs as | `1000:1000` | `1000:1000` |
 | Listens on | `0.0.0.0:38886` (`EXPOSE`d) | nothing |
 | Data volume | `/var/lib/loom/server` | `/var/lib/loom` |
 | Workspace | — | `/workspace` (bind-mounted) |
-| UI bundle | `/usr/local/share/loom/ui`, as `LOOM_UI_DIR` | — |
+| UI | embedded in the `loom-server` binary | — |
 | Provider CLIs | none, and none needed | none — [§ Providers](#providers) |
 
 `scratch` and not a distribution for the server because it needs nothing: the
 binary is a static musl build and the process executes no provider and no tool,
 so a userland it never calls would only be attack surface. What else the image
-carries is a copied directory, which needs no base to copy it. `alpine` and not
+carries is a copied placeholder, which needs no base to copy it. `alpine` and not
 `scratch` for the daemon for the opposite reason — it exists to execute provider
 CLIs, and a provider is usually not a static binary (`pi` is a Node program), so
 the image has to be a base something can be added to.
 
-The server image carries the UI as a directory rather than inside the binary:
-
-```dockerfile
-COPY --chown=1000:1000 ui /usr/local/share/loom/ui
-ENV LOOM_UI_DIR=/usr/local/share/loom/ui
-```
-
-The staged context's `ui/` is the product app's build output — `apps/app/dist`,
-from `pnpm --filter @bb/app run build` — so a container is one of the three ways
-the same bytes reach a deployment, next to the release archive's `ui/` and an
-installed `<prefix>/share/loom/ui` ([`releasing.md`](releasing.md),
-[`ui.md`](ui.md)). The copy is the reason the size column says "plus the UI
-bundle": the 6.9 MB is the control plane alone, and the bundle adds its own
-footprint. Without it the server refuses to start, because there is no
-compiled-in fallback.
+The server image is the static binary and nothing else: the product app is
+compiled into it ([`ui.md`](ui.md)), so there is no directory to copy, no
+`LOOM_UI_DIR` to set and no second artifact that could disagree with the binary.
+The 6.9 MB in the size column was measured before the client was embedded, so
+today's image is larger by the bundle it carries — but it is still one file, and
+one thing to pull, tag and roll back. `LOOM_UI_PROXY` (development only) is the
+only UI override the image's process accepts; `LOOM_UI_DIR` makes it exit with an
+error naming the removal, which is what an environment file from the
+bundle-on-disk release would otherwise leave behind.
 
 Neither image carries a Rust toolchain, or anything else that was needed to
 build it.
@@ -341,7 +335,7 @@ The images are built from the **packaged** binaries, the ones the release page
 publishes, so an image and a download carry the same bytes:
 
 ```bash
-pnpm --filter @bb/app run build              # the UI bundle every image carries
+pnpm --filter @bb/app run build              # the bundle cargo compiles into the server
 cargo build --release --locked --target x86_64-unknown-linux-musl
 scripts/package-release.sh x86_64-unknown-linux-musl
 scripts/build-container-images.sh --platform linux/amd64 --tags dev
@@ -349,8 +343,7 @@ docker run --rm loom-server:dev --version
 ```
 
 `build-container-images.sh` stages a small build context — one binary per Docker
-architecture name, the UI bundle as `ui/` (`--ui-dir`, default
-`apps/app/dist`), plus a `.keep` placeholder the Dockerfiles copy to create
+architecture name, plus a `.keep` placeholder the Dockerfiles copy to create
 their data directories owned by 1000 — and hands it to `docker buildx`. The
 placeholders exist because a `RUN` is what would otherwise be needed to create
 and `chown` a directory, and a `RUN` is what drags an emulator into a
@@ -369,7 +362,6 @@ mkdir -p dist/context
 install -m 0755 dist/loom-server-x86_64-unknown-linux-musl dist/context/loom-server-amd64
 install -m 0755 dist/loom-daemon-x86_64-unknown-linux-musl dist/context/loom-daemon-amd64
 install -m 0644 deploy/containers/keep dist/context/.keep
-cp -R apps/app/dist dist/context/ui
 docker build -f deploy/containers/loom-server.Dockerfile -t loom-server:dev dist/context
 docker build -f deploy/containers/loom-daemon.Dockerfile -t loom-daemon:dev dist/context
 ```

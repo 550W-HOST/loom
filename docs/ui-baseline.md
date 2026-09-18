@@ -46,8 +46,9 @@ ancestor symlink 仍会失败。设置 `BB_SRC` 或传入 `--upstream` 后，检
 
 `loom/apps/app` 现在是 bb `apps/app` 的 ledger 管控 source port
 （`registry.app.disposition = source-port`）：它在 pnpm workspace 内，
-`pnpm --filter @bb/app run build` 产出 `apps/app/dist`，服务器从 `LOOM_UI_DIR`
-提供该目录，它是本仓库唯一的 UI。buildless 的 `ui/` reference client 已删除
+`pnpm --filter @bb/app run build` 产出 `apps/app/dist`，服务器把它编译进
+`loom-server`（`crates/server/build.rs`）并提供该客户端，它是本仓库唯一的 UI。
+buildless 的 `ui/` reference client 已删除
 （`ui/src`、`ui/app.js`、`ui/index.html`、`ui/style.css` 及其 esbuild 构建脚本）；
 `ui/` 下保留的 `ui/packages/*` 是 app 构建所依赖的 pinned bb package。
 `ui/provenance.json` 现在同时保存 upstream 的 commit/tree、完整 app 文件集合及
@@ -147,8 +148,8 @@ action registry 中删除，不能留下 dead navigation。
    are removed or fail closed, and stale persisted plugin/browser panes are
    pruned. The loom transport is in place — `loom-http.ts` over the route table,
    `ws.ts` on the public `/ws` socket ([`ui.md`](ui.md)) — and the app is the only
-   UI the server serves, from its build output (`apps/app/dist`) via
-   `LOOM_UI_DIR`.
+   UI the server serves, from its build output (`apps/app/dist`), compiled into
+   the binary by `crates/server/build.rs`.
 
 本仓库是 hard fork，没有 upstream remote，也不维护 bb patch series；同步是
 精确 source snapshot 加本仓库内可审计的适配提交，不是外部 patch series。

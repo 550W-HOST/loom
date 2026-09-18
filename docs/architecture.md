@@ -7,7 +7,7 @@ Three roles, and only three.
 | Role | Responsibility | Where it runs | How many |
 | --- | --- | --- | --- |
 | **UI** | Inspect and steer. Holds no state. | Browser, installed PWA, or the desktop shell's webview | any |
-| **Server** | State, HTTP API, WebSocket, dispatch, serves the UI bundle | one machine | 1 |
+| **Server** | State, HTTP API, WebSocket, dispatch, serves the UI client it carries | one machine | 1 |
 | **Daemon** | Runs provider CLIs, provisions workspaces, executes tools | each execution machine | N |
 
 A UI never talks to a daemon. A daemon never talks to a UI. Both only talk to
@@ -337,12 +337,11 @@ mobile app is not maintained here.
 
 This is implemented. `loom-server` serves the UI from the same origin as the
 API. The UI is the product app in `apps/app`, built with
-`pnpm --filter @bb/app run build` and served from disk by `LOOM_UI_DIR` —
-`/usr/local/share/loom/ui` for an installed deployment;
+`pnpm --filter @bb/app run build` and compiled into the binary by
+`crates/server/build.rs`, so a server is one artifact: no bundle path to
+configure, and no way for a server's client to differ from its release.
 `LOOM_UI_PROXY` reverse-proxies to a dev server instead, and is development
-only. There is no embedded fallback: a server started with neither variable
-refuses to start, because a UI is a deployment input rather than bytes compiled
-into a binary. The client contract — typed `/api/v1` routes, the public `/ws`
+only. The client contract — typed `/api/v1` routes, the public `/ws`
 subprotocol with bb targets answered by `changed`/`pong`, and a reconnect that
 invalidates and reloads rather than replaying — is in [`ui.md`](ui.md).
 

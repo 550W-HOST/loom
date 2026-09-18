@@ -122,13 +122,13 @@ What this proves, item by item:
 
 > **Superseded: how the UI is served.** Step 3 above ran against the buildless
 > reference client, which was compiled into the binary with `include_bytes!` and
-> was the default UI. Neither the client nor those sources exist any more: the
-> UI is the product app's bundle on disk, served from `LOOM_UI_DIR`
-> (`/usr/local/share/loom/ui`; the archive stages it as `ui/`), and a server
-> started without `LOOM_UI_DIR` — or the development-only `LOOM_UI_PROXY` —
-> exits at startup instead of serving anything. So the recorded command in this
-> step would now fail before it reached `GET /`: a rerun starts the server with
-> `LOOM_UI_DIR` set and checks the served shell and its `/assets/*.js` and
+> was the default UI. That client is still gone, and the product app has taken
+> its place *inside* the same binary: `crates/server/build.rs` embeds
+> `apps/app/dist` and `loom-server` serves it, so there is nothing to configure —
+> while `LOOM_UI_DIR`, the variable the bundle-on-disk release used, now makes
+> the server exit with an error naming the removal. So the recorded command in
+> this step would fail before it reached `GET /`: a rerun starts the server with
+> no UI variable at all and checks the served shell and its `/assets/*.js` and
 > `/assets/*.css` rather than `/app.js` and `/style.css`
 > ([`ui.md`](ui.md), [`releasing.md`](releasing.md)). Everything else this run
 > recorded — server-only startup, enrollment, dispatch, relay replay and the
