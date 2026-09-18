@@ -497,7 +497,7 @@ CPU, which makes a failure's timing legible.
 
 ## Branch protection
 
-Protect `main` and require these five checks:
+Protect `main` and require these six checks:
 
 | Required | Reason |
 | --- | --- |
@@ -506,9 +506,10 @@ Protect `main` and require these five checks:
 | `bb contract is reproducible` | the committed contract is what the exporter produces |
 | `UI typecheck, tests, bundle and provenance` | the client type-checks and passes its tests, the product app builds the bundle every Rust job embeds and holds it to its bundle budget, and the source/package/contract provenance and the port plan match their manifests |
 | `daemon self-update end to end` | a real daemon follows a newer-protocol server: fetch, verify, install over itself, restart, run a turn |
+| `Browser acceptance` | a real browser drives the real stack — server, daemon, an approval that blocks its turn — in a desktop and a phone viewport |
 
-The four jobs that declare `needs: ui` — `checks`, `msrv`, `pi` and
-`self-update` — are skipped when `ui` fails, which is not a hole: `ui` is itself
+The five jobs that declare `needs: ui` — `checks`, `msrv`, `pi`, `self-update`
+and `e2e` — are skipped when `ui` fails, which is not a hole: `ui` is itself
 required, so a red one blocks the merge and the skipped jobs only save runner
 time.
 
@@ -525,7 +526,7 @@ given a configured `pi`; it would then be worth requiring, since it is the only
 coverage of the production bridge.
 
 On GitHub: *Settings → Branches → Branch protection rules → `main`*, enable
-*Require status checks to pass before merging*, then select the three above. Two
+*Require status checks to pass before merging*, then select the six above. Two
 further settings are recommended and independent of this workflow:
 
 - *Require branches to be up to date before merging* — otherwise a pull request
