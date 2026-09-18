@@ -704,7 +704,39 @@ impl Daemon {
                 ..
             } => self.observe_event(&event_id, &scope, &payload),
             ServerMessage::Error { message } => Err(DaemonError::Protocol(message)),
-            // Hello, acks and pongs are the transport shell's to ignore.
+            // A question the control plane refused to record has no client that
+            // can ever answer it — the interaction entity a UI renders and
+            // answers was never created. Waiting out the permission timeout
+            // would show the user a turn blocked on a question nobody can see,
+            // so the agent is told "not granted" now, and the reason is logged
+            // because it is the only account of why the question vanished.
+            ServerMessage::InteractionRequestAck {
+                request_id,
+                accepted: false,
+                detail,
+                ..
+            } => {
+                let registry = self.permissions.clone();
+                let reason =
+                    detail.unwrap_or_else(|| "the control plane refused the request".to_owned());
+                tokio::spawn(async move {
+                    if registry.refuse(&request_id, &reason).await {
+                        eprintln!(
+                            "loom-daemon: the control plane refused permission request \
+                             {request_id} ({reason}); the agent is told it was not granted"
+                        );
+                    } else {
+                        eprintln!(
+                            "loom-daemon: the control plane refused permission request \
+                             {request_id} ({reason}), but nothing was waiting for it"
+                        );
+                    }
+                });
+                Ok(())
+            }
+            // Hello, accepted acknowledgements and pongs are the transport
+            // shell's to ignore: a recorded question is answered by its
+            // resolution, which arrives as an event.
             _ => Ok(()),
         }
     }

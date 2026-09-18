@@ -127,6 +127,27 @@ impl PermissionRegistry {
         pending.answer.send(answer).is_ok()
     }
 
+    /// Hands a waiter the control plane's refusal, if one is waiting.
+    ///
+    /// A request the control plane will not record has no client that can ever
+    /// answer it: the question never became an entity, so nothing will publish a
+    /// resolution for it. The agent is told "not granted" now instead of at the
+    /// end of the permission timeout, which is what the operator sees as a turn
+    /// that hangs on a question their UI never showed.
+    ///
+    /// `false` means nothing was waiting, which is a no-op like [`Self::resolve`]
+    /// — a redelivered acknowledgement, or a run that ended while it was in
+    /// flight.
+    pub async fn refuse(&self, request_id: &str, reason: &str) -> bool {
+        self.resolve(
+            request_id,
+            InteractionAnswer::Cancelled {
+                reason: reason.to_owned(),
+            },
+        )
+        .await
+    }
+
     /// Asks one run's held requests to settle as cancelled, returning how many.
     ///
     /// Called when that run ends: a turn that finished cannot still be blocked on
@@ -258,22 +279,15 @@ impl PermissionBroker {
 
         match tokio::time::timeout(self.timeout, rx).await {
             Ok(Ok(answer)) => answer_to_response(answer, &request, self.run.permission_ceiling),
-            // The control plane refused to record the question, or the sender
-            // was dropped. Either way there is no answer to wait for.
+            // The waiter was dropped — the refusal path is a hand-off like any
+            // answer, so a refused request arrives at the arm above with
+            // `InteractionAnswer::Cancelled`. Either way there is no answer to
+            // wait for.
             Ok(Err(_)) => cancelled(),
             // Nobody answered in time. The agent must be unblocked, and the
             // only truthful answer is "not granted".
             Err(_) => cancelled(),
         }
-    }
-
-    /// Answers as cancelled without asking: the request has nowhere to go.
-    ///
-    /// Used when the control plane rejects it. Separate from [`Self::ask`] so
-    /// the immediate path is explicit rather than an `Option` dance.
-    pub async fn refuse(&self, reason: &str) -> RequestPermissionResponse {
-        let _ = reason;
-        cancelled()
     }
 
     /// The daemon's identity for one ACP request.
@@ -508,6 +522,46 @@ mod tests {
         let (tx, rx) = mpsc::channel(8);
         let broker = PermissionBroker::new(run(), tx, PermissionRegistry::new(), timeout);
         (broker, rx)
+    }
+
+    /// The control plane can refuse to record a question, and then nothing will
+    /// ever answer it. The agent must be told that immediately: the timeout is
+    /// for a human who has not got round to clicking, not for a question that
+    /// never reached anyone.
+    #[tokio::test]
+    async fn a_request_the_control_plane_refuses_is_cancelled_at_once() {
+        // Generous enough that the assertion below cannot pass by waiting it
+        // out: five minutes is the deployed default, and the test would time
+        // out long before.
+        let (broker, mut outbound) = broker(Duration::from_secs(300));
+        let pending = broker.pending.clone();
+        let handle = tokio::spawn(async move { broker.ask(request(allow_options())).await });
+
+        let frame = outbound.recv().await.expect("the request travels up");
+        assert!(
+            pending
+                .refuse(&frame.request_id, "run run_1 is not in flight")
+                .await,
+            "the waiter is handed the refusal"
+        );
+
+        let response = tokio::time::timeout(Duration::from_secs(1), handle)
+            .await
+            .expect("a refused request is answered now, not at the permission timeout")
+            .unwrap();
+        assert_eq!(
+            response.outcome,
+            RequestPermissionOutcome::Cancelled,
+            "a refusal is never an approval"
+        );
+
+        // A refusal for something this daemon is not holding — a redelivered
+        // acknowledgement, or a run that ended first — is a no-op the socket
+        // loop logs rather than an error.
+        assert!(
+            !pending.refuse(&frame.request_id, "late").await,
+            "the waiter was consumed by the refusal"
+        );
     }
 
     #[tokio::test]
