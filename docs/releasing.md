@@ -132,10 +132,10 @@ verifying the tarball verifies the client too.
 `deploy/install.sh server` installs the binaries, the units and the environment
 template; there is no bundle to copy and no UI variable to fill in, because the
 client arrives in the binary. That reverses the old rule — an install that
-placed no bundle used to be a failure — and it is why an environment file from an
-earlier release should have its `LOOM_UI_DIR` line removed: the server refuses to
-start while that variable is set, so it exits with an error naming the removal
-rather than quietly serving its own client ([`upgrades.md`](upgrades.md)).
+placed no bundle used to be a failure — and an environment file from an earlier
+release may still carry a `LOOM_UI_DIR` line: it is inert, the server serves the
+client in its binary and says once that it is ignoring the variable
+([`upgrades.md`](upgrades.md)).
 
 `SHA256SUMS` names its files without a directory prefix, so `sha256sum -c
 SHA256SUMS` works in whatever directory a downloader put them in.

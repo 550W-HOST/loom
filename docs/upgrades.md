@@ -13,10 +13,9 @@ The client is part of the server binary, not a directory beside it
 ([`ui.md`](ui.md)): installing or upgrading the server installs or upgrades its
 UI, there is no bundle to place, and no server can serve a client other than the
 one it was built with. An environment file written while main served a
-bundle from disk still names `LOOM_UI_DIR` — never a release, since no release
-carried that shape — and the server now exits at startup with an error naming
-the removal rather than ignoring it: that line is the one thing such an
-environment has to drop. `LOOM_UI_PROXY` — development only, a frontend
+bundle from disk may still name `LOOM_UI_DIR` — no release carried that shape —
+and the line is inert: the server serves the client in its binary and says once
+at startup that it is ignoring the variable. Nothing has to be edited. `LOOM_UI_PROXY` — development only, a frontend
 dev server to reverse-proxy to — is the single override that survives, and no
 deployment uses it.
 
@@ -407,12 +406,12 @@ Rules:
   `install.sh` (or copying the previous file) plus a restart.
 - The environment file and the data directory are unchanged across an ordinary
   upgrade, so rollback does not touch them. One commit range changed how
-  the UI is served rather than how the protocol works: the server that serves a
-  bundle from disk needs `LOOM_UI_DIR` plus that directory, and the server that
-  carries the client in its binary refuses to start while the variable is set,
-  so rolling across that boundary edits the environment file in one direction or
-  the other. (The disk-bundle shape existed only between two commits on main; no
-  release shipped it.) The two update state files
+  the UI is served rather than how the protocol works: the server that served a
+  bundle from disk needed `LOOM_UI_DIR` plus that directory, and the server that
+  carries its client in the binary ignores the variable — rolling across that
+  boundary needs nothing edited, and the bundle directory can be deleted
+  whenever it is convenient. (The disk-bundle shape existed only between two
+  commits on main; no release shipped it.) The two update state files
   (`host-daemon-update-attempt.json`, `host-artifact.sha256`) are safe to delete:
   the next attempt is then unconditional and unthrottled.
 - The relay log needs no migration within a `protocol_version`. It is an

@@ -47,17 +47,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     // The UI is the product app compiled into this binary, so a server serves
     // a client with no configuration at all. LOOM_UI_PROXY is the one override,
-    // for developing the app against a real server; a LOOM_UI_DIR left over
-    // from the release that shipped a bundle beside the binary is refused
-    // rather than ignored, because the bundle in the binary is what will be
-    // served.
+    // for developing the app against a real server.
+    //
+    // `LOOM_UI_DIR` is not read any more. An environment file that still sets
+    // it is not an error — the variable is simply inert, and saying so once at
+    // startup is the whole of this server's opinion about it. Refusing to boot
+    // over a leftover line would turn a stale config into an outage.
     if std::env::var_os("LOOM_UI_DIR").is_some() {
-        return Err(
-            "LOOM_UI_DIR is no longer read: the product app is embedded in this binary, so \
-             there is no bundle path to configure (remove it from the environment or the \
-             unit's EnvironmentFile). LOOM_UI_PROXY still selects a dev server for frontend \
-             work."
-                .into(),
+        eprintln!(
+            "loom-server: ignoring LOOM_UI_DIR: the product app is compiled into this binary, \
+             so there is no bundle path to configure"
         );
     }
     let ui_proxy = match std::env::var("LOOM_UI_PROXY") {
