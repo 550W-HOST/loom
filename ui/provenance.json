@@ -16056,11 +16056,11 @@
         "name": "@bb/client-core",
         "upstreamPath": "packages/client-core",
         "disposition": "retain-source",
-        "gitTree": "172b9056f72d85c222a3e29570362fbd35e897b3",
+        "gitTree": "f24917c3e24014d1901c483b3a5146920400d789",
         "path": "ui/packages/client-core",
         "tree": {
           "files": 50,
-          "sha256": "05eaf0b7ed5f7fa29499b1f3a46d71a8ab1faf816fac9d6a768503333214bd7e"
+          "sha256": "05b8121612cf95a105e0f1be976a98de3305d31551716276324142daaf0aca05"
         },
         "packageJson": {
           "bytes": 759,

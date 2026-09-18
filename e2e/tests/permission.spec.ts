@@ -14,14 +14,11 @@ const decisionPath = () => `${stackState().provider}.decision`;
  * that reason: what the agent was told is the contract, and a banner that
  * disappears without telling it anything is the bug this test exists to catch.
  *
- * The *rendering* of the turn's next message is asserted from the server's
- * timeline rather than from the page. The client's post-approval refresh is a
- * known defect (W-534): on a fast machine the page can sit on `Working…`
- * without repainting, without another request and with no element in the DOM,
- * while the server has the message — the CI trace that recorded it is on
- * W-534. Asserting a stalled client here would make the suite red for a bug
- * this spec is not about; when W-534 lands, this spec can assert it in the
- * browser and the comment goes away.
+ * The turn's next message is asserted twice: in the browser, where the user
+ * reads it, and in the server's timeline, which is what the page is rendering.
+ * They were the two halves of W-534 — a resolved approval could leave the page
+ * on `Working…` with an empty view while the server held the message — so a
+ * regression in either half fails here.
  */
 async function expandBanner(banner: Locator): Promise<void> {
   // The banner is compact until asked: the collapsed row is the signal, the
@@ -104,8 +101,10 @@ test.describe("a permission request", () => {
     await expect(page.getByTestId("approval-banner")).toBeHidden();
 
     // The decision reached the agent, which is what the stub recorded, and the
-    // turn it unblocked finished with that agent's message.
+    // turn it unblocked finished with that agent's message — rendered in the
+    // thread, not merely recorded.
     expect(readFileSync(decisionPath(), "utf8")).toContain("allow-once");
+    await expect(page.getByText("decision received")).toBeVisible({ timeout: 30_000 });
     await agentSaid(request, threadId, "decision received");
   });
 
@@ -116,6 +115,7 @@ test.describe("a permission request", () => {
     await expect(page.getByTestId("approval-banner")).toBeHidden();
 
     expect(readFileSync(decisionPath(), "utf8")).toContain("deny");
+    await expect(page.getByText("decision received")).toBeVisible({ timeout: 30_000 });
     await agentSaid(request, threadId, "decision received");
   });
 });
