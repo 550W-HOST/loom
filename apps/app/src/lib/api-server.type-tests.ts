@@ -114,6 +114,26 @@ void apiClient.hosts[":id"].delete.$url({ param: { id: "h1" } });
 // @ts-expect-error hosts.delete is DELETE; there is no $get on it
 void apiClient.hosts[":id"].delete.$get({ param: { id: "h1" } });
 
+// `hosts.directory` is a GET whose `path` query is optional: omitting it asks
+// the server for the host's reported default directory.
+void apiClient.hosts[":id"].directory.$get({ param: { id: "h1" } });
+void apiClient.hosts[":id"].directory.$get({
+  param: { id: "h1" },
+  query: { path: "/home" },
+});
+
+void apiClient.hosts[":id"].directory.$get({
+  param: { id: "h1" },
+  // @ts-expect-error `notAQueryKey` is not in the contract's query
+  query: { notAQueryKey: "/home" },
+});
+
+void apiClient.hosts[":id"].directory.$get({
+  param: { id: "h1" },
+  // @ts-expect-error hosts.directory declares no JSON body
+  json: {},
+});
+
 // @ts-expect-error an unknown top-level area is not a route
 void apiClient.nothing.$get({});
 

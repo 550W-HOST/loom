@@ -27,6 +27,7 @@ import {
   loomThreadStoragePaths,
 } from "./loom-thread-storage";
 import { loomDeleteHost } from "./loom-host-mutations";
+import { loomHostDirectory } from "./loom-host-readers";
 
 import {
   loomResetUiPreference,
@@ -58,6 +59,7 @@ export const sdk = {
   hosts: {
     ...compileOnlySdk.hosts,
     delete: loomDeleteHost,
+    directory: loomHostDirectory,
   },
   projects: {
     ...compileOnlySdk.projects,

@@ -37,6 +37,7 @@ export const LOOM_API_ROUTES = [
   { id: "environments.get", method: "GET", path: "/environments/:id" },
   { id: "hosts.createJoinCode", method: "POST", path: "/hosts/join-codes" },
   { id: "hosts.delete", method: "DELETE", path: "/hosts/:id" },
+  { id: "hosts.directory", method: "GET", path: "/hosts/:id/directory" },
   { id: "hosts.list", method: "GET", path: "/hosts" },
   { id: "hosts.updatePermissionCeiling", method: "PATCH", path: "/hosts/:id/permission-ceiling" },
   { id: "projects.attachmentContent", method: "GET", path: "/projects/:id/attachments/content" },

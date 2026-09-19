@@ -414,6 +414,19 @@ describe("loom typed apiClient seam", () => {
     expect(
       toRelativeUrl(apiClient.hosts[":id"].delete.$url({ param: { id: "h1" } })),
     ).toBe("/api/v1/hosts/h1");
+    expect(
+      toRelativeUrl(
+        apiClient.hosts[":id"].directory.$url({
+          param: { id: "h1" },
+          query: { path: "/home" },
+        }),
+      ),
+    ).toBe("/api/v1/hosts/h1/directory?path=%2Fhome");
+    expect(
+      toRelativeUrl(
+        apiClient.hosts[":id"].directory.$url({ param: { id: "h1" } }),
+      ),
+    ).toBe("/api/v1/hosts/h1/directory");
     expect(toRelativeUrl(apiClient.hosts["join-codes"].$url({}))).toBe(
       "/api/v1/hosts/join-codes",
     );

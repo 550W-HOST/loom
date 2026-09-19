@@ -2,6 +2,8 @@ import type {
   CreateHostJoinCodeResponse,
   CreateThreadRequest,
   EnvironmentDiffFileQuery,
+  HostDirectoryListing,
+  HostDirectoryQuery,
   ProjectAttachmentContentQuery,
   ProjectBranchesQuery,
   ProjectDefaultExecutionOptionsQuery,
@@ -95,6 +97,10 @@ export const LOOM_API_REQUEST_SPECS = {
   "environments.get": { source: "none" },
   "hosts.createJoinCode": { source: "json", json: {} as Record<string, never> },
   "hosts.delete": { source: "none" },
+  "hosts.directory": {
+    source: "query",
+    query: {} as HostDirectoryQuery,
+  },
   "hosts.list": { source: "none" },
   "hosts.updatePermissionCeiling": {
     source: "json",
@@ -203,6 +209,7 @@ export interface LoomApiResponseSpecs {
   "environments.get": Environment;
   "hosts.createJoinCode": CreateHostJoinCodeResponse;
   "hosts.delete": { ok: true };
+  "hosts.directory": HostDirectoryListing;
   "hosts.list": Host[];
   "hosts.updatePermissionCeiling": unknown;
   "projects.attachmentContent": unknown;
