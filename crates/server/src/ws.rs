@@ -334,6 +334,10 @@ async fn handle_worker(socket: WebSocket, state: AppState) {
                 let _ = state.publish_domain_event(event);
             }
         }
+        // The socket closed, so the host can no longer speak for its agents.
+        // Whatever it last reported — possibly a partial list if it died
+        // mid-probe — stops being offered until a connection confirms it again.
+        state.forget_host_providers(&host_id);
     }
 
     let _ = state.hub.disconnect(connection_id).await;
@@ -468,6 +472,8 @@ async fn handle_command(
             state
                 .terminals
                 .mark_host_disconnected(&host_id, loom_relay::now_ms());
+            // Its agents go with it: nothing is confirming them any more.
+            state.forget_host_providers(&host_id);
             // Cleared so the socket-close path does not mark it twice.
             *enrolled_host = None;
             Some(ServerMessage::HostDisconnected { host_id })

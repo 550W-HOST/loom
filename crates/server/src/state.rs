@@ -538,6 +538,21 @@ impl AppState {
         specs
     }
 
+    /// Forgets the agents a host reported, because it is no longer connected.
+    ///
+    /// A disconnected machine is not evidence of anything. What it last sent may
+    /// be a partial list — an incremental report whose remaining probes died
+    /// with the worker — and an entry nobody is still confirming must not stay on
+    /// offer. A reconnecting host reports from scratch, so nothing is lost by
+    /// dropping it.
+    pub fn forget_host_providers(&self, host_id: &HostId) {
+        let mut hosts = self
+            .host_providers
+            .lock()
+            .expect("the host provider lock is never poisoned");
+        hosts.retain(|(id, _)| id != host_id);
+    }
+
     /// The agent a caller gets when it has not chosen one.
     ///
     /// This is the first configured provider — discovery appends to the list, it
@@ -1162,6 +1177,46 @@ mod tests {
         assert_eq!(frame["type"], "event");
         assert_eq!(frame["payload"], "{\"n\":1}");
         assert_eq!(frame["event_id"], envelope.event_id.to_string());
+
+        state.shutdown();
+    }
+
+    /// A host's agents are offered while it reports them and dropped the moment
+    /// it stops, so a record that died mid-probe cannot outlive the worker that
+    /// was still assembling it.
+    #[tokio::test]
+    async fn a_hosts_providers_live_only_as_long_as_the_host_does() {
+        let state = AppState::build(AppConfig::default()).unwrap();
+        let host_id = loom_domain::HostId::mint();
+        let found = ProviderSpec {
+            name: "omp".into(),
+            launch: loom_provider_protocol::ProviderLaunch::AcpStdio,
+            command: "/usr/bin/omp".into(),
+            args: vec!["acp".into()],
+            cwd: None,
+        };
+
+        assert!(
+            state.provider_spec_by_id("omp").is_none(),
+            "nothing is offered before a host reports it"
+        );
+        state.record_host_providers(&host_id, vec![ProviderSpec::pi(), found.clone()]);
+        assert_eq!(
+            state.provider_spec_by_id("omp"),
+            Some(found),
+            "the report is what makes the agent dispatchable"
+        );
+
+        state.forget_host_providers(&host_id);
+        assert!(
+            state.provider_spec_by_id("omp").is_none(),
+            "a disconnected host's agents stop being offered"
+        );
+        assert_eq!(
+            state.provider_spec().name,
+            "pi",
+            "and the configured default is what remains"
+        );
 
         state.shutdown();
     }
