@@ -1,27 +1,27 @@
 {
   "format": "loom.app-port-plan-summary/v2",
   "plan": "ui/app-port-plan.json",
-  "planBytes": 1968810,
+  "planBytes": 1970291,
   "source": {
     "root": "apps/app/src",
-    "trackedFiles": 1385,
+    "trackedFiles": 1387,
     "disposition": "source-port",
     "baselineGitTree": "8ba6eb6f3d2f67f8ba2703f1fd0c123f788c6d52",
-    "localGitTree": "ddbc35260d56b761d37d67a601f1fba464bd5535"
+    "localGitTree": "af8644945ad11fdbbbefa29b38403c0c1a2238ab"
   },
   "summary": {
-    "nodes": 1385,
-    "runtimeReachable": 691,
-    "runtimeCompileReachable": 703,
-    "runtimeEmittedReachable": 691,
+    "nodes": 1387,
+    "runtimeReachable": 692,
+    "runtimeCompileReachable": 704,
+    "runtimeEmittedReachable": 692,
     "dispositions": {
-      "retain-verbatim": 652,
+      "retain-verbatim": 653,
       "adapt-boundary": 27,
       "delete-unsupported": 0,
-      "verification-only": 678,
+      "verification-only": 679,
       "asset-build": 28
     },
-    "edges": 8269,
+    "edges": 8275,
     "blockers": {
       "runtime": 3,
       "test": 221,
@@ -31,10 +31,10 @@
     "workspacePackages": 124
   },
   "dispositions": {
-    "retain-verbatim": 652,
+    "retain-verbatim": 653,
     "adapt-boundary": 27,
     "delete-unsupported": 0,
-    "verification-only": 678,
+    "verification-only": 679,
     "asset-build": 28
   },
   "exceptions": {
@@ -3278,6 +3278,11 @@
         "reasonCode": "test-or-story-root"
       },
       {
+        "path": "src/loom/loom-host-mutations.test.ts",
+        "disposition": "verification-only",
+        "reasonCode": "test-or-story-root"
+      },
+      {
         "path": "src/loom/loom-interactions.test.ts",
         "disposition": "verification-only",
         "reasonCode": "test-or-story-root"
@@ -3733,22 +3738,22 @@
     }
   },
   "compilerConsistency": {
-    "compilerSpecifiers": 8329,
-    "graphSpecifiers": 8329,
+    "compilerSpecifiers": 8335,
+    "graphSpecifiers": 8335,
     "missing": [],
     "extra": [],
     "preProcessFileParity": {
-      "compilerLiteralSpecifiers": 8328,
-      "preProcessFileSpecifiers": 8328,
+      "compilerLiteralSpecifiers": 8334,
+      "preProcessFileSpecifiers": 8334,
       "missing": [],
       "extra": []
     }
   },
   "parsers": {
     "typescript": {
-      "files": 1379,
-      "specifiers": 8329,
-      "preProcessFileSpecifiers": 8328
+      "files": 1381,
+      "specifiers": 8335,
+      "preProcessFileSpecifiers": 8334
     },
     "css": {
       "files": 4,
@@ -3760,18 +3765,18 @@
     }
   },
   "batchCoverage": {
-    "expected": 1385,
-    "assigned": 1385,
+    "expected": 1387,
+    "assigned": 1387,
     "missing": [],
     "duplicates": [],
-    "crossStageEdges": 2972,
+    "crossStageEdges": 2976,
     "missingCrossStageEdges": 0,
-    "crossChunkEdges": 2972,
-    "crossChunkOccurrences": 2985,
-    "crossIssueEdges": 1350,
-    "crossIssueOccurrences": 1357,
-    "crossIssueLogicalEdges": 1341,
-    "crossIssueLogicalOccurrences": 1348,
+    "crossChunkEdges": 2976,
+    "crossChunkOccurrences": 2989,
+    "crossIssueEdges": 1353,
+    "crossIssueOccurrences": 1360,
+    "crossIssueLogicalEdges": 1344,
+    "crossIssueLogicalOccurrences": 1351,
     "missingCrossIssueBatchDependencies": 0
   },
   "batchPlan": {
@@ -3806,10 +3811,10 @@
         "cyclic": true
       }
     ],
-    "crossIssueEdges": 1350,
-    "crossIssueLogicalEdges": 1341,
-    "crossIssueOccurrences": 1357,
-    "crossIssueLogicalOccurrences": 1348,
+    "crossIssueEdges": 1353,
+    "crossIssueLogicalEdges": 1344,
+    "crossIssueOccurrences": 1360,
+    "crossIssueLogicalOccurrences": 1351,
     "crossIssueCycles": 0,
     "crossStageConflict": true
   },
@@ -4106,7 +4111,7 @@
           "adapt-boundary",
           "retain-verbatim"
         ],
-        "dependencyCount": 90,
+        "dependencyCount": 91,
         "dependsOnBatchIds": [
           "W-603-01",
           "W-603-02",
@@ -4121,8 +4126,7 @@
           "src/lib/browser-view-bounds-sync.ts",
           "src/lib/in-app-browser-link-preference.ts",
           "src/lib/plugin-sdk-hooks.ts",
-          "src/lib/plugin-slot-resolvers.ts",
-          "src/lib/plugin-slots.ts"
+          "src/lib/plugin-slot-resolvers.ts"
         ],
         "verificationCommands": [
           "pnpm run port-plan:check",
@@ -4134,7 +4138,7 @@
         "id": "W-603-06",
         "kind": "reviewChunk",
         "executable": false,
-        "fileCount": 107,
+        "fileCount": 108,
         "dispositions": [
           "adapt-boundary",
           "retain-verbatim"
@@ -4148,6 +4152,7 @@
           "W-603-05"
         ],
         "cutPoints": [
+          "src/lib/plugin-slots.ts",
           "src/lib/use-desktop-browser-reveal.ts"
         ],
         "verificationCommands": [
@@ -4322,11 +4327,11 @@
         "id": "W-604-06",
         "kind": "reviewChunk",
         "executable": false,
-        "fileCount": 78,
+        "fileCount": 79,
         "dispositions": [
           "verification-only"
         ],
-        "dependencyCount": 156,
+        "dependencyCount": 157,
         "dependsOnBatchIds": [
           "W-603-01",
           "W-603-02",
@@ -5937,11 +5942,11 @@
     {
       "name": "vitest",
       "declaredAs": null,
-      "actualImports": 526,
+      "actualImports": 527,
       "runtimeImports": 0,
       "runtimeValueImports": 0,
       "runtimeTypeImports": 0,
-      "verificationValueImports": 525,
+      "verificationValueImports": 526,
       "verificationTypeImports": 0,
       "decision": "reuse",
       "reasonCode": "declared-external-package",

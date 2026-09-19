@@ -58,12 +58,12 @@
       },
       "local": {
         "path": "apps/app/src/lib/api-server.type-tests.ts",
-        "sha256": "cc638efed57ea0305aa9d5f1ac041e45d1374003a106180511b44dffd7965a4f",
+        "sha256": "bf294ce909d7a88482ee1513c54f4067df542a82e3f254f692460c23dc3584da",
         "mode": "100644"
       },
       "issue": "W-593+W-583+W-585",
       "owner": "PuQing",
-      "reason": "W-593 introduced the typed same-origin HTTP boundary; W-583 extends it only with the contract routes needed for runnable host-bound New Thread flows. W-585 adds compile-time coverage for the typed interaction route tree."
+      "reason": "W-593 introduced the typed same-origin HTTP boundary; W-583 extends it only with the contract routes needed for runnable host-bound New Thread flows. W-585 adds compile-time coverage for the typed interaction route tree. The host mutation surface is asserted against the contract like every other area."
     },
     {
       "kind": "add",
@@ -106,12 +106,12 @@
       },
       "local": {
         "path": "apps/app/src/lib/loom-api-request-spec.ts",
-        "sha256": "2e77b2ad869391596667d53dd2e091a0dc35915723ea5c6222ac0ff10bdf871e",
+        "sha256": "ae4e5cc27512470ae6ce2adbe993094d3c7835ced910c7c32e92e8b4a10cd69b",
         "mode": "100644"
       },
       "issue": "W-593+W-583+W-585",
       "owner": "PuQing",
-      "reason": "W-593 introduced the typed same-origin HTTP boundary; W-583 extends it only with the contract routes needed for runnable host-bound New Thread flows. W-585 adds contract-derived request and response specs for interaction operations. The three thread-storage GETs now carry their request and response specs, so the storage panel reads through loom rather than the fail-closed browser SDK stub."
+      "reason": "W-593 introduced the typed same-origin HTTP boundary; W-583 extends it only with the contract routes needed for runnable host-bound New Thread flows. W-585 adds contract-derived request and response specs for interaction operations. The three thread-storage GETs now carry their request and response specs, so the storage panel reads through loom rather than the fail-closed browser SDK stub. The host-mutation routes carry their request and response specs."
     },
     {
       "kind": "add",
@@ -122,12 +122,12 @@
       },
       "local": {
         "path": "apps/app/src/lib/loom-api-routes.ts",
-        "sha256": "a285ea37a1fbcf694b572191f69db50d6c217cb6e50f42488fbe46143af1c1e7",
+        "sha256": "c0990b82934308a06e365aac779eae229b44f0bf90b4950c09582af710a2c518",
         "mode": "100644"
       },
       "issue": "W-593+W-583+W-585",
       "owner": "PuQing",
-      "reason": "W-593 introduced the typed same-origin HTTP boundary; W-583 extends it only with the contract routes needed for runnable host-bound New Thread flows. W-585 adds the allowlisted same-origin interaction routes. The three thread-storage GETs are registered in the same-origin route table."
+      "reason": "W-593 introduced the typed same-origin HTTP boundary; W-583 extends it only with the contract routes needed for runnable host-bound New Thread flows. W-585 adds the allowlisted same-origin interaction routes. The three thread-storage GETs are registered in the same-origin route table. The host-mutation routes are registered in the same-origin route table."
     },
     {
       "kind": "add",
@@ -298,12 +298,12 @@
       },
       "local": {
         "path": "apps/app/src/loom/api-client.test.ts",
-        "sha256": "b1fb3dfbcb1ae72331145960884cab1d8c73dad9e3ea01657e8d6b4a84ca9ce9",
+        "sha256": "af9e924de00ecd3b6d08037d78046f50d3071ec7f191f5405044a41a1e1e3cfc",
         "mode": "100644"
       },
       "issue": "W-593",
       "owner": "PuQing",
-      "reason": "Add the loom-native same-origin HTTP client, typed request spec, query/cache/router boundary, or shell verification that W-593 owns."
+      "reason": "Add the loom-native same-origin HTTP client, typed request spec, query/cache/router boundary, or shell verification that W-593 owns. The new host-mutation routes are re-validated against the contract."
     },
     {
       "kind": "add",
@@ -3114,12 +3114,12 @@
       },
       "local": {
         "path": "apps/app/src/lib/api-server.ts",
-        "sha256": "fe821d1c43cafaf64e007b1b437568c6270db336cc6a7bcdab3e1a324d9cd22e",
+        "sha256": "eaeb3d9ac1de48e22578c168f4cd69ab410971a9affa3466a8cc0d415e6b8319",
         "mode": "100644"
       },
       "issue": "W-604+W-593+W-585",
       "owner": "PuQing",
-      "reason": "W-604 introduced this path in the source port; W-593 changed it again for the same-origin typed HTTP boundary (api-server seam, product composition, or the collected app test set). Both stages are recorded here so neither audit trail is lost. W-585 adds the typed interaction route tree to the product API client."
+      "reason": "W-604 introduced this path in the source port; W-593 changed it again for the same-origin typed HTTP boundary (api-server seam, product composition, or the collected app test set). Both stages are recorded here so neither audit trail is lost. W-585 adds the typed interaction route tree to the product API client. The host mutations now go through loom: `hosts.delete` reaches the server's contract route instead of throwing `BrowserSdkUnavailableError`."
     },
     {
       "kind": "modify",
@@ -3450,12 +3450,12 @@
       },
       "local": {
         "path": "apps/app/src/lib/sdk.ts",
-        "sha256": "ba7bbd14c6dd1379340f42f5158439adba22f8985cf50b225fde5bb7845d307e",
+        "sha256": "f737e0889768d12a56452be3935938971049ebad21605bb583a4c1e2a3a01ee2",
         "mode": "100644"
       },
       "issue": "W-583+W-585",
       "owner": "PuQing",
-      "reason": "Wire the bb New Thread product flow to loom-native host-bound environments and typed thread create/send/read operations. W-585 overrides only the interaction operations required by the product UI. The thread-storage readers are wired into the app sdk."
+      "reason": "Wire the bb New Thread product flow to loom-native host-bound environments and typed thread create/send/read operations. W-585 overrides only the interaction operations required by the product UI. The thread-storage readers are wired into the app sdk. The host mutations are wired into the app sdk."
     },
     {
       "kind": "modify",
@@ -3888,6 +3888,38 @@
       "issue": "W-604",
       "owner": "PuQing",
       "reason": "W-604 introduced this path with the source-port snapshot. It asserts the reasoning levels render as full-width rows and that clicking one selects it, and locates the section by its label now that it is no longer a radiogroup."
+    },
+    {
+      "kind": "add",
+      "upstream": {
+        "path": null,
+        "sha256": null,
+        "mode": null
+      },
+      "local": {
+        "path": "apps/app/src/lib/loom-host-mutations.ts",
+        "sha256": "6ca41dd97a712f24c580c270bd3e87941d946887a4b5138e6bab497d9234e05a",
+        "mode": "100644"
+      },
+      "issue": "W-585",
+      "owner": "PuQing",
+      "reason": "W-585 introduced the loom-native reader and writer family this belongs to. `hosts.delete` was still the fail-closed browser SDK stub, so removing a machine from Settings threw `BrowserSdkUnavailableError`; the contract route and its server handler already existed, so this is the app half only — a loom-native DELETE with no body."
+    },
+    {
+      "kind": "add",
+      "upstream": {
+        "path": null,
+        "sha256": null,
+        "mode": null
+      },
+      "local": {
+        "path": "apps/app/src/loom/loom-host-mutations.test.ts",
+        "sha256": "6e461c2539ef0964e69e0c4e68d813e216ad0edafaef0538e3ebd77d218509c7",
+        "mode": "100644"
+      },
+      "issue": "W-585",
+      "owner": "PuQing",
+      "reason": "W-585 introduced the loom-native reader and writer family this covers. The test pins the DELETE's URL and method, the absence of a body, and the HTTP error surface."
     }
   ]
 }
