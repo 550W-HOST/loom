@@ -8585,12 +8585,12 @@
       "upstreamPath": "apps/app",
       "localPath": "apps/app",
       "disposition": "source-port",
-      "gitTree": "f0a671512b99d000389627889c12060031711b24",
+      "gitTree": "9ac396c95eee82a43e1b3d0ddcae2af7aba26d4f",
       "snapshot": {
         "path": "apps/app",
         "tree": {
-          "files": 1475,
-          "sha256": "cc7e79bdccc709f89983d9f5ce2a1b1810689442abb7f157c5eba7bb3b46179f"
+          "files": 1477,
+          "sha256": "e7dc0f3d02662322cf1b65de2a4a151910bb83d736d2a8aea7ccd3417d747569"
         },
         "files": [
           {
@@ -9730,13 +9730,13 @@
           },
           {
             "path": "src/components/pickers/modelPickerCycle.test.ts",
-            "bytes": 2802,
-            "sha256": "e1fc99aac9d14fed746e35093b56b7ba2cf2f36b83f761e44615ba439272929d"
+            "bytes": 3385,
+            "sha256": "0e607af7193b01666842a06bc96d621b9248b3b5feea323e71605d8f11a9e9f8"
           },
           {
             "path": "src/components/pickers/modelPickerCycle.ts",
-            "bytes": 1742,
-            "sha256": "c1adf01903b1e8631b59eca22cb4af1cad80eb1aed41e9eaa5eb022c47b71d68"
+            "bytes": 1447,
+            "sha256": "3cb79f0db20b61e1270c5e0429f6e26ee13d3a6855e37a6cd53092744eea6259"
           },
           {
             "path": "src/components/pickers/modelPickerToggle.test.ts",
@@ -14500,13 +14500,13 @@
           },
           {
             "path": "src/lib/loom-api-request-spec.ts",
-            "bytes": 8137,
-            "sha256": "0e61adbfbcaf309b78b30f67d5b6eaf7e0a847606c2b9db7d825ac63b8049d79"
+            "bytes": 8705,
+            "sha256": "2e77b2ad869391596667d53dd2e091a0dc35915723ea5c6222ac0ff10bdf871e"
           },
           {
             "path": "src/lib/loom-api-routes.ts",
-            "bytes": 7073,
-            "sha256": "99d30832a1b592d43ad55b526faf651a90e232c0764ec04ea8cc8683bcfda52a"
+            "bytes": 7355,
+            "sha256": "a285ea37a1fbcf694b572191f69db50d6c217cb6e50f42488fbe46143af1c1e7"
           },
           {
             "path": "src/lib/loom-automations-client.ts",
@@ -14547,6 +14547,11 @@
             "path": "src/lib/loom-thread-runtime.ts",
             "bytes": 15220,
             "sha256": "04e1508aa84b24028e37a124f2ae5667e2f802d8e6569612384b2892a123f39a"
+          },
+          {
+            "path": "src/lib/loom-thread-storage.ts",
+            "bytes": 1846,
+            "sha256": "6ff7b3a845d6f84e55e40f5831f0ed6d6089e1e7b7d7e48ef914412f22ca7b21"
           },
           {
             "path": "src/lib/loom-ui-preferences.ts",
@@ -14935,8 +14940,8 @@
           },
           {
             "path": "src/lib/reasoning-labels.ts",
-            "bytes": 914,
-            "sha256": "35396a20ff6e8854bd6346d56fe96f88865f7f161e97f1c843843f89a8838085"
+            "bytes": 1241,
+            "sha256": "4fa23aa792d25353cfa697ef2003103a38a3d4767c65570b8a0ab79843946ee2"
           },
           {
             "path": "src/lib/relative-time.test.ts",
@@ -14995,8 +15000,8 @@
           },
           {
             "path": "src/lib/sdk.ts",
-            "bytes": 2468,
-            "sha256": "973aa12fb8286f948991c64771c78f6b1e6c148328237095db0275e3ad36f7c8"
+            "bytes": 2722,
+            "sha256": "ba7bbd14c6dd1379340f42f5158439adba22f8985cf50b225fde5bb7845d307e"
           },
           {
             "path": "src/lib/shared-resize-observer.test.tsx",
@@ -15387,6 +15392,11 @@
             "path": "src/loom/loom-thread-runtime.test.ts",
             "bytes": 13338,
             "sha256": "baaa40fe590bc0ef750513eb552fa43a84aef36901d9db5bf177b882d394e509"
+          },
+          {
+            "path": "src/loom/loom-thread-storage.test.ts",
+            "bytes": 4427,
+            "sha256": "ee414808d7b34f967ce821b1d6d1aa5c0f6cf81dd127a34b92335f43bacce029"
           },
           {
             "path": "src/loom/loom-ui-preferences.test.ts",
@@ -15976,11 +15986,11 @@
         "name": "@bb/domain",
         "upstreamPath": "packages/domain",
         "disposition": "retain-source",
-        "gitTree": "152a5bb09211ac5e75eee5e5f44b787cc2c62e01",
+        "gitTree": "61586122033cc1218ed671cb6a6850353aa49ba7",
         "path": "ui/packages/domain",
         "tree": {
-          "files": 53,
-          "sha256": "6c5342c28363b5c63f6801bcd2d04979a0acdbf01b3c84f110a94b145cbd0eed"
+          "files": 54,
+          "sha256": "0b99697d7232e8845a0a8f5fdbd05ed608458928e086edbd16824dcceed79f1a"
         },
         "packageJson": {
           "bytes": 474,
@@ -16342,11 +16352,11 @@
         "name": "bb-plugin-automations",
         "upstreamPath": "plugins/automations",
         "disposition": "retain-source",
-        "gitTree": "c5b49c8465be7944b987d957d03f1608504b6508",
+        "gitTree": "c3aadfbfb2fdc1b9f2d4a90e90884219b466fe23",
         "path": "ui/packages/automations",
         "tree": {
           "files": 42,
-          "sha256": "89626411595785f0311ee20c89ad5ba9312c0cea71d6697f8aed64e36a661ef4"
+          "sha256": "d86400f270ace3f2415d4d246e6dcbb2cb5ba5e65128277ff67b2fcc8fa48ebb"
         },
         "packageJson": {
           "bytes": 1818,

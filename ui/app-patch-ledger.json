@@ -106,12 +106,12 @@
       },
       "local": {
         "path": "apps/app/src/lib/loom-api-request-spec.ts",
-        "sha256": "0e61adbfbcaf309b78b30f67d5b6eaf7e0a847606c2b9db7d825ac63b8049d79",
+        "sha256": "2e77b2ad869391596667d53dd2e091a0dc35915723ea5c6222ac0ff10bdf871e",
         "mode": "100644"
       },
       "issue": "W-593+W-583+W-585",
       "owner": "PuQing",
-      "reason": "W-593 introduced the typed same-origin HTTP boundary; W-583 extends it only with the contract routes needed for runnable host-bound New Thread flows. W-585 adds contract-derived request and response specs for interaction operations."
+      "reason": "W-593 introduced the typed same-origin HTTP boundary; W-583 extends it only with the contract routes needed for runnable host-bound New Thread flows. W-585 adds contract-derived request and response specs for interaction operations. The three thread-storage GETs now carry their request and response specs, so the storage panel reads through loom rather than the fail-closed browser SDK stub."
     },
     {
       "kind": "add",
@@ -122,12 +122,12 @@
       },
       "local": {
         "path": "apps/app/src/lib/loom-api-routes.ts",
-        "sha256": "99d30832a1b592d43ad55b526faf651a90e232c0764ec04ea8cc8683bcfda52a",
+        "sha256": "a285ea37a1fbcf694b572191f69db50d6c217cb6e50f42488fbe46143af1c1e7",
         "mode": "100644"
       },
       "issue": "W-593+W-583+W-585",
       "owner": "PuQing",
-      "reason": "W-593 introduced the typed same-origin HTTP boundary; W-583 extends it only with the contract routes needed for runnable host-bound New Thread flows. W-585 adds the allowlisted same-origin interaction routes."
+      "reason": "W-593 introduced the typed same-origin HTTP boundary; W-583 extends it only with the contract routes needed for runnable host-bound New Thread flows. W-585 adds the allowlisted same-origin interaction routes. The three thread-storage GETs are registered in the same-origin route table."
     },
     {
       "kind": "add",
@@ -3450,12 +3450,12 @@
       },
       "local": {
         "path": "apps/app/src/lib/sdk.ts",
-        "sha256": "973aa12fb8286f948991c64771c78f6b1e6c148328237095db0275e3ad36f7c8",
+        "sha256": "ba7bbd14c6dd1379340f42f5158439adba22f8985cf50b225fde5bb7845d307e",
         "mode": "100644"
       },
       "issue": "W-583+W-585",
       "owner": "PuQing",
-      "reason": "Wire the bb New Thread product flow to loom-native host-bound environments and typed thread create/send/read operations. W-585 overrides only the interaction operations required by the product UI."
+      "reason": "Wire the bb New Thread product flow to loom-native host-bound environments and typed thread create/send/read operations. W-585 overrides only the interaction operations required by the product UI. The thread-storage readers are wired into the app sdk."
     },
     {
       "kind": "modify",
@@ -3776,6 +3776,86 @@
       "issue": "W-588",
       "owner": "PuQing",
       "reason": "W-586/W-588: the reference client is gone and the product app is the only UI. The app's `build` now also writes the Brotli siblings the bundle-budget check measures, so a built bundle is directly publishable and the budget gate can actually run."
+    },
+    {
+      "kind": "modify",
+      "upstream": {
+        "path": "apps/app/src/components/pickers/modelPickerCycle.ts",
+        "sha256": "c1adf01903b1e8631b59eca22cb4af1cad80eb1aed41e9eaa5eb022c47b71d68",
+        "mode": "100644"
+      },
+      "local": {
+        "path": "apps/app/src/components/pickers/modelPickerCycle.ts",
+        "sha256": "3cb79f0db20b61e1270c5e0429f6e26ee13d3a6855e37a6cd53092744eea6259",
+        "mode": "100644"
+      },
+      "issue": "W-604",
+      "owner": "PuQing",
+      "reason": "W-604 introduced this path with the source-port snapshot. The reasoning cycle now follows the order the agent published for the selected model instead of bb's fixed level list, so ids bb never named (`off`, `minimal`) are no longer dropped."
+    },
+    {
+      "kind": "modify",
+      "upstream": {
+        "path": "apps/app/src/components/pickers/modelPickerCycle.test.ts",
+        "sha256": "e1fc99aac9d14fed746e35093b56b7ba2cf2f36b83f761e44615ba439272929d",
+        "mode": "100644"
+      },
+      "local": {
+        "path": "apps/app/src/components/pickers/modelPickerCycle.test.ts",
+        "sha256": "0e607af7193b01666842a06bc96d621b9248b3b5feea323e71605d8f11a9e9f8",
+        "mode": "100644"
+      },
+      "issue": "W-604",
+      "owner": "PuQing",
+      "reason": "W-604 introduced this path with the source-port snapshot. Its cases now assert the agent's own ladder order, including ids bb never named (`off`, `minimal`)."
+    },
+    {
+      "kind": "modify",
+      "upstream": {
+        "path": "apps/app/src/lib/reasoning-labels.ts",
+        "sha256": "35396a20ff6e8854bd6346d56fe96f88865f7f161e97f1c843843f89a8838085",
+        "mode": "100644"
+      },
+      "local": {
+        "path": "apps/app/src/lib/reasoning-labels.ts",
+        "sha256": "4fa23aa792d25353cfa697ef2003103a38a3d4767c65570b8a0ab79843946ee2",
+        "mode": "100644"
+      },
+      "issue": "W-604",
+      "owner": "PuQing",
+      "reason": "W-604 introduced this path with the source-port snapshot. It gained labels for pi's `off`/`minimal` and now falls through to the raw id for any level this build does not know."
+    },
+    {
+      "kind": "add",
+      "upstream": {
+        "path": null,
+        "sha256": null,
+        "mode": null
+      },
+      "local": {
+        "path": "apps/app/src/lib/loom-thread-storage.ts",
+        "sha256": "6ff7b3a845d6f84e55e40f5831f0ed6d6089e1e7b7d7e48ef914412f22ca7b21",
+        "mode": "100644"
+      },
+      "issue": "W-585",
+      "owner": "PuQing",
+      "reason": "W-585 introduced the loom-native reader family this belongs to. `threads.storageFiles`/`storageLocation`/`storagePaths` were still the fail-closed browser SDK stub, so opening a thread's storage panel threw `BrowserSdkUnavailableError`; the readers are implemented over `loomApiJson`."
+    },
+    {
+      "kind": "add",
+      "upstream": {
+        "path": null,
+        "sha256": null,
+        "mode": null
+      },
+      "local": {
+        "path": "apps/app/src/loom/loom-thread-storage.test.ts",
+        "sha256": "ee414808d7b34f967ce821b1d6d1aa5c0f6cf81dd127a34b92335f43bacce029",
+        "mode": "100644"
+      },
+      "issue": "W-585",
+      "owner": "PuQing",
+      "reason": "W-585 introduced the loom-native reader family this covers. The test pins URL/method/query mapping, undefined-query omission and HTTP error surfacing for the storage readers."
     }
   ]
 }
