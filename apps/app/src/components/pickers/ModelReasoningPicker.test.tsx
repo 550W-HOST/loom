@@ -852,9 +852,18 @@ describe("ModelReasoningPicker", () => {
     act(() => frames.shift()?.(16));
 
     const modelList = screen.getByRole("listbox", { name: "Models" });
-    const reasoning = screen.getByRole("radiogroup", { name: "Reasoning" });
+    const reasoning = screen.getByText("Reasoning").parentElement;
+    if (reasoning === null) throw new Error("the reasoning section is missing");
 
     expect(modelList.contains(reasoning)).toBe(false);
+    for (const className of [
+      "shrink-0",
+      "px-1",
+      "pb-1",
+      "pt-0",
+    ]) {
+      expect(reasoning.classList.contains(className)).toBe(true);
+    }
     for (const className of [
       "min-h-0",
       "flex-1",
@@ -875,6 +884,22 @@ describe("ModelReasoningPicker", () => {
       }
     }
     expect(scrollParents).toEqual([]);
+  });
+
+  it("renders reasoning as rows, like the model list, and selects on click", () => {
+    const { onReasoningChange } = renderPicker();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Provider, model and reasoning" }),
+    );
+
+    const medium = screen.getByRole("button", { name: "Medium" });
+    const high = screen.getByRole("button", { name: "High" });
+    expect(medium.classList.contains("w-full")).toBe(true);
+    expect(high.classList.contains("w-full")).toBe(true);
+
+    fireEvent.click(high);
+    expect(onReasoningChange).toHaveBeenCalledWith("high");
   });
 
   it("does not render the search box for short model lists", () => {

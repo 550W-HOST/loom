@@ -36,7 +36,6 @@ import {
 } from "@bb/shared-ui/popover";
 import { Skeleton } from "@bb/shared-ui/skeleton";
 import { Switch } from "@bb/shared-ui/switch";
-import { ToggleGroup, ToggleGroupItem } from "@bb/shared-ui/toggle-group";
 import { LIST_HOVER_TRANSITION } from "@bb/shared-ui/motion";
 import {
   MENU_ITEM_LAST_HOVERED_CLASS,
@@ -1083,38 +1082,17 @@ export function ModelReasoningPicker({
             {showReasoningSection ? (
               <>
                 <div className="shrink-0 border-t border-border" />
-                <div className="shrink-0 px-2 py-2.5">
-                  <MenuSectionLabel className="mb-2 px-1 py-0">
-                    Reasoning
-                  </MenuSectionLabel>
-                  <ToggleGroup
-                    type="single"
-                    aria-label="Reasoning"
-                    value={isPreviewing ? "" : reasoningValue}
-                    onValueChange={(value) => {
-                      const option = activeReasoningOptions.find(
-                        (candidate) => candidate.value === value,
-                      );
-                      if (option) handleReasoningSelect(option.value);
-                    }}
-                    disabled={previewSelectionBlocked}
-                    className="flex gap-1"
-                  >
-                    {activeReasoningOptions.map((option) => (
-                      <ToggleGroupItem
-                        key={option.value}
-                        value={option.value}
-                        aria-label={option.label}
-                        className={cn(
-                          "h-6 min-w-0 flex-auto shrink-0 whitespace-nowrap rounded-sm px-1 text-xs font-normal shadow-none data-[state=on]:bg-state-active data-[state=on]:text-foreground",
-                          isCompactViewport && "h-9 text-sm",
-                          LIST_HOVER_TRANSITION,
-                        )}
-                      >
-                        {option.label}
-                      </ToggleGroupItem>
-                    ))}
-                  </ToggleGroup>
+                <div className="shrink-0 px-1 pb-1 pt-0">
+                  <MenuSectionLabel>Reasoning</MenuSectionLabel>
+                  {activeReasoningOptions.map((option) => (
+                    <MenuRowButton
+                      key={option.value}
+                      label={option.label}
+                      selected={!isPreviewing && option.value === reasoningValue}
+                      disabled={previewSelectionBlocked}
+                      onClick={() => handleReasoningSelect(option.value)}
+                    />
+                  ))}
                 </div>
               </>
             ) : null}
