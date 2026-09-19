@@ -77,7 +77,7 @@ impl ProviderRun {
             permission_ceiling: dispatch.permission_ceiling,
             provider_session_id: dispatch.provider_session_id.clone(),
             model: dispatch.model.clone(),
-            reasoning_level: dispatch.reasoning_level,
+            reasoning_level: dispatch.reasoning_level.clone(),
         }
     }
 

@@ -551,16 +551,17 @@ async fn set_config_option(
 
 /// The thought-level value that answers `level`, if this model offers one.
 ///
-/// Which levels exist is the model's business, so this only ever answers with a
-/// value the agent advertised: an exact match on loom's name for the level, or
-/// the one spelling loom's closed set and pi's ladder disagree on (`none` is
-/// pi's `off`). A level the agent does not offer here is left unset rather than
-/// approximated — the agent already holds a default for the model it is using.
+/// The level is already the provider's own id: the client picked it from the
+/// values the server advertised for this model and sent it back verbatim, so
+/// there is nothing to translate here. The lookup is still made against the
+/// option set the agent returned for the model it now holds, which is what
+/// makes the ladder follow the model — a value this model does not offer is
+/// left unset rather than approximated, and the agent keeps its own default.
 fn thought_level_value(
     options: &[v2::SessionConfigOption],
-    level: ReasoningLevel,
+    level: &ReasoningLevel,
 ) -> Option<String> {
-    let wanted = reasoning_level_id(level)?;
+    let wanted = level.as_str();
     let option = options
         .iter()
         .find(|option| option.config_id.0.as_ref() == THOUGHT_LEVEL_CONFIG_ID)?;
@@ -579,23 +580,6 @@ fn thought_level_value(
         .iter()
         .find(|candidate| candidate.value.0.as_ref() == wanted)
         .map(|candidate| candidate.value.0.to_string())
-}
-
-/// loom's name for a level as the provider spells it.
-///
-/// loom's set is bb's `reasoningLevelSchema`, which is wider than any
-/// provider's ladder: `ultracode` and `ultra` have no counterpart here, so they
-/// are never asked for.
-fn reasoning_level_id(level: ReasoningLevel) -> Option<&'static str> {
-    match level {
-        ReasoningLevel::None => Some("off"),
-        ReasoningLevel::Low => Some("low"),
-        ReasoningLevel::Medium => Some("medium"),
-        ReasoningLevel::High => Some("high"),
-        ReasoningLevel::Xhigh => Some("xhigh"),
-        ReasoningLevel::Max => Some("max"),
-        ReasoningLevel::Ultracode | ReasoningLevel::Ultra => None,
-    }
 }
 
 impl UpdateSink {
@@ -874,7 +858,7 @@ impl UpdateSink {
                 options = updated;
             }
         }
-        let Some(level) = self.run.reasoning_level else {
+        let Some(level) = self.run.reasoning_level.as_ref() else {
             return;
         };
         let Some(value) = thought_level_value(&options, level) else {
@@ -1119,8 +1103,22 @@ mod tests {
         )
     }
 
-    /// The levels on offer are the model's own. A level loom knows, but the
-    /// model the agent holds does not, is left unset rather than approximated.
+    /// The client's value is the provider's own id, so it is asked for as it
+    /// stands — including a spelling bb's own schema does not name.
+    #[test]
+    fn the_providers_own_value_is_asked_for_verbatim() {
+        let options = vec![
+            select(MODEL_CONFIG_ID, "provider/a", &["provider/a", "provider/b"]),
+            select(THOUGHT_LEVEL_CONFIG_ID, "minimal", &["off", "minimal"]),
+        ];
+        assert_eq!(
+            thought_level_value(&options, &ReasoningLevel::from("minimal")),
+            Some("minimal".to_string())
+        );
+    }
+
+    /// The ladder follows the model: a level this model does not offer is left
+    /// unset rather than approximated, so the agent keeps its own default.
     #[test]
     fn a_level_the_model_does_not_offer_is_not_asked_for() {
         let options = vec![
@@ -1128,35 +1126,13 @@ mod tests {
             select(THOUGHT_LEVEL_CONFIG_ID, "high", &["off", "high"]),
         ];
         assert_eq!(
-            thought_level_value(&options, ReasoningLevel::High),
+            thought_level_value(&options, &ReasoningLevel::from("high")),
             Some("high".to_string())
         );
-        assert_eq!(thought_level_value(&options, ReasoningLevel::Low), None);
-    }
-
-    #[test]
-    fn loom_none_is_asked_for_as_the_providers_off() {
-        let options = vec![select(THOUGHT_LEVEL_CONFIG_ID, "off", &["off"])];
         assert_eq!(
-            thought_level_value(&options, ReasoningLevel::None),
-            Some("off".to_string())
-        );
-    }
-
-    /// bb's closed set is wider than a provider's ladder, so the levels with no
-    /// counterpart are never sent — the agent keeps its own default instead.
-    #[test]
-    fn levels_without_a_provider_counterpart_are_not_asked_for() {
-        let options = vec![select(THOUGHT_LEVEL_CONFIG_ID, "max", &["off", "max"])];
-        assert_eq!(
-            thought_level_value(&options, ReasoningLevel::Max),
-            Some("max".to_string())
-        );
-        assert_eq!(
-            thought_level_value(&options, ReasoningLevel::Ultracode),
+            thought_level_value(&options, &ReasoningLevel::from("low")),
             None
         );
-        assert_eq!(thought_level_value(&options, ReasoningLevel::Ultra), None);
     }
 
     /// A grouped selector describes the same model, so it is searched too.
@@ -1173,7 +1149,7 @@ mod tests {
             )]),
         );
         assert_eq!(
-            thought_level_value(&[option], ReasoningLevel::Low),
+            thought_level_value(&[option], &ReasoningLevel::from("low")),
             Some("low".to_string())
         );
     }
@@ -1183,6 +1159,9 @@ mod tests {
     #[test]
     fn an_agent_without_the_option_gets_no_choice() {
         let options = vec![select("reasoning_effort", "low", &["low"])];
-        assert_eq!(thought_level_value(&options, ReasoningLevel::Low), None);
+        assert_eq!(
+            thought_level_value(&options, &ReasoningLevel::from("low")),
+            None
+        );
     }
 }

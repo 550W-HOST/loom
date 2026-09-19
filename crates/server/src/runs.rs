@@ -582,7 +582,7 @@ impl AppState {
             // the worker honours them without a lookup, and the agent stays
             // free to refuse a value it no longer offers.
             model: thread.model.clone(),
-            reasoning_level: thread.reasoning_level,
+            reasoning_level: thread.reasoning_level.clone(),
             project_id: thread.project_id.clone(),
             host_id: host.id.clone(),
             prompt: prompt.to_owned(),

@@ -904,7 +904,7 @@ mod tests {
                 prompt: "summarise the repository".into(),
                 provider_id: "pi".into(),
                 model: "pi/default".into(),
-                reasoning_level: ReasoningLevel::Medium,
+                reasoning_level: ReasoningLevel::from("medium"),
                 service_tier: None,
                 permission_mode: PermissionMode::Auto,
                 environment,
@@ -1662,7 +1662,7 @@ mod tests {
                 prompt: "again".into(),
                 provider_id: "pi".into(),
                 model: "pi/default".into(),
-                reasoning_level: ReasoningLevel::Medium,
+                reasoning_level: ReasoningLevel::from("medium"),
                 service_tier: None,
                 permission_mode: PermissionMode::Auto,
                 environment: AgentEnvironment::Reuse {

@@ -1453,7 +1453,7 @@ fn automation_fixture(
                         prompt: "summarise the repository".into(),
                         provider_id: "pi".into(),
                         model: "pi/default".into(),
-                        reasoning_level: loom_domain::ReasoningLevel::Medium,
+                        reasoning_level: loom_domain::ReasoningLevel::from("medium"),
                         service_tier: None,
                         permission_mode: loom_domain::automation::PermissionMode::Auto,
                         environment: loom_domain::automation::AgentEnvironment::Reuse {

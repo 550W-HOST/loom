@@ -2539,9 +2539,10 @@ async fn thread_default_execution_options(
             .clone()
             .unwrap_or_else(|| configured_provider_id(&state)),
         "serviceTier": DEFAULT_SERVICE_TIER,
-        "reasoningLevel": thread
-            .reasoning_level
-            .map_or(DEFAULT_REASONING_LEVEL, ReasoningLevel::as_str),
+        "reasoningLevel": thread.reasoning_level.clone().map_or_else(
+            || DEFAULT_REASONING_LEVEL.to_owned(),
+            |level| level.to_string(),
+        ),
         "permissionMode": DEFAULT_PERMISSION_MODE,
         "source": "client/thread/start",
     }))
@@ -3696,9 +3697,10 @@ fn queued_message_value(state: &AppState, message: &QueuedMessage) -> Value {
         "threadId": message.thread_id.to_string(),
         "content": queued_message_content(&message.text),
         "model": model,
-        "reasoningLevel": message
-            .reasoning_level
-            .map_or(DEFAULT_REASONING_LEVEL, ReasoningLevel::as_str),
+        "reasoningLevel": message.reasoning_level.clone().map_or_else(
+            || DEFAULT_REASONING_LEVEL.to_owned(),
+            |level| level.to_string(),
+        ),
         "permissionMode": message
             .permission_mode
             .clone()

@@ -459,7 +459,7 @@ pub struct AgentExecution {
 }
 
 fn default_reasoning_level() -> ReasoningLevel {
-    ReasoningLevel::Medium
+    ReasoningLevel::from("medium")
 }
 
 impl AgentExecution {
@@ -887,8 +887,8 @@ impl Automation {
             validate_non_empty("update.agent.model", model)?;
             current.model = model.clone();
         }
-        if let Some(reasoning_level) = patch.reasoning_level {
-            current.reasoning_level = reasoning_level;
+        if let Some(reasoning_level) = &patch.reasoning_level {
+            current.reasoning_level = reasoning_level.clone();
         }
         if let Some(service_tier) = patch.service_tier {
             current.service_tier = service_tier;
@@ -1648,7 +1648,7 @@ mod tests {
             prompt: "summarise the repository".into(),
             provider_id: "pi".into(),
             model: "pi/default".into(),
-            reasoning_level: ReasoningLevel::Medium,
+            reasoning_level: ReasoningLevel::from("medium"),
             service_tier: None,
             permission_mode: PermissionMode::Auto,
             environment: AgentEnvironment::ProjectDefault,

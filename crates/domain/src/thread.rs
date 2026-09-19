@@ -171,62 +171,47 @@ impl fmt::Display for ThreadOriginKind {
     }
 }
 
-/// How much reasoning a provider is asked to spend on a turn.
+/// How much reasoning the provider is asked to spend on a turn.
 ///
-/// The set is closed: bb's `reasoningLevelSchema` names exactly these eight,
-/// so an unknown level is rejected at the edge rather than stored and reported.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum ReasoningLevel {
-    /// No explicit reasoning pass.
-    None,
-    /// A short reasoning pass.
-    Low,
-    /// The provider's default balance.
-    Medium,
-    /// More reasoning than the default.
-    High,
-    /// Extra-high reasoning.
-    Xhigh,
-    /// The provider's "ultracode" tier.
-    Ultracode,
-    /// The provider's maximum tier.
-    Max,
-    /// The provider's ultra tier.
-    Ultra,
-}
+/// Opaque to loom: the value is one the *provider* advertised for the model the
+/// session holds, carried unchanged from the client's choice back to the agent.
+/// Which levels exist is therefore the agent's business, and it follows the
+/// selected model — pi derives the ladder per model from that model's own
+/// thinking-level map. bb's closed `reasoningLevelSchema` is a display
+/// vocabulary the client does not enforce: it renders the values the server
+/// advertises and sends one back verbatim, so loom stores and forwards those
+/// rather than consulting a list of its own.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct ReasoningLevel(String);
 
 impl ReasoningLevel {
-    /// Every level, in ascending order.
-    pub const ALL: [ReasoningLevel; 8] = [
-        ReasoningLevel::None,
-        ReasoningLevel::Low,
-        ReasoningLevel::Medium,
-        ReasoningLevel::High,
-        ReasoningLevel::Xhigh,
-        ReasoningLevel::Ultracode,
-        ReasoningLevel::Max,
-        ReasoningLevel::Ultra,
-    ];
+    /// The provider's own id for the level.
+    pub fn new(id: impl Into<String>) -> Self {
+        Self(id.into())
+    }
 
-    /// The spelling the contract uses.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            ReasoningLevel::None => "none",
-            ReasoningLevel::Low => "low",
-            ReasoningLevel::Medium => "medium",
-            ReasoningLevel::High => "high",
-            ReasoningLevel::Xhigh => "xhigh",
-            ReasoningLevel::Ultracode => "ultracode",
-            ReasoningLevel::Max => "max",
-            ReasoningLevel::Ultra => "ultra",
-        }
+    /// The id as the provider spells it.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl From<&str> for ReasoningLevel {
+    fn from(id: &str) -> Self {
+        Self(id.to_owned())
+    }
+}
+
+impl From<String> for ReasoningLevel {
+    fn from(id: String) -> Self {
+        Self(id)
     }
 }
 
 impl fmt::Display for ReasoningLevel {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.as_str())
+        f.write_str(&self.0)
     }
 }
 
@@ -714,7 +699,7 @@ impl Thread {
 
         if let Some(level) = &update.reasoning_level {
             changed |= self.reasoning_level != *level;
-            self.reasoning_level = *level;
+            self.reasoning_level = level.clone();
         }
 
         if let Some(visibility) = update.visibility {
@@ -1108,7 +1093,7 @@ mod tests {
         assert_eq!(updated.section_id.as_deref(), Some("sec-1"));
         assert_eq!(updated.visibility, ThreadVisibility::Hidden);
         assert_eq!(updated.model.as_deref(), Some("pi"));
-        assert_eq!(updated.reasoning_level, Some(ReasoningLevel::Xhigh));
+        assert_eq!(updated.reasoning_level, Some(ReasoningLevel::from("xhigh")));
         assert_eq!(updated.updated_at_ms, 2_000);
         assert_eq!(updated.tabs_revision, 0, "an update must not move the tabs");
     }

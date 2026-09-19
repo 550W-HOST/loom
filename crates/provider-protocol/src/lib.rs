@@ -1537,12 +1537,14 @@ mod tests {
     fn a_dispatch_carries_the_clients_model_and_reasoning_choices() {
         let dispatch = RunDispatch {
             model: Some("anthropic/claude-sonnet-4".into()),
-            reasoning_level: Some(ReasoningLevel::High),
+            // A level bb's own schema does not name: the vocabulary is the
+            // agent's, so the choice travels as the agent spelled it.
+            reasoning_level: Some(ReasoningLevel::from("off")),
             ..sample_dispatch()
         };
         let encoded = serde_json::to_value(&dispatch).unwrap();
         assert_eq!(encoded["model"], "anthropic/claude-sonnet-4");
-        assert_eq!(encoded["reasoning_level"], "high");
+        assert_eq!(encoded["reasoning_level"], "off");
         assert_eq!(
             serde_json::from_value::<RunDispatch>(encoded).unwrap(),
             dispatch
