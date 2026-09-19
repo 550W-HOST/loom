@@ -497,6 +497,8 @@ mod tests {
             permission_timeout: Duration::from_secs(30),
             permission_ceiling: HostPermissionMode::Full,
             provider_session_id: None,
+            model: None,
+            reasoning_level: None,
         }
     }
 

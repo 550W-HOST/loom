@@ -58,6 +58,8 @@ fn run(cwd: &str) -> ProviderRun {
         permission_timeout: Duration::from_secs(5),
         permission_ceiling: loom_domain::HostPermissionMode::Full,
         provider_session_id: None,
+        model: None,
+        reasoning_level: None,
     }
 }
 
@@ -205,6 +207,8 @@ fn run_with_agent(
         permission_timeout: Duration::from_secs(5),
         permission_ceiling: loom_domain::HostPermissionMode::Full,
         provider_session_id: provider_session_id.map(str::to_owned),
+        model: None,
+        reasoning_level: None,
     }
 }
 

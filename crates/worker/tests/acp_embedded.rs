@@ -112,6 +112,8 @@ fn run_resuming(cwd: &str, pi: &Path, provider_session_id: Option<&str>) -> Prov
         permission_timeout: Duration::from_secs(5),
         permission_ceiling: loom_domain::HostPermissionMode::Full,
         provider_session_id: provider_session_id.map(str::to_owned),
+        model: None,
+        reasoning_level: None,
     }
 }
 

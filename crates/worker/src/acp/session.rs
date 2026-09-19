@@ -33,7 +33,7 @@ use agent_client_protocol::schema::{v2, ProtocolVersion};
 use agent_client_protocol::{
     on_receive_notification, on_receive_request, Agent, Client, ConnectTo, ConnectionTo, Error,
 };
-use loom_domain::{ProviderEvent, RunEvent};
+use loom_domain::{ProviderEvent, ReasoningLevel, RunEvent};
 use loom_provider_protocol::{InteractionRequest, ProviderReport};
 use tokio::sync::mpsc;
 
@@ -520,6 +520,84 @@ struct UpdateSink {
     broker: PermissionBroker,
 }
 
+/// The ACP session config option ids for the model and the reasoning level.
+///
+/// ACP leaves the ids to the agent; these are the two pi advertises. An agent
+/// that names them differently simply gets no choice applied, because every
+/// lookup here reads the agent's own reply rather than assuming the option
+/// exists.
+const MODEL_CONFIG_ID: &str = "model";
+const THOUGHT_LEVEL_CONFIG_ID: &str = "thought_level";
+
+/// Ask the agent to set one session config option.
+///
+/// Returns the option set the agent holds afterwards. The reply is what makes
+/// the level list after a model change the *new* model's list rather than the
+/// one loom happened to record earlier.
+async fn set_config_option(
+    connection: &ConnectionTo<Agent>,
+    session_id: &str,
+    config_id: &str,
+    value: &str,
+) -> Result<Vec<v2::SessionConfigOption>, Error> {
+    let request = v2::SetSessionConfigOptionRequest::new(
+        session_id.to_owned(),
+        v2::SessionConfigId::new(config_id),
+        v2::SessionConfigOptionValue::id(value.to_owned()),
+    );
+    let response = connection.send_request(request).block_task().await?;
+    Ok(response.config_options)
+}
+
+/// The thought-level value that answers `level`, if this model offers one.
+///
+/// Which levels exist is the model's business, so this only ever answers with a
+/// value the agent advertised: an exact match on loom's name for the level, or
+/// the one spelling loom's closed set and pi's ladder disagree on (`none` is
+/// pi's `off`). A level the agent does not offer here is left unset rather than
+/// approximated — the agent already holds a default for the model it is using.
+fn thought_level_value(
+    options: &[v2::SessionConfigOption],
+    level: ReasoningLevel,
+) -> Option<String> {
+    let wanted = reasoning_level_id(level)?;
+    let option = options
+        .iter()
+        .find(|option| option.config_id.0.as_ref() == THOUGHT_LEVEL_CONFIG_ID)?;
+    let v2::SessionConfigKind::Select(select) = &option.kind else {
+        return None;
+    };
+    let candidates: Vec<&v2::SessionConfigSelectOption> = match &select.options {
+        v2::SessionConfigSelectOptions::Ungrouped(options) => options.iter().collect(),
+        v2::SessionConfigSelectOptions::Grouped(groups) => groups
+            .iter()
+            .flat_map(|group| group.options.iter())
+            .collect(),
+        _ => return None,
+    };
+    candidates
+        .iter()
+        .find(|candidate| candidate.value.0.as_ref() == wanted)
+        .map(|candidate| candidate.value.0.to_string())
+}
+
+/// loom's name for a level as the provider spells it.
+///
+/// loom's set is bb's `reasoningLevelSchema`, which is wider than any
+/// provider's ladder: `ultracode` and `ultra` have no counterpart here, so they
+/// are never asked for.
+fn reasoning_level_id(level: ReasoningLevel) -> Option<&'static str> {
+    match level {
+        ReasoningLevel::None => Some("off"),
+        ReasoningLevel::Low => Some("low"),
+        ReasoningLevel::Medium => Some("medium"),
+        ReasoningLevel::High => Some("high"),
+        ReasoningLevel::Xhigh => Some("xhigh"),
+        ReasoningLevel::Max => Some("max"),
+        ReasoningLevel::Ultracode | ReasoningLevel::Ultra => None,
+    }
+}
+
 impl UpdateSink {
     /// One ACP session update: translate, then report.
     ///
@@ -772,6 +850,39 @@ impl UpdateSink {
         Ok(())
     }
 
+    /// Apply the client's model and reasoning choices to a session.
+    ///
+    /// The agent owns the meaning of both values: each is an id it advertised
+    /// through the session's config options. The model goes first because the
+    /// levels a session offers are the model's own, so the level is chosen
+    /// against the option set the model change returned rather than against
+    /// what loom recorded when the thread was created.
+    ///
+    /// A choice the agent refuses is not a run failure. A refusal means the
+    /// catalogue moved under a stored choice, and the conversation is still
+    /// worth having on the agent's own default for the model it holds.
+    async fn apply_config_choices(
+        &self,
+        connection: &ConnectionTo<Agent>,
+        session_id: &str,
+        mut options: Vec<v2::SessionConfigOption>,
+    ) {
+        if let Some(model) = self.run.model.as_deref() {
+            if let Ok(updated) =
+                set_config_option(connection, session_id, MODEL_CONFIG_ID, model).await
+            {
+                options = updated;
+            }
+        }
+        let Some(level) = self.run.reasoning_level else {
+            return;
+        };
+        let Some(value) = thought_level_value(&options, level) else {
+            return;
+        };
+        let _ = set_config_option(connection, session_id, THOUGHT_LEVEL_CONFIG_ID, &value).await;
+    }
+
     /// Initialize, open or resume a v2 session, send the prompt, and wait for
     /// the protocol's `state_update: idle` notification. The v2 resume request
     /// intentionally omits `replayFrom`: loom's timeline already owns the
@@ -799,12 +910,14 @@ impl UpdateSink {
         let session_id = match &self.run.provider_session_id {
             Some(existing) => {
                 self.begin_load(existing.clone()).await;
-                connection
+                let resumed = connection
                     .send_request(v2::ResumeSessionRequest::new(existing.clone(), cwd))
                     .block_task()
                     .await?;
                 self.finish_load(existing).await;
                 self.on_session_known(existing).await;
+                self.apply_config_choices(connection, existing, resumed.config_options)
+                    .await;
                 existing.clone()
             }
             None => {
@@ -814,6 +927,8 @@ impl UpdateSink {
                     .await?;
                 let session_id = created.session_id.0.to_string();
                 self.on_session_known(&session_id).await;
+                self.apply_config_choices(connection, &session_id, created.config_options)
+                    .await;
                 session_id
             }
         };
@@ -986,4 +1101,88 @@ pub fn spawn(
                 .await;
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn select(config_id: &str, current: &str, values: &[&str]) -> v2::SessionConfigOption {
+        v2::SessionConfigOption::select(
+            config_id,
+            config_id,
+            current.to_string(),
+            values
+                .iter()
+                .map(|value| v2::SessionConfigSelectOption::new(*value, *value))
+                .collect::<Vec<_>>(),
+        )
+    }
+
+    /// The levels on offer are the model's own. A level loom knows, but the
+    /// model the agent holds does not, is left unset rather than approximated.
+    #[test]
+    fn a_level_the_model_does_not_offer_is_not_asked_for() {
+        let options = vec![
+            select(MODEL_CONFIG_ID, "provider/a", &["provider/a", "provider/b"]),
+            select(THOUGHT_LEVEL_CONFIG_ID, "high", &["off", "high"]),
+        ];
+        assert_eq!(
+            thought_level_value(&options, ReasoningLevel::High),
+            Some("high".to_string())
+        );
+        assert_eq!(thought_level_value(&options, ReasoningLevel::Low), None);
+    }
+
+    #[test]
+    fn loom_none_is_asked_for_as_the_providers_off() {
+        let options = vec![select(THOUGHT_LEVEL_CONFIG_ID, "off", &["off"])];
+        assert_eq!(
+            thought_level_value(&options, ReasoningLevel::None),
+            Some("off".to_string())
+        );
+    }
+
+    /// bb's closed set is wider than a provider's ladder, so the levels with no
+    /// counterpart are never sent — the agent keeps its own default instead.
+    #[test]
+    fn levels_without_a_provider_counterpart_are_not_asked_for() {
+        let options = vec![select(THOUGHT_LEVEL_CONFIG_ID, "max", &["off", "max"])];
+        assert_eq!(
+            thought_level_value(&options, ReasoningLevel::Max),
+            Some("max".to_string())
+        );
+        assert_eq!(
+            thought_level_value(&options, ReasoningLevel::Ultracode),
+            None
+        );
+        assert_eq!(thought_level_value(&options, ReasoningLevel::Ultra), None);
+    }
+
+    /// A grouped selector describes the same model, so it is searched too.
+    #[test]
+    fn a_grouped_level_selector_is_searched() {
+        let option = v2::SessionConfigOption::select(
+            THOUGHT_LEVEL_CONFIG_ID,
+            "Thinking",
+            "low".to_string(),
+            v2::SessionConfigSelectOptions::Grouped(vec![v2::SessionConfigSelectGroup::new(
+                "ladder",
+                "Ladder",
+                vec![v2::SessionConfigSelectOption::new("low", "Low")],
+            )]),
+        );
+        assert_eq!(
+            thought_level_value(&[option], ReasoningLevel::Low),
+            Some("low".to_string())
+        );
+    }
+
+    /// An agent that names its options differently gets no choice applied
+    /// rather than a request it cannot honour.
+    #[test]
+    fn an_agent_without_the_option_gets_no_choice() {
+        let options = vec![select("reasoning_effort", "low", &["low"])];
+        assert_eq!(thought_level_value(&options, ReasoningLevel::Low), None);
+    }
 }

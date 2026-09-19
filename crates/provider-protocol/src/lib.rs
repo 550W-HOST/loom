@@ -34,8 +34,8 @@
 //! [`RunEvent`]: loom_domain::RunEvent
 
 use loom_domain::{
-    AutomationId, AutomationRunId, EnvironmentId, HostId, HostPermissionMode, ProjectId, RunEvent,
-    RunId, ScriptInterpreter, ThreadId,
+    AutomationId, AutomationRunId, EnvironmentId, HostId, HostPermissionMode, ProjectId,
+    ReasoningLevel, RunEvent, RunId, ScriptInterpreter, ThreadId,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -163,6 +163,24 @@ pub struct RunDispatch {
     /// means "start fresh", the behaviour it already had.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_session_id: Option<String>,
+    /// The model the client chose for this thread, when it chose one.
+    ///
+    /// Opaque to the control plane: it is whatever the provider's advertised
+    /// model catalogue offered, carried to the worker so the agent can be told
+    /// which model to use. A value the agent does not recognise is the agent's
+    /// to refuse, and a refusal is not a run failure.
+    ///
+    /// Additive on the wire: an older dispatch deserializes with `None`, which
+    /// means "the agent's own default", the behaviour it already had.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// How much reasoning the client asked for, when it asked for any.
+    ///
+    /// loom's own closed set rather than the agent's: the worker maps it onto
+    /// the level the agent advertised for the session, and a level with no
+    /// counterpart there is left alone rather than guessed at.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_level: Option<ReasoningLevel>,
     /// The host policy ceiling applied to provider permission answers.
     #[serde(default)]
     pub permission_ceiling: HostPermissionMode,
@@ -1488,6 +1506,8 @@ mod tests {
             deadline_ms: 12,
             created_at_ms: 1,
             provider_session_id: None,
+            model: None,
+            reasoning_level: None,
         }
     }
 
@@ -1497,6 +1517,34 @@ mod tests {
         let encoded = serde_json::to_string(&dispatch).unwrap();
         assert_eq!(
             serde_json::from_str::<RunDispatch>(&encoded).unwrap(),
+            dispatch
+        );
+    }
+
+    /// The choices are additive: a control plane that predates them sends no
+    /// such keys, and the worker reads that as the agent's own default.
+    #[test]
+    fn a_dispatch_from_an_older_control_plane_carries_no_choices() {
+        let older = serde_json::to_value(sample_dispatch()).unwrap();
+        assert!(older.as_object().unwrap().get("model").is_none());
+        assert!(older.as_object().unwrap().get("reasoning_level").is_none());
+        let decoded: RunDispatch = serde_json::from_value(older).unwrap();
+        assert_eq!(decoded.model, None);
+        assert_eq!(decoded.reasoning_level, None);
+    }
+
+    #[test]
+    fn a_dispatch_carries_the_clients_model_and_reasoning_choices() {
+        let dispatch = RunDispatch {
+            model: Some("anthropic/claude-sonnet-4".into()),
+            reasoning_level: Some(ReasoningLevel::High),
+            ..sample_dispatch()
+        };
+        let encoded = serde_json::to_value(&dispatch).unwrap();
+        assert_eq!(encoded["model"], "anthropic/claude-sonnet-4");
+        assert_eq!(encoded["reasoning_level"], "high");
+        assert_eq!(
+            serde_json::from_value::<RunDispatch>(encoded).unwrap(),
             dispatch
         );
     }

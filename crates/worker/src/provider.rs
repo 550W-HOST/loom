@@ -8,7 +8,9 @@
 
 use std::time::Duration;
 
-use loom_domain::{HostPermissionMode, ProviderEvent, RunEvent, RunOutcome, TurnError};
+use loom_domain::{
+    HostPermissionMode, ProviderEvent, ReasoningLevel, RunEvent, RunOutcome, TurnError,
+};
 use loom_provider_protocol::{ProviderSpec, RunDispatch};
 
 /// Everything one ACP run needs to report events.
@@ -43,6 +45,16 @@ pub struct ProviderRun {
     /// The agent's identifier for this thread's conversation, when a previous
     /// run already opened one.
     pub provider_session_id: Option<String>,
+    /// The model the client chose for the thread, in the agent's own terms.
+    ///
+    /// Applied through the session's `model` config option; a value the agent
+    /// no longer offers is refused by the agent, not by this side.
+    pub model: Option<String>,
+    /// How much reasoning the client asked for, in loom's own terms.
+    ///
+    /// Mapped onto the levels the agent advertises for *the model it holds*,
+    /// so a level the chosen model does not offer is left unset.
+    pub reasoning_level: Option<ReasoningLevel>,
 }
 
 impl ProviderRun {
@@ -64,6 +76,8 @@ impl ProviderRun {
             permission_timeout,
             permission_ceiling: dispatch.permission_ceiling,
             provider_session_id: dispatch.provider_session_id.clone(),
+            model: dispatch.model.clone(),
+            reasoning_level: dispatch.reasoning_level,
         }
     }
 

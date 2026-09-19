@@ -578,6 +578,11 @@ impl AppState {
             // conversation rather than starting over. `None` means this is
             // the first run, or that the recorded one belongs elsewhere.
             provider_session_id,
+            // The client's own choices travel the same way as the session id:
+            // the worker honours them without a lookup, and the agent stays
+            // free to refuse a value it no longer offers.
+            model: thread.model.clone(),
+            reasoning_level: thread.reasoning_level,
             project_id: thread.project_id.clone(),
             host_id: host.id.clone(),
             prompt: prompt.to_owned(),
