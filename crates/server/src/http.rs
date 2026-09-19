@@ -816,7 +816,10 @@ fn query_provider(state: &AppState, query: &ProviderQuery) -> ProviderSpec {
 /// The keys are the ids discovery uses, so a tab reads "OpenCode" rather than
 /// "opencode" without the worker having to describe how its own name is
 /// capitalised.
-fn provider_display_name(provider_id: &str) -> String {
+///
+/// `pub(crate)` because the logo route draws a monogram from the same table: two
+/// tables would eventually disagree about what a provider is called.
+pub(crate) fn provider_display_name(provider_id: &str) -> String {
     match provider_id {
         "pi" => "Pi".to_owned(),
         "omp" => "OMP".to_owned(),
