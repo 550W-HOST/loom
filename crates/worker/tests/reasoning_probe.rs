@@ -81,8 +81,18 @@ fn streamed_thinking(events: &[RunEvent]) -> String {
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "runs the real `pi` CLI and needs model credentials"]
 async fn a_real_turn_reports_its_thinking() {
-    let workspace = tempfile::tempdir().unwrap();
-    let cwd = workspace.path().to_string_lossy().into_owned();
+    // `PROBE_CWD` aims the turn at a directory the probe wants the agent to see
+    // — a real file to read, say; otherwise the turn runs in a fresh temp dir.
+    let asked_cwd = std::env::var("PROBE_CWD").ok();
+    let workspace = asked_cwd.is_none().then(|| tempfile::tempdir().unwrap());
+    let cwd = asked_cwd.unwrap_or_else(|| {
+        workspace
+            .as_ref()
+            .expect("a temp workspace when PROBE_CWD is unset")
+            .path()
+            .to_string_lossy()
+            .into_owned()
+    });
     let mut spec = ProviderSpec::acp_pi();
     spec.command = pi_binary();
     spec.cwd = Some(cwd.clone());

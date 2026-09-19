@@ -198,6 +198,43 @@ impl ToolActivity {
                 fields.insert("exitCode".into(), json!(exit_code));
                 fields.insert("activityIntents".into(), json!([]));
             }
+            // The kinds the contract gives their own row are drawn from the
+            // item rather than flattened into a tool: a read names the file it
+            // read, a search the query it ran. They carry no `approvalStatus`,
+            // and their variants close their property sets, so the shared
+            // base's copy is dropped rather than sent and rejected.
+            ThreadEventItem::FileRead { path, cmd, .. } => {
+                fields.remove("approvalStatus");
+                fields.insert("workKind".into(), json!("file-read"));
+                fields.insert("path".into(), json!(path));
+                fields.insert("cmd".into(), json!(cmd));
+            }
+            ThreadEventItem::Search {
+                mode,
+                query,
+                path,
+                cmd,
+                ..
+            } => {
+                fields.remove("approvalStatus");
+                fields.insert("workKind".into(), json!("search"));
+                fields.insert("mode".into(), json!(mode));
+                fields.insert("query".into(), json!(query));
+                fields.insert("path".into(), json!(path));
+                fields.insert("cmd".into(), json!(cmd));
+            }
+            ThreadEventItem::WebFetch {
+                url,
+                prompt,
+                pattern,
+                ..
+            } => {
+                fields.remove("approvalStatus");
+                fields.insert("workKind".into(), json!("web-fetch"));
+                fields.insert("url".into(), json!(url));
+                fields.insert("prompt".into(), json!(prompt));
+                fields.insert("pattern".into(), json!(pattern));
+            }
             item => {
                 fields.insert("workKind".into(), json!("tool"));
                 fields.insert("toolName".into(), json!(tool_name(item)));
@@ -619,6 +656,155 @@ mod tests {
         assert_eq!(row["exitCode"], 0);
         assert_eq!(row["completedAt"], 2_200);
         assert_eq!(row["activityIntents"], json!([]));
+    }
+
+    /// A read, a search and a fetch are the contract's own row kinds. Each names
+    /// what it touched; flattened into a tool row they showed a progress line
+    /// where the file, the query or the URL belongs.
+    #[test]
+    fn a_read_a_search_and_a_fetch_carry_their_own_rows() {
+        let mut timeline = ToolTimeline::new();
+        let items = [
+            ThreadEventItem::FileRead {
+                id: "call-read".to_owned(),
+                path: "/srv/project/src/a.rs".to_owned(),
+                cmd: None,
+                status: ItemStatus::Completed,
+                presentation: None,
+                parent_tool_call_id: None,
+            },
+            ThreadEventItem::Search {
+                id: "call-search".to_owned(),
+                mode: loom_domain::SearchMode::Content,
+                query: "gbatch".to_owned(),
+                path: Some("/srv/project".to_owned()),
+                cmd: None,
+                status: ItemStatus::Completed,
+                presentation: None,
+                parent_tool_call_id: None,
+            },
+            ThreadEventItem::WebFetch {
+                id: "call-fetch".to_owned(),
+                url: "https://example.com/doc".to_owned(),
+                prompt: None,
+                pattern: None,
+                result_text: None,
+                presentation: None,
+                parent_tool_call_id: None,
+            },
+        ];
+        for (index, item) in items.into_iter().enumerate() {
+            timeline.absorb(
+                "run-1",
+                &ProviderEvent::ItemCompleted {
+                    item,
+                    provider_thread_id: "provider-thread".to_owned(),
+                },
+                10 + index as u64,
+                1_000,
+            );
+        }
+
+        let read = row_for(&timeline, "call-read");
+        assert_eq!(read["workKind"], "file-read");
+        assert_eq!(read["path"], "/srv/project/src/a.rs");
+        assert_eq!(read["cmd"], Value::Null);
+        assert_eq!(read["callId"], "call-read");
+        assert_keys(
+            &read,
+            &[
+                "id",
+                "threadId",
+                "turnId",
+                "sourceSeqStart",
+                "sourceSeqEnd",
+                "startedAt",
+                "createdAt",
+                "kind",
+                "status",
+                "workKind",
+                "callId",
+                "path",
+                "cmd",
+                "completedAt",
+            ],
+        );
+
+        let search = row_for(&timeline, "call-search");
+        assert_eq!(search["workKind"], "search");
+        assert_eq!(search["mode"], "content");
+        assert_eq!(search["query"], "gbatch");
+        assert_eq!(search["path"], "/srv/project");
+        assert_keys(
+            &search,
+            &[
+                "id",
+                "threadId",
+                "turnId",
+                "sourceSeqStart",
+                "sourceSeqEnd",
+                "startedAt",
+                "createdAt",
+                "kind",
+                "status",
+                "workKind",
+                "callId",
+                "mode",
+                "query",
+                "path",
+                "cmd",
+                "completedAt",
+            ],
+        );
+
+        let fetch = row_for(&timeline, "call-fetch");
+        assert_eq!(fetch["workKind"], "web-fetch");
+        assert_eq!(fetch["url"], "https://example.com/doc");
+        assert_eq!(fetch["prompt"], Value::Null);
+        assert_eq!(fetch["pattern"], Value::Null);
+        assert_keys(
+            &fetch,
+            &[
+                "id",
+                "threadId",
+                "turnId",
+                "sourceSeqStart",
+                "sourceSeqEnd",
+                "startedAt",
+                "createdAt",
+                "kind",
+                "status",
+                "workKind",
+                "callId",
+                "url",
+                "prompt",
+                "pattern",
+                "completedAt",
+            ],
+        );
+    }
+
+    fn row_for(timeline: &ToolTimeline, item_id: &str) -> Value {
+        timeline
+            .get("run-1", item_id)
+            .expect("the call exists")
+            .row("thread-1")
+    }
+
+    /// The row's fields, exactly: the contract's work variants close their
+    /// property sets, so a field another kind carries (or one this kind does not
+    /// declare) is a row the client is refused.
+    fn assert_keys(row: &Value, expected: &[&str]) {
+        let mut keys: Vec<&str> = row
+            .as_object()
+            .expect("a row is an object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        keys.sort_unstable();
+        let mut expected = expected.to_vec();
+        expected.sort_unstable();
+        assert_eq!(keys, expected, "the row carries the wrong fields: {row}");
     }
 
     /// A failure is the contract's `error`, not its own word for it, and the

@@ -2214,3 +2214,56 @@ async fn a_file_edit_becomes_a_diff_row() {
 
     fixture.state.shutdown();
 }
+
+/// A read is the contract's `file-read` row — the file it read is the row's
+/// point — rather than a tool row whose only detail is a progress line.
+#[tokio::test]
+async fn a_file_read_becomes_a_row_that_names_the_file() {
+    let fixture = fixture().await;
+    let run_id = loom_domain::RunId::mint();
+    let item = loom_domain::ThreadEventItem::FileRead {
+        id: "call-read".to_owned(),
+        path: "/srv/project/README.md".to_owned(),
+        cmd: None,
+        status: loom_domain::ItemStatus::Completed,
+        presentation: None,
+        parent_tool_call_id: None,
+    };
+    publish_tool_frame(
+        &fixture,
+        &run_id,
+        loom_domain::ProviderEvent::ItemStarted {
+            item: item.clone(),
+            provider_thread_id: fixture.thread_id.clone(),
+        },
+    );
+    publish_tool_frame(
+        &fixture,
+        &run_id,
+        loom_domain::ProviderEvent::ItemCompleted {
+            item,
+            provider_thread_id: fixture.thread_id.clone(),
+        },
+    );
+
+    let response = fixture
+        .get(&format!("/api/v1/threads/{}/timeline", fixture.thread_id))
+        .await;
+    assert_response("threads.timeline", 200, &response.body);
+    let rows = response.body["rows"].as_array().unwrap();
+    let reads: Vec<&Value> = rows
+        .iter()
+        .filter(|row| row["workKind"] == "file-read")
+        .collect();
+    assert_eq!(
+        reads.len(),
+        1,
+        "one row for the read: {}",
+        serde_json::to_string_pretty(&rows).unwrap()
+    );
+    assert_eq!(reads[0]["path"], "/srv/project/README.md");
+    assert_eq!(reads[0]["callId"], "call-read");
+    assert_eq!(reads[0]["status"], "completed");
+
+    fixture.state.shutdown();
+}
