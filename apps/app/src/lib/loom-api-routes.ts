@@ -54,6 +54,7 @@ export const LOOM_API_ROUTES = [
   { id: "system.updateUiPreference", method: "PUT", path: "/preferences/ui/:key" },
   { id: "system.resetUiPreference", method: "DELETE", path: "/preferences/ui/:key" },
   { id: "system.voiceTranscription", method: "POST", path: "/system/voice-transcription" },
+  { id: "threads.childSummary", method: "GET", path: "/threads/:id/child-summary" },
   { id: "threads.create", method: "POST", path: "/threads" },
   { id: "threads.defaultExecutionOptions", method: "GET", path: "/threads/:id/default-execution-options" },
   { id: "threads.get", method: "GET", path: "/threads/:id" },

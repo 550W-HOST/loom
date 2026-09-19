@@ -13,6 +13,7 @@ import type {
   SidebarBootstrapResponse,
   SystemEnvironmentProvider,
   SystemEnvironmentProvidersQuery,
+  ThreadChildSummaryResponse,
   ThreadGetQuery,
   ThreadResponse,
   ThreadTabsResponse,
@@ -431,6 +432,26 @@ export function loomThreadDefaultExecutionOptions(request: {
   threadId: string;
 }): Promise<ResolvedThreadExecutionOptions | null> {
   return loomApiJson("threads.defaultExecutionOptions", {
+    param: { id: request.threadId },
+    signal: request.signal,
+  });
+}
+
+/**
+ * How many live children the thread has, over the contract route.
+ *
+ * The delete-confirmation flow reads this before offering "delete with
+ * children" so it can warn about — and ask to confirm — the threads that would
+ * go with the parent. `threads.childSummary` was still the fail-closed browser
+ * SDK stub, so the app's delete dialog could never see a non-zero count and
+ * quietly skipped the child confirmation; the server route already exists,
+ * counts non-deleted children, and is contract-tested, so this is the app half.
+ */
+export function loomThreadChildSummary(request: {
+  signal?: AbortSignal;
+  threadId: string;
+}): Promise<ThreadChildSummaryResponse> {
+  return loomApiJson("threads.childSummary", {
     param: { id: request.threadId },
     signal: request.signal,
   });

@@ -16,6 +16,7 @@ import {
   loomMarkThreadUnread,
   loomGetThreadTabs,
   loomSpawnThread,
+  loomThreadChildSummary,
   loomThreadDefaultExecutionOptions,
   loomUpdateThreadTabs,
   resolveLoomThreadEnvironment,
@@ -418,6 +419,7 @@ describe("loom New Thread runtime", () => {
 
   it("wires only the scoped browser SDK operations", async () => {
     expect(sdk.threads.spawn).toBe(loomSpawnThread);
+    expect(sdk.threads.childSummary).toBe(loomThreadChildSummary);
     expect(sdk.threads.defaultExecutionOptions).toBe(
       loomThreadDefaultExecutionOptions,
     );
@@ -429,5 +431,67 @@ describe("loom New Thread runtime", () => {
     await expect(sdk.threads.stop({ threadId: "thr_missing" })).rejects.toBeInstanceOf(
       BrowserSdkUnavailableError,
     );
+  });
+});
+
+describe("loom thread child summary", () => {
+  it("reads the child count from the contract route with no body", async () => {
+    const fetchMock = vi.fn(async () =>
+      jsonResponse({ nonDeletedChildCount: 3 }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      loomThreadChildSummary({ threadId: "thr_1" }),
+    ).resolves.toEqual({ nonDeletedChildCount: 3 });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [URL, RequestInit];
+    expect(init.method).toBe("GET");
+    expect(init.body).toBeUndefined();
+    expect(url.pathname).toBe("/api/v1/threads/thr_1/child-summary");
+    expect(url.search).toBe("");
+  });
+
+  it("encodes the thread id as a single path segment", async () => {
+    const fetchMock = vi.fn(async () =>
+      jsonResponse({ nonDeletedChildCount: 0 }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await loomThreadChildSummary({ threadId: "a/b" });
+
+    const [url] = fetchMock.mock.calls[0] as unknown as [URL];
+    expect(url.pathname).toBe("/api/v1/threads/a%2Fb/child-summary");
+  });
+
+  it("surfaces a route failure as a loom HTTP error", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        jsonResponse({ code: "thread_not_found", message: "gone" }, 404),
+      ),
+    );
+
+    await expect(
+      loomThreadChildSummary({ threadId: "thr_missing" }),
+    ).rejects.toMatchObject({
+      status: 404,
+      code: "thread_not_found",
+    });
+  });
+
+  it("is reachable through the browser SDK surface", async () => {
+    const fetchMock = vi.fn(async () =>
+      jsonResponse({ nonDeletedChildCount: 2 }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      sdk.threads.childSummary({ threadId: "thr_1" }),
+    ).resolves.toEqual({ nonDeletedChildCount: 2 });
+
+    const [url] = fetchMock.mock.calls[0] as unknown as [URL];
+    expect(url.pathname).toBe("/api/v1/threads/thr_1/child-summary");
   });
 });

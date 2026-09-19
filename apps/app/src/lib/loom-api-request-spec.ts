@@ -19,6 +19,7 @@ import type {
   SystemProviderInfo,
   SystemVersionQuery,
   SystemVersionResponse,
+  ThreadChildSummaryResponse,
   ThreadFilesRawQuery,
   ThreadGetQuery,
   ThreadHostFileContentQuery,
@@ -144,6 +145,7 @@ export const LOOM_API_REQUEST_SPECS = {
     source: "form",
     form: {} as FormData,
   },
+  "threads.childSummary": { source: "none" },
   "threads.create": { source: "json", json: {} as CreateThreadRequest },
   "threads.defaultExecutionOptions": { source: "none" },
   "threads.get": { source: "query", query: {} as ThreadGetQuery },
@@ -218,6 +220,7 @@ export interface LoomApiResponseSpecs {
   "system.updateUiPreference": UiPreferenceResponse;
   "system.resetUiPreference": UiPreferenceResponse;
   "system.voiceTranscription": { text: string };
+  "threads.childSummary": ThreadChildSummaryResponse;
   "threads.create": ThreadResponse;
   "threads.defaultExecutionOptions": ResolvedThreadExecutionOptions | null;
   "threads.get": ThreadResponse;

@@ -11,6 +11,7 @@ import {
   loomProjectDefaultExecutionOptions,
   loomSendThreadMessage,
   loomSpawnThread,
+  loomThreadChildSummary,
   loomThreadDefaultExecutionOptions,
   loomUpdateThreadTabs,
 } from "./loom-thread-runtime";
@@ -73,6 +74,7 @@ export const sdk = {
   },
   threads: {
     ...compileOnlySdk.threads,
+    childSummary: loomThreadChildSummary,
     defaultExecutionOptions: loomThreadDefaultExecutionOptions,
     get: loomGetThread,
     interactions: {
