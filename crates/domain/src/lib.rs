@@ -55,6 +55,7 @@
 #![forbid(unsafe_code)]
 
 pub mod automation;
+pub mod catalog;
 pub mod environment;
 pub mod error;
 pub mod event;

@@ -526,8 +526,8 @@ struct UpdateSink {
 /// that names them differently simply gets no choice applied, because every
 /// lookup here reads the agent's own reply rather than assuming the option
 /// exists.
-const MODEL_CONFIG_ID: &str = "model";
-const THOUGHT_LEVEL_CONFIG_ID: &str = "thought_level";
+pub(crate) const MODEL_CONFIG_ID: &str = "model";
+pub(crate) const THOUGHT_LEVEL_CONFIG_ID: &str = "thought_level";
 
 /// Ask the agent to set one session config option.
 ///

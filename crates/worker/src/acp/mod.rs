@@ -1684,6 +1684,7 @@ fn content_text(block: &ContentBlock) -> String {
     }
 }
 
+pub mod catalog;
 pub mod permission;
 pub mod session;
 pub mod sessions;
