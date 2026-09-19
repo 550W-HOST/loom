@@ -544,7 +544,7 @@ async fn validate_contract_request(request: Request, next: Next) -> Response {
     };
     // A body the JSON extractor will reject anyway gets its own message from
     // `normalize_api_error`; re-running the handler preserves that behaviour.
-    let instance: Value = match serde_json::from_slice(&bytes) {
+    let mut instance: Value = match serde_json::from_slice(&bytes) {
         Ok(instance) => instance,
         Err(_) => {
             return next
@@ -552,6 +552,17 @@ async fn validate_contract_request(request: Request, next: Next) -> Response {
                 .await;
         }
     };
+    // loom serves the agent's own reasoning-level ids — `off`, `minimal` — while
+    // bb's request schemas still name only its own eight, so the level's *value*
+    // is not something loom can validate against that vocabulary. A body that
+    // carries one is validated with a legal placeholder in its place: the bytes
+    // handed to the handler are untouched, an omitted level is still missing,
+    // and the type is still enforced by serde.
+    if let Some(object) = instance.as_object_mut() {
+        if object.contains_key("reasoningLevel") {
+            object.insert("reasoningLevel".into(), json!("medium"));
+        }
+    }
     let violations = loom_contract::shared().validate_request(route, &instance);
     if !violations.is_empty() {
         return error_response_with_code(
@@ -1595,6 +1606,15 @@ pub struct CreateThreadRequest {
     /// Optional display title.
     #[serde(default)]
     pub title: Option<String>,
+    /// The agent the client picked for this thread, when it picked one.
+    #[serde(default)]
+    pub provider_id: Option<String>,
+    /// The model the client picked, as the agent's own id.
+    #[serde(default)]
+    pub model: Option<String>,
+    /// The reasoning level the client picked.
+    #[serde(default)]
+    pub reasoning_level: Option<ReasoningLevel>,
 }
 
 /// bb's `createThreadRequestSchema.origin`.
@@ -2315,9 +2335,10 @@ struct SendThreadRequest {
     #[serde(default)]
     send_at: Option<u64>,
     /// The model, reasoning level, permission mode and service tier the client
-    /// picked. Recorded on the queued row when one is created; a delivered
-    /// turn does not carry them because `ProviderSpec` has no field for them
-    /// yet (see the retry route's note).
+    /// picked. The model and level are recorded on the thread before the turn
+    /// dispatches, because the dispatch reads the thread's record rather than
+    /// this request; on a queued message they are also kept on the row, so the
+    /// turn runs with the options it was created with.
     #[serde(default)]
     model: Option<String>,
     #[serde(default)]
@@ -2494,6 +2515,16 @@ async fn send_thread(
         };
     }
 
+    // The turn about to be dispatched reads the thread's record, so the options
+    // this request carried are recorded first. A queued message keeps its own
+    // on the row instead; that branch returned above.
+    apply_execution_options(
+        &state,
+        &thread_id,
+        None,
+        request.model.as_deref(),
+        request.reasoning_level.as_ref(),
+    );
     match append_thread_message(&state, &thread_id, MessageRole::User, content) {
         Ok(_) => Json(json!({ "ok": true, "delivery": "sent" })).into_response(),
         Err(response) => response,
@@ -2593,6 +2624,46 @@ async fn update_thread_tabs(
             error_response_with_code(StatusCode::CONFLICT, "thread_tabs_conflict", message)
         }
         Err(error) => command_error_response(error),
+    }
+}
+
+/// Records the execution options a request carried onto a thread.
+///
+/// A client picks the provider, model and reasoning level in the composer and
+/// sends them with the thread it creates or the turn it starts. The run is
+/// dispatched from the *thread's* record, so without this the choice would be
+/// dropped and every run would use the server's defaults. Fields the request
+/// left out are left alone, so a caller that names only a model keeps the
+/// provider the thread already had.
+fn apply_execution_options(
+    state: &AppState,
+    thread_id: &ThreadId,
+    provider_id: Option<&str>,
+    model: Option<&str>,
+    reasoning_level: Option<&ReasoningLevel>,
+) {
+    if provider_id.is_none() && model.is_none() && reasoning_level.is_none() {
+        return;
+    }
+    let update = ThreadUpdate {
+        provider_id: provider_id.map(|value| Some(value.to_owned())),
+        model: model.map(|value| Some(value.to_owned())),
+        reasoning_level: reasoning_level.map(|level| Some(level.clone())),
+        ..ThreadUpdate::default()
+    };
+    match state
+        .registry
+        .update_thread(thread_id, &update, loom_relay::now_ms())
+    {
+        Ok((_, Some(event))) => {
+            let _ = state.publish_domain_event(&event);
+        }
+        Ok((_, None)) => {}
+        Err(error) => {
+            eprintln!(
+                "loom-server: could not record execution options on thread {thread_id}: {error}"
+            );
+        }
     }
 }
 
@@ -5401,6 +5472,15 @@ async fn create_thread(
     if let Err(error) = state.publish_domain_event(&event) {
         return error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string());
     }
+    // Before the initial prompt, so the first turn runs on what the client
+    // picked rather than on the server's defaults.
+    apply_execution_options(
+        &state,
+        &thread.id,
+        request.provider_id.as_deref(),
+        request.model.as_deref(),
+        request.reasoning_level.as_ref(),
+    );
     if let Some(content) = initial_content {
         if let Err(response) = append_thread_message(&state, &thread.id, MessageRole::User, content)
         {
@@ -6846,6 +6926,107 @@ mod tests {
         assert_eq!(
             unknown["models"][0]["model"], "pi/one",
             "a stale provider id falls back to the default rather than failing the picker"
+        );
+        state.shutdown();
+    }
+
+    /// The composer sends what it picked with the thread it creates, and the
+    /// thread records it before the first turn dispatches — the dispatch reads
+    /// the thread's record, not the request.
+    #[tokio::test]
+    async fn creating_a_thread_records_the_composers_execution_options() {
+        let state = test_state();
+        let app = router(state.clone());
+        let project_id = state.registry.personal_project_id().to_string();
+
+        let created = body_json(
+            post(
+                &app,
+                "/api/v1/threads",
+                serde_json::json!({
+                    "projectId": project_id,
+                    "origin": "app",
+                    "input": [],
+                    "environment": { "type": "project-default" },
+                    "providerId": "pi",
+                    "model": "mock/deep",
+                    "reasoningLevel": "high",
+                }),
+            )
+            .await,
+        )
+        .await;
+
+        let thread_id = created["id"].as_str().unwrap().parse::<ThreadId>().unwrap();
+        let thread = state
+            .registry
+            .thread(&thread_id)
+            .expect("the thread exists");
+        assert_eq!(thread.provider_id.as_deref(), Some("pi"));
+        assert_eq!(thread.model.as_deref(), Some("mock/deep"));
+        assert_eq!(
+            thread
+                .reasoning_level
+                .as_ref()
+                .map(ToString::to_string)
+                .as_deref(),
+            Some("high")
+        );
+        assert_eq!(
+            created["providerId"], "pi",
+            "the created thread's summary reports the agent it will run on"
+        );
+        state.shutdown();
+    }
+
+    /// A turn's options travel with the prompt and are recorded on the thread
+    /// before the run dispatches, for the same reason.
+    #[tokio::test]
+    async fn sending_a_message_records_its_execution_options() {
+        let state = test_state();
+        let app = router(state.clone());
+        let project_id = state.registry.personal_project_id().to_string();
+        let created = body_json(
+            post(
+                &app,
+                "/api/v1/threads",
+                serde_json::json!({
+                    "projectId": project_id,
+                    "origin": "app",
+                    "input": [],
+                    "environment": { "type": "project-default" },
+                }),
+            )
+            .await,
+        )
+        .await;
+        let thread_id = created["id"].as_str().unwrap().parse::<ThreadId>().unwrap();
+
+        let response = post(
+            &app,
+            &format!("/api/v1/threads/{thread_id}/send"),
+            serde_json::json!({
+                "input": [{ "type": "text", "text": "hi" }],
+                "mode": "auto",
+                "model": "mock/two",
+                "reasoningLevel": "minimal",
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK, "the send is accepted");
+
+        let thread = state
+            .registry
+            .thread(&thread_id)
+            .expect("the thread exists");
+        assert_eq!(thread.model.as_deref(), Some("mock/two"));
+        assert_eq!(
+            thread
+                .reasoning_level
+                .as_ref()
+                .map(ToString::to_string)
+                .as_deref(),
+            Some("minimal")
         );
         state.shutdown();
     }
