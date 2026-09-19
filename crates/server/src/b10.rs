@@ -6,6 +6,7 @@
 
 #![allow(clippy::result_large_err)]
 
+use axum::body::Body;
 use axum::extract::{Multipart, Path as AxumPath, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
@@ -178,6 +179,15 @@ pub async fn update_keyboard(
     Json(Value::Array(keyboard)).into_response()
 }
 
+/// The pi mark, copied byte for byte from the vendor's own
+/// `https://pi.dev/logo-auto.svg`.
+///
+/// Serving an invented image would misrepresent the provider, so the asset is
+/// the vendor's file rather than a hand-drawn stand-in. The client masks
+/// `logoUrl` and fills it with the current text colour, so the three brand
+/// fills collapse to a silhouette at render time.
+const PI_LOGO_SVG: &[u8] = include_bytes!("../assets/pi.svg");
+
 /// `system.providerLogo`.
 pub async fn provider_logo(
     State(state): State<AppState>,
@@ -190,13 +200,12 @@ pub async fn provider_logo(
             format!("provider {provider_id:?} is not configured"),
         );
     }
-    // Provider logos are optional binary assets. loom has no configured asset
-    // store yet, so returning a fake image would misrepresent provider state.
-    api_error(
-        StatusCode::NOT_IMPLEMENTED,
-        "not_configured",
-        "provider logos are not configured on this server",
-    )
+    let mut response = Response::new(Body::from(PI_LOGO_SVG));
+    response.headers_mut().insert(
+        axum::http::header::CONTENT_TYPE,
+        axum::http::HeaderValue::from_static("image/svg+xml"),
+    );
+    response
 }
 
 /// `system.reloadConfig`.

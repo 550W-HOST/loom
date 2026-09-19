@@ -22,6 +22,16 @@ async fn body_json(response: axum::response::Response) -> Value {
         .unwrap_or_else(|error| panic!("response was not JSON: {error}; body={:?}", bytes))
 }
 
+async fn body_bytes(response: axum::response::Response) -> Vec<u8> {
+    response
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes()
+        .to_vec()
+}
+
 async fn get(app: &Router, path: &str) -> axum::response::Response {
     app.clone()
         .oneshot(Request::get(path).body(Body::empty()).unwrap())
@@ -190,9 +200,21 @@ async fn b10_routes_validate_requests_and_responses() {
     assert_response("system.usageLimits", 200, &limits);
     assert_eq!(limits["pi"]["status"], "error");
 
+    // The provider mark is a real asset, not a fabricated image: the route
+    // serves the vendor's SVG so the client can mask it.
     let logo = get(&app, "/api/v1/system/providers/pi/logo").await;
-    assert_eq!(logo.status(), StatusCode::NOT_IMPLEMENTED);
-    assert_error(StatusCode::NOT_IMPLEMENTED, &body_json(logo).await);
+    assert_eq!(logo.status(), StatusCode::OK);
+    assert_eq!(logo.headers()["content-type"], "image/svg+xml");
+    let logo_body = body_bytes(logo).await;
+    assert!(
+        logo_body.starts_with(b"<?xml") && logo_body.ends_with(b"</svg>\n"),
+        "the provider logo is the vendor's SVG asset: {:?}",
+        String::from_utf8_lossy(&logo_body)
+    );
+
+    let unknown_logo = get(&app, "/api/v1/system/providers/nope/logo").await;
+    assert_eq!(unknown_logo.status(), StatusCode::NOT_FOUND);
+    assert_error(StatusCode::NOT_FOUND, &body_json(unknown_logo).await);
 
     let unknown_theme = get(&app, "/api/v1/settings/themes/no-such-theme").await;
     assert_eq!(unknown_theme.status(), StatusCode::NOT_FOUND);

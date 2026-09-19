@@ -778,13 +778,17 @@ fn configured_provider_id(state: &AppState) -> String {
 
 fn configured_provider_info(state: &AppState) -> Value {
     let provider_id = configured_provider_id(state);
+    let logo_url = format!("/api/v1/system/providers/{provider_id}/logo");
     json!({
         "id": provider_id,
         // `pluginId` remains a required bb field even though loom providers
         // are first-class and do not use a plugin lifecycle.
         "pluginId": "loom",
         "displayName": "Pi",
-        "logoUrl": null,
+        // The client draws the provider mark from `logoUrl`, and keeps
+        // `family` as the fallback it uses when no logo can be loaded.
+        "logoUrl": logo_url,
+        "family": "acp",
         "maintenance": {
             "health": true,
             "usage": true,
