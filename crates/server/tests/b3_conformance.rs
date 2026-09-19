@@ -1634,6 +1634,41 @@ fn publish_agent_message_completed(fixture: &Fixture, run_id: &loom_domain::RunI
         .unwrap();
 }
 
+/// Publishes one `item/reasoning/textDelta` the way a worker report would.
+///
+/// The payload is the real one: the ACP translator ids a thinking item
+/// `reasoning-v2-<message>` inside its run, and every chunk of that thinking
+/// shares the id.
+fn publish_reasoning_delta(
+    fixture: &Fixture,
+    run_id: &loom_domain::RunId,
+    item_id: &str,
+    delta: &str,
+) {
+    fixture
+        .state
+        .publish_domain_event(&loom_domain::DomainEvent::ThreadRunEvent {
+            run: Box::new(loom_domain::RunEvent::new(
+                fixture.thread_id(),
+                fixture
+                    .state
+                    .registry
+                    .thread(&fixture.thread_id())
+                    .unwrap()
+                    .project_id,
+                run_id.clone(),
+                loom_relay::now_ms(),
+                loom_domain::ProviderEvent::ItemReasoningTextDelta {
+                    item_id: item_id.to_owned(),
+                    delta: delta.to_owned(),
+                    provider_thread_id: fixture.thread_id.clone(),
+                    parent_tool_call_id: None,
+                },
+            )),
+        })
+        .unwrap();
+}
+
 async fn timeline_rows(fixture: &Fixture) -> Vec<Value> {
     fixture
         .get(&format!("/api/v1/threads/{}/timeline", fixture.thread_id))
@@ -1876,5 +1911,70 @@ async fn a_status_change_adds_no_timeline_row() {
         before,
         "a lifecycle transition is not content: {after:#?}"
     );
+    fixture.state.shutdown();
+}
+
+/// Thinking that streamed into the log becomes a row the client can show.
+///
+/// The rows are built *on the server*, so a missing fold here means the client
+/// never receives thinking at all, no matter how faithfully the worker
+/// translated it — which is exactly how a real turn came to show none: 27
+/// `item/reasoning/textDelta` frames in the log and three rows in the timeline.
+#[tokio::test]
+async fn thinking_streams_into_one_row_the_client_can_expand() {
+    let fixture = fixture().await;
+    let run_id = loom_domain::RunId::mint();
+
+    // A model that thinks before answering: several chunks, one item.
+    for delta in ["The user", " asked for", " a count."] {
+        publish_reasoning_delta(&fixture, &run_id, "reasoning-v2-pi-msg-2", delta);
+    }
+    publish_delta(&fixture, &run_id, "assistant-v2-pi-msg-2", "Sixty.");
+    publish_agent_message_completed(&fixture, &run_id, "assistant-v2-pi-msg-2");
+
+    // The contract is what the client parses, so the row this fix adds must
+    // validate against it — not merely look right in JSON.
+    let response = fixture
+        .get(&format!("/api/v1/threads/{}/timeline", fixture.thread_id))
+        .await;
+    assert_response("threads.timeline", 200, &response.body);
+    let rows = response.body["rows"].as_array().unwrap().clone();
+    let thinking: Vec<&Value> = rows
+        .iter()
+        .filter(|row| row["operationKind"] == "reasoning")
+        .collect();
+    assert_eq!(
+        thinking.len(),
+        1,
+        "one thinking item is one row: {}",
+        serde_json::to_string_pretty(&rows).unwrap()
+    );
+    let row = thinking[0];
+    assert_eq!(row["kind"], "system");
+    assert_eq!(row["systemKind"], "operation");
+    assert_eq!(row["reasoningId"], "reasoning-v2-pi-msg-2");
+    assert_eq!(row["detail"], "The user asked for a count.");
+    assert!(
+        row["title"]
+            .as_str()
+            .is_some_and(|title| title.starts_with("Thought for ")),
+        "a thinking row is labelled with how long it took: {}",
+        row["title"]
+    );
+    // The thinking sorts where it streamed, ahead of the answer it produced.
+    let thinking_at = rows
+        .iter()
+        .position(|candidate| candidate["operationKind"] == "reasoning")
+        .unwrap();
+    let answer_at = rows
+        .iter()
+        .position(|candidate| candidate["kind"] == "conversation")
+        .unwrap();
+    assert!(
+        thinking_at < answer_at,
+        "{}",
+        serde_json::to_string_pretty(&rows).unwrap()
+    );
+
     fixture.state.shutdown();
 }

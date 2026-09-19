@@ -3624,6 +3624,50 @@ fn assistant_message_timeline(
     timeline
 }
 
+/// The thinking of a thread, folded from the deltas that streamed it.
+fn reasoning_timeline(
+    entries: &[(String, u64, u64, DomainEvent)],
+) -> crate::reasoning_timeline::ReasoningTimeline {
+    let mut timeline = crate::reasoning_timeline::ReasoningTimeline::new();
+    for (_event_id, sequence, created_at_ms, event) in entries {
+        if let DomainEvent::ThreadRunEvent { run } = event {
+            timeline.absorb(
+                &run.run_id.to_string(),
+                &run.event.body,
+                *sequence,
+                *created_at_ms,
+            );
+        }
+    }
+    timeline
+}
+
+/// One timeline row for a folded thinking item.
+fn reasoning_row(
+    thread_id: &ThreadId,
+    run_id: &str,
+    item: &crate::reasoning_timeline::ReasoningItem,
+) -> Value {
+    json!({
+        "id": format!("{run_id}-reasoning-{}", item.id.item_id),
+        "threadId": thread_id.to_string(),
+        "turnId": run_id,
+        "sourceSeqStart": item.start_sequence,
+        "sourceSeqEnd": item.end_sequence,
+        "startedAt": item.started_at_ms,
+        "createdAt": item.ended_at_ms,
+        "completedAt": item.ended_at_ms,
+        "kind": "system",
+        "systemKind": "operation",
+        "operationKind": "reasoning",
+        // The client keys a thinking row's expanded state on this.
+        "reasoningId": item.id.item_id,
+        "title": format!("Thought for {}", item.duration_label()),
+        "detail": item.text,
+        "status": "completed",
+    })
+}
+
 /// One timeline row for a folded assistant message.
 ///
 /// The row id is the provider's item id prefixed with the thread, matching the
@@ -3821,13 +3865,47 @@ async fn thread_timeline(
     // which is the frame carrying its first text, not an earlier empty delta,
     // and which is exactly the set of messages the fold holds.
     let assistant_messages = assistant_message_timeline(&entries);
+    // Thinking folds the same way and for the same reason: the contract carries
+    // it as deltas that share an item, while a row is one "Thought for 1.2s"
+    // line. Without this fold the reasoning never reaches a client at all — the
+    // rows are built here, not in the browser.
+    let reasoning_items = reasoning_timeline(&entries);
     let mut emitted: HashSet<(String, String)> = HashSet::new();
+    let mut emitted_reasoning: HashSet<(String, String)> = HashSet::new();
     let mut assistant_rows: Vec<Value> = Vec::new();
+    let mut reasoning_rows: Vec<Value> = Vec::new();
+    let mut model_fallback: Option<Value> = None;
     let mut all_rows = entries
         .iter()
         .filter_map(|(_event_id, sequence, created_at_ms, event)| {
             if let DomainEvent::ThreadRunEvent { run } = event {
                 let run_id = run.run_id.to_string();
+                if let loom_domain::ProviderEvent::ItemReasoningTextDelta { item_id, .. } =
+                    &run.event.body
+                {
+                    // The frame belongs to the reasoning projection either way,
+                    // so it never falls through to a generic row; it only
+                    // contributes one when it is the first frame of an item the
+                    // fold found something to say about.
+                    if emitted_reasoning.insert((run_id.clone(), item_id.clone())) {
+                        if let Some(item) = reasoning_items.get(&run_id, item_id) {
+                            reasoning_rows.push(reasoning_row(&thread_id, &run_id, item));
+                        }
+                    }
+                    return None;
+                }
+                if let loom_domain::ProviderEvent::ProviderModelFallback {
+                    original_model,
+                    fallback_model: replaced_by,
+                    ..
+                } = &run.event.body
+                {
+                    model_fallback = Some(json!({
+                        "originalModel": original_model,
+                        "fallbackModel": replaced_by,
+                        "detectedAt": created_at_ms,
+                    }));
+                }
                 let item_id = match &run.event.body {
                     loom_domain::ProviderEvent::ItemAgentMessageDelta { item_id, .. } => {
                         Some(item_id.as_str())
@@ -3860,6 +3938,7 @@ async fn thread_timeline(
         })
         .collect::<Vec<_>>();
     all_rows.extend(assistant_rows);
+    all_rows.extend(reasoning_rows);
     all_rows.sort_by_key(|row| {
         row.get("sourceSeqStart")
             .and_then(Value::as_u64)
@@ -3911,7 +3990,7 @@ async fn thread_timeline(
         "activeBackgroundCommands": [],
         "pendingTodos": null,
         "goal": goal_value(&state, &thread_id, &entries),
-        "modelFallback": null,
+        "modelFallback": model_fallback,
         "timelinePage": {
             "kind": if before.is_some() { "older" } else { "latest" },
             "segmentLimit": segment_limit,

@@ -47,6 +47,7 @@ pub mod persistence;
 pub mod protocol;
 pub mod pump;
 pub mod queue;
+pub mod reasoning_timeline;
 pub mod run;
 pub mod runs;
 pub mod settings;
