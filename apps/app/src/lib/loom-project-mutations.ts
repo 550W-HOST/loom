@@ -1,18 +1,40 @@
+import type { CreateProjectRequest, ProjectResponse } from "@bb/server-contract";
 import { loomApiJson } from "@/lib/loom-http";
 
 /**
  * The project mutations the product app issues over loom.
  *
- * `projects.delete` was still the fail-closed browser SDK stub, so removing a
- * project — from Settings or from a project row's actions — threw
+ * `projects.create` and `projects.delete` were still the fail-closed browser
+ * SDK stubs, so creating a project from the New Project dialog and removing one
+ * — from Settings or from a project row's actions — threw
  * `BrowserSdkUnavailableError` instead of reaching the server. The contract
- * route (`projects.delete`, a bodyless `DELETE` to `/projects/:id`) and its
- * server handler already exist, so this is the app half only.
+ * routes (`projects.create`, a JSON `POST` to `/projects`, and `projects.delete`,
+ * a bodyless `DELETE` to `/projects/:id`) and their server handlers already
+ * exist, so this is the app half only.
  *
- * It follows the loom-native writer pattern (`loom-host-mutations.ts`,
- * `loom-ui-preferences.ts`): a contract DELETE with no body, wired into
- * `src/lib/sdk.ts`.
+ * They follow the loom-native writer pattern (`loom-host-mutations.ts`,
+ * `loom-ui-preferences.ts`): the route table decides the verb and the body, and
+ * both are wired into `src/lib/sdk.ts`.
  */
+
+export interface LoomCreateProjectArgs extends CreateProjectRequest {
+  signal?: AbortSignal;
+}
+
+/**
+ * Create a project through the contract route.
+ *
+ * The contract declares a JSON body whose `source` names the machine the code
+ * lives on and the local path, and answers `201` with the created project.
+ * Returning that body keeps the SDK's `ProjectResponse` result honest rather
+ * than inventing one; the caller reads its `id` to select the new project.
+ */
+export function loomCreateProject(
+  args: LoomCreateProjectArgs,
+): Promise<ProjectResponse> {
+  const { signal, ...json } = args;
+  return loomApiJson("projects.create", { json, signal });
+}
 
 export interface LoomDeleteProjectArgs {
   projectId: string;

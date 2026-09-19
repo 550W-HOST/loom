@@ -1,6 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { sdk } from "@/lib/sdk";
-import { loomDeleteProject } from "@/lib/loom-project-mutations";
+import {
+  loomCreateProject,
+  loomDeleteProject,
+} from "@/lib/loom-project-mutations";
 import {
   LoomApiPathParamError,
   LoomHttpError,
@@ -14,9 +17,89 @@ function jsonResponse(body: unknown, status = 200): Response {
   });
 }
 
+const NEW_PROJECT = {
+  id: "proj_new",
+  kind: "standard",
+  name: "bb",
+  gitRemoteUrl: null,
+  createdAt: 1,
+  updatedAt: 2,
+  sources: [],
+};
+
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
+});
+
+describe("loom project creation", () => {
+  it("issues POST against the contract path with the JSON body", async () => {
+    const fetchMock = vi.fn(async () => jsonResponse(NEW_PROJECT, 201));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const request = {
+      name: "bb",
+      source: { type: "local_path", hostId: "host_1", path: "/home/me/bb" },
+    } as const;
+
+    await expect(loomCreateProject(request)).resolves.toEqual(NEW_PROJECT);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [URL, RequestInit];
+    expect(resolveLoomApiMethod("projects.create")).toBe("POST");
+    expect(init.method).toBe("POST");
+    expect(url.pathname).toBe("/api/v1/projects");
+    expect(url.search).toBe("");
+    expect(JSON.parse(String(init.body))).toEqual(request);
+  });
+
+  it("puts no signal into the request body", async () => {
+    const fetchMock = vi.fn(async () => jsonResponse(NEW_PROJECT, 201));
+    vi.stubGlobal("fetch", fetchMock);
+    const controller = new AbortController();
+
+    await loomCreateProject({
+      name: "bb",
+      source: { type: "local_path", hostId: "host_1", path: "/home/me/bb" },
+      signal: controller.signal,
+    });
+
+    const [, init] = fetchMock.mock.calls[0] as unknown as [URL, RequestInit];
+    expect(init.signal).toBe(controller.signal);
+    expect(Object.keys(JSON.parse(String(init.body))).sort()).toEqual([
+      "name",
+      "source",
+    ]);
+  });
+
+  it("surfaces the server's refusal instead of a fake project", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        jsonResponse(
+          { code: "not_found", message: "host host_1 is not enrolled" },
+          404,
+        ),
+      ),
+    );
+
+    await expect(
+      loomCreateProject({
+        name: "bb",
+        source: { type: "local_path", hostId: "host_1", path: "/home/me/bb" },
+      }),
+    ).rejects.toMatchObject({ status: 404, code: "not_found" });
+    await expect(
+      loomCreateProject({
+        name: "bb",
+        source: { type: "local_path", hostId: "host_1", path: "/home/me/bb" },
+      }),
+    ).rejects.toBeInstanceOf(LoomHttpError);
+  });
+
+  it("wires the create into the browser SDK surface", () => {
+    expect(sdk.projects.create).toBe(loomCreateProject);
+  });
 });
 
 describe("loom project deletion", () => {

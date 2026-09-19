@@ -32,7 +32,7 @@ import {
 } from "./loom-thread-storage";
 import { loomDeleteHost } from "./loom-host-mutations";
 import { loomHostDirectory } from "./loom-host-readers";
-import { loomDeleteProject } from "./loom-project-mutations";
+import { loomCreateProject, loomDeleteProject } from "./loom-project-mutations";
 import { loomUpdateGeneralSettings } from "./loom-settings-mutations";
 
 import {
@@ -69,6 +69,7 @@ export const sdk = {
   },
   projects: {
     ...compileOnlySdk.projects,
+    create: loomCreateProject,
     defaultExecutionOptions: loomProjectDefaultExecutionOptions,
     delete: loomDeleteProject,
   },

@@ -1,5 +1,6 @@
 import type {
   CreateHostJoinCodeResponse,
+  CreateProjectRequest,
   CreateThreadRequest,
   DeleteThreadRequest,
   EnvironmentDiffFileQuery,
@@ -9,6 +10,7 @@ import type {
   ProjectBranchesQuery,
   ProjectDefaultExecutionOptionsQuery,
   ProjectFileContentQuery,
+  ProjectResponse,
   SendMessageRequest,
   SendMessageResponse,
   SidebarBootstrapResponse,
@@ -119,6 +121,7 @@ export const LOOM_API_REQUEST_SPECS = {
     source: "query",
     query: {} as ProjectBranchesQuery,
   },
+  "projects.create": { source: "json", json: {} as CreateProjectRequest },
   "projects.defaultExecutionOptions": {
     source: "query",
     query: {} as ProjectDefaultExecutionOptionsQuery,
@@ -231,6 +234,7 @@ export interface LoomApiResponseSpecs {
   "hosts.updatePermissionCeiling": unknown;
   "projects.attachmentContent": unknown;
   "projects.branchOptions": unknown;
+  "projects.create": ProjectResponse;
   "projects.defaultExecutionOptions": ProjectExecutionDefaults | null;
   "projects.delete": { ok: true };
   "projects.fileContent": unknown;
