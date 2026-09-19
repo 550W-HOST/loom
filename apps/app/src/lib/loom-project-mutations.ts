@@ -1,4 +1,12 @@
-import type { CreateProjectRequest, ProjectResponse } from "@bb/server-contract";
+import type {
+  CreateProjectRequest,
+  CreateProjectSourceRequest,
+  ProjectResponse,
+  ReorderProjectRequest,
+  UpdateProjectRequest,
+  UpdateProjectSourceRequest,
+} from "@bb/server-contract";
+import type { ProjectSource } from "@bb/domain";
 import { loomApiJson } from "@/lib/loom-http";
 
 /**
@@ -7,14 +15,14 @@ import { loomApiJson } from "@/lib/loom-http";
  * `projects.create` and `projects.delete` were still the fail-closed browser
  * SDK stubs, so creating a project from the New Project dialog and removing one
  * — from Settings or from a project row's actions — threw
- * `BrowserSdkUnavailableError` instead of reaching the server. The contract
- * routes (`projects.create`, a JSON `POST` to `/projects`, and `projects.delete`,
- * a bodyless `DELETE` to `/projects/:id`) and their server handlers already
- * exist, so this is the app half only.
+ * `BrowserSdkUnavailableError` instead of reaching the server. The rest of the
+ * project write surface was stubbed the same way: rename, the sidebar drag
+ * reorder and the add/update/remove of a project's sources. The contract routes
+ * and their server handlers already exist, so this is the app half only.
  *
  * They follow the loom-native writer pattern (`loom-host-mutations.ts`,
  * `loom-ui-preferences.ts`): the route table decides the verb and the body, and
- * both are wired into `src/lib/sdk.ts`.
+ * each is wired into `src/lib/sdk.ts`.
  */
 
 export interface LoomCreateProjectArgs extends CreateProjectRequest {
@@ -34,6 +42,116 @@ export function loomCreateProject(
 ): Promise<ProjectResponse> {
   const { signal, ...json } = args;
   return loomApiJson("projects.create", { json, signal });
+}
+
+export interface LoomUpdateProjectArgs extends UpdateProjectRequest {
+  projectId: string;
+  signal?: AbortSignal;
+}
+
+/** Rename a project; the contract body is the `name` field alone. */
+export function loomUpdateProject(
+  args: LoomUpdateProjectArgs,
+): Promise<ProjectResponse> {
+  const { projectId, signal, ...json } = args;
+  return loomApiJson("projects.update", {
+    param: { id: projectId },
+    json,
+    signal,
+  });
+}
+
+export interface LoomReorderProjectArgs extends ReorderProjectRequest {
+  projectId: string;
+  signal?: AbortSignal;
+}
+
+/**
+ * Place a project between two neighbours through the contract route.
+ *
+ * The server answers with the reordered list, so the result is the server's
+ * ordering rather than the caller re-deriving it.
+ */
+export function loomReorderProject(
+  args: LoomReorderProjectArgs,
+): Promise<ProjectResponse[]> {
+  const { projectId, signal, ...json } = args;
+  return loomApiJson("projects.reorder", {
+    param: { id: projectId },
+    json,
+    signal,
+  });
+}
+
+export type LoomAddProjectSourceArgs = CreateProjectSourceRequest & {
+  projectId: string;
+  signal?: AbortSignal;
+};
+
+/**
+ * Build the body for the source union from the chosen branch.
+ *
+ * Spreading the request would keep `remoteUrl` on a `local_path` source, and
+ * the contract validates both branches strictly, so the body is rebuilt instead.
+ */
+function projectSourceAddJson(
+  request: CreateProjectSourceRequest,
+): CreateProjectSourceRequest {
+  if (request.type === "local_path") {
+    return { hostId: request.hostId, path: request.path, type: request.type };
+  }
+  return {
+    hostId: request.hostId,
+    type: request.type,
+    ...(request.remoteUrl === undefined ? {} : { remoteUrl: request.remoteUrl }),
+    ...(request.targetPath === undefined
+      ? {}
+      : { targetPath: request.targetPath }),
+  };
+}
+
+export function loomAddProjectSource(
+  args: LoomAddProjectSourceArgs,
+): Promise<ProjectSource> {
+  const { projectId, signal, ...request } = args;
+  return loomApiJson("projects.createSource", {
+    param: { id: projectId },
+    json: projectSourceAddJson(request),
+    signal,
+  });
+}
+
+export interface LoomUpdateProjectSourceArgs
+  extends UpdateProjectSourceRequest {
+  projectId: string;
+  sourceId: string;
+  signal?: AbortSignal;
+}
+
+export function loomUpdateProjectSource(
+  args: LoomUpdateProjectSourceArgs,
+): Promise<ProjectSource> {
+  const { projectId, sourceId, signal, ...json } = args;
+  return loomApiJson("projects.updateSource", {
+    param: { id: projectId, sourceId },
+    json,
+    signal,
+  });
+}
+
+export interface LoomDeleteProjectSourceArgs {
+  projectId: string;
+  sourceId: string;
+  signal?: AbortSignal;
+}
+
+export function loomDeleteProjectSource(
+  args: LoomDeleteProjectSourceArgs,
+): Promise<{ ok: true }> {
+  return loomApiJson("projects.deleteSource", {
+    param: { id: args.projectId, sourceId: args.sourceId },
+    signal: args.signal,
+  });
 }
 
 export interface LoomDeleteProjectArgs {

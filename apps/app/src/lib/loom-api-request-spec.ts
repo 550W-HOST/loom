@@ -1,8 +1,14 @@
 import type {
+  CloseTerminalRequest,
   CreateHostJoinCodeResponse,
   CreateProjectRequest,
+  CreateProjectSourceRequest,
+  CreateQueuedMessageRequest,
+  CreateTerminalRequest,
   CreateThreadRequest,
+  CreateThreadSectionRequest,
   DeleteThreadRequest,
+  DeleteThreadSectionRequest,
   EnvironmentDiffFileQuery,
   HostDirectoryListing,
   HostDirectoryQuery,
@@ -11,8 +17,13 @@ import type {
   ProjectDefaultExecutionOptionsQuery,
   ProjectFileContentQuery,
   ProjectResponse,
+  ReorderProjectRequest,
+  ReorderQueuedMessageRequest,
   SendMessageRequest,
   SendMessageResponse,
+  SendQueuedMessageRequest,
+  SendQueuedMessageResponse,
+  SetQueuedMessageGroupBoundaryRequest,
   SidebarBootstrapResponse,
   SystemConfigResponse,
   SystemEnvironmentProvidersQuery,
@@ -24,6 +35,9 @@ import type {
   SystemProviderInfo,
   SystemVersionQuery,
   SystemVersionResponse,
+  TerminalListQuery,
+  TerminalListResponse,
+  TerminalSession,
   ThreadChildSummaryResponse,
   ThreadFilesRawQuery,
   ThreadGetQuery,
@@ -32,6 +46,9 @@ import type {
   ResolvePendingInteractionRequest,
   ThreadResponse,
   ThreadPendingInteractionsResponse,
+  ThreadQueuedMessageListResponse,
+  ThreadSectionMutationResponse,
+  ThreadSectionResponse,
   ThreadStorageContentQuery,
   ThreadStorageFileListResponse,
   ThreadStorageFilesQuery,
@@ -43,6 +60,11 @@ import type {
   ThreadTimelineResponse,
   UiPreferenceResponse,
   UiPreferencesResponse,
+  UpdateProjectRequest,
+  UpdateProjectSourceRequest,
+  UpdateQueuedMessageRequest,
+  UpdateTerminalRequest,
+  UpdateThreadSectionRequest,
   UpdateThreadTabsRequest,
   UpdateUiPreferenceRequest,
 } from "@bb/server-contract";
@@ -53,8 +75,10 @@ import type {
   Host,
   PendingInteraction,
   ProjectExecutionDefaults,
+  ProjectSource,
   ResolvedThreadExecutionOptions,
   ThreadListEntry,
+  ThreadQueuedMessage,
 } from "@bb/domain";
 
 /**
@@ -122,16 +146,30 @@ export const LOOM_API_REQUEST_SPECS = {
     query: {} as ProjectBranchesQuery,
   },
   "projects.create": { source: "json", json: {} as CreateProjectRequest },
+  "projects.createSource": {
+    source: "json",
+    json: {} as CreateProjectSourceRequest,
+  },
   "projects.defaultExecutionOptions": {
     source: "query",
     query: {} as ProjectDefaultExecutionOptionsQuery,
   },
   "projects.delete": { source: "none" },
+  "projects.deleteSource": { source: "none" },
   "projects.fileContent": {
     source: "query",
     query: {} as ProjectFileContentQuery,
   },
+  "projects.reorder": {
+    source: "json",
+    json: {} as ReorderProjectRequest,
+  },
   "projects.sidebarBootstrap": { source: "none" },
+  "projects.update": { source: "json", json: {} as UpdateProjectRequest },
+  "projects.updateSource": {
+    source: "json",
+    json: {} as UpdateProjectSourceRequest,
+  },
   "system.environmentProviders": {
     source: "query",
     query: {} as SystemEnvironmentProvidersQuery,
@@ -166,8 +204,13 @@ export const LOOM_API_REQUEST_SPECS = {
   },
   "threads.childSummary": { source: "none" },
   "threads.create": { source: "json", json: {} as CreateThreadRequest },
+  "threads.createQueuedMessage": {
+    source: "json",
+    json: {} as CreateQueuedMessageRequest,
+  },
   "threads.defaultExecutionOptions": { source: "none" },
   "threads.delete": { source: "json", json: {} as DeleteThreadRequest },
+  "threads.deleteQueuedMessage": { source: "none" },
   "threads.get": { source: "query", query: {} as ThreadGetQuery },
   "threads.hostFileContent": {
     source: "query",
@@ -180,14 +223,27 @@ export const LOOM_API_REQUEST_SPECS = {
     source: "json",
     json: {} as ReorderPinnedThreadRequest,
   },
+  "threads.queuedMessages": { source: "none" },
   "threads.rawFile": { source: "query", query: {} as ThreadFilesRawQuery },
   "threads.read": { source: "none" },
+  "threads.reorderQueuedMessage": {
+    source: "json",
+    json: {} as ReorderQueuedMessageRequest,
+  },
   "threads.resolveInteraction": {
     source: "json",
     json: {} as ResolvePendingInteractionRequest,
   },
   "threads.cancelInteraction": { source: "none" },
   "threads.send": { source: "json", json: {} as SendMessageRequest },
+  "threads.sendQueuedMessage": {
+    source: "json",
+    json: {} as SendQueuedMessageRequest,
+  },
+  "threads.setQueuedMessageGroupBoundary": {
+    source: "json",
+    json: {} as SetQueuedMessageGroupBoundaryRequest,
+  },
   "threads.storageContent": {
     source: "query",
     query: {} as ThreadStorageContentQuery,
@@ -206,11 +262,31 @@ export const LOOM_API_REQUEST_SPECS = {
   "threads.timeline": { source: "query", query: {} as ThreadTimelineQuery },
   "threads.unpin": { source: "none" },
   "threads.unread": { source: "none" },
+  "threads.updateQueuedMessage": {
+    source: "json",
+    json: {} as UpdateQueuedMessageRequest,
+  },
   "threads.updateTabs": {
     source: "json",
     json: {} as UpdateThreadTabsRequest,
   },
   "threads.worktreeFile": { source: "none" },
+  "terminals.close": { source: "json", json: {} as CloseTerminalRequest },
+  "terminals.create": { source: "json", json: {} as CreateTerminalRequest },
+  "terminals.list": { source: "query", query: {} as TerminalListQuery },
+  "terminals.update": { source: "json", json: {} as UpdateTerminalRequest },
+  "threadSections.create": {
+    source: "json",
+    json: {} as CreateThreadSectionRequest,
+  },
+  "threadSections.delete": {
+    source: "json",
+    json: {} as DeleteThreadSectionRequest,
+  },
+  "threadSections.update": {
+    source: "json",
+    json: {} as UpdateThreadSectionRequest,
+  },
 } as const satisfies Record<string, LoomApiRequestSpec>;
 
 export type SystemProviderStatesQueryShape = SystemProvidersQuery;
@@ -235,10 +311,15 @@ export interface LoomApiResponseSpecs {
   "projects.attachmentContent": unknown;
   "projects.branchOptions": unknown;
   "projects.create": ProjectResponse;
+  "projects.createSource": ProjectSource;
   "projects.defaultExecutionOptions": ProjectExecutionDefaults | null;
   "projects.delete": { ok: true };
+  "projects.deleteSource": { ok: true };
   "projects.fileContent": unknown;
+  "projects.reorder": ProjectResponse[];
   "projects.sidebarBootstrap": SidebarBootstrapResponse;
+  "projects.update": ProjectResponse;
+  "projects.updateSource": ProjectSource;
   "system.environmentProviders": SystemEnvironmentProvidersResponse;
   "system.executionOptions": SystemExecutionOptionsResponse;
   "system.generalSettings": AppSettings & {
@@ -254,19 +335,25 @@ export interface LoomApiResponseSpecs {
   "system.voiceTranscription": { text: string };
   "threads.childSummary": ThreadChildSummaryResponse;
   "threads.create": ThreadResponse;
+  "threads.createQueuedMessage": ThreadQueuedMessage;
   "threads.defaultExecutionOptions": ResolvedThreadExecutionOptions | null;
   "threads.delete": { ok: true };
+  "threads.deleteQueuedMessage": { ok: true };
   "threads.get": ThreadResponse;
   "threads.hostFileContent": unknown;
   "threads.interaction": PendingInteraction;
   "threads.interactions": ThreadPendingInteractionsResponse;
   "threads.pin": ThreadResponse;
   "threads.pinOrder": ThreadListEntry[];
+  "threads.queuedMessages": ThreadQueuedMessageListResponse;
   "threads.rawFile": unknown;
   "threads.read": ThreadResponse;
+  "threads.reorderQueuedMessage": ThreadQueuedMessageListResponse;
   "threads.resolveInteraction": PendingInteraction;
   "threads.cancelInteraction": PendingInteraction;
   "threads.send": SendMessageResponse;
+  "threads.sendQueuedMessage": SendQueuedMessageResponse;
+  "threads.setQueuedMessageGroupBoundary": ThreadQueuedMessageListResponse;
   "threads.storageContent": unknown;
   "threads.storageFile": unknown;
   "threads.storageFiles": ThreadStorageFileListResponse;
@@ -276,6 +363,14 @@ export interface LoomApiResponseSpecs {
   "threads.timeline": ThreadTimelineResponse;
   "threads.unpin": ThreadResponse;
   "threads.unread": ThreadResponse;
+  "threads.updateQueuedMessage": ThreadQueuedMessage;
   "threads.updateTabs": ThreadTabsResponse;
   "threads.worktreeFile": unknown;
+  "terminals.close": TerminalSession;
+  "terminals.create": TerminalSession;
+  "terminals.list": TerminalListResponse;
+  "terminals.update": TerminalSession;
+  "threadSections.create": ThreadSectionResponse;
+  "threadSections.delete": ThreadSectionMutationResponse;
+  "threadSections.update": ThreadSectionMutationResponse;
 }

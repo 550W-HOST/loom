@@ -30,10 +30,38 @@ import {
   loomThreadStorageLocation,
   loomThreadStoragePaths,
 } from "./loom-thread-storage";
+import {
+  loomCreateQueuedMessage,
+  loomDeleteQueuedMessage,
+  loomListQueuedMessages,
+  loomReorderQueuedMessage,
+  loomSendQueuedMessage,
+  loomSetQueuedMessageGroupBoundary,
+  loomUpdateQueuedMessage,
+} from "./loom-thread-queue";
 import { loomDeleteHost } from "./loom-host-mutations";
 import { loomHostDirectory } from "./loom-host-readers";
-import { loomCreateProject, loomDeleteProject } from "./loom-project-mutations";
+import {
+  loomAddProjectSource,
+  loomCreateProject,
+  loomDeleteProject,
+  loomDeleteProjectSource,
+  loomReorderProject,
+  loomUpdateProject,
+  loomUpdateProjectSource,
+} from "./loom-project-mutations";
 import { loomUpdateGeneralSettings } from "./loom-settings-mutations";
+import {
+  loomCloseTerminal,
+  loomCreateTerminal,
+  loomListTerminals,
+  loomRenameTerminal,
+} from "./loom-terminals";
+import {
+  loomCreateThreadSection,
+  loomDeleteThreadSection,
+  loomUpdateThreadSection,
+} from "./loom-thread-sections";
 
 import {
   loomResetUiPreference,
@@ -50,10 +78,12 @@ const compileOnlySdk = createBrowserBbSdk({
 });
 
 /**
- * The browser SDK remains fail-closed except for the narrow loom-native
- * operations required by the New Thread success path. Object-spread keeps all
- * other methods as BrowserSdkUnavailableError while preserving the concrete
- * request/response types of these overrides at their call sites.
+ * The browser SDK remains fail-closed for the bb surfaces this fork does not
+ * implement. The operations the product app actually issues — the project,
+ * thread, section, queue and terminal writes among them — are overridden with
+ * loom-native implementations. Object-spread keeps every other method as
+ * BrowserSdkUnavailableError while preserving the concrete request/response
+ * types of these overrides at their call sites.
  */
 export const sdk = {
   ...compileOnlySdk,
@@ -72,6 +102,14 @@ export const sdk = {
     create: loomCreateProject,
     defaultExecutionOptions: loomProjectDefaultExecutionOptions,
     delete: loomDeleteProject,
+    reorder: loomReorderProject,
+    sources: {
+      ...compileOnlySdk.projects.sources,
+      add: loomAddProjectSource,
+      delete: loomDeleteProjectSource,
+      update: loomUpdateProjectSource,
+    },
+    update: loomUpdateProject,
   },
   system: {
     ...compileOnlySdk.system,
@@ -82,6 +120,13 @@ export const sdk = {
       set: loomSetUiPreference,
     },
     updateGeneralSettings: loomUpdateGeneralSettings,
+  },
+  terminals: {
+    ...compileOnlySdk.terminals,
+    close: loomCloseTerminal,
+    create: loomCreateTerminal,
+    list: loomListTerminals,
+    rename: loomRenameTerminal,
   },
   threads: {
     ...compileOnlySdk.threads,
@@ -99,6 +144,16 @@ export const sdk = {
     markRead: loomMarkThreadRead,
     markUnread: loomMarkThreadUnread,
     pin: loomPinThread,
+    queuedMessages: {
+      ...compileOnlySdk.threads.queuedMessages,
+      create: loomCreateQueuedMessage,
+      delete: loomDeleteQueuedMessage,
+      list: loomListQueuedMessages,
+      reorder: loomReorderQueuedMessage,
+      send: loomSendQueuedMessage,
+      setGroupBoundary: loomSetQueuedMessageGroupBoundary,
+      update: loomUpdateQueuedMessage,
+    },
     reorderPinned: loomReorderPinnedThread,
     send: loomSendThreadMessage,
     spawn: loomSpawnThread,
@@ -112,6 +167,12 @@ export const sdk = {
     },
     timeline: loomGetThreadTimeline,
     unpin: loomUnpinThread,
+  },
+  threadSections: {
+    ...compileOnlySdk.threadSections,
+    create: loomCreateThreadSection,
+    delete: loomDeleteThreadSection,
+    update: loomUpdateThreadSection,
   },
 };
 

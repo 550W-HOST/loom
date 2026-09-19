@@ -1,8 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { sdk } from "@/lib/sdk";
 import {
+  loomAddProjectSource,
   loomCreateProject,
   loomDeleteProject,
+  loomDeleteProjectSource,
+  loomReorderProject,
+  loomUpdateProject,
+  loomUpdateProjectSource,
 } from "@/lib/loom-project-mutations";
 import {
   LoomApiPathParamError,
@@ -175,5 +180,128 @@ describe("loom project deletion", () => {
 
   it("wires the delete into the browser SDK surface", () => {
     expect(sdk.projects.delete).toBe(loomDeleteProject);
+  });
+});
+
+describe("loom project writes", () => {
+  const project = { id: "p1", name: "bb" };
+
+  it("renames through PATCH with the name body", async () => {
+    const fetchMock = vi.fn(async () => jsonResponse(project));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      loomUpdateProject({ projectId: "p1", name: "bb" }),
+    ).resolves.toEqual(project);
+
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [URL, RequestInit];
+    expect(resolveLoomApiMethod("projects.update")).toBe("PATCH");
+    expect(init.method).toBe("PATCH");
+    expect(url.pathname).toBe("/api/v1/projects/p1");
+    expect(JSON.parse(String(init.body))).toEqual({ name: "bb" });
+  });
+
+  it("reorders through PATCH with both neighbours", async () => {
+    const fetchMock = vi.fn(async () => jsonResponse([project]));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      loomReorderProject({
+        projectId: "p1",
+        nextProjectId: "p2",
+        previousProjectId: null,
+      }),
+    ).resolves.toEqual([project]);
+
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [URL, RequestInit];
+    expect(resolveLoomApiMethod("projects.reorder")).toBe("PATCH");
+    expect(url.pathname).toBe("/api/v1/projects/p1/order");
+    expect(JSON.parse(String(init.body))).toEqual({
+      nextProjectId: "p2",
+      previousProjectId: null,
+    });
+  });
+
+  it("adds a local_path source without leaking clone fields", async () => {
+    const fetchMock = vi.fn(async () => jsonResponse({ id: "src1" }, 201));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await loomAddProjectSource({
+      hostId: "h1",
+      path: "/home/me/bb",
+      projectId: "p1",
+      type: "local_path",
+    });
+
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [URL, RequestInit];
+    expect(resolveLoomApiMethod("projects.createSource")).toBe("POST");
+    expect(url.pathname).toBe("/api/v1/projects/p1/sources");
+    expect(JSON.parse(String(init.body))).toEqual({
+      hostId: "h1",
+      path: "/home/me/bb",
+      type: "local_path",
+    });
+  });
+
+  it("adds a clone source with only the fields it declares", async () => {
+    const fetchMock = vi.fn(async () => jsonResponse({ id: "src1" }, 201));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await loomAddProjectSource({
+      hostId: "h1",
+      projectId: "p1",
+      remoteUrl: "https://example.test/bb.git",
+      type: "clone",
+    });
+
+    const [, init] = fetchMock.mock.calls[0] as unknown as [URL, RequestInit];
+    expect(JSON.parse(String(init.body))).toEqual({
+      hostId: "h1",
+      remoteUrl: "https://example.test/bb.git",
+      type: "clone",
+    });
+  });
+
+  it("updates a source through PATCH with both path params", async () => {
+    const fetchMock = vi.fn(async () => jsonResponse({ id: "src1" }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await loomUpdateProjectSource({
+      path: "/home/me/bb2",
+      projectId: "p1",
+      sourceId: "src1",
+      type: "local_path",
+    });
+
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [URL, RequestInit];
+    expect(resolveLoomApiMethod("projects.updateSource")).toBe("PATCH");
+    expect(url.pathname).toBe("/api/v1/projects/p1/sources/src1");
+    expect(JSON.parse(String(init.body))).toEqual({
+      path: "/home/me/bb2",
+      type: "local_path",
+    });
+  });
+
+  it("removes a source with a bodyless DELETE", async () => {
+    const fetchMock = vi.fn(async () => jsonResponse({ ok: true }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      loomDeleteProjectSource({ projectId: "p1", sourceId: "src1" }),
+    ).resolves.toEqual({ ok: true });
+
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [URL, RequestInit];
+    expect(resolveLoomApiMethod("projects.deleteSource")).toBe("DELETE");
+    expect(init.method).toBe("DELETE");
+    expect(init.body).toBeUndefined();
+    expect(url.pathname).toBe("/api/v1/projects/p1/sources/src1");
+  });
+
+  it("wires every project write into the browser SDK surface", () => {
+    expect(sdk.projects.update).toBe(loomUpdateProject);
+    expect(sdk.projects.reorder).toBe(loomReorderProject);
+    expect(sdk.projects.sources.add).toBe(loomAddProjectSource);
+    expect(sdk.projects.sources.update).toBe(loomUpdateProjectSource);
+    expect(sdk.projects.sources.delete).toBe(loomDeleteProjectSource);
   });
 });
