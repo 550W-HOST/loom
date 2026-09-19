@@ -1,4 +1,8 @@
-import { reasoningLevelValues, type ReasoningLevel } from "./shared-types.js";
+import {
+  reasoningLevelValues,
+  type KnownReasoningLevel,
+  type ReasoningLevel,
+} from "./shared-types.js";
 
 export function reconcileReasoningLevel(
   previous: ReasoningLevel,
@@ -35,5 +39,8 @@ export function reconcileReasoningLevel(
 }
 
 function reasoningRank(level: ReasoningLevel): number {
-  return reasoningLevelValues.indexOf(level);
+  // An id outside the known list — the agent's own naming — ranks before every
+  // known level, which makes a reconciliation off such a value land on the
+  // bottom of the ladder rather than on an arbitrary known entry.
+  return reasoningLevelValues.indexOf(level as KnownReasoningLevel);
 }

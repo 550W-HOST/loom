@@ -191,6 +191,11 @@ pub struct AppState {
     pub host_rpc: Arc<HostRpcBroker>,
     /// HTTP requests waiting on a host's answer to a terminal operation.
     pub terminal: Arc<crate::terminals::TerminalBroker>,
+    /// What each host's agent reported it can run.
+    ///
+    /// Kept per host because it is a fact about the agent on that machine, not
+    /// about the control plane's own configuration. See [`crate::catalogs`].
+    pub catalogs: Arc<crate::catalogs::CatalogRegistry>,
     /// The control plane's terminal session index.
     pub terminals: Arc<crate::terminals::TerminalSessions>,
     local_host_id: Option<HostId>,
@@ -288,6 +293,7 @@ impl AppState {
             host_files: Arc::new(HostFileBroker::new()),
             host_rpc: Arc::new(HostRpcBroker::new()),
             terminal: Arc::new(crate::terminals::TerminalBroker::new()),
+            catalogs: Arc::new(crate::catalogs::CatalogRegistry::new()),
             terminals: Arc::new(crate::terminals::TerminalSessions::new()),
             local_host_id: config.local_host_id,
             run_timeout_ms: config.run_timeout.as_millis().min(u128::from(u64::MAX)) as u64,

@@ -162,21 +162,13 @@ function parsePermissionMode(
 }
 
 function parseReasoningLevel(value: string): ReasoningLevel {
-  if (
-    value === "none" ||
-    value === "low" ||
-    value === "medium" ||
-    value === "high" ||
-    value === "xhigh" ||
-    value === "ultracode" ||
-    value === "max" ||
-    value === "ultra"
-  ) {
+  // The level vocabulary is the agent's, not the CLI's: `off` and `minimal` are
+  // real pi levels that this list never named. Anything non-empty is forwarded
+  // verbatim, and an agent that refuses one falls back to its own default.
+  if (value.length > 0) {
     return value;
   }
-  throw new Error(
-    "Invalid --reasoning. Expected none, low, medium, high, xhigh, ultracode, max, or ultra.",
-  );
+  throw new Error("Invalid --reasoning. Expected a non-empty reasoning level.");
 }
 
 function parseServiceTier(value: string): ServiceTier | null {

@@ -7,7 +7,9 @@
 
 use bytes::Bytes;
 use loom_domain::{DomainEvent, EnvironmentId, Host, RunId};
-use loom_provider_protocol::{EnvironmentProvisionReport, HostRpcReport, ProviderReport};
+use loom_provider_protocol::{
+    EnvironmentProvisionReport, HostRpcReport, ProviderCatalogReport, ProviderReport,
+};
 use loom_relay::envelope::Envelope;
 use loom_relay::event_id::EventId;
 use loom_relay::scope::Scope;
@@ -437,6 +439,14 @@ pub enum WorkerClientMessage {
     },
     RunReport {
         report: Box<ProviderReport>,
+    },
+    /// The models the agent on this host advertises, per model ladders included.
+    ///
+    /// Host-scoped rather than run-scoped: the catalogue describes the agent
+    /// installed on the machine, so it is reported once per enrollment and
+    /// refreshed from any session the worker opens.
+    CatalogReport {
+        report: ProviderCatalogReport,
     },
     InteractionRequest {
         request: Box<loom_provider_protocol::InteractionRequest>,

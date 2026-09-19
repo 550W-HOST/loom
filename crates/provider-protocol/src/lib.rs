@@ -34,8 +34,8 @@
 //! [`RunEvent`]: loom_domain::RunEvent
 
 use loom_domain::{
-    AutomationId, AutomationRunId, EnvironmentId, HostId, HostPermissionMode, ProjectId,
-    ReasoningLevel, RunEvent, RunId, ScriptInterpreter, ThreadId,
+    catalog::ProviderCatalog, AutomationId, AutomationRunId, EnvironmentId, HostId,
+    HostPermissionMode, ProjectId, ReasoningLevel, RunEvent, RunId, ScriptInterpreter, ThreadId,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -359,6 +359,22 @@ pub struct ProviderReport {
     pub host_id: HostId,
     /// What happened.
     pub event: RunEvent,
+}
+
+/// A worker's report of what the agent on its machine can run.
+///
+/// This is a fact about the **host**, not about a run: which models the agent
+/// advertises and which thinking-level ladder belongs to each of them. It is
+/// therefore its own frame rather than a field on a run event, and the server
+/// keeps it per host. The worker reads it once at enrollment and again from
+/// every session it opens, so a model list that changes under a stored choice
+/// is corrected on the next turn.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderCatalogReport {
+    /// The host whose agent this catalogue describes.
+    pub host_id: HostId,
+    /// The models the agent advertised, and the one its session is on.
+    pub catalog: ProviderCatalog,
 }
 
 // ---------------------------------------------------------------------------

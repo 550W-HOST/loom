@@ -34,7 +34,7 @@ use agent_client_protocol::{
     on_receive_notification, on_receive_request, Agent, Client, ConnectTo, ConnectionTo, Error,
 };
 use loom_domain::{ProviderEvent, ReasoningLevel, RunEvent};
-use loom_provider_protocol::{InteractionRequest, ProviderReport};
+use loom_provider_protocol::{InteractionRequest, ProviderCatalogReport, ProviderReport};
 use tokio::sync::mpsc;
 
 use super::permission::{PermissionBroker, PermissionRegistry};
@@ -128,6 +128,7 @@ pub async fn drive(
     run: &ProviderRun,
     transport: Transport,
     reports: &mpsc::Sender<ProviderReport>,
+    catalogs: &mpsc::Sender<ProviderCatalogReport>,
     permissions: PermissionRegistry,
     interactions: mpsc::Sender<InteractionRequest>,
 ) -> Result<(), String> {
@@ -159,6 +160,7 @@ pub async fn drive(
             pending_load_usage_v2: None,
         })),
         reports: reports.clone(),
+        catalogs: catalogs.clone(),
         report_lock: Arc::new(tokio::sync::Mutex::new(())),
         terminal_sent: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         completion_notify: Arc::new(tokio::sync::Notify::new()),
@@ -503,6 +505,12 @@ struct UpdateSink {
     run: ProviderRun,
     state: Arc<tokio::sync::Mutex<UpdateState>>,
     reports: mpsc::Sender<ProviderReport>,
+    /// Where the catalogue read from this session's config options is reported.
+    ///
+    /// The catalogue is a fact about the host's agent rather than about this
+    /// run, so it travels on its own channel to the socket loop instead of
+    /// being folded into a run event.
+    catalogs: mpsc::Sender<ProviderCatalogReport>,
     /// Preserves report order across the notification callback and the
     /// conversation future. In particular, identity must be sent before any
     /// update released from construction.
@@ -845,12 +853,15 @@ impl UpdateSink {
     /// A choice the agent refuses is not a run failure. A refusal means the
     /// catalogue moved under a stored choice, and the conversation is still
     /// worth having on the agent's own default for the model it holds.
+    ///
+    /// Returns the option set the session holds afterwards, which is the
+    /// freshest description of the agent's catalogue this run has seen.
     async fn apply_config_choices(
         &self,
         connection: &ConnectionTo<Agent>,
         session_id: &str,
         mut options: Vec<v2::SessionConfigOption>,
-    ) {
+    ) -> Vec<v2::SessionConfigOption> {
         if let Some(model) = self.run.model.as_deref() {
             if let Ok(updated) =
                 set_config_option(connection, session_id, MODEL_CONFIG_ID, model).await
@@ -859,12 +870,38 @@ impl UpdateSink {
             }
         }
         let Some(level) = self.run.reasoning_level.as_ref() else {
-            return;
+            return options;
         };
         let Some(value) = thought_level_value(&options, level) else {
-            return;
+            return options;
         };
-        let _ = set_config_option(connection, session_id, THOUGHT_LEVEL_CONFIG_ID, &value).await;
+        match set_config_option(connection, session_id, THOUGHT_LEVEL_CONFIG_ID, &value).await {
+            // The reply after the level change is the option set the session
+            // holds, so it is the one worth reporting.
+            Ok(updated) => updated,
+            Err(_) => options,
+        }
+    }
+
+    /// Reports what this session's config options say the agent can run.
+    ///
+    /// The catalogue is a fact about the host, but a live session is the only
+    /// place it is published, so every turn refreshes it for free. This is what
+    /// keeps a stored model choice honest when the agent's list changes under
+    /// it: the picker is corrected on the next turn rather than at the next
+    /// worker restart.
+    async fn report_catalog(&self, options: &[v2::SessionConfigOption]) {
+        let catalog = super::catalog::catalog_from_options(options);
+        if catalog.is_empty() {
+            return;
+        }
+        let _ = self
+            .catalogs
+            .send(ProviderCatalogReport {
+                host_id: self.run.host_id.clone(),
+                catalog,
+            })
+            .await;
     }
 
     /// Initialize, open or resume a v2 session, send the prompt, and wait for
@@ -900,8 +937,10 @@ impl UpdateSink {
                     .await?;
                 self.finish_load(existing).await;
                 self.on_session_known(existing).await;
-                self.apply_config_choices(connection, existing, resumed.config_options)
+                let options = self
+                    .apply_config_choices(connection, existing, resumed.config_options)
                     .await;
+                self.report_catalog(&options).await;
                 existing.clone()
             }
             None => {
@@ -911,8 +950,10 @@ impl UpdateSink {
                     .await?;
                 let session_id = created.session_id.0.to_string();
                 self.on_session_known(&session_id).await;
-                self.apply_config_choices(connection, &session_id, created.config_options)
+                let options = self
+                    .apply_config_choices(connection, &session_id, created.config_options)
                     .await;
+                self.report_catalog(&options).await;
                 session_id
             }
         };
@@ -1068,11 +1109,21 @@ pub fn spawn(
     run: ProviderRun,
     transport: Transport,
     reports: mpsc::Sender<ProviderReport>,
+    catalogs: mpsc::Sender<ProviderCatalogReport>,
     permissions: PermissionRegistry,
     interactions: mpsc::Sender<InteractionRequest>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        if let Err(message) = drive(&run, transport, &reports, permissions, interactions).await {
+        if let Err(message) = drive(
+            &run,
+            transport,
+            &reports,
+            &catalogs,
+            permissions,
+            interactions,
+        )
+        .await
+        {
             let _ = reports
                 .send(ProviderReport {
                     host_id: run.host_id.clone(),

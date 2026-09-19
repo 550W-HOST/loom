@@ -20,16 +20,14 @@ export {
 
 export const permissionModeSchema = z.enum(["accept-edits", "auto", "full"]);
 export type PermissionMode = z.infer<typeof permissionModeSchema>;
-export const reasoningLevelSchema = z.enum([
-  "none",
-  "low",
-  "medium",
-  "high",
-  "xhigh",
-  "ultracode",
-  "max",
-  "ultra",
-]);
+/**
+ * A reasoning level, as the agent that will run it spells it.
+ *
+ * Not a closed set: the level vocabulary belongs to the agent, and pi names
+ * levels (`off`, `minimal`) bb never did. The value travels through opaquely,
+ * so the only thing worth rejecting is an empty one.
+ */
+export const reasoningLevelSchema = z.string().min(1);
 export type ReasoningLevel = z.infer<typeof reasoningLevelSchema>;
 export const serviceTierSchema = z.enum(["default", "fast"]);
 export type ServiceTier = z.infer<typeof serviceTierSchema>;

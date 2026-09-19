@@ -487,6 +487,24 @@ async fn handle_command(
                 detail,
             })
         }
+        ClientCommand::CatalogReport { report } => {
+            // A catalogue describes the agent on the machine that reported it,
+            // so the same ownership rule as every host-scoped frame applies:
+            // one host cannot describe another's agent.
+            let Some(host_id) = enrolled_host.clone() else {
+                return Some(ServerMessage::Error {
+                    message: "catalog reports require an enrolled host".into(),
+                });
+            };
+            if host_id != report.host_id {
+                return Some(ServerMessage::Error {
+                    message: "report names a different host than this connection enrolled as"
+                        .into(),
+                });
+            }
+            state.catalogs.record(&host_id, report.catalog);
+            None
+        }
         ClientCommand::InteractionRequest { request } => {
             let request = *request;
             let Some(host_id) = enrolled_host.clone() else {

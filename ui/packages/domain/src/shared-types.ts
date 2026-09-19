@@ -1,6 +1,16 @@
 import { z } from "zod";
 import { jsonObjectSchema } from "./json-value.js";
 
+/**
+ * The level ids the client already has a built-in label and rank for.
+ *
+ * This is deliberately **not** the set of levels an agent may offer. Which
+ * levels exist is a property of the model: the agent publishes its own ids and
+ * the ladder that belongs to each, and pi names levels (`off`, `minimal`) that
+ * bb's vocabulary never did. The schema below therefore accepts any non-empty
+ * id and carries it through verbatim; this list only says which ids the client
+ * can label and order without asking.
+ */
 export const reasoningLevelValues = [
   "none",
   "low",
@@ -11,8 +21,19 @@ export const reasoningLevelValues = [
   "max",
   "ultra",
 ] as const;
-export const reasoningLevelSchema = z.enum(reasoningLevelValues);
-export type ReasoningLevel = z.infer<typeof reasoningLevelSchema>;
+export type KnownReasoningLevel = (typeof reasoningLevelValues)[number];
+/**
+ * Any non-empty level id, exactly as the agent spelled it.
+ *
+ * The picker's value is what the server advertised and what it sends back, so
+ * there is nothing here to validate against a closed set.
+ */
+export const reasoningLevelSchema = z.string().min(1);
+/**
+ * A level id. Known ids autocomplete; an id this build has never seen — the
+ * agent's `off`, or `minimal` — is equally valid and passes through untouched.
+ */
+export type ReasoningLevel = KnownReasoningLevel | (string & {});
 
 export const serviceTierSchema = z.enum(["fast", "default"]);
 export type ServiceTier = z.infer<typeof serviceTierSchema>;

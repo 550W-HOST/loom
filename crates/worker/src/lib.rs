@@ -61,8 +61,8 @@ use futures_util::{SinkExt, StreamExt};
 use loom_domain::{HostId, RunId};
 use loom_provider_protocol::{
     EnvironmentProvision, EnvironmentProvisionOutcome, EnvironmentProvisionReport, HostFileRequest,
-    HostRpcReport, HostRpcRequest, InteractionRequest, InteractionResolutionFrame, ProviderSpec,
-    RunDispatch,
+    HostRpcReport, HostRpcRequest, InteractionRequest, InteractionResolutionFrame,
+    ProviderCatalogReport, ProviderLaunch, ProviderSpec, RunDispatch,
 };
 use loom_relay::dedup::SeenSet;
 use loom_relay::{EventId, Scope};
@@ -95,6 +95,13 @@ const REPORT_CHANNEL_CAPACITY: usize = 256;
 /// Re-exported from the ACP permission bridge, which is where the reasoning
 /// lives; `main.rs` uses it for `--permission-timeout-ms`.
 pub const DEFAULT_PERMISSION_TIMEOUT: Duration = crate::acp::permission::DEFAULT_PERMISSION_TIMEOUT;
+
+/// How long the startup catalogue probe waits for the agent to answer.
+///
+/// The probe opens one throwaway session, so the budget has to cover an agent's
+/// cold start. It runs off the socket loop and its failure is only logged: an
+/// agent that cannot answer yet must not keep the worker from enrolling.
+pub const DEFAULT_CATALOG_PROBE_BUDGET: Duration = Duration::from_secs(30);
 
 /// Where managed environments' workspaces are created by default.
 ///
@@ -396,6 +403,14 @@ pub struct Worker {
     /// Provider reports waiting to be forwarded to the server.
     reports: mpsc::Receiver<loom_provider_protocol::ProviderReport>,
     reports_tx: mpsc::Sender<loom_provider_protocol::ProviderReport>,
+    /// Agent catalogues waiting to be forwarded to the server.
+    ///
+    /// A catalogue is a fact about the host's agent, not about a run, so it has
+    /// its own channel rather than riding a run report. Two producers feed it:
+    /// the startup probe, once per enrollment, and every ACP session, which
+    /// reads the catalogue out of the config options it already holds.
+    catalog_reports: mpsc::Receiver<ProviderCatalogReport>,
+    catalog_reports_tx: mpsc::Sender<ProviderCatalogReport>,
     /// Permission requests raised by providers, waiting to be forwarded.
     ///
     /// The socket loop is the only thing that may write to the server socket,
@@ -449,6 +464,7 @@ impl Worker {
                 // A mismatch after enrollment would corrupt dispatch/runs.
                 ensure_compatible_protocol(protocol_version)?;
                 let (reports_tx, reports) = mpsc::channel(REPORT_CHANNEL_CAPACITY);
+                let (catalog_reports_tx, catalog_reports) = mpsc::channel(REPORT_CHANNEL_CAPACITY);
                 let (interactions_tx, interactions) = mpsc::channel(REPORT_CHANNEL_CAPACITY);
                 let (env_reports_tx, env_reports) = mpsc::channel(REPORT_CHANNEL_CAPACITY);
                 let (host_file_reports_tx, host_file_reports) =
@@ -467,6 +483,8 @@ impl Worker {
                     seen_runs: RunSeen::new(DISPATCH_DEDUP_CAPACITY),
                     reports,
                     reports_tx,
+                    catalog_reports,
+                    catalog_reports_tx,
                     interactions,
                     interactions_tx,
                     permissions: crate::acp::permission::PermissionRegistry::new(),
@@ -536,7 +554,60 @@ impl Worker {
         // window, and the dedup set drops the overlap.
         self.subscribe(Scope::Host(host_id.to_string())).await?;
         self.replay_host_scope(&host_id).await?;
+        // The host id is known now, which is all the catalogue report needs.
+        // This runs in the background: a slow or missing agent delays the
+        // catalogue, never enrollment.
+        self.probe_catalog(&host_id);
         Ok(host_id)
+    }
+
+    /// Asks the agent on this machine what it can run, and reports the answer.
+    ///
+    /// The catalogue a fresh install needs cannot wait for a run to happen, so
+    /// it is probed once per enrollment — and re-probed on every reconnect,
+    /// which is what keeps it current when the agent is upgraded underneath a
+    /// long-lived worker.
+    ///
+    /// The probe reuses the same transport a run would use. An operator override
+    /// wins, because on a machine that needed one the default `pi` may not exist
+    /// at all; with no override the built-in `pi` spec is what every dispatch
+    /// would carry anyway.
+    fn probe_catalog(&self, host_id: &HostId) {
+        let spec = self.config.provider.clone().unwrap_or_default();
+        let transport = match spec.launch {
+            ProviderLaunch::AcpStdio => crate::acp::session::Transport::Stdio {
+                command: spec.command,
+                args: spec.args,
+            },
+            ProviderLaunch::AcpEmbeddedPi => crate::acp::session::Transport::EmbeddedPi {
+                command: spec.command,
+                args: spec.args,
+            },
+        };
+        // The probe opens a session in the worker's own directory: it is not
+        // about a project, it only needs a workspace the agent accepts.
+        let cwd = std::env::current_dir()
+            .map(|dir| dir.to_string_lossy().into_owned())
+            .unwrap_or_else(|_| ".".to_owned());
+        let host_id = host_id.clone();
+        let reports = self.catalog_reports_tx.clone();
+        tokio::spawn(async move {
+            match crate::acp::catalog::read_catalog(transport, cwd, DEFAULT_CATALOG_PROBE_BUDGET)
+                .await
+            {
+                crate::acp::catalog::CatalogProbeOutcome::Read(catalog) if !catalog.is_empty() => {
+                    let _ = reports
+                        .send(ProviderCatalogReport { host_id, catalog })
+                        .await;
+                }
+                crate::acp::catalog::CatalogProbeOutcome::Read(_) => {
+                    eprintln!("loom-worker: the ACP agent advertised no models");
+                }
+                crate::acp::catalog::CatalogProbeOutcome::Failed { error } => {
+                    eprintln!("loom-worker: could not read the ACP agent catalogue: {error}");
+                }
+            }
+        });
     }
 
     /// Sends one heartbeat. Frames are not awaited: heartbeats carry no reply
@@ -607,6 +678,10 @@ impl Worker {
                         report: Box::new(report),
                     })
                     .await?;
+                }
+                report = self.catalog_reports.recv() => {
+                    let Some(report) = report else { continue };
+                    self.send(&ClientCommand::CatalogReport { report }).await?;
                 }
                 request = self.interactions.recv() => {
                     let Some(request) = request else { continue };
@@ -933,6 +1008,7 @@ impl Worker {
                     run,
                     transport,
                     self.reports_tx.clone(),
+                    self.catalog_reports_tx.clone(),
                     permissions,
                     interactions,
                 );
@@ -946,6 +1022,7 @@ impl Worker {
                     run,
                     transport,
                     self.reports_tx.clone(),
+                    self.catalog_reports_tx.clone(),
                     permissions,
                     interactions,
                 );

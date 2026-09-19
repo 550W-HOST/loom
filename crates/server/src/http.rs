@@ -14,6 +14,7 @@ use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use http_body_util::BodyExt;
 use loom_domain::{
+    catalog::{CatalogModel, ProviderCatalog},
     DomainError, DomainEvent, DomainScope, Environment, EnvironmentId, EnvironmentKind,
     EnvironmentStatus, Host, HostId, HostStatus, Interaction, InteractionId, InteractionOrigin,
     MessageRole, NewQueuedMessage, Project, ProjectId, ProjectKind, ProjectSourceId, QueuedMessage,
@@ -828,7 +829,105 @@ fn configured_model(state: &AppState) -> Value {
     })
 }
 
-fn configured_execution_options(state: &AppState) -> Value {
+/// One model as the client's catalogue sees it (`d71`).
+///
+/// Every id here is the agent's own: the client sends `model` back verbatim as
+/// the model choice, so a translated value would select something the agent
+/// never named. `id` is only the catalogue entry's identity, namespaced by
+/// provider so two agents cannot collide.
+fn catalog_model(model: &CatalogModel, provider_id: &str, is_default: bool) -> Value {
+    let supported: Vec<Value> = model
+        .thinking_levels
+        .iter()
+        .map(|level| {
+            json!({
+                "reasoningEffort": level.id,
+                // The client picks this up by id; the description is what it
+                // shows when the level is not in its own label table.
+                "description": level
+                    .description
+                    .clone()
+                    .unwrap_or_else(|| level.name.clone()),
+            })
+        })
+        .collect();
+    // The agent's stated default is authoritative. When it named none, the
+    // first level of its own ladder is the honest answer, and `medium` is the
+    // last resort for a model that described no ladder at all.
+    let default_effort = model
+        .default_thinking_level
+        .clone()
+        .or_else(|| model.thinking_levels.first().map(|level| level.id.clone()))
+        .unwrap_or_else(|| "medium".to_owned());
+    json!({
+        "id": format!("{provider_id}/{}", model.id),
+        "model": model.id,
+        "displayName": model.name,
+        "description": model.name,
+        "supportedReasoningEfforts": supported,
+        "defaultReasoningEffort": default_effort,
+        "isDefault": is_default,
+    })
+}
+
+/// The models an agent advertised, in the shape `d71` asks for.
+///
+/// `current_model` names which entry is the session's own; when the agent named
+/// one that is not in its list, nothing is marked and the client falls back to
+/// the first entry rather than a lie.
+fn catalog_models(catalog: &ProviderCatalog, provider_id: &str) -> Vec<Value> {
+    catalog
+        .models
+        .iter()
+        .map(|model| {
+            catalog_model(
+                model,
+                provider_id,
+                catalog.current_model.as_deref() == Some(model.id.as_str()),
+            )
+        })
+        .collect()
+}
+
+/// The catalogue a query's host reported, when there is one to serve.
+///
+/// A named host's own answer is the only acceptable one: answering with another
+/// machine's models would offer choices the agent that will run the thread does
+/// not have. A query that named no host — a fresh install's first composer
+/// call, before an environment is chosen — takes the newest report, which is
+/// what lets the picker show real models before anything has run.
+fn catalog_for_query(state: &AppState, query: &ProviderQuery) -> Option<ProviderCatalog> {
+    if let Some(host_id) = query
+        .host_id
+        .as_deref()
+        .and_then(|raw| raw.parse::<HostId>().ok())
+    {
+        return state.catalogs.get(&host_id).filter(|it| !it.is_empty());
+    }
+    if let Some(environment_id) = query
+        .environment_id
+        .as_deref()
+        .and_then(|raw| raw.parse::<EnvironmentId>().ok())
+    {
+        let host_id = state.registry.environment(&environment_id)?.host_id;
+        return state.catalogs.get(&host_id).filter(|it| !it.is_empty());
+    }
+    state.catalogs.most_recent()
+}
+
+fn configured_execution_options(state: &AppState, catalog: Option<&ProviderCatalog>) -> Value {
+    if let Some(catalog) = catalog.filter(|catalog| !catalog.is_empty()) {
+        let models = catalog_models(catalog, &configured_provider_id(state));
+        return json!({
+            "providers": [configured_provider_info(state)],
+            "permissionCeiling": "full",
+            "models": models,
+            "selectedOnlyModels": models,
+            "modelLoadError": null,
+        });
+    }
+    // No host has described its agent yet. The hardcoded entry keeps the picker
+    // non-empty, and is replaced the moment a worker reports its catalogue.
     let model = configured_model(state);
     json!({
         "providers": [configured_provider_info(state)],
@@ -1013,9 +1112,10 @@ async fn environment_providers(
 
 async fn execution_options(
     State(state): State<AppState>,
-    Query(_query): Query<ProviderQuery>,
+    Query(query): Query<ProviderQuery>,
 ) -> Json<Value> {
-    Json(configured_execution_options(&state))
+    let catalog = catalog_for_query(&state, &query);
+    Json(configured_execution_options(&state, catalog.as_ref()))
 }
 
 async fn system_providers(
@@ -6244,6 +6344,7 @@ mod tests {
     use axum::body::Body;
     use axum::http::Request;
     use http_body_util::BodyExt;
+    use loom_domain::catalog::CatalogThinkingLevel;
     use tower::ServiceExt;
 
     fn test_state() -> AppState {
@@ -6431,6 +6532,135 @@ mod tests {
 
         let json = body_json(response).await;
         assert_eq!(json["version"], env!("CARGO_PKG_VERSION"));
+    }
+
+    fn catalog_model_fixture(
+        id: &str,
+        name: &str,
+        levels: &[&str],
+        default: Option<&str>,
+    ) -> CatalogModel {
+        CatalogModel {
+            id: id.to_owned(),
+            name: name.to_owned(),
+            thinking_levels: levels
+                .iter()
+                .map(|level| CatalogThinkingLevel {
+                    id: (*level).to_owned(),
+                    name: (*level).to_owned(),
+                    description: None,
+                })
+                .collect(),
+            default_thinking_level: default.map(str::to_owned),
+        }
+    }
+
+    /// The composer reads the host's real models, with the agent's own ids and
+    /// the ladder that belongs to each.
+    ///
+    /// The levels deliberately include `off` and `minimal`, which `d250` does
+    /// not name: the level vocabulary is the agent's, and this route is not
+    /// conformance-validated, so they are served rather than translated.
+    #[tokio::test]
+    async fn execution_options_serve_the_host_agents_own_catalogue() {
+        let state = test_state();
+        let host_id = HostId::mint();
+        state.catalogs.record(
+            &host_id,
+            ProviderCatalog {
+                current_model: Some("mock/fast".into()),
+                models: vec![
+                    catalog_model_fixture("mock/fast", "Fast", &["off"], Some("off")),
+                    catalog_model_fixture("mock/deep", "Deep", &["minimal", "high"], Some("high")),
+                ],
+            },
+        );
+        let app = router(state.clone());
+        let json = body_json(
+            get(
+                &app,
+                &format!("/api/v1/system/execution-options?hostId={host_id}"),
+            )
+            .await,
+        )
+        .await;
+
+        let models = json["models"].as_array().expect("models is an array");
+        assert_eq!(models.len(), 2);
+        // The value the client sends back is `model`, and it is the agent's id.
+        assert_eq!(models[0]["model"], "mock/fast");
+        assert_eq!(models[0]["displayName"], "Fast");
+        // The catalogue's own current model is the default, exactly once.
+        assert_eq!(models[0]["isDefault"], true);
+        assert_eq!(models[1]["isDefault"], false);
+        // A model with no reasoning shows only `off`.
+        assert_eq!(
+            models[0]["supportedReasoningEfforts"][0]["reasoningEffort"],
+            "off"
+        );
+        assert_eq!(models[0]["defaultReasoningEffort"], "off");
+        // The ladder follows the model: `minimal` is this model's, not the
+        // other's, and the model's stated default is kept.
+        assert_eq!(
+            models[1]["supportedReasoningEfforts"][0]["reasoningEffort"],
+            "minimal"
+        );
+        assert_eq!(models[1]["defaultReasoningEffort"], "high");
+        assert_eq!(
+            json["selectedOnlyModels"].as_array().map(Vec::len),
+            Some(2),
+            "the catalogue is mirrored, and the client filters the duplicate"
+        );
+        state.shutdown();
+    }
+
+    /// A query that names a host the server has no catalogue for never borrows
+    /// another host's models, and a query that names no host gets the most
+    /// recent report — which is what a fresh install's first composer call is.
+    #[tokio::test]
+    async fn execution_options_resolve_the_catalogue_by_host() {
+        let state = test_state();
+        let known = HostId::mint();
+        state.catalogs.record(
+            &known,
+            ProviderCatalog {
+                current_model: Some("mock/only".into()),
+                models: vec![catalog_model_fixture("mock/only", "Only", &["off"], None)],
+            },
+        );
+        let app = router(state.clone());
+
+        let stranger = HostId::mint();
+        let named = body_json(
+            get(
+                &app,
+                &format!("/api/v1/system/execution-options?hostId={stranger}"),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(
+            named["models"][0]["displayName"], "Default",
+            "an unknown host falls back rather than answering with another machine's models"
+        );
+
+        let unnamed = body_json(get(&app, "/api/v1/system/execution-options").await).await;
+        assert_eq!(unnamed["models"][0]["model"], "mock/only");
+        state.shutdown();
+    }
+
+    /// A host that has reported nothing yet still gets a usable picker.
+    #[tokio::test]
+    async fn execution_options_fall_back_when_no_catalogue_exists() {
+        let state = test_state();
+        let app = router(state.clone());
+        let json = body_json(get(&app, "/api/v1/system/execution-options").await).await;
+        assert_eq!(json["models"][0]["displayName"], "Default");
+        assert_eq!(
+            json["models"][0]["supportedReasoningEfforts"][0]["reasoningEffort"],
+            "medium"
+        );
+        state.shutdown();
     }
 
     #[tokio::test]

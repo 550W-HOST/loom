@@ -72,11 +72,13 @@ async fn drive_with_agent(run: ProviderRun, agent: PathBuf) -> Vec<loom_domain::
     };
 
     let (interactions, _requests) = mpsc::channel(8);
+    let (catalogs, _catalog_reports) = mpsc::channel(8);
     let handle = tokio::spawn(async move {
         let _ = drive(
             &run,
             transport,
             &tx,
+            &catalogs,
             PermissionRegistry::new(),
             interactions,
         )
@@ -404,10 +406,12 @@ async fn a_missing_agent_ends_the_run_rather_than_hanging_it() {
     };
     let run = run(&cwd.to_string_lossy());
     let (interactions, _requests) = mpsc::channel(8);
+    let (catalogs, _catalog_reports) = mpsc::channel(8);
     let _ = drive(
         &run,
         transport,
         &tx,
+        &catalogs,
         PermissionRegistry::new(),
         interactions,
     )
@@ -440,10 +444,12 @@ async fn a_dispatch_without_a_working_directory_is_refused() {
         args: Vec::new(),
     };
     let (interactions, _requests) = mpsc::channel(8);
+    let (catalogs, _catalog_reports) = mpsc::channel(8);
     let result = drive(
         &run,
         transport,
         &tx,
+        &catalogs,
         PermissionRegistry::new(),
         interactions,
     )
@@ -592,10 +598,12 @@ async fn a_workspace_that_does_not_exist_is_refused() {
         args: Vec::new(),
     };
     let (interactions, _requests) = mpsc::channel(8);
+    let (catalogs, _catalog_reports) = mpsc::channel(8);
     let result = drive(
         &run,
         transport,
         &tx,
+        &catalogs,
         PermissionRegistry::new(),
         interactions,
     )
@@ -644,10 +652,12 @@ async fn a_resume_in_a_missing_workspace_fails_and_names_the_path() {
         args: Vec::new(),
     };
     let (interactions, _requests) = mpsc::channel(8);
+    let (catalogs, _catalog_reports) = mpsc::channel(8);
     let result = drive(
         &run,
         transport,
         &tx,
+        &catalogs,
         PermissionRegistry::new(),
         interactions,
     )
@@ -706,10 +716,12 @@ async fn a_resume_against_an_agent_without_load_session_fails() {
         Some("acp-session-from-another-agent"),
     );
     let (interactions, _requests) = mpsc::channel(8);
+    let (catalogs, _catalog_reports) = mpsc::channel(8);
     let _ = drive(
         &run,
         transport,
         &tx,
+        &catalogs,
         PermissionRegistry::new(),
         interactions,
     )

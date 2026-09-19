@@ -1,4 +1,4 @@
-import { reasoningLevelValues, type ReasoningLevel } from "@bb/domain";
+import type { ReasoningLevel } from "@bb/domain";
 import type { PickerOption } from "./OptionPicker";
 
 export function nextCycleValue<T extends string>(
@@ -19,35 +19,22 @@ export function previousCycleValue<T extends string>(
   return nextCycleValue([...options].reverse(), current);
 }
 
+/**
+ * Cycles the reasoning picker through the levels the current model offers, in
+ * the order the agent published them.
+ *
+ * That order *is* the ladder — pi lists `off`, `minimal`, `low`, … — so ranking
+ * by a list loom keeps would reintroduce the fixed vocabulary this picker
+ * exists to avoid, and would silently drop any level it does not name. The
+ * generic cycle helpers already express "the picker's own order", including a
+ * current value that is no longer offered.
+ */
 export function cycleReasoningValue(
   options: readonly PickerOption<ReasoningLevel>[],
   current: ReasoningLevel,
   direction: "forward" | "backward",
 ): ReasoningLevel | null {
-  const supported = new Set(options.map((option) => option.value));
-  const orderedOptions = reasoningLevelValues.filter((level) =>
-    supported.has(level),
-  );
-  const currentRank = reasoningLevelValues.indexOf(current);
-  let candidate: ReasoningLevel | undefined;
-  if (direction === "forward") {
-    candidate = orderedOptions.find(
-      (level) => reasoningLevelValues.indexOf(level) > currentRank,
-    );
-    candidate ??= orderedOptions[0];
-  } else {
-    for (let index = orderedOptions.length - 1; index >= 0; index -= 1) {
-      const level = orderedOptions[index];
-      if (
-        level !== undefined &&
-        reasoningLevelValues.indexOf(level) < currentRank
-      ) {
-        candidate = level;
-        break;
-      }
-    }
-    candidate ??= orderedOptions.at(-1);
-  }
-  if (candidate === undefined || candidate === current) return null;
-  return candidate;
+  return direction === "forward"
+    ? nextCycleValue(options, current)
+    : previousCycleValue(options, current);
 }

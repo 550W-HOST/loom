@@ -45,38 +45,40 @@ describe("previousCycleValue", () => {
 });
 
 describe("cycleReasoningValue", () => {
-  const unorderedOptions = [
-    { value: "max", label: "Max" },
+  // The agent published these in its own order. That order is the ladder, and
+  // it is deliberately not bb's canonical rank — `off`/`minimal` are ids bb
+  // never named.
+  const agentOptions = [
+    { value: "off", label: "Off" },
+    { value: "minimal", label: "Minimal" },
     { value: "low", label: "Low" },
     { value: "high", label: "High" },
   ] satisfies readonly { value: ReasoningLevel; label: string }[];
 
-  it("cycles in canonical rank rather than provider response order", () => {
-    expect(cycleReasoningValue(unorderedOptions, "low", "forward")).toBe(
-      "high",
-    );
-    expect(cycleReasoningValue(unorderedOptions, "high", "forward")).toBe(
-      "max",
-    );
-    expect(cycleReasoningValue(unorderedOptions, "high", "backward")).toBe(
-      "low",
-    );
+  it("cycles in the agent's own ladder order, including ids loom does not name", () => {
+    expect(cycleReasoningValue(agentOptions, "off", "forward")).toBe("minimal");
+    expect(cycleReasoningValue(agentOptions, "minimal", "forward")).toBe("low");
+    expect(cycleReasoningValue(agentOptions, "minimal", "backward")).toBe("off");
   });
 
-  it("wraps at both canonical edges", () => {
-    expect(cycleReasoningValue(unorderedOptions, "max", "forward")).toBe("low");
-    expect(cycleReasoningValue(unorderedOptions, "low", "backward")).toBe(
-      "max",
-    );
+  it("does not treat provider response order as meaningful beyond the ladder", () => {
+    const unordered = [
+      { value: "max", label: "Max" },
+      { value: "low", label: "Low" },
+      { value: "high", label: "High" },
+    ] satisfies readonly { value: ReasoningLevel; label: string }[];
+    expect(cycleReasoningValue(unordered, "high", "forward")).toBe("max");
+    expect(cycleReasoningValue(unordered, "high", "backward")).toBe("low");
   });
 
-  it("keeps canonical direction when the current effort is unsupported", () => {
-    expect(cycleReasoningValue(unorderedOptions, "medium", "forward")).toBe(
-      "high",
-    );
-    expect(cycleReasoningValue(unorderedOptions, "medium", "backward")).toBe(
-      "low",
-    );
+  it("wraps at both edges of the ladder", () => {
+    expect(cycleReasoningValue(agentOptions, "high", "forward")).toBe("off");
+    expect(cycleReasoningValue(agentOptions, "off", "backward")).toBe("high");
+  });
+
+  it("enters the ladder when the current effort is not offered", () => {
+    expect(cycleReasoningValue(agentOptions, "medium", "forward")).toBe("off");
+    expect(cycleReasoningValue(agentOptions, "medium", "backward")).toBe("high");
   });
 
   it("returns null when there is nowhere to move", () => {

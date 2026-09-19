@@ -1438,7 +1438,7 @@ dependencies = [
 [[package]]
 name = "pi-acp"
 version = "0.4.0"
-source = "git+https://github.com/AndPuQing/pi-acp?branch=main#02965179683b5ce541387834541cc6b1b1ef3eec"
+source = "git+https://github.com/AndPuQing/pi-acp?branch=main#3ec393fa04c25d3ef054c64781f93f5a842918ca"
 dependencies = [
  "agent-client-protocol",
  "agent-client-protocol-schema",
@@ -2059,7 +2059,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix",
  "windows-sys",

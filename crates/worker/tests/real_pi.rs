@@ -68,6 +68,7 @@ async fn drive_one(run: ProviderRun) -> Vec<loom_domain::RunEvent> {
     let (tx, mut rx) = mpsc::channel(256);
     let (interactions, mut requests) =
         mpsc::channel::<loom_provider_protocol::InteractionRequest>(8);
+    let (catalogs, _catalog_reports) = mpsc::channel(8);
     let transport = Transport::EmbeddedPi {
         command: run.spec.command.clone(),
         args: Vec::new(),
@@ -88,6 +89,7 @@ async fn drive_one(run: ProviderRun) -> Vec<loom_domain::RunEvent> {
             &run,
             transport,
             &tx,
+            &catalogs,
             PermissionRegistry::new(),
             interactions,
         )

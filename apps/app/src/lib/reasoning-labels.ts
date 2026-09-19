@@ -1,6 +1,15 @@
 import type { ProviderInfo, ReasoningLevel } from "@bb/domain";
 
-const FALLBACK_REASONING_LABELS: Record<ReasoningLevel, string> = {
+/**
+ * Labels for the level ids this build already knows.
+ *
+ * An id outside the table — any agent's own naming, such as a level added after
+ * this build — falls through to the id itself rather than disappearing from the
+ * picker. `off` and `minimal` are here because pi advertises them.
+ */
+const FALLBACK_REASONING_LABELS: Record<string, string> = {
+  off: "Off",
+  minimal: "Minimal",
   none: "None",
   low: "Low",
   medium: "Medium",

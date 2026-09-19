@@ -124,11 +124,13 @@ async fn drive_embedded(run: ProviderRun) -> Vec<loom_domain::RunEvent> {
         args: Vec::new(),
     };
     let (interactions, _requests) = mpsc::channel(8);
+    let (catalogs, _catalog_reports) = mpsc::channel(8);
     let handle = tokio::spawn(async move {
         let _ = drive(
             &run,
             transport,
             &tx,
+            &catalogs,
             PermissionRegistry::new(),
             interactions,
         )
@@ -249,10 +251,12 @@ async fn provider_arguments_are_refused_rather_than_dropped() {
     // refusal surfaces there rather than as a returned error.
     let (tx, mut rx) = mpsc::channel(64);
     let (interactions, _requests) = mpsc::channel(8);
+    let (catalogs, _catalog_reports) = mpsc::channel(8);
     let _ = drive(
         &run,
         transport,
         &tx,
+        &catalogs,
         PermissionRegistry::new(),
         interactions,
     )

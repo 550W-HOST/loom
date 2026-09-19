@@ -4,11 +4,23 @@
 //! belongs to it rides in that value's `_meta` — the channel ACP reserves for
 //! implementation extensions, which is where `pi-acp` publishes it. Nothing here
 //! interprets a level id; they are carried through as the agent spelled them.
+//!
+//! There are two ways in, and they answer the same question at different
+//! moments. [`catalog_from_options`] reads the options a live session already
+//! holds, so every turn keeps the catalogue honest for free.
+//! [`read_catalog`] opens a throwaway session purely to ask, which is what lets
+//! a fresh install show real models before any run has happened.
 
-use agent_client_protocol::schema::v2;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use agent_client_protocol::schema::{v2, ProtocolVersion};
+use agent_client_protocol::{on_receive_request, Agent, Client, ConnectTo, ConnectionTo, Error};
 use loom_domain::catalog::{CatalogModel, CatalogThinkingLevel, ProviderCatalog};
 
-use super::session::{MODEL_CONFIG_ID, THOUGHT_LEVEL_CONFIG_ID};
+use super::session::{
+    agent_argv, embedded_agent_factory, Transport, MODEL_CONFIG_ID, THOUGHT_LEVEL_CONFIG_ID,
+};
 
 /// The `_meta` keys a model's ladder travels under.
 const THINKING_LEVELS_META: &str = "thinking_levels";
@@ -114,11 +126,178 @@ fn ladder_meta(
     Some((levels, default))
 }
 
+/// What asking an agent for its catalogue produced.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CatalogProbeOutcome {
+    /// The agent answered with the models it offers.
+    Read(ProviderCatalog),
+    /// The probe could not run or could not answer: a missing executable, a
+    /// refused handshake, or a deadline. A probe that cannot answer is a
+    /// reported failure, never a hang.
+    Failed {
+        /// Why, verbatim, so it can be shown to a user.
+        error: String,
+    },
+}
+
+/// Asks an ACP agent what it can run, without touching any thread's session.
+///
+/// The catalogue is only published on a session's config options, so it cannot
+/// be read without opening one: the probe opens a throwaway session, reads the
+/// options, and closes it again. This is what lets a fresh install — where no
+/// run has happened yet — already show the agent's real models.
+///
+/// `cwd` is the directory the probe session is opened in. It is not part of the
+/// answer, but the agent needs a workspace it can use.
+pub async fn read_catalog(
+    transport: Transport,
+    cwd: String,
+    budget: Duration,
+) -> CatalogProbeOutcome {
+    let operation = async {
+        match transport {
+            Transport::Stdio { command, args } => {
+                let argv = agent_argv(&command, &args, &cwd);
+                agent_client_protocol::AcpAgent::from_args(argv.clone())
+                    .map_err(|error| format!("could not describe the ACP agent: {error}"))?;
+                probe(
+                    move || {
+                        agent_client_protocol::AcpAgent::from_args(argv.clone())
+                            .expect("validated ACP agent arguments")
+                    },
+                    cwd,
+                )
+                .await
+            }
+            // Only `pi` is a child here; the adapter itself is in-process, so
+            // there is no argv to build for it.
+            Transport::EmbeddedPi { command, args } => {
+                if !args.is_empty() {
+                    return Err(format!(
+                        "the embedded pi-acp transport takes no provider arguments, but the \
+                         request supplies {args:?}"
+                    ));
+                }
+                probe(embedded_agent_factory(command), cwd).await
+            }
+        }
+    };
+
+    match tokio::time::timeout(budget, operation).await {
+        Ok(Ok(catalog)) => CatalogProbeOutcome::Read(catalog),
+        Ok(Err(error)) => CatalogProbeOutcome::Failed { error },
+        Err(_) => CatalogProbeOutcome::Failed {
+            error: format!(
+                "the ACP agent did not answer the catalogue probe within {}ms",
+                budget.as_millis()
+            ),
+        },
+    }
+}
+
+/// Runs the initialize-and-open conversation against a connected agent.
+async fn probe<C, F>(agent_factory: F, cwd: String) -> Result<ProviderCatalog, String>
+where
+    C: ConnectTo<Client>,
+    F: FnMut() -> C + Send + 'static,
+{
+    let state = Arc::new(CatalogProbeState::default());
+    let result = Client
+        .protocol_connector()
+        // Only v2 carries session config options. An agent that speaks v1 has
+        // no catalogue to read, and the probe reports that rather than
+        // inventing an empty one.
+        .with_v2({
+            let state = Arc::clone(&state);
+            move || V2CatalogClient {
+                state: Arc::clone(&state),
+                cwd: cwd.clone(),
+            }
+        })
+        .connect_to(agent_factory)
+        .await;
+
+    result.map_err(|error| format!("the ACP connection ended: {error}"))?;
+    state
+        .take()
+        .ok_or_else(|| "the ACP agent ended without returning a catalogue".to_owned())
+}
+
+#[derive(Default)]
+struct CatalogProbeState {
+    catalog: Mutex<Option<ProviderCatalog>>,
+}
+
+impl CatalogProbeState {
+    fn set(&self, catalog: ProviderCatalog) {
+        *self.catalog.lock().expect("catalogue probe result lock") = Some(catalog);
+    }
+
+    fn take(&self) -> Option<ProviderCatalog> {
+        self.catalog
+            .lock()
+            .expect("catalogue probe result lock")
+            .take()
+    }
+}
+
+struct V2CatalogClient {
+    state: Arc<CatalogProbeState>,
+    cwd: String,
+}
+
+impl ConnectTo<Agent> for V2CatalogClient {
+    async fn connect_to(self, agent: impl ConnectTo<Client>) -> Result<(), Error> {
+        let state = self.state;
+        let cwd = self.cwd;
+        Client
+            .v2()
+            .on_receive_request(
+                async move |_request: v2::RequestPermissionRequest, responder, _cx| {
+                    let _ = responder.respond(v2::RequestPermissionResponse::new(
+                        v2::RequestPermissionOutcome::Cancelled,
+                    ));
+                    Ok(())
+                },
+                on_receive_request!(),
+            )
+            .connect_with(agent, |connection: ConnectionTo<Agent>| async move {
+                let initialized = connection
+                    .send_request(v2::InitializeRequest::new(
+                        ProtocolVersion::V2,
+                        v2::Implementation::new("loom", env!("CARGO_PKG_VERSION")),
+                    ))
+                    .block_task()
+                    .await?;
+                if initialized.protocol_version != ProtocolVersion::V2 {
+                    return Err(Error::internal_error().data(
+                        "the ACP agent negotiated an unsupported protocol version for the \
+                         catalogue probe",
+                    ));
+                }
+                let created = connection
+                    .send_request(v2::NewSessionRequest::new(cwd))
+                    .block_task()
+                    .await?;
+                let catalog = catalog_from_options(&created.config_options);
+                // The probe's session is throwaway: closing it keeps the agent
+                // from accumulating one conversation per enrollment.
+                let _ = connection
+                    .send_request(v2::CloseSessionRequest::new(created.session_id.clone()))
+                    .block_task()
+                    .await;
+                state.set(catalog);
+                Ok(())
+            })
+            .await
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
-
+    use std::path::PathBuf;
     fn model_option(
         values: Vec<v2::SessionConfigSelectOption>,
         current: &str,
@@ -240,5 +419,129 @@ mod tests {
             catalog_from_options(&[level_option(&[("off", "Off")])]),
             ProviderCatalog::default()
         );
+    }
+
+    /// Writes an executable ACP agent stub that answers a v2 probe.
+    ///
+    /// `config_options` is the JSON array `session/new` returns. `new_body` is
+    /// the shell body for `session/new`; an empty one leaves the method
+    /// unanswered, which is what the deadline test wants.
+    fn write_probe_agent(dir: &std::path::Path, config_options: &str, new_body: &str) -> PathBuf {
+        let path = dir.join("catalog-probe.sh");
+        let script = format!(
+            r#"#!/bin/sh
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([^,]*\),"method":.*/\1/p')
+  method=$(printf '%s' "$line" | sed -n 's/.*"method":"\([^"]*\)".*/\1/p')
+  case "$method" in
+    initialize)
+      printf '%s\n' '{{"jsonrpc":"2.0","id":'"$id"',"result":{{"protocolVersion":2,"info":{{"name":"fake-v2","version":"1"}},"capabilities":{{"session":{{}}}}}}}}'
+      ;;
+    session/new)
+{new_body}
+      ;;
+    session/close)
+      printf '%s\n' '{{"jsonrpc":"2.0","id":'"$id"',"result":{{}}}}'
+      ;;
+  esac
+done
+"#
+        );
+        // The options array is the one `session/new` answers with; the rest of
+        // the template has its own braces, escaped above.
+        let script = script.replace("%OPTIONS%", config_options);
+        std::fs::write(&path, script).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        path
+    }
+
+    fn stdio(agent: &std::path::Path) -> Transport {
+        Transport::Stdio {
+            command: agent.to_string_lossy().into_owned(),
+            args: Vec::new(),
+        }
+    }
+
+    /// The startup probe opens a session, reads the catalogue the agent
+    /// published, and closes it — which is what a fresh install needs, before
+    /// any run has happened.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_probe_reads_the_catalogue_from_a_probe_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let options = vec![
+            model_option(
+                vec![
+                    model_with_ladder("mock/reasoning", &["off", "minimal", "high"], "high"),
+                    model_with_ladder("mock/plain", &["off"], "off"),
+                ],
+                "mock/reasoning",
+            ),
+            level_option(&[("off", "Off"), ("minimal", "Minimal"), ("high", "High")]),
+        ];
+        let config_options = serde_json::to_string(&options).unwrap();
+        // `%OPTIONS%` is substituted by `write_probe_agent`, because a shell
+        // fragment full of JSON braces cannot be built with `format!` directly.
+        let new_body = r#"      printf '%s\n' '{"jsonrpc":"2.0","id":'"$id"',"result":{"sessionId":"probe-1","configOptions":%OPTIONS%}}'"#;
+        let agent = write_probe_agent(dir.path(), &config_options, new_body);
+
+        let outcome = read_catalog(
+            stdio(&agent),
+            dir.path().to_string_lossy().into_owned(),
+            Duration::from_secs(10),
+        )
+        .await;
+
+        match outcome {
+            CatalogProbeOutcome::Read(catalog) => {
+                assert_eq!(catalog.current_model.as_deref(), Some("mock/reasoning"));
+                let ladder = |id: &str| -> Vec<String> {
+                    catalog
+                        .models
+                        .iter()
+                        .find(|model| model.id == id)
+                        .expect("advertised")
+                        .thinking_levels
+                        .iter()
+                        .map(|level| level.id.clone())
+                        .collect()
+                };
+                assert_eq!(ladder("mock/reasoning"), vec!["off", "minimal", "high"]);
+                assert_eq!(ladder("mock/plain"), vec!["off"]);
+                assert_eq!(
+                    catalog.models[0].default_thinking_level.as_deref(),
+                    Some("high")
+                );
+            }
+            other => panic!("expected Read, got {other:?}"),
+        }
+    }
+
+    /// A probe that cannot answer is a reported failure with the deadline in
+    /// it, never a hang: enrollment must not wait on a broken agent.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_probe_that_never_answers_fails_with_its_deadline() {
+        let dir = tempfile::tempdir().unwrap();
+        // An empty body answers nothing, so `session/new` would hang.
+        let agent = write_probe_agent(dir.path(), "[]", "");
+        let outcome = read_catalog(
+            stdio(&agent),
+            dir.path().to_string_lossy().into_owned(),
+            Duration::from_millis(500),
+        )
+        .await;
+
+        match outcome {
+            CatalogProbeOutcome::Failed { error } => {
+                assert!(
+                    error.contains("500ms"),
+                    "the deadline is reported, got: {error}"
+                );
+            }
+            other => panic!("expected Failed, got {other:?}"),
+        }
     }
 }
