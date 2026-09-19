@@ -89,9 +89,11 @@ async fn a_real_turn_reports_its_thinking() {
     let run = ProviderRun {
         spec,
         model: std::env::var("PROBE_MODEL").ok(),
-        prompt: "Think it through before answering: how many distinct ways can you arrange the \
-                 letters of the word BANANA?"
-            .to_owned(),
+        prompt: std::env::var("PROBE_PROMPT").unwrap_or_else(|_| {
+            "Think it through before answering: how many distinct ways can you arrange the \
+             letters of the word BANANA?"
+                .to_owned()
+        }),
         host_id: loom_domain::HostId::mint(),
         thread_id: loom_domain::ThreadId::mint(),
         project_id: loom_domain::ProjectId::mint(),
@@ -122,6 +124,14 @@ async fn a_real_turn_reports_its_thinking() {
                     .map(|l| l.id.as_str())
                     .collect::<Vec<_>>(),
                 model.default_thinking_level
+            );
+        }
+    }
+    if std::env::var("PROBE_DUMP").is_ok() {
+        for event in &events {
+            println!(
+                "EVENT {}",
+                serde_json::to_string(&event.event.body).unwrap_or_default()
             );
         }
     }
