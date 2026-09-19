@@ -9,6 +9,7 @@ import {
 } from "@bb/domain";
 import type {
   CreateThreadRequest,
+  DeleteThreadRequest,
   ReorderPinnedThreadRequest,
   SendMessageRequest,
   SendMessageResponse,
@@ -456,6 +457,28 @@ export function loomThreadChildSummary(request: {
   return loomApiJson("threads.childSummary", {
     param: { id: request.threadId },
     signal: request.signal,
+  });
+}
+
+/**
+ * Delete a thread through the contract route.
+ *
+ * `threads.delete` was still the fail-closed browser SDK stub, so confirming
+ * the delete dialog threw `BrowserSdkUnavailableError` instead of reaching the
+ * server — and the child-summary reader above could never be acted on. The
+ * contract route is a `DELETE` on the thread itself whose JSON body carries the
+ * confirmation the server demands before it takes threads with children down:
+ * an unconfirmed parent comes back as a typed `409` rather than a silent
+ * cascade. The server answers `{ ok: true }`, so the parsed body is returned
+ * rather than an invented one.
+ */
+export function loomDeleteThread(
+  request: DeleteThreadRequest & { threadId: string },
+): Promise<{ ok: true }> {
+  const { threadId, ...json } = request;
+  return loomApiJson("threads.delete", {
+    param: { id: threadId },
+    json,
   });
 }
 

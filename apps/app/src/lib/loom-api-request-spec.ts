@@ -1,6 +1,7 @@
 import type {
   CreateHostJoinCodeResponse,
   CreateThreadRequest,
+  DeleteThreadRequest,
   EnvironmentDiffFileQuery,
   HostDirectoryListing,
   HostDirectoryQuery,
@@ -44,6 +45,8 @@ import type {
   UpdateUiPreferenceRequest,
 } from "@bb/server-contract";
 import type {
+  AppSettings,
+  AppSettingsUpdate,
   Environment,
   Host,
   PendingInteraction,
@@ -120,6 +123,7 @@ export const LOOM_API_REQUEST_SPECS = {
     source: "query",
     query: {} as ProjectDefaultExecutionOptionsQuery,
   },
+  "projects.delete": { source: "none" },
   "projects.fileContent": {
     source: "query",
     query: {} as ProjectFileContentQuery,
@@ -132,6 +136,10 @@ export const LOOM_API_REQUEST_SPECS = {
   "system.executionOptions": {
     source: "query",
     query: {} as SystemExecutionOptionsQuery,
+  },
+  "system.generalSettings": {
+    source: "json",
+    json: {} as AppSettingsUpdate,
   },
   "system.providers": { source: "query", query: {} as SystemProvidersQuery },
   "system.providerStates": {
@@ -156,6 +164,7 @@ export const LOOM_API_REQUEST_SPECS = {
   "threads.childSummary": { source: "none" },
   "threads.create": { source: "json", json: {} as CreateThreadRequest },
   "threads.defaultExecutionOptions": { source: "none" },
+  "threads.delete": { source: "json", json: {} as DeleteThreadRequest },
   "threads.get": { source: "query", query: {} as ThreadGetQuery },
   "threads.hostFileContent": {
     source: "query",
@@ -223,10 +232,14 @@ export interface LoomApiResponseSpecs {
   "projects.attachmentContent": unknown;
   "projects.branchOptions": unknown;
   "projects.defaultExecutionOptions": ProjectExecutionDefaults | null;
+  "projects.delete": { ok: true };
   "projects.fileContent": unknown;
   "projects.sidebarBootstrap": SidebarBootstrapResponse;
   "system.environmentProviders": SystemEnvironmentProvidersResponse;
   "system.executionOptions": SystemExecutionOptionsResponse;
+  "system.generalSettings": AppSettings & {
+    showUnhandledProviderEvents?: boolean;
+  };
   "system.providers": SystemProviderInfo[];
   "system.providerStates": SystemProviderStatesResponse;
   "system.version": SystemVersionResponse;
@@ -238,6 +251,7 @@ export interface LoomApiResponseSpecs {
   "threads.childSummary": ThreadChildSummaryResponse;
   "threads.create": ThreadResponse;
   "threads.defaultExecutionOptions": ResolvedThreadExecutionOptions | null;
+  "threads.delete": { ok: true };
   "threads.get": ThreadResponse;
   "threads.hostFileContent": unknown;
   "threads.interaction": PendingInteraction;

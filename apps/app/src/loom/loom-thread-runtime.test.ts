@@ -19,6 +19,7 @@ import {
   loomUnpinThread,
   loomGetThreadTabs,
   loomSpawnThread,
+  loomDeleteThread,
   loomThreadChildSummary,
   loomThreadDefaultExecutionOptions,
   loomUpdateThreadTabs,
@@ -426,6 +427,7 @@ describe("loom New Thread runtime", () => {
     expect(sdk.threads.defaultExecutionOptions).toBe(
       loomThreadDefaultExecutionOptions,
     );
+    expect(sdk.threads.delete).toBe(loomDeleteThread);
     expect(sdk.threads.markRead).toBe(loomMarkThreadRead);
     expect(sdk.threads.markUnread).toBe(loomMarkThreadUnread);
     expect(sdk.threads.pin).toBe(loomPinThread);
@@ -598,5 +600,83 @@ describe("loom thread pin state", () => {
     const [url, init] = fetchMock.mock.calls[0] as unknown as [URL, RequestInit];
     expect(url.pathname).toBe("/api/v1/threads/thr_1/pin");
     expect(init.method).toBe("POST");
+  });
+});
+
+describe("loom thread deletion", () => {
+  it("deletes through the contract route with the confirmation as its JSON body", async () => {
+    const fetchMock = vi.fn(async () => jsonResponse({ ok: true }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      loomDeleteThread({ childThreadsConfirmed: true, threadId: "thr_1" }),
+    ).resolves.toEqual({ ok: true });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [URL, RequestInit];
+    expect(init.method).toBe("DELETE");
+    expect(url.pathname).toBe("/api/v1/threads/thr_1");
+    expect(url.search).toBe("");
+    expect(JSON.parse(String(init.body))).toEqual({
+      childThreadsConfirmed: true,
+    });
+  });
+
+  it("sends the unconfirmed flag verbatim rather than assuming a cascade", async () => {
+    const fetchMock = vi.fn(async () => jsonResponse({ ok: true }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await loomDeleteThread({ childThreadsConfirmed: false, threadId: "thr_1" });
+
+    const [, init] = fetchMock.mock.calls[0] as unknown as [URL, RequestInit];
+    expect(JSON.parse(String(init.body))).toEqual({
+      childThreadsConfirmed: false,
+    });
+  });
+
+  it("encodes the thread id as a single path segment", async () => {
+    const fetchMock = vi.fn(async () => jsonResponse({ ok: true }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await loomDeleteThread({ childThreadsConfirmed: true, threadId: "a/b" });
+
+    const [url] = fetchMock.mock.calls[0] as unknown as [URL];
+    expect(url.pathname).toBe("/api/v1/threads/a%2Fb");
+  });
+
+  it("surfaces the child-confirmation refusal instead of a fake success", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        jsonResponse(
+          {
+            code: "child_threads_confirmation_required",
+            message: "thread thr_1 has 2 child thread(s); confirm deletion",
+            childThreadCount: 2,
+          },
+          409,
+        ),
+      ),
+    );
+
+    await expect(
+      loomDeleteThread({ childThreadsConfirmed: false, threadId: "thr_1" }),
+    ).rejects.toMatchObject({
+      status: 409,
+      code: "child_threads_confirmation_required",
+    });
+  });
+
+  it("is reachable through the browser SDK surface", async () => {
+    const fetchMock = vi.fn(async () => jsonResponse({ ok: true }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      sdk.threads.delete({ childThreadsConfirmed: true, threadId: "thr_1" }),
+    ).resolves.toEqual({ ok: true });
+
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [URL, RequestInit];
+    expect(url.pathname).toBe("/api/v1/threads/thr_1");
+    expect(init.method).toBe("DELETE");
   });
 });

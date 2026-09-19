@@ -8585,12 +8585,12 @@
       "upstreamPath": "apps/app",
       "localPath": "apps/app",
       "disposition": "source-port",
-      "gitTree": "af8644945ad11fdbbbefa29b38403c0c1a2238ab",
+      "gitTree": "0f7196cf000c33f5069bd1e1c63005b0c1c3e4f5",
       "snapshot": {
         "path": "apps/app",
         "tree": {
-          "files": 1479,
-          "sha256": "34e6854fe8359c03230b723fd8008c8e9e4b8e33a72bd6d2ef0d4c571980f258"
+          "files": 1485,
+          "sha256": "8a974ab3a3b404bcb8e1c11d813da0dfa2cf490035c651d14f4d9df85ea3c834"
         },
         "files": [
           {
@@ -14110,13 +14110,13 @@
           },
           {
             "path": "src/lib/api-server.ts",
-            "bytes": 8249,
-            "sha256": "eaeb3d9ac1de48e22578c168f4cd69ab410971a9affa3466a8cc0d415e6b8319"
+            "bytes": 8292,
+            "sha256": "4c2402cd70ecf328ed1f14c502ca34df19c28a956dd80f5d12b35ed8882a6bf5"
           },
           {
             "path": "src/lib/api-server.type-tests.ts",
-            "bytes": 10840,
-            "sha256": "bf294ce909d7a88482ee1513c54f4067df542a82e3f254f692460c23dc3584da"
+            "bytes": 11468,
+            "sha256": "218f2b96941d9eefe2c740351877383b72614b91129fd2fb7e0dd63abd53ee9e"
           },
           {
             "path": "src/lib/api.ts",
@@ -14500,13 +14500,13 @@
           },
           {
             "path": "src/lib/loom-api-request-spec.ts",
-            "bytes": 8775,
-            "sha256": "ae4e5cc27512470ae6ce2adbe993094d3c7835ced910c7c32e92e8b4a10cd69b"
+            "bytes": 9831,
+            "sha256": "d6088699c28e51b8a7647dc5bc7ee75da91c94372ba3129456b591b1a7f2478f"
           },
           {
             "path": "src/lib/loom-api-routes.ts",
-            "bytes": 7419,
-            "sha256": "c0990b82934308a06e365aac779eae229b44f0bf90b4950c09582af710a2c518"
+            "bytes": 8011,
+            "sha256": "7146b7fe72ef0ea3efc5502b319faf9df54a9c50e42a17f2e24c6083ec544272"
           },
           {
             "path": "src/lib/loom-automations-client.ts",
@@ -14517,6 +14517,11 @@
             "path": "src/lib/loom-host-mutations.ts",
             "bytes": 1173,
             "sha256": "6ca41dd97a712f24c580c270bd3e87941d946887a4b5138e6bab497d9234e05a"
+          },
+          {
+            "path": "src/lib/loom-host-readers.ts",
+            "bytes": 1250,
+            "sha256": "633626a752a068c33d8864e6938fd71ad1c309bc9e0f2a871861686d22a9b072"
           },
           {
             "path": "src/lib/loom-http.ts",
@@ -14539,6 +14544,16 @@
             "sha256": "20cb523b10c0005bed15f4e63a5c845afbb427d984816fd7e9f8f2c529de52ef"
           },
           {
+            "path": "src/lib/loom-project-mutations.ts",
+            "bytes": 1364,
+            "sha256": "2da60b97c625ac8b474b2ba6c05c1fd8c3042bac6b4db45e712d6f9aa7d2a216"
+          },
+          {
+            "path": "src/lib/loom-settings-mutations.ts",
+            "bytes": 1182,
+            "sha256": "901ce4195a89d72e3429679679c2cf60e6df464de8f86910f58b43438401b5f4"
+          },
+          {
             "path": "src/lib/loom-shell.ts",
             "bytes": 3964,
             "sha256": "d0182520b99b01b42c00c2aa2cd462a2d80411a119740e087ba2e2ff108a29f7"
@@ -14550,8 +14565,8 @@
           },
           {
             "path": "src/lib/loom-thread-runtime.ts",
-            "bytes": 15220,
-            "sha256": "04e1508aa84b24028e37a124f2ae5667e2f802d8e6569612384b2892a123f39a"
+            "bytes": 18434,
+            "sha256": "49df3baea6490ce2883186e206772c3eb83de974f24e02dc53f837cecba92434"
           },
           {
             "path": "src/lib/loom-thread-storage.ts",
@@ -15005,8 +15020,8 @@
           },
           {
             "path": "src/lib/sdk.ts",
-            "bytes": 2851,
-            "sha256": "f737e0889768d12a56452be3935938971049ebad21605bb583a4c1e2a3a01ee2"
+            "bytes": 3437,
+            "sha256": "86d65d27177ada1551458b6fb0c45cd3545205b683a3f16722439fa112b89c0e"
           },
           {
             "path": "src/lib/shared-resize-observer.test.tsx",
@@ -15365,8 +15380,8 @@
           },
           {
             "path": "src/loom/api-client.test.ts",
-            "bytes": 21059,
-            "sha256": "af9e924de00ecd3b6d08037d78046f50d3071ec7f191f5405044a41a1e1e3cfc"
+            "bytes": 21439,
+            "sha256": "fbcaed3bbe56e9bcb1e14cd14c297b7a8b2b96eb2c59a42dde52f9e6696ff9b8"
           },
           {
             "path": "src/loom/browser-boundaries.test.ts",
@@ -15389,6 +15404,11 @@
             "sha256": "6e461c2539ef0964e69e0c4e68d813e216ad0edafaef0538e3ebd77d218509c7"
           },
           {
+            "path": "src/loom/loom-host-readers.test.ts",
+            "bytes": 3848,
+            "sha256": "6d0a3953d34b0cb5b1e07fc0cf83dfcbeca6996f7625ad004d4d13c9909a5681"
+          },
+          {
             "path": "src/loom/loom-interactions.test.ts",
             "bytes": 4874,
             "sha256": "f81c24b949a9afcf08bf8dca040a816a3a059c728706615f04afc1d2e0595c51"
@@ -15399,9 +15419,19 @@
             "sha256": "3a20c9a6248d021dda1d1f59f50eb5633b871296b0c10b088d13935e82cdc9cf"
           },
           {
+            "path": "src/loom/loom-project-mutations.test.ts",
+            "bytes": 3035,
+            "sha256": "9ab3d11f6ee115b42af28c6c09547554e1ce661a3b25a630e2d41c5ab79df85a"
+          },
+          {
+            "path": "src/loom/loom-settings-mutations.test.ts",
+            "bytes": 3060,
+            "sha256": "41f70c312cf2065a2fca4396b723fc43c82c291ba68287a9e3979f4d229467a8"
+          },
+          {
             "path": "src/loom/loom-thread-runtime.test.ts",
-            "bytes": 13338,
-            "sha256": "baaa40fe590bc0ef750513eb552fa43a84aef36901d9db5bf177b882d394e509"
+            "bytes": 21770,
+            "sha256": "c0a5e8e643e667b2bf9976021ac51636c6a11a2e557f1027471a3c3f37868809"
           },
           {
             "path": "src/loom/loom-thread-storage.test.ts",
@@ -16046,11 +16076,11 @@
         "name": "@bb/thread-view",
         "upstreamPath": "packages/thread-view",
         "disposition": "retain-source",
-        "gitTree": "e2aad0be8a5c04c89420f291055f05b219b62ba8",
+        "gitTree": "3c474a7d267d3a4fa4e5deb998ef1121f6ae5655",
         "path": "ui/packages/thread-view",
         "tree": {
           "files": 61,
-          "sha256": "0f84a00f472c11e921b30170def0d99c64596c9ef812749b8e17a1da07d855e3"
+          "sha256": "cca3b23e1f2ff3e27c231ebb7442992cbf89dfdf5867d87e276f8b72a7cad55a"
         },
         "packageJson": {
           "bytes": 644,

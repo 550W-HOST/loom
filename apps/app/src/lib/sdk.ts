@@ -1,6 +1,7 @@
 import { createBrowserBbSdk } from "@bb/sdk/browser";
 import { fetchWithAppSurface } from "./app-surface";
 import {
+  loomDeleteThread,
   loomGetEnvironment,
   loomGetThread,
   loomGetThreadTabs,
@@ -31,6 +32,8 @@ import {
 } from "./loom-thread-storage";
 import { loomDeleteHost } from "./loom-host-mutations";
 import { loomHostDirectory } from "./loom-host-readers";
+import { loomDeleteProject } from "./loom-project-mutations";
+import { loomUpdateGeneralSettings } from "./loom-settings-mutations";
 
 import {
   loomResetUiPreference,
@@ -67,6 +70,7 @@ export const sdk = {
   projects: {
     ...compileOnlySdk.projects,
     defaultExecutionOptions: loomProjectDefaultExecutionOptions,
+    delete: loomDeleteProject,
   },
   system: {
     ...compileOnlySdk.system,
@@ -76,11 +80,13 @@ export const sdk = {
       reset: loomResetUiPreference,
       set: loomSetUiPreference,
     },
+    updateGeneralSettings: loomUpdateGeneralSettings,
   },
   threads: {
     ...compileOnlySdk.threads,
     childSummary: loomThreadChildSummary,
     defaultExecutionOptions: loomThreadDefaultExecutionOptions,
+    delete: loomDeleteThread,
     get: loomGetThread,
     interactions: {
       ...compileOnlySdk.threads.interactions,
