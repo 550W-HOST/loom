@@ -388,9 +388,10 @@ worker PATH lookup ──▶ candidate specs ──▶ ACP handshake ──▶ H
 
 Two properties make this honest rather than optimistic:
 
-- **The report is the same run as the catalogue.** The probe that fills the
-  model picker is the probe that decides admission, so a provider can never be
-  advertised with a catalogue it did not produce.
+- **Admission and the catalogue come from one probe.** The session that decides a
+  candidate is admitted is the session its model list is read from, so a provider
+  is never advertised with models no probe produced, and never with a model list
+  from an agent that did not answer.
 - **The host is the authority, not the control plane.** The server records what
   each machine reported, keyed by host, and dispatch resolves a provider
   *against the host that will run it* — two machines may report the same agent
