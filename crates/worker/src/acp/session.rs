@@ -33,12 +33,14 @@ use agent_client_protocol::schema::{v2, ProtocolVersion};
 use agent_client_protocol::{
     on_receive_notification, on_receive_request, Agent, Client, ConnectTo, ConnectionTo, Error,
 };
-use loom_domain::{ProviderEvent, ReasoningLevel, RunEvent};
+use loom_domain::{
+    ModelFallbackReason, ProviderEvent, ProviderWarningCategory, ReasoningLevel, RunEvent,
+};
 use loom_provider_protocol::{InteractionRequest, ProviderCatalogReport, ProviderReport};
 use tokio::sync::mpsc;
 
 use super::permission::{PermissionBroker, PermissionRegistry};
-use super::{AcpTranslator, RunContext};
+use super::{AcpTranslator, RunContext, Translated};
 use crate::provider::ProviderRun;
 
 /// How an ACP agent is reached.
@@ -569,10 +571,22 @@ fn thought_level_value(
     options: &[v2::SessionConfigOption],
     level: &ReasoningLevel,
 ) -> Option<String> {
-    let wanted = level.as_str();
+    let (_, values) = select_state(options, THOUGHT_LEVEL_CONFIG_ID)?;
+    values.into_iter().find(|value| value == level.as_str())
+}
+
+/// The current value of a select config option, and the values it offers.
+///
+/// What an agent *did* accept is only worth reporting when it comes from the
+/// agent's own reply, which is why the fallback path reads it here rather than
+/// from anything loom recorded earlier.
+fn select_state(
+    options: &[v2::SessionConfigOption],
+    config_id: &str,
+) -> Option<(String, Vec<String>)> {
     let option = options
         .iter()
-        .find(|option| option.config_id.0.as_ref() == THOUGHT_LEVEL_CONFIG_ID)?;
+        .find(|option| option.config_id.0.as_ref() == config_id)?;
     let v2::SessionConfigKind::Select(select) = &option.kind else {
         return None;
     };
@@ -584,10 +598,13 @@ fn thought_level_value(
             .collect(),
         _ => return None,
     };
-    candidates
-        .iter()
-        .find(|candidate| candidate.value.0.as_ref() == wanted)
-        .map(|candidate| candidate.value.0.to_string())
+    Some((
+        select.current_value.0.to_string(),
+        candidates
+            .iter()
+            .map(|candidate| candidate.value.0.to_string())
+            .collect(),
+    ))
 }
 
 impl UpdateSink {
@@ -643,9 +660,10 @@ impl UpdateSink {
     async fn on_v2_notification(&self, notification: v2::UpdateSessionNotification) {
         let session_id = notification.session_id.0.to_string();
         acp_trace!(
-            "v2 update {} for session {}",
+            "v2 update {} for session {} :: {:?}",
             v2_update_name(&notification.update),
-            session_id
+            session_id,
+            notification.update
         );
         let events = {
             let mut state = self.state.lock().await;
@@ -854,33 +872,105 @@ impl UpdateSink {
     /// catalogue moved under a stored choice, and the conversation is still
     /// worth having on the agent's own default for the model it holds.
     ///
+    /// What it must not be is *silent*. A run that quietly uses a different
+    /// model from the one the thread names produces an answer the user will
+    /// attribute to the model they chose, and a thinking level that was dropped
+    /// looks exactly like an agent that has nothing to think. Both are reported
+    /// as the contract's own events, which the client already renders.
+    ///
     /// Returns the option set the session holds afterwards, which is the
-    /// freshest description of the agent's catalogue this run has seen.
+    /// freshest description of the agent's catalogue this run has seen, and the
+    /// events that describe what it would not take.
     async fn apply_config_choices(
         &self,
         connection: &ConnectionTo<Agent>,
         session_id: &str,
         mut options: Vec<v2::SessionConfigOption>,
-    ) -> Vec<v2::SessionConfigOption> {
+    ) -> (Vec<v2::SessionConfigOption>, Translated) {
+        let mut events: Translated = Vec::new();
+        let provider_thread_id = self.provider_thread_id().await;
+
         if let Some(model) = self.run.model.as_deref() {
-            if let Ok(updated) =
-                set_config_option(connection, session_id, MODEL_CONFIG_ID, model).await
-            {
-                options = updated;
+            match set_config_option(connection, session_id, MODEL_CONFIG_ID, model).await {
+                Ok(updated) => options = updated,
+                Err(error) => {
+                    // The fallback is the model the session already holds, and
+                    // it is only worth naming when the agent's own reply names
+                    // it.
+                    let held = select_state(&options, MODEL_CONFIG_ID)
+                        .map(|(current, _)| current)
+                        .unwrap_or_else(|| "the agent's default".to_owned());
+                    eprintln!("loom-worker: the agent did not accept model `{model}`: {error}");
+                    events.push(ProviderEvent::ProviderModelFallback {
+                        provider_thread_id: provider_thread_id.clone(),
+                        original_model: model.to_owned(),
+                        fallback_model: held.clone(),
+                        reason: ModelFallbackReason::Refusal,
+                        message: format!(
+                            "The agent did not accept `{model}` for this session, so this turn \
+                             ran on `{held}`."
+                        ),
+                    });
+                }
             }
         }
+
         let Some(level) = self.run.reasoning_level.as_ref() else {
-            return options;
+            return (options, events);
         };
         let Some(value) = thought_level_value(&options, level) else {
-            return options;
+            // The model on this session does not offer the level the thread
+            // names — the ladder follows the model, so this is what a model
+            // change looks like from the other side. loom leaves the level
+            // unset rather than approximating with a different one, and says
+            // which levels the model does offer.
+            if let Some((current, offered)) = select_state(&options, THOUGHT_LEVEL_CONFIG_ID) {
+                events.push(ProviderEvent::ProviderWarning {
+                    provider_thread_id: provider_thread_id.clone(),
+                    category: ProviderWarningCategory::Config,
+                    summary: Some(format!(
+                        "This model does not offer the reasoning level `{}`",
+                        level.as_str()
+                    )),
+                    details: Some(format!(
+                        "The turn ran at the agent's own default `{current}`. The model offers: \
+                         {}.",
+                        offered.join(", ")
+                    )),
+                });
+            }
+            return (options, events);
         };
         match set_config_option(connection, session_id, THOUGHT_LEVEL_CONFIG_ID, &value).await {
             // The reply after the level change is the option set the session
             // holds, so it is the one worth reporting.
-            Ok(updated) => updated,
-            Err(_) => options,
+            Ok(updated) => options = updated,
+            Err(error) => {
+                eprintln!(
+                    "loom-worker: the agent did not accept reasoning level `{value}`: {error}"
+                );
+                events.push(ProviderEvent::ProviderWarning {
+                    provider_thread_id: provider_thread_id.clone(),
+                    category: ProviderWarningCategory::Config,
+                    summary: Some(format!(
+                        "The agent did not accept the reasoning level `{}`",
+                        level.as_str()
+                    )),
+                    details: Some(format!(
+                        "The turn ran at whatever level the session already held: {error}"
+                    )),
+                });
+            }
         }
+        (options, events)
+    }
+
+    /// The provider thread id this session reports against.
+    ///
+    /// Read through the translator rather than guessed, because the agent's own
+    /// session id is what a consumer joins these events on.
+    async fn provider_thread_id(&self) -> String {
+        self.state.lock().await.translator.ptid()
     }
 
     /// Reports what this session's config options say the agent can run.
@@ -940,9 +1030,10 @@ impl UpdateSink {
                     .await?;
                 self.finish_load(existing).await;
                 self.on_session_known(existing).await;
-                let options = self
+                let (options, choice_events) = self
                     .apply_config_choices(connection, existing, resumed.config_options)
                     .await;
+                self.report_all(choice_events).await;
                 self.report_catalog(&options).await;
                 existing.clone()
             }
@@ -953,9 +1044,10 @@ impl UpdateSink {
                     .await?;
                 let session_id = created.session_id.0.to_string();
                 self.on_session_known(&session_id).await;
-                let options = self
+                let (options, choice_events) = self
                     .apply_config_choices(connection, &session_id, created.config_options)
                     .await;
+                self.report_all(choice_events).await;
                 self.report_catalog(&options).await;
                 session_id
             }
@@ -1187,6 +1279,34 @@ mod tests {
             thought_level_value(&options, &ReasoningLevel::from("low")),
             None
         );
+    }
+
+    /// The fallback report names what the agent *did* hold, which is only
+    /// knowable from the agent's own reply — a session on a model the thread
+    /// did not ask for is exactly the case this exists to make visible.
+    #[test]
+    fn the_held_model_and_its_ladder_come_from_the_agents_reply() {
+        let options = vec![
+            select(MODEL_CONFIG_ID, "provider/a", &["provider/a", "provider/b"]),
+            select(THOUGHT_LEVEL_CONFIG_ID, "high", &["off", "low", "high"]),
+        ];
+        assert_eq!(
+            select_state(&options, MODEL_CONFIG_ID),
+            Some((
+                "provider/a".to_string(),
+                vec!["provider/a".to_string(), "provider/b".to_string()]
+            ))
+        );
+        assert_eq!(
+            select_state(&options, THOUGHT_LEVEL_CONFIG_ID).map(|(_, offered)| offered),
+            Some(vec![
+                "off".to_string(),
+                "low".to_string(),
+                "high".to_string()
+            ])
+        );
+        // An option the agent did not publish is absent, not invented.
+        assert_eq!(select_state(&options, "service_tier"), None);
     }
 
     /// A grouped selector describes the same model, so it is searched too.

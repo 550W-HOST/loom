@@ -29,10 +29,13 @@ fn pi_binary() -> String {
     std::env::var("PI_BIN").unwrap_or_else(|_| "pi".to_owned())
 }
 
-async fn drive_one(run: ProviderRun, transport: Transport) -> Vec<RunEvent> {
+async fn drive_one(
+    run: ProviderRun,
+    transport: Transport,
+) -> (Vec<RunEvent>, Option<loom_domain::catalog::ProviderCatalog>) {
     let (tx, mut rx) = mpsc::channel(256);
     let (interactions, requests) = mpsc::channel::<loom_provider_protocol::InteractionRequest>(8);
-    let (catalogs, _catalog_reports) = mpsc::channel(8);
+    let (catalogs, mut catalog_reports) = mpsc::channel(8);
     let collector = tokio::spawn(async move {
         let mut seen: Vec<String> = Vec::new();
         let mut requests = requests;
@@ -58,7 +61,10 @@ async fn drive_one(run: ProviderRun, transport: Transport) -> Vec<RunEvent> {
     }
     let _ = handle.await;
     drop(collector);
-    events
+    // The catalogue report the session emitted is the only place the test can
+    // see which model the agent actually settled on.
+    let catalog = catalog_reports.try_recv().ok().map(|report| report.catalog);
+    (events, catalog)
 }
 
 /// The thinking a run streamed, concatenated.
@@ -82,6 +88,7 @@ async fn a_real_turn_reports_its_thinking() {
     spec.cwd = Some(cwd.clone());
     let run = ProviderRun {
         spec,
+        model: std::env::var("PROBE_MODEL").ok(),
         prompt: "Think it through before answering: how many distinct ways can you arrange the \
                  letters of the word BANANA?"
             .to_owned(),
@@ -93,15 +100,44 @@ async fn a_real_turn_reports_its_thinking() {
         permission_timeout: Duration::from_secs(15),
         permission_ceiling: loom_domain::HostPermissionMode::Full,
         provider_session_id: None,
-        model: None,
-        reasoning_level: Some(ReasoningLevel::from("high")),
+        reasoning_level: Some(ReasoningLevel::from(
+            std::env::var("PROBE_REASONING").unwrap_or_else(|_| "high".to_owned()),
+        )),
     };
 
     let transport = Transport::EmbeddedPi {
         command: run.spec.command.clone(),
         args: Vec::new(),
     };
-    let events = drive_one(run, transport).await;
+    let (events, catalog) = drive_one(run, transport).await;
+    if let Some(catalog) = &catalog {
+        println!("session model: {:?}", catalog.current_model);
+        for model in &catalog.models {
+            println!(
+                "  option value {:?}  ladder={:?} default={:?}",
+                model.id,
+                model
+                    .thinking_levels
+                    .iter()
+                    .map(|l| l.id.as_str())
+                    .collect::<Vec<_>>(),
+                model.default_thinking_level
+            );
+        }
+    }
+    for event in &events {
+        match &event.event.body {
+            ProviderEvent::ProviderModelFallback {
+                original_model,
+                fallback_model,
+                ..
+            } => println!("model fallback: {original_model} -> {fallback_model}"),
+            ProviderEvent::ProviderWarning { summary, .. } => {
+                println!("warning: {summary:?}")
+            }
+            _ => {}
+        }
+    }
     let kinds: Vec<&str> = events
         .iter()
         .map(|event| event.kind())
@@ -167,7 +203,10 @@ async fn each_discovered_agent_reports_what_it_thinks() {
             reasoning_level: Some(ReasoningLevel::from("high")),
         };
 
-        let events = drive_one(run, transport).await;
+        let (events, catalog) = drive_one(run, transport).await;
+        if let Some(catalog) = &catalog {
+            println!("          session model: {:?}", catalog.current_model);
+        }
         let thinking = streamed_thinking(&events);
         let terminal = events
             .iter()
