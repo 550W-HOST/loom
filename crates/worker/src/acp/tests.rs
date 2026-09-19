@@ -222,9 +222,13 @@ fn an_edit_carries_a_patch_rather_than_the_whole_new_file() {
         panic!("expected a file change");
     };
     let diff = changes[0].diff.as_deref().expect("a patch");
-    assert!(diff.contains("--- /srv/a.rs"), "{diff}");
-    assert!(diff.contains("+++ /srv/a.rs"), "{diff}");
-    assert!(diff.contains("@@"), "{diff}");
+    // Spelled the way the client's parser reads: a git header naming both
+    // sides, the two header lines, then the hunks. An absolute path loses its
+    // leading slash rather than becoming `a//srv/a.rs`.
+    assert!(
+        diff.starts_with("diff --git a/srv/a.rs b/srv/a.rs\n--- a/srv/a.rs\n+++ b/srv/a.rs\n@@"),
+        "{diff}"
+    );
     assert!(diff.contains("-two\n"), "{diff}");
     assert!(diff.contains("+two changed\n"), "{diff}");
     // Unchanged lines are context — one leading space — rather than a removal
@@ -238,6 +242,120 @@ fn an_edit_carries_a_patch_rather_than_the_whole_new_file() {
             "an unchanged line must not read as changed: {diff}"
         );
     }
+}
+
+/// pi writes its patch with `git diff --no-prefix`, which the client's parser
+/// rejects outright: the row arrives with no file name and nothing drawn under
+/// it. ACP v2 hands over that text as-is, so the adapter re-spells it.
+#[test]
+fn a_no_prefix_patch_is_respelled_into_the_canonical_form() {
+    let mut t = translator();
+    let patch = "diff --git main.rs main.rs\n\
+                 --- main.rs\n\
+                 +++ main.rs\n\
+                 @@ -1,3 +1,3 @@\n\
+                 \x20fn main() {\n\
+                 -    println!(\"hello\");\n\
+                 +    println!(\"loom\");\n\
+                 \x20}\n";
+    let update = v2::ToolCallUpdate::new("tool-1")
+        .kind(v2::ToolKind::Edit)
+        .status(v2::ToolCallStatus::Completed)
+        .content(vec![v2::ToolCallContent::Diff(
+            v2::Diff::new(vec![v2::DiffChange::modify("main.rs")])
+                .with_patch(v2::DiffPatch::new(patch)),
+        )]);
+    let events = t.on_v2_session_update(&v2::SessionUpdate::ToolCallUpdate(update));
+
+    let Some(ThreadEventItem::FileChange { changes, .. }) = events.iter().find_map(|e| match e {
+        ProviderEvent::ItemStarted { item, .. } => Some(item),
+        _ => None,
+    }) else {
+        panic!("expected a file change, got {events:?}");
+    };
+    assert_eq!(changes[0].path, "main.rs");
+    assert_eq!(
+        changes[0].diff.as_deref(),
+        Some(
+            "diff --git a/main.rs b/main.rs\n\
+             --- a/main.rs\n\
+             +++ b/main.rs\n\
+             @@ -1,3 +1,3 @@\n\
+             \x20fn main() {\n\
+             -    println!(\"hello\");\n\
+             +    println!(\"loom\");\n\
+             \x20}\n"
+        )
+    );
+}
+
+/// A patch may cover several files. Each row carries its own file's hunks, not
+/// the whole patch, since a row draws one file's diff.
+#[test]
+fn a_patch_covering_several_files_is_split_across_their_rows() {
+    let mut t = translator();
+    let patch = "diff --git a/a.rs b/a.rs\n\
+                 --- a/a.rs\n\
+                 +++ b/a.rs\n\
+                 @@ -1 +1 @@\n\
+                 -a old\n\
+                 +a new\n\
+                 diff --git a/b.rs b/b.rs\n\
+                 --- a/b.rs\n\
+                 +++ b/b.rs\n\
+                 @@ -1 +1 @@\n\
+                 -b old\n\
+                 +b new\n";
+    let update = v2::ToolCallUpdate::new("tool-1")
+        .kind(v2::ToolKind::Edit)
+        .status(v2::ToolCallStatus::Completed)
+        .content(vec![v2::ToolCallContent::Diff(
+            v2::Diff::new(vec![
+                v2::DiffChange::modify("a.rs"),
+                v2::DiffChange::modify("b.rs"),
+            ])
+            .with_patch(v2::DiffPatch::new(patch)),
+        )]);
+    let events = t.on_v2_session_update(&v2::SessionUpdate::ToolCallUpdate(update));
+
+    let Some(ThreadEventItem::FileChange { changes, .. }) = events.iter().find_map(|e| match e {
+        ProviderEvent::ItemStarted { item, .. } => Some(item),
+        _ => None,
+    }) else {
+        panic!("expected a file change, got {events:?}");
+    };
+    assert_eq!(changes.len(), 2);
+    let a = changes[0].diff.as_deref().expect("a's patch");
+    assert!(a.starts_with("diff --git a/a.rs b/a.rs\n"), "{a}");
+    assert!(a.contains("+a new\n"), "{a}");
+    assert!(!a.contains("b new"), "a's row carries only a's hunks: {a}");
+    let b = changes[1].diff.as_deref().expect("b's patch");
+    assert!(b.starts_with("diff --git a/b.rs b/b.rs\n"), "{b}");
+    assert!(b.contains("+b new\n"), "{b}");
+    assert!(!b.contains("a new"), "b's row carries only b's hunks: {b}");
+}
+
+/// A patch with no hunks is not one a diff view can draw.
+#[test]
+fn a_patch_without_hunks_carries_no_diff() {
+    let mut t = translator();
+    let update = v2::ToolCallUpdate::new("tool-1")
+        .kind(v2::ToolKind::Edit)
+        .status(v2::ToolCallStatus::Completed)
+        .content(vec![v2::ToolCallContent::Diff(
+            v2::Diff::new(vec![v2::DiffChange::modify("/srv/a.rs")])
+                .with_patch(v2::DiffPatch::new("diff --git a/a.rs b/a.rs\n")),
+        )]);
+    let events = t.on_v2_session_update(&v2::SessionUpdate::ToolCallUpdate(update));
+
+    let Some(ThreadEventItem::FileChange { changes, .. }) = events.iter().find_map(|e| match e {
+        ProviderEvent::ItemStarted { item, .. } => Some(item),
+        _ => None,
+    }) else {
+        panic!("expected a file change, got {events:?}");
+    };
+    assert_eq!(changes[0].path, "/srv/a.rs");
+    assert_eq!(changes[0].diff, None);
 }
 
 #[test]

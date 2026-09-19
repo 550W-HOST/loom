@@ -1309,11 +1309,17 @@ fn v2_changes_from_content(content: &[v2::ToolCallContent]) -> Vec<loom_domain::
                     ),
                     _ => return None,
                 };
+                // ACP v2 carries no before/after text, only the agent's own
+                // patch, and that patch is spelled however the agent's `git
+                // diff` was invoked. It is re-spelled per file here.
+                let diff = patch
+                    .as_deref()
+                    .and_then(|text| normalize_git_patch(text, &path));
                 Some(loom_domain::FileChange {
                     path,
                     kind,
                     move_path,
-                    diff: patch.clone(),
+                    diff,
                 })
             }))
         })
@@ -1575,14 +1581,22 @@ fn changes_from_content(content: &[ToolCallContent]) -> Vec<loom_domain::FileCha
                     (Some(old), true) => (loom_domain::FileChangeKind::Delete, old.clone()),
                     (Some(old), false) => (
                         loom_domain::FileChangeKind::Update,
-                        unified_diff(&path, old, &diff.new_text),
+                        unified_diff(old, &diff.new_text),
                     ),
+                };
+                // A file that appeared or disappeared carries its content, as the
+                // contract asks; only an edit is a patch, and that patch is
+                // re-spelled into the one the client can draw.
+                let diff = if kind == loom_domain::FileChangeKind::Update {
+                    normalize_git_patch(&body, &path)
+                } else {
+                    Some(body)
                 };
                 Some(loom_domain::FileChange {
                     path,
                     kind,
                     move_path: None,
-                    diff: Some(body),
+                    diff,
                 })
             }
             _ => None,
@@ -1594,15 +1608,120 @@ fn changes_from_content(content: &[ToolCallContent]) -> Vec<loom_domain::FileCha
 ///
 /// Only the v1 path needs this: v2 hands over a patch already. Three lines of
 /// context is what a reader expects around a change, and it is what the
-/// contract's own examples show.
-fn unified_diff(path: &str, old: &str, new: &str) -> String {
+/// contract's own examples show. The headers come from
+/// [`normalize_git_patch`], so a v1 edit and a v2 one reach the client in the
+/// same shape.
+fn unified_diff(old: &str, new: &str) -> String {
     similar::TextDiff::from_lines(old, new)
         .unified_diff()
         .context_radius(3)
-        // The path is the one the agent gave, which is absolute here: prefixing
-        // it with `a/` would spell an absolute path as `a//srv/...`.
-        .header(path, path)
         .to_string()
+}
+
+/// Rewrites an agent's patch into the one spelling the client can render.
+///
+/// ACP promises `git_patch` text but not how it is spelled. pi writes one with
+/// `git diff --no-prefix`, which starts `diff --git main.rs main.rs`; the
+/// client's parser rejects that header outright ("invalid git diff header"), so
+/// the row reaches the screen with no file name and no lines under it. The
+/// client does render the canonical form — `diff --git a/<path> b/<path>` with
+/// matching `---`/`+++` — so the adapter rewrites the headers and keeps the
+/// agent's own hunks, untouched.
+///
+/// The path is ACP's structured `changes[].operation.path`, which the protocol
+/// calls authoritative, so a patch that covers several files still lands each
+/// file's hunks on that file's row. Slashes are normalized the way the client's
+/// own synthetic patches are, since the header is a display path rather than
+/// something that will be applied.
+fn normalize_git_patch(patch: &str, path: &str) -> Option<String> {
+    let relative = patch_header_path(path);
+    if relative.is_empty() {
+        return None;
+    }
+    let hunks = patch_hunks(patch, &relative)?;
+    Some(format!(
+        "diff --git a/{relative} b/{relative}\n--- a/{relative}\n+++ b/{relative}\n{hunks}"
+    ))
+}
+
+/// The hunks of `patch` that belong to `path`, with every header line dropped.
+///
+/// `None` when the patch carries no hunk for it — an empty diff is not one a
+/// diff view can draw, and the client has its own fallback for a change that
+/// arrives without a patch.
+fn patch_hunks(patch: &str, path: &str) -> Option<String> {
+    let lines: Vec<&str> = patch.lines().collect();
+    let starts: Vec<usize> = lines
+        .iter()
+        .enumerate()
+        .filter(|(_, line)| line.starts_with("diff --git "))
+        .map(|(index, _)| index)
+        .collect();
+    // A patch with no `diff --git` line is a single unnamed section.
+    let sections: Vec<&[&str]> = if starts.is_empty() {
+        vec![&lines]
+    } else {
+        starts
+            .iter()
+            .enumerate()
+            .map(|(index, start)| {
+                let end = starts.get(index + 1).copied().unwrap_or(lines.len());
+                &lines[*start..end]
+            })
+            .collect()
+    };
+    let section = sections
+        .iter()
+        .find(|section| section_paths(section).iter().any(|named| named == path))
+        .or_else(|| sections.first().filter(|_| sections.len() == 1))?;
+    let first_hunk = section.iter().position(|line| line.starts_with("@@"))?;
+    let mut hunks = section[first_hunk..].join("\n");
+    hunks.push('\n');
+    Some(hunks)
+}
+
+/// The file paths a patch section's headers name, in header spelling.
+fn section_paths(section: &[&str]) -> Vec<String> {
+    let mut paths = Vec::new();
+    for line in section {
+        if let Some(rest) = line.strip_prefix("diff --git ") {
+            let mut parts = rest.split_whitespace().map(unquote_patch_path);
+            if let Some(old) = parts.next() {
+                paths.push(old);
+            }
+            if let Some(new) = parts.next_back() {
+                paths.push(new);
+            }
+            continue;
+        }
+        if let Some(rest) = line
+            .strip_prefix("--- ")
+            .or_else(|| line.strip_prefix("+++ "))
+        {
+            paths.push(unquote_patch_path(rest));
+        }
+    }
+    paths
+        .into_iter()
+        .map(|named| patch_header_path(&named))
+        .filter(|named| !named.is_empty() && named != "dev/null")
+        .collect()
+}
+
+/// A patch path as a row spells it: `/`-separated, without a leading slash and
+/// without git's `a/`/`b/` side prefix.
+fn patch_header_path(path: &str) -> String {
+    let normalized = path.replace('\\', "/");
+    let trimmed = normalized.trim_start_matches('/');
+    match trimmed.split_once('/') {
+        Some(("a" | "b", rest)) => rest.to_owned(),
+        _ => trimmed.to_owned(),
+    }
+}
+
+/// A header path without git's quotes, which it adds around paths with spaces.
+fn unquote_patch_path(path: &str) -> String {
+    path.trim_matches('"').to_owned()
 }
 
 /// A path for a read, from ACP's locations or the arguments.
