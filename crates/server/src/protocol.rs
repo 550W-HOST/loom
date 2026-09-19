@@ -482,6 +482,17 @@ pub enum WorkerServerMessage {
     /// First frame on `/internal/ws`; no worker may enroll before checking it.
     Hello {
         protocol_version: u32,
+        /// The agents this server can dispatch, so a worker can read each
+        /// one's catalogue before any run has happened.
+        ///
+        /// Optional on the wire: a worker built before the field existed
+        /// ignores it, and one built afterwards falls back to its own
+        /// configured provider when it is absent. That keeps the frame
+        /// compatible in both directions without a protocol bump, and an empty
+        /// list is omitted so a single-provider server sends what it always
+        /// did.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        providers: Vec<loom_provider_protocol::ProviderSpec>,
     },
     Subscribed {
         scope: Scope,
@@ -972,6 +983,7 @@ mod tests {
     fn worker_handshake_is_distinct_from_the_public_protocol() {
         let hello = WorkerServerMessage::Hello {
             protocol_version: 3,
+            providers: Vec::new(),
         };
         assert_eq!(
             serde_json::to_value(hello).unwrap(),
@@ -980,6 +992,34 @@ mod tests {
         assert!(
             serde_json::from_str::<ClientMessage>(r#"{"type":"hello","protocol_version":3}"#)
                 .is_err()
+        );
+    }
+
+    /// The provider list is additive on the wire: a hello with agents carries
+    /// them, and one without them still parses — which is what lets a worker
+    /// built before the field existed keep enrolling.
+    #[test]
+    fn a_hello_may_carry_the_provider_list() {
+        let providers = vec![loom_provider_protocol::ProviderSpec::pi()];
+        let hello = WorkerServerMessage::Hello {
+            protocol_version: 3,
+            providers: providers.clone(),
+        };
+        let encoded = serde_json::to_value(&hello).unwrap();
+        assert_eq!(
+            encoded["providers"],
+            serde_json::to_value(&providers).unwrap()
+        );
+
+        let without =
+            serde_json::from_str::<WorkerServerMessage>(r#"{"type":"hello","protocol_version":3}"#)
+                .unwrap();
+        assert_eq!(
+            without,
+            WorkerServerMessage::Hello {
+                protocol_version: 3,
+                providers: Vec::new(),
+            }
         );
     }
 

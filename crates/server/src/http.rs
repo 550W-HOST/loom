@@ -22,6 +22,7 @@ use loom_domain::{
     ReasoningLevel, Resolution, ServiceTier, Thread, ThreadId, ThreadStatus, ThreadTrigger,
     ThreadUpdate,
 };
+use loom_provider_protocol::ProviderSpec;
 use loom_relay::scope::Scope;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -773,19 +774,50 @@ struct SystemVersionQuery {
     force: Option<String>,
 }
 
+/// The default agent's id.
+///
+/// Used by routes whose subject does not record a provider yet — a thread, a
+/// queued message, an interaction. Those were dispatched by the default
+/// provider, so naming it is the honest answer until the record carries one of
+/// its own.
 fn configured_provider_id(state: &AppState) -> String {
     state.provider_spec().name.clone()
 }
 
-fn configured_provider_info(state: &AppState) -> Value {
-    let provider_id = configured_provider_id(state);
+/// The agent a system query is about.
+///
+/// A request that names a configured provider gets it; one that names an
+/// unknown id, or none at all, gets the default. The client only ever names a
+/// provider this server advertised, so the fallback covers a stale tab rather
+/// than a normal path.
+fn query_provider<'a>(state: &'a AppState, query: &ProviderQuery) -> &'a ProviderSpec {
+    query
+        .provider_id
+        .as_deref()
+        .and_then(|provider_id| state.provider_spec_by_id(provider_id))
+        .unwrap_or_else(|| state.provider_spec())
+}
+
+/// The name an agent is shown under.
+///
+/// Cosmetic, and deliberately a table rather than a field on [`ProviderSpec`]:
+/// that is the dispatch contract and carries launch metadata, not presentation.
+fn provider_display_name(provider_id: &str) -> String {
+    match provider_id {
+        "pi" => "Pi".to_owned(),
+        other => other.to_owned(),
+    }
+}
+
+fn provider_info(spec: &ProviderSpec) -> Value {
+    let provider_id = spec.name.clone();
     let logo_url = format!("/api/v1/system/providers/{provider_id}/logo");
     json!({
         "id": provider_id,
         // `pluginId` remains a required bb field even though loom providers
         // are first-class and do not use a plugin lifecycle.
         "pluginId": "loom",
-        "displayName": "Pi",
+        "displayName": provider_display_name(&spec.name),
         // The client draws the provider mark from `logoUrl`, and keeps
         // `family` as the fallback it uses when no logo can be loaded.
         "logoUrl": logo_url,
@@ -813,8 +845,7 @@ fn configured_provider_info(state: &AppState) -> Value {
     })
 }
 
-fn configured_model(state: &AppState) -> Value {
-    let provider_id = configured_provider_id(state);
+fn configured_model(provider_id: &str) -> Value {
     json!({
         "id": format!("{provider_id}/default"),
         "model": provider_id,
@@ -889,20 +920,29 @@ fn catalog_models(catalog: &ProviderCatalog, provider_id: &str) -> Vec<Value> {
         .collect()
 }
 
-/// The catalogue a query's host reported, when there is one to serve.
+/// The catalogue a query's host reported for one provider, when there is one.
 ///
 /// A named host's own answer is the only acceptable one: answering with another
 /// machine's models would offer choices the agent that will run the thread does
-/// not have. A query that named no host — a fresh install's first composer
-/// call, before an environment is chosen — takes the newest report, which is
-/// what lets the picker show real models before anything has run.
-fn catalog_for_query(state: &AppState, query: &ProviderQuery) -> Option<ProviderCatalog> {
+/// not have. The provider is part of the key for the same reason — two agents
+/// on one machine advertise different models. A query that named no host — a
+/// fresh install's first composer call, before an environment is chosen —
+/// takes the newest report for that provider, which is what lets the picker
+/// show real models before anything has run.
+fn catalog_for_query(
+    state: &AppState,
+    provider_id: &str,
+    query: &ProviderQuery,
+) -> Option<ProviderCatalog> {
     if let Some(host_id) = query
         .host_id
         .as_deref()
         .and_then(|raw| raw.parse::<HostId>().ok())
     {
-        return state.catalogs.get(&host_id).filter(|it| !it.is_empty());
+        return state
+            .catalogs
+            .get(&host_id, provider_id)
+            .filter(|it| !it.is_empty());
     }
     if let Some(environment_id) = query
         .environment_id
@@ -910,27 +950,42 @@ fn catalog_for_query(state: &AppState, query: &ProviderQuery) -> Option<Provider
         .and_then(|raw| raw.parse::<EnvironmentId>().ok())
     {
         let host_id = state.registry.environment(&environment_id)?.host_id;
-        return state.catalogs.get(&host_id).filter(|it| !it.is_empty());
+        return state
+            .catalogs
+            .get(&host_id, provider_id)
+            .filter(|it| !it.is_empty());
     }
-    state.catalogs.most_recent()
+    state.catalogs.most_recent(provider_id)
 }
 
-fn configured_execution_options(state: &AppState, catalog: Option<&ProviderCatalog>) -> Value {
+/// The execution options one provider resolves to.
+///
+/// `providers` lists every configured agent, because that is the list the
+/// composer's provider picker draws its tabs from; `models` are the ones the
+/// request's provider advertised, so a tab that is not the selected one never
+/// leaks its models into another's catalogue.
+fn execution_options_for(
+    state: &AppState,
+    provider: &ProviderSpec,
+    catalog: Option<&ProviderCatalog>,
+) -> Value {
+    let providers: Vec<Value> = state.providers().iter().map(provider_info).collect();
     if let Some(catalog) = catalog.filter(|catalog| !catalog.is_empty()) {
-        let models = catalog_models(catalog, &configured_provider_id(state));
+        let models = catalog_models(catalog, &provider.name);
         return json!({
-            "providers": [configured_provider_info(state)],
+            "providers": providers,
             "permissionCeiling": "full",
             "models": models,
             "selectedOnlyModels": models,
             "modelLoadError": null,
         });
     }
-    // No host has described its agent yet. The hardcoded entry keeps the picker
-    // non-empty, and is replaced the moment a worker reports its catalogue.
-    let model = configured_model(state);
+    // No host has described this agent yet. The hardcoded entry keeps the
+    // picker non-empty, and is replaced the moment a worker reports its
+    // catalogue.
+    let model = configured_model(&provider.name);
     json!({
-        "providers": [configured_provider_info(state)],
+        "providers": providers,
         "permissionCeiling": "full",
         "models": [model.clone()],
         "selectedOnlyModels": [model],
@@ -1114,37 +1169,48 @@ async fn execution_options(
     State(state): State<AppState>,
     Query(query): Query<ProviderQuery>,
 ) -> Json<Value> {
-    let catalog = catalog_for_query(&state, &query);
-    Json(configured_execution_options(&state, catalog.as_ref()))
+    let provider = query_provider(&state, &query);
+    let catalog = catalog_for_query(&state, &provider.name, &query);
+    Json(execution_options_for(&state, provider, catalog.as_ref()))
 }
 
 async fn system_providers(
     State(state): State<AppState>,
     Query(_query): Query<ProviderQuery>,
 ) -> Json<Value> {
-    Json(json!([configured_provider_info(&state)]))
+    Json(json!(state
+        .providers()
+        .iter()
+        .map(provider_info)
+        .collect::<Vec<_>>()))
 }
 
 async fn system_provider_states(
     State(state): State<AppState>,
     Query(_query): Query<ProviderQuery>,
 ) -> Json<Value> {
-    let provider_id = configured_provider_id(&state);
-    Json(json!({
-        "providers": [{
-            "status": "unknown",
-            "statusMessage": null,
-            "accountEmail": null,
-            "planLabel": null,
-            "installedVersion": null,
-            "minimumSupportedVersion": null,
-            "canInstall": false,
-            "canUpdate": false,
-            "loginCommand": null,
-            "providerId": provider_id,
-            "displayName": "Pi"
-        }]
-    }))
+    // One entry per configured agent: the client uses this list to find a
+    // provider it can use, so reporting only the default would hide the others.
+    let providers: Vec<Value> = state
+        .providers()
+        .iter()
+        .map(|spec| {
+            json!({
+                "status": "unknown",
+                "statusMessage": null,
+                "accountEmail": null,
+                "planLabel": null,
+                "installedVersion": null,
+                "minimumSupportedVersion": null,
+                "canInstall": false,
+                "canUpdate": false,
+                "loginCommand": null,
+                "providerId": spec.name,
+                "displayName": provider_display_name(&spec.name)
+            })
+        })
+        .collect();
+    Json(json!({ "providers": providers }))
 }
 
 async fn system_version(Query(_query): Query<SystemVersionQuery>) -> Json<Value> {
@@ -2678,7 +2744,7 @@ async fn project_default_execution_options(
     }
     // The configured model's `model` field is the provider id today; reading it
     // from `configured_model` keeps the two in step if that changes.
-    let model = configured_model(&state)
+    let model = configured_model(&provider_id)
         .get("model")
         .and_then(Value::as_str)
         .map(str::to_owned)
@@ -6345,6 +6411,7 @@ mod tests {
     use axum::http::Request;
     use http_body_util::BodyExt;
     use loom_domain::catalog::CatalogThinkingLevel;
+    use loom_provider_protocol::ProviderLaunch;
     use tower::ServiceExt;
 
     fn test_state() -> AppState {
@@ -6567,6 +6634,7 @@ mod tests {
         let host_id = HostId::mint();
         state.catalogs.record(
             &host_id,
+            "pi",
             ProviderCatalog {
                 current_model: Some("mock/fast".into()),
                 models: vec![
@@ -6623,6 +6691,7 @@ mod tests {
         let known = HostId::mint();
         state.catalogs.record(
             &known,
+            "pi",
             ProviderCatalog {
                 current_model: Some("mock/only".into()),
                 models: vec![catalog_model_fixture("mock/only", "Only", &["off"], None)],
@@ -6659,6 +6728,115 @@ mod tests {
         assert_eq!(
             json["models"][0]["supportedReasoningEfforts"][0]["reasoningEffort"],
             "medium"
+        );
+        state.shutdown();
+    }
+
+    fn provider_spec(name: &str, launch: ProviderLaunch, command: &str) -> ProviderSpec {
+        ProviderSpec {
+            name: name.to_owned(),
+            launch,
+            command: command.to_owned(),
+            args: Vec::new(),
+            cwd: None,
+        }
+    }
+
+    /// A second configured agent is advertised, catalogued separately, and
+    /// served only its own models.
+    #[tokio::test]
+    async fn each_configured_provider_serves_its_own_catalogue() {
+        let state = AppState::build(AppConfig {
+            providers: vec![
+                provider_spec("pi", ProviderLaunch::AcpEmbeddedPi, "pi"),
+                provider_spec("codex", ProviderLaunch::AcpStdio, "codex"),
+            ],
+            ..AppConfig::default()
+        })
+        .unwrap();
+        let host_id = HostId::mint();
+        state.catalogs.record(
+            &host_id,
+            "pi",
+            ProviderCatalog {
+                current_model: Some("pi/one".into()),
+                models: vec![catalog_model_fixture(
+                    "pi/one",
+                    "Pi One",
+                    &["off"],
+                    Some("off"),
+                )],
+            },
+        );
+        state.catalogs.record(
+            &host_id,
+            "codex",
+            ProviderCatalog {
+                current_model: Some("codex/two".into()),
+                models: vec![catalog_model_fixture(
+                    "codex/two",
+                    "Codex Two",
+                    &["minimal"],
+                    Some("minimal"),
+                )],
+            },
+        );
+        let app = router(state.clone());
+
+        let providers = body_json(get(&app, "/api/v1/system/providers").await).await;
+        let ids: Vec<&str> = providers
+            .as_array()
+            .expect("providers is an array")
+            .iter()
+            .filter_map(|provider| provider["id"].as_str())
+            .collect();
+        assert_eq!(ids, vec!["pi", "codex"]);
+
+        let listed = body_json(
+            get(
+                &app,
+                &format!("/api/v1/system/execution-options?hostId={host_id}"),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(
+            listed["providers"].as_array().map(Vec::len),
+            Some(2),
+            "the picker draws its provider tabs from this list"
+        );
+        assert_eq!(
+            listed["models"][0]["model"], "pi/one",
+            "a query that names no provider gets the default one"
+        );
+
+        let codex = body_json(
+            get(
+                &app,
+                &format!("/api/v1/system/execution-options?hostId={host_id}&providerId=codex"),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(
+            codex["models"].as_array().map(Vec::len),
+            Some(1),
+            "only the named provider's models"
+        );
+        assert_eq!(codex["models"][0]["model"], "codex/two");
+        assert_eq!(codex["models"][0]["displayName"], "Codex Two");
+
+        let unknown = body_json(
+            get(
+                &app,
+                &format!("/api/v1/system/execution-options?hostId={host_id}&providerId=nope"),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(
+            unknown["models"][0]["model"], "pi/one",
+            "a stale provider id falls back to the default rather than failing the picker"
         );
         state.shutdown();
     }

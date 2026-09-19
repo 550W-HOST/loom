@@ -301,7 +301,7 @@ printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":
     );
 
     let (url, state) = spawn_server(AppConfig {
-        provider_spec: provider.clone(),
+        providers: vec![provider.clone()],
         ..AppConfig::default()
     })
     .await;
@@ -375,7 +375,7 @@ printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":
 "#,
     );
     let (url, state) = spawn_server(AppConfig {
-        provider_spec: provider.clone(),
+        providers: vec![provider.clone()],
         ..AppConfig::default()
     })
     .await;
@@ -440,7 +440,7 @@ async fn a_provider_runs_in_the_environment_workspace() {
     );
 
     let (url, state) = spawn_server(AppConfig {
-        provider_spec: provider.clone(),
+        providers: vec![provider.clone()],
         ..AppConfig::default()
     })
     .await;
@@ -485,7 +485,7 @@ async fn a_dispatch_to_a_missing_workspace_fails_with_a_clear_reason() {
     );
 
     let (url, state) = spawn_server(AppConfig {
-        provider_spec: provider.clone(),
+        providers: vec![provider.clone()],
         ..AppConfig::default()
     })
     .await;
@@ -541,7 +541,7 @@ exit 7
     );
 
     let (url, state) = spawn_server(AppConfig {
-        provider_spec: provider.clone(),
+        providers: vec![provider.clone()],
         ..AppConfig::default()
     })
     .await;
@@ -592,7 +592,7 @@ async fn a_hanging_provider_is_killed_and_reported_as_timed_out() {
     );
 
     let (url, state) = spawn_server(AppConfig {
-        provider_spec: provider.clone(),
+        providers: vec![provider.clone()],
         // A long server deadline, so the worker's own timeout is what fires.
         run_timeout: Duration::from_secs(60),
         ..AppConfig::default()
@@ -634,7 +634,7 @@ async fn a_dispatch_missed_while_disconnected_is_replayed_on_reconnect() {
     );
 
     let (url, state) = spawn_server(AppConfig {
-        provider_spec: provider.clone(),
+        providers: vec![provider.clone()],
         ..AppConfig::default()
     })
     .await;
@@ -691,7 +691,7 @@ async fn a_run_on_a_silent_worker_is_reaped_by_the_stale_heartbeat_sweep() {
     let provider = write_stub(dir.path(), "never.sh", "sleep 30\n");
 
     let (url, state) = spawn_server(AppConfig {
-        provider_spec: provider.clone(),
+        providers: vec![provider.clone()],
         run_timeout: Duration::from_secs(60),
         host_stale_after: Duration::from_millis(300),
         reconcile_interval: Duration::from_millis(25),
@@ -928,7 +928,7 @@ async fn a_reconnect_recovers_more_dispatches_than_one_replay_page() {
     );
 
     let (url, state) = spawn_server(AppConfig {
-        provider_spec: provider.clone(),
+        providers: vec![provider.clone()],
         run_timeout: Duration::from_secs(60),
         ..AppConfig::default()
     })
@@ -1068,7 +1068,7 @@ async fn a_permission_request_is_answered_through_the_interaction_routes() {
     let dir = tempfile::tempdir().unwrap();
     let provider = write_stub(dir.path(), "permission.sh", PERMISSION_STUB);
     let (url, state) = spawn_server(AppConfig {
-        provider_spec: provider.clone(),
+        providers: vec![provider.clone()],
         run_timeout: Duration::from_secs(30),
         ..AppConfig::default()
     })
@@ -1175,7 +1175,7 @@ async fn a_denied_permission_selects_the_agents_rejecting_option() {
     let dir = tempfile::tempdir().unwrap();
     let provider = write_stub(dir.path(), "deny.sh", PERMISSION_STUB);
     let (url, state) = spawn_server(AppConfig {
-        provider_spec: provider.clone(),
+        providers: vec![provider.clone()],
         run_timeout: Duration::from_secs(30),
         ..AppConfig::default()
     })
@@ -1246,7 +1246,7 @@ async fn a_client_cancelled_permission_unblocks_the_agent() {
     let dir = tempfile::tempdir().unwrap();
     let provider = write_stub(dir.path(), "cancel.sh", PERMISSION_STUB);
     let (url, state) = spawn_server(AppConfig {
-        provider_spec: provider.clone(),
+        providers: vec![provider.clone()],
         run_timeout: Duration::from_secs(30),
         ..AppConfig::default()
     })
@@ -1329,7 +1329,7 @@ async fn an_unanswered_permission_is_cancelled_when_the_run_ends() {
     let dir = tempfile::tempdir().unwrap();
     let provider = write_stub(dir.path(), "unanswered.sh", PERMISSION_STUB);
     let (url, state) = spawn_server(AppConfig {
-        provider_spec: provider.clone(),
+        providers: vec![provider.clone()],
         // Short enough that the run deadline reaps the blocked turn.
         run_timeout: Duration::from_millis(150),
         ..AppConfig::default()
@@ -1503,7 +1503,7 @@ async fn a_scheduled_automation_run_becomes_a_real_turn() {
 "#,
     );
     let (url, state) = spawn_server(AppConfig {
-        provider_spec: provider.clone(),
+        providers: vec![provider.clone()],
         schedule_interval: Duration::ZERO,
         ..AppConfig::default()
     })
@@ -1601,7 +1601,7 @@ async fn a_manual_automation_run_dispatches_and_closes_with_its_thread() {
 "#,
     );
     let (url, state) = spawn_server(AppConfig {
-        provider_spec: provider.clone(),
+        providers: vec![provider.clone()],
         schedule_interval: Duration::ZERO,
         ..AppConfig::default()
     })

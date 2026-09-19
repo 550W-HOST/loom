@@ -361,18 +361,24 @@ pub struct ProviderReport {
     pub event: RunEvent,
 }
 
-/// A worker's report of what the agent on its machine can run.
+/// A worker's report of what one agent on its machine can run.
 ///
-/// This is a fact about the **host**, not about a run: which models the agent
-/// advertises and which thinking-level ladder belongs to each of them. It is
-/// therefore its own frame rather than a field on a run event, and the server
-/// keeps it per host. The worker reads it once at enrollment and again from
-/// every session it opens, so a model list that changes under a stored choice
-/// is corrected on the next turn.
+/// This is a fact about one **provider on one host**, not about a run: which
+/// models that agent advertises and which thinking-level ladder belongs to each
+/// of them. It is therefore its own frame rather than a field on a run event,
+/// and the server keeps it under `(host, provider)`. The worker reads it once
+/// at enrollment and again from every session it opens, so a model list that
+/// changes under a stored choice is corrected on the next turn.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProviderCatalogReport {
     /// The host whose agent this catalogue describes.
     pub host_id: HostId,
+    /// The provider that agent serves, as [`ProviderSpec::name`] spells it.
+    ///
+    /// A machine may run several agents — `pi`, `codex`, `claude-code` — and
+    /// each advertises its own models, so a catalogue without this would be
+    /// attributed to whichever agent happened to report first.
+    pub provider_id: String,
     /// The models the agent advertised, and the one its session is on.
     pub catalog: ProviderCatalog,
 }

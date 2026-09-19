@@ -392,6 +392,13 @@ impl RunSeen {
 pub struct Worker {
     socket: Socket,
     config: WorkerConfig,
+    /// The agents the server can dispatch, as it announced them at connect.
+    ///
+    /// The worker probes each one's catalogue at enrollment, so this is what
+    /// makes a second agent show real models before any run has happened. An
+    /// older server that sends none falls back to the worker's own spec, which
+    /// is the single-provider behaviour this replaced.
+    providers: Vec<ProviderSpec>,
     host_id: Option<HostId>,
     /// Highest host-scope event id applied, for reconnect replay.
     cursor: Option<EventId>,
@@ -459,7 +466,10 @@ impl Worker {
         let url = config.websocket_url();
         let (mut socket, _) = connect_async(&url).await?;
         match next_message(&mut socket).await? {
-            ServerMessage::Hello { protocol_version } => {
+            ServerMessage::Hello {
+                protocol_version,
+                providers,
+            } => {
                 // Refuse a peer this build cannot speak to, before enrolling.
                 // A mismatch after enrollment would corrupt dispatch/runs.
                 ensure_compatible_protocol(protocol_version)?;
@@ -478,6 +488,7 @@ impl Worker {
                     socket,
                     cursor: config.resume_cursor,
                     config,
+                    providers,
                     host_id: None,
                     seen_events: SeenSet::new(DISPATCH_DEDUP_CAPACITY),
                     seen_runs: RunSeen::new(DISPATCH_DEDUP_CAPACITY),
@@ -561,53 +572,70 @@ impl Worker {
         Ok(host_id)
     }
 
-    /// Asks the agent on this machine what it can run, and reports the answer.
+    /// Asks each agent on this machine what it can run, and reports the answers.
     ///
     /// The catalogue a fresh install needs cannot wait for a run to happen, so
-    /// it is probed once per enrollment — and re-probed on every reconnect,
-    /// which is what keeps it current when the agent is upgraded underneath a
-    /// long-lived worker.
+    /// every advertised agent is probed once per enrollment — and re-probed on
+    /// every reconnect, which is what keeps it current when an agent is
+    /// upgraded underneath a long-lived worker.
     ///
-    /// The probe reuses the same transport a run would use. An operator override
-    /// wins, because on a machine that needed one the default `pi` may not exist
-    /// at all; with no override the built-in `pi` spec is what every dispatch
-    /// would carry anyway.
+    /// Each probe runs in its own task: a slow or missing agent delays only its
+    /// own catalogue, never enrollment or its siblings'.
     fn probe_catalog(&self, host_id: &HostId) {
-        let spec = self.config.provider.clone().unwrap_or_default();
-        let transport = match spec.launch {
-            ProviderLaunch::AcpStdio => crate::acp::session::Transport::Stdio {
-                command: spec.command,
-                args: spec.args,
-            },
-            ProviderLaunch::AcpEmbeddedPi => crate::acp::session::Transport::EmbeddedPi {
-                command: spec.command,
-                args: spec.args,
-            },
-        };
-        // The probe opens a session in the worker's own directory: it is not
-        // about a project, it only needs a workspace the agent accepts.
-        let cwd = std::env::current_dir()
-            .map(|dir| dir.to_string_lossy().into_owned())
-            .unwrap_or_else(|_| ".".to_owned());
-        let host_id = host_id.clone();
-        let reports = self.catalog_reports_tx.clone();
-        tokio::spawn(async move {
-            match crate::acp::catalog::read_catalog(transport, cwd, DEFAULT_CATALOG_PROBE_BUDGET)
+        for spec in self.probe_specs() {
+            // The probe opens a session in the worker's own directory: it is
+            // not about a project, it only needs a workspace the agent accepts.
+            let cwd = std::env::current_dir()
+                .map(|dir| dir.to_string_lossy().into_owned())
+                .unwrap_or_else(|_| ".".to_owned());
+            let transport = match spec.launch {
+                ProviderLaunch::AcpStdio => crate::acp::session::Transport::Stdio {
+                    command: spec.command,
+                    args: spec.args,
+                },
+                ProviderLaunch::AcpEmbeddedPi => crate::acp::session::Transport::EmbeddedPi {
+                    command: spec.command,
+                    args: spec.args,
+                },
+            };
+            let provider_id = spec.name;
+            let host_id = host_id.clone();
+            let reports = self.catalog_reports_tx.clone();
+            tokio::spawn(async move {
+                match crate::acp::catalog::read_catalog(
+                    transport,
+                    cwd,
+                    DEFAULT_CATALOG_PROBE_BUDGET,
+                )
                 .await
-            {
-                crate::acp::catalog::CatalogProbeOutcome::Read(catalog) if !catalog.is_empty() => {
-                    let _ = reports
-                        .send(ProviderCatalogReport { host_id, catalog })
-                        .await;
+                {
+                    crate::acp::catalog::CatalogProbeOutcome::Read(catalog)
+                        if !catalog.is_empty() =>
+                    {
+                        let _ = reports
+                            .send(ProviderCatalogReport {
+                                host_id,
+                                provider_id,
+                                catalog,
+                            })
+                            .await;
+                    }
+                    crate::acp::catalog::CatalogProbeOutcome::Read(_) => {
+                        eprintln!("loom-worker: {provider_id} advertised no models");
+                    }
+                    crate::acp::catalog::CatalogProbeOutcome::Failed { error } => {
+                        eprintln!(
+                            "loom-worker: could not read the {provider_id} catalogue: {error}"
+                        );
+                    }
                 }
-                crate::acp::catalog::CatalogProbeOutcome::Read(_) => {
-                    eprintln!("loom-worker: the ACP agent advertised no models");
-                }
-                crate::acp::catalog::CatalogProbeOutcome::Failed { error } => {
-                    eprintln!("loom-worker: could not read the ACP agent catalogue: {error}");
-                }
-            }
-        });
+            });
+        }
+    }
+
+    /// The specs to probe for this connection.
+    fn probe_specs(&self) -> Vec<ProviderSpec> {
+        probe_specs(&self.providers, self.config.provider.as_ref())
     }
 
     /// Sends one heartbeat. Frames are not awaited: heartbeats carry no reply
@@ -1112,6 +1140,45 @@ impl Worker {
     }
 }
 
+/// The specs a worker probes at enrollment, with the operator override applied.
+///
+/// The override replaces the **default** agent's executable, because that is
+/// the one dispatch hands a run when the caller names no provider. A machine
+/// that pins one binary therefore keeps its single-provider behaviour, while
+/// agents the server listed for itself are probed exactly as configured.
+///
+/// An empty `advertised` list means an older server, which sent no provider
+/// list at all; the worker then probes what a dispatch would carry.
+fn probe_specs(
+    advertised: &[ProviderSpec],
+    override_spec: Option<&ProviderSpec>,
+) -> Vec<ProviderSpec> {
+    let advertised = if advertised.is_empty() {
+        vec![override_spec.cloned().unwrap_or_default()]
+    } else {
+        advertised.to_vec()
+    };
+    let Some(override_spec) = override_spec else {
+        return advertised;
+    };
+    advertised
+        .into_iter()
+        .enumerate()
+        .map(|(index, spec)| {
+            if index != 0 {
+                return spec;
+            }
+            ProviderSpec {
+                name: spec.name,
+                launch: override_spec.launch,
+                command: override_spec.command.clone(),
+                args: override_spec.args.clone(),
+                cwd: spec.cwd,
+            }
+        })
+        .collect()
+}
+
 /// Creates one managed environment's workspace under `root`.
 ///
 /// The directory is `<root>/<environment_id>`. Creation is idempotent, so a
@@ -1241,5 +1308,59 @@ mod tests {
             panic!("expected a failure, got {outcome:?}");
         };
         assert!(error.contains("not-a-dir"), "{error}");
+    }
+
+    fn spec(name: &str, command: &str) -> ProviderSpec {
+        ProviderSpec {
+            name: name.to_owned(),
+            launch: loom_provider_protocol::ProviderLaunch::AcpStdio,
+            command: command.to_owned(),
+            args: Vec::new(),
+            cwd: None,
+        }
+    }
+
+    /// Every agent the server advertised is probed, not just the default.
+    #[test]
+    fn every_advertised_agent_is_probed() {
+        let advertised = vec![spec("pi", "pi"), spec("codex", "codex")];
+        let probed = probe_specs(&advertised, None);
+        assert_eq!(
+            probed
+                .iter()
+                .map(|spec| spec.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["pi", "codex"]
+        );
+    }
+
+    /// An operator override replaces the default agent's executable, and only
+    /// that one: a pinned machine keeps its single-provider behaviour without
+    /// breaking the agents the server listed for itself.
+    #[test]
+    fn the_override_replaces_only_the_default_agents_executable() {
+        let advertised = vec![spec("pi", "pi"), spec("codex", "codex")];
+        let override_spec = spec("acp", "/opt/custom/agent");
+        let probed = probe_specs(&advertised, Some(&override_spec));
+
+        assert_eq!(probed[0].name, "pi", "the default keeps its identity");
+        assert_eq!(probed[0].command, "/opt/custom/agent");
+        assert_eq!(probed[1].name, "codex");
+        assert_eq!(probed[1].command, "codex", "a sibling is left alone");
+    }
+
+    /// A server that sent no list (an older one) is probed with what a dispatch
+    /// would carry: the override when there is one, the built-in provider
+    /// otherwise.
+    #[test]
+    fn a_server_without_a_provider_list_falls_back_to_a_dispatch_spec() {
+        let override_spec = spec("acp", "/opt/custom/agent");
+        let probed = probe_specs(&[], Some(&override_spec));
+        assert_eq!(probed.len(), 1);
+        assert_eq!(probed[0].command, "/opt/custom/agent");
+
+        let probed = probe_specs(&[], None);
+        assert_eq!(probed.len(), 1);
+        assert_eq!(probed[0].name, ProviderSpec::default().name);
     }
 }

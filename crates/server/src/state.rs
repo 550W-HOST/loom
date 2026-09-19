@@ -96,8 +96,18 @@ pub struct AppConfig {
     /// `Duration::ZERO` disables the periodic writer; a snapshot is still
     /// written once, on a clean shutdown.
     pub snapshot_interval: Duration,
-    /// The provider the control plane asks execution machines to run.
-    pub provider_spec: ProviderSpec,
+    /// The agents the control plane can ask execution machines to run, in
+    /// preference order.
+    ///
+    /// One entry is the normal case today (`pi`), but the list is what makes a
+    /// second ACP agent — `codex`, `claude-code`, `omp` — a configuration
+    /// change rather than a rewrite: a provider is identified by
+    /// [`ProviderSpec::name`] everywhere on the wire, and the first entry is
+    /// the default a caller that has not chosen one gets.
+    ///
+    /// An empty list is normalised to `[pi]` when the state is built, so the
+    /// accessors can promise at least one provider.
+    pub providers: Vec<ProviderSpec>,
     /// A frontend dev server to reverse-proxy unmatched requests to.
     ///
     /// Development only: the product app is embedded in the binary, and this is
@@ -129,7 +139,7 @@ impl Default for AppConfig {
             reconcile_interval: Duration::from_secs(5),
             schedule_interval: Duration::from_secs(10),
             snapshot_interval: Duration::from_secs(30),
-            provider_spec: ProviderSpec::pi(),
+            providers: vec![ProviderSpec::pi()],
             ui_proxy: None,
             artifact_dir: None,
         }
@@ -201,7 +211,7 @@ pub struct AppState {
     local_host_id: Option<HostId>,
     run_timeout_ms: u64,
     host_stale_after_ms: u64,
-    provider_spec: ProviderSpec,
+    provider_specs: Vec<ProviderSpec>,
     reconcile_stop: Arc<AtomicBool>,
     snapshot_stop: Arc<AtomicBool>,
     schedule_stop: Arc<AtomicBool>,
@@ -275,7 +285,17 @@ impl AppState {
         // in-process backends leave the entity view ephemeral (see
         // `docs/domain-persistence.md`).
         let snapshot_root = config.backend_path.clone();
-        let provider_id = config.provider_spec.name.clone();
+        // Normalised once, so every accessor can promise at least one provider.
+        let provider_specs = if config.providers.is_empty() {
+            vec![ProviderSpec::pi()]
+        } else {
+            config.providers
+        };
+        let provider_id = provider_specs
+            .first()
+            .expect("the provider list is normalised to at least one entry")
+            .name
+            .clone();
 
         let state = Self {
             relay,
@@ -301,7 +321,7 @@ impl AppState {
                 .host_stale_after
                 .as_millis()
                 .min(u128::from(u64::MAX)) as u64,
-            provider_spec: config.provider_spec,
+            provider_specs,
             reconcile_stop: Arc::new(AtomicBool::new(false)),
             snapshot_stop: Arc::new(AtomicBool::new(false)),
             schedule_stop: Arc::new(AtomicBool::new(false)),
@@ -442,12 +462,30 @@ impl AppState {
         self.host_stale_after_ms
     }
 
-    /// The provider the control plane asks execution machines to run.
+    /// Every agent the control plane can dispatch, in preference order.
+    pub fn providers(&self) -> &[ProviderSpec] {
+        &self.provider_specs
+    }
+
+    /// The agent a caller gets when it has not chosen one.
+    ///
+    /// This is the first configured provider. Callers that resolve a provider
+    /// from a request must use [`AppState::provider_spec_by_id`] instead, so a
+    /// request for one agent's models is never answered with another's.
     ///
     /// `pub` because a route's response (`projects.commands`) names the
     /// provider it runs, and an integration test exercises that route.
     pub fn provider_spec(&self) -> &ProviderSpec {
-        &self.provider_spec
+        self.provider_specs
+            .first()
+            .expect("the state normalises an empty provider list to the built-in provider")
+    }
+
+    /// The configured agent with this id, when the operator listed one.
+    pub fn provider_spec_by_id(&self, provider_id: &str) -> Option<&ProviderSpec> {
+        self.provider_specs
+            .iter()
+            .find(|spec| spec.name == provider_id)
     }
 
     /// The operator-declared local host, if any.
@@ -543,7 +581,7 @@ impl AppState {
                 let runs = snapshot.runs.clone();
                 self.registry.restore(snapshot.registry);
                 if let Some(settings) = snapshot.settings {
-                    self.settings.restore(settings, &self.provider_spec.name);
+                    self.settings.restore(settings, &self.provider_spec().name);
                 }
                 if let Some(automations) = snapshot.automations {
                     self.automations.restore(automations);

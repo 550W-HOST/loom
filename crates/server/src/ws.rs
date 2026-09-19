@@ -233,6 +233,9 @@ async fn handle_worker(socket: WebSocket, state: AppState) {
         &mut sink,
         &ServerMessage::Hello {
             protocol_version: crate::PROTOCOL_VERSION,
+            // The agents this server can dispatch, so a worker can read each
+            // one's catalogue at enrollment instead of waiting for a run.
+            providers: state.providers().to_vec(),
         },
     )
     .await
@@ -502,7 +505,9 @@ async fn handle_command(
                         .into(),
                 });
             }
-            state.catalogs.record(&host_id, report.catalog);
+            state
+                .catalogs
+                .record(&host_id, &report.provider_id, report.catalog);
             None
         }
         ClientCommand::InteractionRequest { request } => {

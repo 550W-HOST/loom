@@ -425,7 +425,7 @@ async fn a_protocol_mismatch_updates_the_worker_and_the_new_binary_runs_a_turn()
     // `--no-auto-update` here: the real server's protocol matches, so this only
     // documents that the update half is finished with this binary.
     let (real_url, server_state) = spawn_server(AppConfig {
-        provider_spec: provider,
+        providers: vec![provider],
         ..AppConfig::default()
     })
     .await;

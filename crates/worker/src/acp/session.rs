@@ -899,6 +899,9 @@ impl UpdateSink {
             .catalogs
             .send(ProviderCatalogReport {
                 host_id: self.run.host_id.clone(),
+                // The agent that served this session: a machine may run
+                // several, and the server keys catalogues by the pair.
+                provider_id: self.run.spec.name.clone(),
                 catalog,
             })
             .await;
