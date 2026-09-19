@@ -25,6 +25,7 @@ import type {
   ThreadFilesRawQuery,
   ThreadGetQuery,
   ThreadHostFileContentQuery,
+  ReorderPinnedThreadRequest,
   ResolvePendingInteractionRequest,
   ThreadResponse,
   ThreadPendingInteractionsResponse,
@@ -48,6 +49,7 @@ import type {
   PendingInteraction,
   ProjectExecutionDefaults,
   ResolvedThreadExecutionOptions,
+  ThreadListEntry,
 } from "@bb/domain";
 
 /**
@@ -161,6 +163,11 @@ export const LOOM_API_REQUEST_SPECS = {
   },
   "threads.interaction": { source: "none" },
   "threads.interactions": { source: "none" },
+  "threads.pin": { source: "none" },
+  "threads.pinOrder": {
+    source: "json",
+    json: {} as ReorderPinnedThreadRequest,
+  },
   "threads.rawFile": { source: "query", query: {} as ThreadFilesRawQuery },
   "threads.read": { source: "none" },
   "threads.resolveInteraction": {
@@ -185,6 +192,7 @@ export const LOOM_API_REQUEST_SPECS = {
   },
   "threads.tabs": { source: "none" },
   "threads.timeline": { source: "query", query: {} as ThreadTimelineQuery },
+  "threads.unpin": { source: "none" },
   "threads.unread": { source: "none" },
   "threads.updateTabs": {
     source: "json",
@@ -234,6 +242,8 @@ export interface LoomApiResponseSpecs {
   "threads.hostFileContent": unknown;
   "threads.interaction": PendingInteraction;
   "threads.interactions": ThreadPendingInteractionsResponse;
+  "threads.pin": ThreadResponse;
+  "threads.pinOrder": ThreadListEntry[];
   "threads.rawFile": unknown;
   "threads.read": ThreadResponse;
   "threads.resolveInteraction": PendingInteraction;
@@ -246,6 +256,7 @@ export interface LoomApiResponseSpecs {
   "threads.storagePaths": ThreadStoragePathListResponse;
   "threads.tabs": ThreadTabsResponse;
   "threads.timeline": ThreadTimelineResponse;
+  "threads.unpin": ThreadResponse;
   "threads.unread": ThreadResponse;
   "threads.updateTabs": ThreadTabsResponse;
   "threads.worktreeFile": unknown;

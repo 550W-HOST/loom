@@ -14,6 +14,9 @@ import {
   loomListEnvironmentProviders,
   loomMarkThreadRead,
   loomMarkThreadUnread,
+  loomPinThread,
+  loomReorderPinnedThread,
+  loomUnpinThread,
   loomGetThreadTabs,
   loomSpawnThread,
   loomThreadChildSummary,
@@ -425,6 +428,9 @@ describe("loom New Thread runtime", () => {
     );
     expect(sdk.threads.markRead).toBe(loomMarkThreadRead);
     expect(sdk.threads.markUnread).toBe(loomMarkThreadUnread);
+    expect(sdk.threads.pin).toBe(loomPinThread);
+    expect(sdk.threads.unpin).toBe(loomUnpinThread);
+    expect(sdk.threads.reorderPinned).toBe(loomReorderPinnedThread);
     expect(sdk.threads.tabs.get).toBe(loomGetThreadTabs);
     expect(sdk.threads.tabs.update).toBe(loomUpdateThreadTabs);
     expect(sdk.environments.listProviders).toBe(loomListEnvironmentProviders);
@@ -493,5 +499,104 @@ describe("loom thread child summary", () => {
 
     const [url] = fetchMock.mock.calls[0] as unknown as [URL];
     expect(url.pathname).toBe("/api/v1/threads/thr_1/child-summary");
+  });
+});
+
+describe("loom thread pin state", () => {
+  it("pins through the contract route with no body", async () => {
+    const pinned = thread("proj_personal", "env_1");
+    const fetchMock = vi.fn(async () => jsonResponse(pinned));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(loomPinThread({ threadId: "thr_1" })).resolves.toEqual(pinned);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [URL, RequestInit];
+    expect(init.method).toBe("POST");
+    expect(init.body).toBeUndefined();
+    expect(url.pathname).toBe("/api/v1/threads/thr_1/pin");
+    expect(url.search).toBe("");
+  });
+
+  it("unpins through the contract route with no body", async () => {
+    const unpinned = thread("proj_personal", "env_1");
+    const fetchMock = vi.fn(async () => jsonResponse(unpinned));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(loomUnpinThread({ threadId: "thr_1" })).resolves.toEqual(
+      unpinned,
+    );
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [URL, RequestInit];
+    expect(init.method).toBe("POST");
+    expect(init.body).toBeUndefined();
+    expect(url.pathname).toBe("/api/v1/threads/thr_1/unpin");
+    expect(url.search).toBe("");
+  });
+
+  it("reorders a pinned thread with the neighbour ids as its JSON body", async () => {
+    const ordered = [{ id: "thr_1", pinSortKey: "k1" }];
+    const fetchMock = vi.fn(async () => jsonResponse(ordered));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      loomReorderPinnedThread({
+        threadId: "thr_1",
+        previousThreadId: null,
+        nextThreadId: "thr_2",
+      }),
+    ).resolves.toEqual(ordered);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [URL, RequestInit];
+    expect(init.method).toBe("PATCH");
+    expect(url.pathname).toBe("/api/v1/threads/thr_1/pin-order");
+    expect(JSON.parse(String(init.body))).toEqual({
+      previousThreadId: null,
+      nextThreadId: "thr_2",
+    });
+  });
+
+  it("encodes the thread id as a single path segment", async () => {
+    const fetchMock = vi.fn(async () =>
+      jsonResponse(thread("proj_personal", "env_1")),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await loomPinThread({ threadId: "a/b" });
+
+    const [url] = fetchMock.mock.calls[0] as unknown as [URL];
+    expect(url.pathname).toBe("/api/v1/threads/a%2Fb/pin");
+  });
+
+  it("surfaces a route failure as a loom HTTP error", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        jsonResponse({ code: "thread_not_found", message: "gone" }, 404),
+      ),
+    );
+
+    await expect(
+      loomPinThread({ threadId: "thr_missing" }),
+    ).rejects.toMatchObject({
+      status: 404,
+      code: "thread_not_found",
+    });
+  });
+
+  it("is reachable through the browser SDK surface", async () => {
+    const pinned = thread("proj_personal", "env_1");
+    const fetchMock = vi.fn(async () => jsonResponse(pinned));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(sdk.threads.pin({ threadId: "thr_1" })).resolves.toEqual(
+      pinned,
+    );
+
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [URL, RequestInit];
+    expect(url.pathname).toBe("/api/v1/threads/thr_1/pin");
+    expect(init.method).toBe("POST");
   });
 });

@@ -8,11 +8,14 @@ import {
   loomListEnvironmentProviders,
   loomMarkThreadRead,
   loomMarkThreadUnread,
+  loomPinThread,
   loomProjectDefaultExecutionOptions,
+  loomReorderPinnedThread,
   loomSendThreadMessage,
   loomSpawnThread,
   loomThreadChildSummary,
   loomThreadDefaultExecutionOptions,
+  loomUnpinThread,
   loomUpdateThreadTabs,
 } from "./loom-thread-runtime";
 import {
@@ -88,6 +91,8 @@ export const sdk = {
     },
     markRead: loomMarkThreadRead,
     markUnread: loomMarkThreadUnread,
+    pin: loomPinThread,
+    reorderPinned: loomReorderPinnedThread,
     send: loomSendThreadMessage,
     spawn: loomSpawnThread,
     storageFiles: loomThreadStorageFiles,
@@ -99,6 +104,7 @@ export const sdk = {
       update: loomUpdateThreadTabs,
     },
     timeline: loomGetThreadTimeline,
+    unpin: loomUnpinThread,
   },
 };
 

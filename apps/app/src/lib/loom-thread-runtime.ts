@@ -5,9 +5,11 @@ import {
   type Host,
   type ProjectExecutionDefaults,
   type ResolvedThreadExecutionOptions,
+  type ThreadListEntry,
 } from "@bb/domain";
 import type {
   CreateThreadRequest,
+  ReorderPinnedThreadRequest,
   SendMessageRequest,
   SendMessageResponse,
   SidebarBootstrapResponse,
@@ -477,6 +479,43 @@ export async function loomMarkThreadUnread(request: {
     param: { id: request.threadId },
   });
   return normalizeThreadProjectWithSidebar(thread, sidebar);
+}
+
+/**
+ * Pin, unpin and reorder over the contract routes the pinned thread list uses.
+ *
+ * `threads.pin` was still the fail-closed browser SDK stub, so pinning from the
+ * thread menu or the sidebar drag threw `BrowserSdkUnavailableError` instead of
+ * reaching the server. Its siblings were unwired the same way: `threads.unpin`
+ * is the other half of the toggle, and `threads.pinOrder` is the drag reorder.
+ * The contract routes, their handlers and their contract tests already exist,
+ * so this is the app half only.
+ *
+ * These return the server's own thread summary without a sidebar round-trip:
+ * `proj_personal` is the reserved id the client addresses the personal scope by
+ * (see the personal-scope decision), so there is no minted id left to remap the
+ * way the older read-state wiring had to.
+ */
+export function loomPinThread(request: {
+  threadId: string;
+}): Promise<ThreadResponse> {
+  return loomApiJson("threads.pin", { param: { id: request.threadId } });
+}
+
+export function loomUnpinThread(request: {
+  threadId: string;
+}): Promise<ThreadResponse> {
+  return loomApiJson("threads.unpin", { param: { id: request.threadId } });
+}
+
+export function loomReorderPinnedThread(
+  request: ReorderPinnedThreadRequest & { threadId: string },
+): Promise<ThreadListEntry[]> {
+  const { threadId, ...json } = request;
+  return loomApiJson("threads.pinOrder", {
+    param: { id: threadId },
+    json,
+  });
 }
 
 export function loomGetThreadTabs(request: {
