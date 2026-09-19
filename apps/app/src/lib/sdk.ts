@@ -20,6 +20,11 @@ import {
   loomListThreadInteractions,
   loomResolveThreadInteraction,
 } from "./loom-interactions";
+import {
+  loomThreadStorageFiles,
+  loomThreadStorageLocation,
+  loomThreadStoragePaths,
+} from "./loom-thread-storage";
 
 import {
   loomResetUiPreference,
@@ -76,6 +81,9 @@ export const sdk = {
     markUnread: loomMarkThreadUnread,
     send: loomSendThreadMessage,
     spawn: loomSpawnThread,
+    storageFiles: loomThreadStorageFiles,
+    storageLocation: loomThreadStorageLocation,
+    storagePaths: loomThreadStoragePaths,
     tabs: {
       ...compileOnlySdk.threads.tabs,
       get: loomGetThreadTabs,

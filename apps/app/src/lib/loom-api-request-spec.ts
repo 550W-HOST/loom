@@ -26,6 +26,11 @@ import type {
   ThreadResponse,
   ThreadPendingInteractionsResponse,
   ThreadStorageContentQuery,
+  ThreadStorageFileListResponse,
+  ThreadStorageFilesQuery,
+  ThreadStorageLocationResponse,
+  ThreadStoragePathListResponse,
+  ThreadStoragePathsQuery,
   ThreadTabsResponse,
   ThreadTimelineQuery,
   ThreadTimelineResponse,
@@ -160,6 +165,15 @@ export const LOOM_API_REQUEST_SPECS = {
     query: {} as ThreadStorageContentQuery,
   },
   "threads.storageFile": { source: "none" },
+  "threads.storageFiles": {
+    source: "query",
+    query: {} as ThreadStorageFilesQuery,
+  },
+  "threads.storageLocation": { source: "none" },
+  "threads.storagePaths": {
+    source: "query",
+    query: {} as ThreadStoragePathsQuery,
+  },
   "threads.tabs": { source: "none" },
   "threads.timeline": { source: "query", query: {} as ThreadTimelineQuery },
   "threads.unread": { source: "none" },
@@ -215,6 +229,9 @@ export interface LoomApiResponseSpecs {
   "threads.send": SendMessageResponse;
   "threads.storageContent": unknown;
   "threads.storageFile": unknown;
+  "threads.storageFiles": ThreadStorageFileListResponse;
+  "threads.storageLocation": ThreadStorageLocationResponse;
+  "threads.storagePaths": ThreadStoragePathListResponse;
   "threads.tabs": ThreadTabsResponse;
   "threads.timeline": ThreadTimelineResponse;
   "threads.unread": ThreadResponse;
