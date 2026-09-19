@@ -103,11 +103,78 @@ impl ToolActivity {
 }
 
 impl ToolActivity {
-    /// This call as a timeline row.
+    /// This call as timeline rows.
     ///
-    /// One row per call: the kind of row follows the kind of item, because the
-    /// client draws a shell command and a generic tool differently.
-    pub fn row(&self, thread_id: &str) -> Value {
+    /// Usually one row: the kind of row follows the kind of item, because the
+    /// client draws a shell command and a generic tool differently. A file
+    /// change is the exception the contract already decided: one row per file,
+    /// so a call that touched three files reads as three rows rather than one
+    /// row listing three paths.
+    pub fn rows(&self, thread_id: &str) -> Vec<Value> {
+        if let ThreadEventItem::FileChange { changes, .. } = &self.item {
+            // A file-edit call can be reported without its changes yet (an
+            // approval still waiting, or an adapter that sends the call before
+            // the diff). Falling back to the generic tool row keeps the call
+            // visible instead of dropping it from the timeline.
+            if changes.is_empty() {
+                return vec![self.row(thread_id)];
+            }
+            return changes
+                .iter()
+                .enumerate()
+                .map(|(index, change)| self.file_change_row(thread_id, index, change))
+                .collect();
+        }
+        vec![self.row(thread_id)]
+    }
+
+    /// One row per file a change touched.
+    ///
+    /// `diff` follows the contract's own convention, which is not "always a
+    /// unified diff": an added file carries its whole content and a deleted one
+    /// the content it had, while an edit carries a patch. The stats follow from
+    /// that — which is why they are computed here rather than trusted from the
+    /// agent, whose idea of a diff is its own.
+    fn file_change_row(
+        &self,
+        thread_id: &str,
+        index: usize,
+        change: &loom_domain::FileChange,
+    ) -> Value {
+        // Built from the shared base rather than from the tool row: the
+        // contract's row variants are closed, and a `tool` row's fields
+        // (`toolName`, `toolArgs`) are not what a `file-change` row carries.
+        let mut row = self.base_fields(thread_id);
+        let fields = row.as_object_mut().expect("a row is an object");
+        // The contract's `file-change` variant closes its property set and does
+        // not list `completedAt` (only the tool and command variants do), so the
+        // shared base's copy is dropped rather than sent and rejected.
+        fields.remove("completedAt");
+        fields.insert("workKind".into(), json!("file-change"));
+        let id = fields
+            .get("id")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
+        fields.insert("id".into(), json!(format!("{id}:file-change:{index}")));
+        let (added, removed) = file_change_diff_stats(change);
+        fields.insert(
+            "change".into(),
+            json!({
+                "path": change.path,
+                "kind": change.kind,
+                "movePath": change.move_path,
+                "diff": change.diff,
+                "diffStats": { "added": added, "removed": removed },
+            }),
+        );
+        fields.insert("stdout".into(), Value::Null);
+        fields.insert("stderr".into(), Value::Null);
+        row
+    }
+
+    /// This call as one timeline row.
+    fn row(&self, thread_id: &str) -> Value {
         let base = self.base_fields(thread_id);
         let object = base.as_object().cloned().expect("a row is an object");
         let mut row = Value::Object(object);
@@ -319,6 +386,124 @@ fn item_id_of(item: &ThreadEventItem) -> &str {
     }
 }
 
+/// The action a change describes, in the client's vocabulary.
+///
+/// A move with edits is an edit rather than a rename: the reader wants to know
+/// the file changed, and the new path is on the change either way.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FileChangeAction {
+    Created,
+    Deleted,
+    Renamed,
+    Edited,
+}
+
+fn file_change_action(change: &loom_domain::FileChange) -> FileChangeAction {
+    if change.move_path.is_some() {
+        return if has_substantive_diff(change.diff.as_deref()) {
+            FileChangeAction::Edited
+        } else {
+            FileChangeAction::Renamed
+        };
+    }
+    match change.kind {
+        loom_domain::FileChangeKind::Add => FileChangeAction::Created,
+        loom_domain::FileChangeKind::Delete => FileChangeAction::Deleted,
+        loom_domain::FileChangeKind::Update => FileChangeAction::Edited,
+    }
+}
+
+/// Whether a diff has a line that actually changed.
+fn has_substantive_diff(diff: Option<&str>) -> bool {
+    let Some(diff) = diff else {
+        return false;
+    };
+    diff.split('\n').any(|line| {
+        !line.starts_with("+++ ")
+            && !line.starts_with("--- ")
+            && (line.starts_with('+') || line.starts_with('-'))
+    })
+}
+
+/// A line that belongs to the patch's own frame rather than to the file.
+fn is_patch_metadata_line(line: &str) -> bool {
+    let line = line.trim_end();
+    line.starts_with("diff --git ")
+        || line.starts_with("index ")
+        || line.starts_with("new file mode ")
+        || line.starts_with("deleted file mode ")
+        || line.starts_with("similarity index ")
+        || line.starts_with("rename from ")
+        || line.starts_with("rename to ")
+        || line.starts_with("--- ")
+        || line.starts_with("+++ ")
+        || line.starts_with("@@")
+        || line == "\\ No newline at end of file"
+}
+
+fn has_patch_metadata(diff: &str) -> bool {
+    diff.split('\n').any(is_patch_metadata_line)
+}
+
+/// The lines a diff carries that are neither blank nor patch frame.
+fn count_plain_content_lines(diff: &str) -> u64 {
+    diff.split('\n')
+        .map(str::trim_end)
+        .filter(|line| !line.trim().is_empty())
+        .filter(|line| !is_patch_metadata_line(line))
+        .count() as u64
+}
+
+/// How many lines a change added and removed.
+///
+/// Ported from the client's own rule, because the client shows these numbers
+/// and a second implementation that disagreed would show different totals for
+/// the same edit depending on which side built the row. The rule is not
+/// "count `+` and `-`": a whole added or deleted file carries its content
+/// rather than a patch, so its lines are the count.
+fn file_change_diff_stats(change: &loom_domain::FileChange) -> (u64, u64) {
+    let Some(diff) = change.diff.as_deref() else {
+        return (0, 0);
+    };
+    let action = file_change_action(change);
+    let plain = count_plain_content_lines(diff);
+    if !has_patch_metadata(diff)
+        && matches!(
+            action,
+            FileChangeAction::Created | FileChangeAction::Deleted
+        )
+    {
+        return match action {
+            FileChangeAction::Created => (plain, 0),
+            _ => (0, plain),
+        };
+    }
+
+    let mut added = 0;
+    let mut removed = 0;
+    let mut saw_unified_line = false;
+    for line in diff.split('\n') {
+        if line.starts_with("+++ ") || line.starts_with("--- ") {
+            continue;
+        }
+        if line.starts_with('+') {
+            saw_unified_line = true;
+            added += 1;
+        } else if line.starts_with('-') {
+            saw_unified_line = true;
+            removed += 1;
+        }
+    }
+    if saw_unified_line {
+        return (added, removed);
+    }
+    match action {
+        FileChangeAction::Created => (plain, 0),
+        FileChangeAction::Deleted => (0, plain),
+        FileChangeAction::Renamed | FileChangeAction::Edited => (0, 0),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -455,6 +640,184 @@ mod tests {
         let activity = timeline.get("run-1", "call-3").expect("the call exists");
         assert_eq!(activity.status(), "error");
         assert_eq!(activity.row("thread-1")["status"], "error");
+    }
+
+    fn file_change(changes: Vec<loom_domain::FileChange>, status: ItemStatus) -> ThreadEventItem {
+        ThreadEventItem::FileChange {
+            id: "call-edit".to_owned(),
+            changes,
+            status,
+            approval_status: None,
+            presentation: None,
+            parent_tool_call_id: None,
+        }
+    }
+
+    fn change(
+        path: &str,
+        kind: loom_domain::FileChangeKind,
+        diff: &str,
+    ) -> loom_domain::FileChange {
+        loom_domain::FileChange {
+            path: path.to_owned(),
+            kind,
+            move_path: None,
+            diff: Some(diff.to_owned()),
+        }
+    }
+
+    /// An edit is one row per file, and the patch the agent supplied is what the
+    /// row carries — the client draws it, so loom must not paraphrase it.
+    #[test]
+    fn an_edit_becomes_one_row_per_file_with_its_patch() {
+        let patch = "@@ -1,2 +1,3 @@\n context\n-removed\n+added\n+more\n";
+        let mut timeline = ToolTimeline::new();
+        timeline.absorb(
+            "run-1",
+            &ProviderEvent::ItemStarted {
+                item: file_change(
+                    vec![
+                        change("src/a.rs", loom_domain::FileChangeKind::Update, patch),
+                        change(
+                            "src/b.rs",
+                            loom_domain::FileChangeKind::Update,
+                            "@@ -1 +1 @@\n-old\n+new\n",
+                        ),
+                    ],
+                    ItemStatus::Pending,
+                ),
+                provider_thread_id: "provider-thread".to_owned(),
+            },
+            3,
+            1_000,
+        );
+        timeline.absorb(
+            "run-1",
+            &ProviderEvent::ItemCompleted {
+                item: file_change(
+                    vec![change(
+                        "src/a.rs",
+                        loom_domain::FileChangeKind::Update,
+                        patch,
+                    )],
+                    ItemStatus::Completed,
+                ),
+                provider_thread_id: "provider-thread".to_owned(),
+            },
+            4,
+            1_500,
+        );
+
+        let activity = timeline.get("run-1", "call-edit").expect("the call exists");
+        let rows = activity.rows("thread-1");
+        assert_eq!(rows.len(), 1, "the completion replaced the item's changes");
+        let row = &rows[0];
+        assert_eq!(row["kind"], "work");
+        assert_eq!(row["workKind"], "file-change");
+        assert_eq!(row["callId"], "call-edit");
+        assert_eq!(row["status"], "completed");
+        assert_eq!(row["change"]["path"], "src/a.rs");
+        assert_eq!(row["change"]["kind"], "update");
+        assert_eq!(row["change"]["diff"], patch);
+        // Two `+` lines and one `-`, and the `+++`/`---` frame is not content.
+        assert_eq!(row["change"]["diffStats"]["added"], 2);
+        assert_eq!(row["change"]["diffStats"]["removed"], 1);
+        assert!(row["id"]
+            .as_str()
+            .is_some_and(|id| id.ends_with(":file-change:0")));
+        // The contract's `file-change` variant closes its property set, so the
+        // row carries exactly those fields — no `completedAt` and none of the
+        // tool row's `toolName`/`toolArgs`/`output`, which the schema rejects.
+        let mut keys: Vec<&str> = row
+            .as_object()
+            .expect("a row is an object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            [
+                "approvalStatus",
+                "callId",
+                "change",
+                "createdAt",
+                "id",
+                "kind",
+                "sourceSeqEnd",
+                "sourceSeqStart",
+                "startedAt",
+                "status",
+                "stderr",
+                "stdout",
+                "threadId",
+                "turnId",
+                "workKind",
+            ]
+        );
+    }
+
+    /// A file-edit call reported without its changes is still a call: it falls
+    /// back to a generic tool row rather than disappearing from the timeline.
+    #[test]
+    fn a_file_edit_without_changes_is_still_a_row() {
+        let mut timeline = ToolTimeline::new();
+        timeline.absorb(
+            "run-1",
+            &ProviderEvent::ItemStarted {
+                item: file_change(Vec::new(), ItemStatus::Pending),
+                provider_thread_id: "provider-thread".to_owned(),
+            },
+            6,
+            1_000,
+        );
+
+        let activity = timeline.get("run-1", "call-edit").expect("the call exists");
+        let rows = activity.rows("thread-1");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["workKind"], "tool");
+        assert_eq!(rows[0]["toolName"], "edit");
+    }
+
+    /// The contract's `diff` is not always a patch: a whole added or deleted
+    /// file carries its content, and then the file's own lines are the count.
+    #[test]
+    fn a_whole_added_or_deleted_file_counts_its_lines() {
+        let mut timeline = ToolTimeline::new();
+        timeline.absorb(
+            "run-1",
+            &ProviderEvent::ItemStarted {
+                item: file_change(
+                    vec![
+                        change(
+                            "src/new.rs",
+                            loom_domain::FileChangeKind::Add,
+                            "fn one() {}\n\nfn two() {}\n",
+                        ),
+                        change(
+                            "src/gone.rs",
+                            loom_domain::FileChangeKind::Delete,
+                            "fn old() {}\n",
+                        ),
+                    ],
+                    ItemStatus::Completed,
+                ),
+                provider_thread_id: "provider-thread".to_owned(),
+            },
+            5,
+            1_000,
+        );
+
+        let activity = timeline.get("run-1", "call-edit").expect("the call exists");
+        let rows = activity.rows("thread-1");
+        assert_eq!(rows.len(), 2, "one row per file");
+        assert_eq!(rows[0]["change"]["kind"], "add");
+        assert_eq!(rows[0]["change"]["diffStats"]["added"], 2);
+        assert_eq!(rows[0]["change"]["diffStats"]["removed"], 0);
+        assert_eq!(rows[1]["change"]["kind"], "delete");
+        assert_eq!(rows[1]["change"]["diffStats"]["added"], 0);
+        assert_eq!(rows[1]["change"]["diffStats"]["removed"], 1);
+        assert_ne!(rows[0]["id"], rows[1]["id"], "each file is its own row");
     }
 
     /// Reasoning and answers are other folds' events; this one must not claim

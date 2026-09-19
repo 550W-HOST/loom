@@ -203,6 +203,66 @@ fn an_edit_with_a_diff_becomes_a_file_change() {
 }
 
 #[test]
+fn an_edit_carries_a_patch_rather_than_the_whole_new_file() {
+    // v1 hands over the two texts, and the timeline draws a patch: a row whose
+    // `diff` was the file's new content would show a diff view in which nothing
+    // is marked as changed.
+    let mut t = translator();
+    let mut call = tool_call(ToolKind::Edit, None);
+    call.content = vec![ToolCallContent::Diff(
+        agent_client_protocol_schema::v1::Diff::new("/srv/a.rs", "one\ntwo changed\nthree\n")
+            .old_text("one\ntwo\nthree\n"),
+    )];
+    let events = t.on_session_update(&SessionUpdate::ToolCall(call));
+
+    let Some(ThreadEventItem::FileChange { changes, .. }) = events.iter().find_map(|e| match e {
+        ProviderEvent::ItemStarted { item, .. } => Some(item),
+        _ => None,
+    }) else {
+        panic!("expected a file change");
+    };
+    let diff = changes[0].diff.as_deref().expect("a patch");
+    assert!(diff.contains("--- /srv/a.rs"), "{diff}");
+    assert!(diff.contains("+++ /srv/a.rs"), "{diff}");
+    assert!(diff.contains("@@"), "{diff}");
+    assert!(diff.contains("-two\n"), "{diff}");
+    assert!(diff.contains("+two changed\n"), "{diff}");
+    // Unchanged lines are context — one leading space — rather than a removal
+    // and an addition of the same text.
+    for context in [" one\n", " three\n"] {
+        assert!(diff.contains(context), "{context:?} is missing from {diff}");
+    }
+    for unchanged in ["+one", "-one", "+three", "-three"] {
+        assert!(
+            !diff.contains(unchanged),
+            "an unchanged line must not read as changed: {diff}"
+        );
+    }
+}
+
+#[test]
+fn a_deleted_file_carries_the_content_it_had() {
+    let mut t = translator();
+    let mut call = tool_call(ToolKind::Delete, None);
+    call.content = vec![ToolCallContent::Diff(
+        agent_client_protocol_schema::v1::Diff::new("/srv/old.rs", "").old_text("fn gone() {}\n"),
+    )];
+    let events = t.on_session_update(&SessionUpdate::ToolCall(call));
+
+    let Some(ThreadEventItem::FileChange { changes, .. }) = events.iter().find_map(|e| match e {
+        ProviderEvent::ItemStarted { item, .. } => Some(item),
+        _ => None,
+    }) else {
+        panic!("expected a file change");
+    };
+    assert!(matches!(
+        changes[0].kind,
+        loom_domain::FileChangeKind::Delete
+    ));
+    assert_eq!(changes[0].diff.as_deref(), Some("fn gone() {}\n"));
+}
+
+#[test]
 fn a_multi_file_edit_is_one_item_with_several_changes() {
     // ACP's content is an array, which the contract can express and the Pi
     // path cannot.

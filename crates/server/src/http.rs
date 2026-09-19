@@ -3959,7 +3959,7 @@ async fn thread_timeline(
                     // holds.
                     if emitted_tools.insert((run_id.clone(), item_id.to_owned())) {
                         if let Some(activity) = tool_items.get(&run_id, item_id) {
-                            tool_rows.push(activity.row(&thread_id.to_string()));
+                            tool_rows.extend(activity.rows(&thread_id.to_string()));
                         }
                     }
                     return None;

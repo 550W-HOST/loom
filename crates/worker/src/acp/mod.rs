@@ -1562,22 +1562,47 @@ fn changes_from_content(content: &[ToolCallContent]) -> Vec<loom_domain::FileCha
         .iter()
         .filter_map(|entry| match entry {
             ToolCallContent::Diff(diff) => {
-                // An absent `old_text` means the file did not exist before.
-                let kind = if diff.old_text.is_none() {
-                    loom_domain::FileChangeKind::Add
-                } else {
-                    loom_domain::FileChangeKind::Update
+                let path = diff.path.to_string_lossy().into_owned();
+                // The contract's `diff` is the whole content for a file that
+                // appeared or disappeared, and a patch for one that changed —
+                // which is what the client draws and counts. v1 hands over the
+                // two texts rather than a patch, so the patch is built here; a
+                // timeline showing an edit as the file's entire new content is
+                // a diff view that says nothing changed.
+                let (kind, body) = match (&diff.old_text, diff.new_text.is_empty()) {
+                    (None, false) => (loom_domain::FileChangeKind::Add, diff.new_text.clone()),
+                    (None, true) => return None,
+                    (Some(old), true) => (loom_domain::FileChangeKind::Delete, old.clone()),
+                    (Some(old), false) => (
+                        loom_domain::FileChangeKind::Update,
+                        unified_diff(&path, old, &diff.new_text),
+                    ),
                 };
                 Some(loom_domain::FileChange {
-                    path: diff.path.to_string_lossy().into_owned(),
+                    path,
                     kind,
                     move_path: None,
-                    diff: Some(diff.new_text.clone()),
+                    diff: Some(body),
                 })
             }
             _ => None,
         })
         .collect()
+}
+
+/// A unified diff between two versions of one file.
+///
+/// Only the v1 path needs this: v2 hands over a patch already. Three lines of
+/// context is what a reader expects around a change, and it is what the
+/// contract's own examples show.
+fn unified_diff(path: &str, old: &str, new: &str) -> String {
+    similar::TextDiff::from_lines(old, new)
+        .unified_diff()
+        .context_radius(3)
+        // The path is the one the agent gave, which is absolute here: prefixing
+        // it with `a/` would spell an absolute path as `a//srv/...`.
+        .header(path, path)
+        .to_string()
 }
 
 /// A path for a read, from ACP's locations or the arguments.

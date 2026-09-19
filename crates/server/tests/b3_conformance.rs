@@ -2140,3 +2140,77 @@ async fn a_shell_command_becomes_a_command_row() {
 
     fixture.state.shutdown();
 }
+
+/// A file edit renders as a diff row, one per file, carrying the patch the
+/// agent supplied and the counts the client shows beside it.
+#[tokio::test]
+async fn a_file_edit_becomes_a_diff_row() {
+    let fixture = fixture().await;
+    let run_id = loom_domain::RunId::mint();
+    let patch = "@@ -1,2 +1,3 @@\n context\n-removed\n+added\n+more\n";
+    let item = loom_domain::ThreadEventItem::FileChange {
+        id: "call-edit".to_owned(),
+        changes: vec![
+            loom_domain::FileChange {
+                path: "/srv/project/src/a.rs".to_owned(),
+                kind: loom_domain::FileChangeKind::Update,
+                move_path: None,
+                diff: Some(patch.to_owned()),
+            },
+            // A whole new file carries its content rather than a patch, and its
+            // lines are what the counts are.
+            loom_domain::FileChange {
+                path: "/srv/project/src/b.rs".to_owned(),
+                kind: loom_domain::FileChangeKind::Add,
+                move_path: None,
+                diff: Some("fn one() {}\nfn two() {}\n".to_owned()),
+            },
+        ],
+        status: loom_domain::ItemStatus::Completed,
+        approval_status: None,
+        presentation: None,
+        parent_tool_call_id: None,
+    };
+    publish_tool_frame(
+        &fixture,
+        &run_id,
+        loom_domain::ProviderEvent::ItemStarted {
+            item: item.clone(),
+            provider_thread_id: fixture.thread_id.clone(),
+        },
+    );
+    publish_tool_frame(
+        &fixture,
+        &run_id,
+        loom_domain::ProviderEvent::ItemCompleted {
+            item,
+            provider_thread_id: fixture.thread_id.clone(),
+        },
+    );
+
+    let response = fixture
+        .get(&format!("/api/v1/threads/{}/timeline", fixture.thread_id))
+        .await;
+    assert_response("threads.timeline", 200, &response.body);
+    let rows = response.body["rows"].as_array().unwrap();
+    let changes: Vec<&Value> = rows
+        .iter()
+        .filter(|row| row["workKind"] == "file-change")
+        .collect();
+    assert_eq!(
+        changes.len(),
+        2,
+        "one row per file: {}",
+        serde_json::to_string_pretty(&rows).unwrap()
+    );
+    assert_eq!(changes[0]["change"]["path"], "/srv/project/src/a.rs");
+    assert_eq!(changes[0]["change"]["diff"], patch);
+    assert_eq!(changes[0]["change"]["diffStats"]["added"], 2);
+    assert_eq!(changes[0]["change"]["diffStats"]["removed"], 1);
+    assert_eq!(changes[1]["change"]["kind"], "add");
+    assert_eq!(changes[1]["change"]["diffStats"]["added"], 2);
+    assert_eq!(changes[1]["change"]["diffStats"]["removed"], 0);
+    assert_ne!(changes[0]["id"], changes[1]["id"]);
+
+    fixture.state.shutdown();
+}
