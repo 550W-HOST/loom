@@ -402,6 +402,38 @@ what a server with no connected worker answers with. It is not the source of
 truth: an agent appears because a machine verified it, and disappears when the
 machine stops reporting it.
 
+### Marks
+
+A provider's tab is its icon and nothing else, so an icon that 404s is an
+invisible tab rather than a missing decoration, and every offered provider has
+one.
+
+Loom follows bb here rather than inventing a scheme. Each agent gets a **drawn
+glyph** — the files loom ships are the ones bb's own provider plugins declare
+(`plugins/provider-*/icons/`, copied to `crates/server/assets/`) — and every one
+of them paints itself with `currentColor`, with tone, where a mark has any,
+coming from `fill-opacity`. One file therefore works in both themes: the client
+masks the image and fills it with the theme's text colour, so the mark *is* the
+theme's ink.
+
+That choice retires the obvious alternative. A vendor's full-colour artwork does
+not survive a mask — it flattens to a silhouette — and where the artwork is only
+legible because of its colour (`oh-my-pi`'s near-white bars, Cursor's solid
+tile) the flattened result is worse than a drawn glyph. Loom also probes agents
+bb has no icon for (Gemini); an agent with no glyph of its own is drawn as an
+**ACP agent**, which is bb's fallback for the same case.
+
+Colour beyond the theme comes from `strings.iconTint`, and those values are bb's
+too: `pi` is `#6D5DFB`, `omp` `#9333EA`, `opencode` `#2563EB`, `claude-code`
+`#D97757`, and Cursor carries a real pair (`#111827` light, `#F5F5F5` dark) that
+the client resolves with `light-dark()`. The same object carries the agent's own
+sign-in command worded into a hint and the vendor's install page, which is what
+the client shows when an agent is missing or signed out.
+
+`logoUrl` is content-addressed (`?h=<16 hex of the mark>`). A request naming the
+current hash is answered `immutable` for a year; anything else — an old hash, or
+none — is answered but never cached, so a client cannot pin a stale icon.
+
 ## Decisions taken
 
 | Question | Decision |

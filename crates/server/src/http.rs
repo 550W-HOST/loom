@@ -835,8 +835,13 @@ pub(crate) fn provider_display_name(provider_id: &str) -> String {
 
 fn provider_info(spec: &ProviderSpec) -> Value {
     let provider_id = spec.name.clone();
-    let logo_url = format!("/api/v1/system/providers/{provider_id}/logo");
-    json!({
+    // bb addresses a mark by its content: an icon cannot change without its URL
+    // changing, so the logo route can answer a matching request as immutable.
+    let logo_url = format!(
+        "/api/v1/system/providers/{provider_id}/logo?h={}",
+        crate::b10::provider_mark_hash(&spec.name)
+    );
+    let mut info = json!({
         "id": provider_id,
         // `pluginId` remains a required bb field even though loom providers
         // are first-class and do not use a plugin lifecycle.
@@ -866,7 +871,43 @@ fn provider_info(spec: &ProviderSpec) -> Value {
         },
         "composerActions": [],
         "available": true
-    })
+    });
+    // Omitted rather than null when an agent has no branding: the contract
+    // allows either, but the client's schema is `optional()` and rejects an
+    // explicit null, and a rejected object costs the whole provider list.
+    if let Some(strings) = provider_strings(&spec.name) {
+        info["strings"] = strings;
+    }
+    info
+}
+
+/// The presentation strings a provider carries, worded the way bb words them.
+///
+/// `strings` is where a provider says how to sign in, where to install it, and
+/// what colour its mark is. Loom does not own an agent's credentials — the agent
+/// signs itself in on its own machine — so a hint names that agent's own
+/// command, which is also what bb shows for the same agents.
+fn provider_strings(provider_id: &str) -> Option<Value> {
+    let branding = crate::b10::provider_branding(provider_id)?;
+    let name = provider_display_name(provider_id);
+    let mut strings = json!({
+        "signInHint": format!(
+            "Run `{}` on the machine to sign in.",
+            branding.sign_in_command
+        ),
+        "expiredHint": format!(
+            "Your {name} session expired. Run `{}`, then reload.",
+            branding.sign_in_command
+        ),
+        "installUrl": branding.install_url,
+    });
+    // Most agents carry one brand colour for both themes and a few carry none;
+    // only Cursor publishes a real pair, and `light-dark()` is what lets the
+    // client resolve it with the rest of the app's theming.
+    if let (Some(light), Some(dark)) = (branding.light, branding.dark) {
+        strings["iconTint"] = json!({ "light": light, "dark": dark });
+    }
+    Some(strings)
 }
 
 fn configured_model(provider_id: &str) -> Value {
@@ -6842,6 +6883,62 @@ mod tests {
             args: Vec::new(),
             cwd: None,
         }
+    }
+
+    /// A branded provider carries the vendor's light/dark ink, and an unbranded
+    /// one omits the object entirely: the client's schema is `optional()` and
+    /// A branded provider carries bb's own light/dark ink and hints, an agent
+    /// with no colour keeps its hints and drops the tint, and an unknown id gets
+    /// neither — the client's schema is `optional()`, so the object is only sent
+    /// when there is something true to put in it.
+    #[test]
+    fn a_branded_provider_carries_bb_own_colours() {
+        let logo_url = |id: &str| {
+            format!(
+                "/api/v1/system/providers/{id}/logo?h={}",
+                crate::b10::provider_mark_hash(id)
+            )
+        };
+
+        let branded = provider_info(&provider_spec(
+            "opencode",
+            ProviderLaunch::AcpStdio,
+            "opencode",
+        ));
+        assert_eq!(branded["strings"]["iconTint"]["light"], "#2563EB");
+        assert_eq!(branded["strings"]["iconTint"]["dark"], "#2563EB");
+        assert_eq!(branded["strings"]["installUrl"], "https://opencode.ai/docs");
+        assert_eq!(
+            branded["strings"]["signInHint"],
+            "Run `opencode auth login` on the machine to sign in."
+        );
+        assert_eq!(
+            branded["strings"]["expiredHint"],
+            "Your OpenCode session expired. Run `opencode auth login`, then reload."
+        );
+        // The mark is addressed by content, so a client may cache the URL it was
+        // handed forever.
+        assert_eq!(branded["logoUrl"], logo_url("opencode"));
+
+        // Cursor publishes a real light/dark pair.
+        let cursor = provider_info(&provider_spec("cursor", ProviderLaunch::AcpStdio, "cursor"));
+        assert_eq!(cursor["strings"]["iconTint"]["light"], "#111827");
+        assert_eq!(cursor["strings"]["iconTint"]["dark"], "#F5F5F5");
+
+        // Hermes has a mark and a sign-in command but no colour of its own: it
+        // keeps its strings and drops the tint.
+        let untinted = provider_info(&provider_spec("hermes", ProviderLaunch::AcpStdio, "hermes"));
+        assert_eq!(
+            untinted["strings"]["signInHint"],
+            "Run `hermes login` on the machine to sign in."
+        );
+        assert!(untinted["strings"].get("iconTint").is_none());
+
+        // An agent loom knows nothing about still has a mark — the protocol's —
+        // but nothing true to say about signing it in.
+        let unknown = provider_info(&provider_spec("nope", ProviderLaunch::AcpStdio, "nope"));
+        assert!(unknown.get("strings").is_none());
+        assert_eq!(unknown["logoUrl"], logo_url("nope"));
     }
 
     /// A second configured agent is advertised, catalogued separately, and

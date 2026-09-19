@@ -200,17 +200,58 @@ async fn b10_routes_validate_requests_and_responses() {
     assert_response("system.usageLimits", 200, &limits);
     assert_eq!(limits["pi"]["status"], "error");
 
-    // The provider mark is a real asset, not a fabricated image: the route
-    // serves the vendor's SVG so the client can mask it.
+    // The provider mark is the glyph loom ships — bb's drawn icon, painted with
+    // `currentColor` so the client's mask gives it the theme's own ink — and the
+    // URL the API hands out is content-addressed, which is what makes it
+    // cacheable forever.
+    let advertised = body_json(get(&app, "/api/v1/system/providers").await).await;
+    let pi = advertised
+        .as_array()
+        .expect("providers is a list")
+        .iter()
+        .find(|provider| provider["id"] == "pi")
+        .expect("pi is offered");
+    assert_eq!(
+        pi["strings"]["signInHint"],
+        "Run `pi` on the machine to sign in."
+    );
+    assert_eq!(pi["strings"]["iconTint"]["light"], "#6D5DFB");
+    assert_eq!(pi["strings"]["iconTint"]["dark"], "#6D5DFB");
+    let logo_url = pi["logoUrl"]
+        .as_str()
+        .expect("pi advertises a logo")
+        .to_owned();
+    assert!(
+        logo_url.starts_with("/api/v1/system/providers/pi/logo?h="),
+        "a mark is addressed by content: {logo_url}"
+    );
+
     let logo = get(&app, "/api/v1/system/providers/pi/logo").await;
     assert_eq!(logo.status(), StatusCode::OK);
     assert_eq!(logo.headers()["content-type"], "image/svg+xml");
+    assert_eq!(logo.headers()["cache-control"], "no-store");
     let logo_body = body_bytes(logo).await;
     assert!(
-        logo_body.starts_with(b"<?xml") && logo_body.ends_with(b"</svg>\n"),
-        "the provider logo is the vendor's SVG asset: {:?}",
+        logo_body.starts_with(b"<svg") && logo_body.ends_with(b"</svg>\n"),
+        "the provider logo is loom's own mark: {:?}",
         String::from_utf8_lossy(&logo_body)
     );
+    assert!(
+        String::from_utf8_lossy(&logo_body).contains("currentColor"),
+        "a mark that does not follow the theme would vanish in one of them"
+    );
+
+    let hashed = get(&app, &logo_url).await;
+    assert_eq!(hashed.status(), StatusCode::OK);
+    assert_eq!(
+        hashed.headers()["cache-control"],
+        "public, max-age=31536000, immutable"
+    );
+    assert_eq!(body_bytes(hashed).await, logo_body);
+
+    let stale = get(&app, "/api/v1/system/providers/pi/logo?h=0000000000000000").await;
+    assert_eq!(stale.status(), StatusCode::OK);
+    assert_eq!(stale.headers()["cache-control"], "no-store");
 
     let unknown_logo = get(&app, "/api/v1/system/providers/nope/logo").await;
     assert_eq!(unknown_logo.status(), StatusCode::NOT_FOUND);

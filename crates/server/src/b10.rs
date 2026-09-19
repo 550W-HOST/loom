@@ -179,120 +179,194 @@ pub async fn update_keyboard(
     Json(Value::Array(keyboard)).into_response()
 }
 
-/// The pi mark, copied byte for byte from the vendor's own
-/// `https://pi.dev/logo-auto.svg`.
+/// The mark each provider is drawn with.
 ///
-/// Serving an invented image would misrepresent the provider, so the asset is
-/// the vendor's file rather than a hand-drawn stand-in. The client masks
-/// `logoUrl` and fills it with the current text colour, so the three brand
-/// fills collapse to a silhouette at render time.
-const PI_LOGO_SVG: &[u8] = include_bytes!("../assets/pi.svg");
+/// These are loom's port of bb's provider icons — one file per agent, taken from
+/// the plugin that declares it upstream (`plugins/provider-*/icons/`) — plus a
+/// glyph for Gemini, which loom probes and bb has no entry for.
+///
+/// Every mark is a single path (or a few) painted with `currentColor`, and tone
+/// where a mark has any comes from `fill-opacity` rather than a second colour.
+/// That is what makes one file work on both themes: the client masks the image
+/// and fills it with the theme's text colour, so the mark *is* the theme's ink,
+/// and the brand tint on top of it comes from [`provider_branding`]. Shipping a
+/// vendor's full-colour artwork instead would fight the mask — it would flatten
+/// to a silhouette anyway, and where the artwork relies on colour to be legible
+/// (`oh-my-pi`'s near-white bars, Cursor's solid tile) that silhouette is worse
+/// than the drawn glyph.
+const PROVIDER_MARKS: &[(&str, &[u8])] = &[
+    ("pi", include_bytes!("../assets/pi.svg")),
+    ("omp", include_bytes!("../assets/omp.svg")),
+    ("hermes", include_bytes!("../assets/hermes.svg")),
+    ("opencode", include_bytes!("../assets/opencode.svg")),
+    ("cursor", include_bytes!("../assets/cursor.svg")),
+    ("codex", include_bytes!("../assets/codex.svg")),
+    ("claude-code", include_bytes!("../assets/claude-code.svg")),
+    ("gemini", include_bytes!("../assets/gemini.svg")),
+];
+
+/// The generic Agent Client Protocol mark.
+///
+/// It is what bb shows for an ACP agent outside its known list, and what loom
+/// shows for an agent discovery found that has no mark of its own: the honest
+/// answer is "this is an ACP agent", not an invented logo.
+const ACP_MARK_SVG: &[u8] = include_bytes!("../assets/acp.svg");
+
+/// The mark for `provider_id`, falling back to the protocol's own mark.
+fn provider_mark(provider_id: &str) -> &'static [u8] {
+    PROVIDER_MARKS
+        .iter()
+        .find(|(id, _)| *id == provider_id)
+        .map(|(_, svg)| *svg)
+        .unwrap_or(ACP_MARK_SVG)
+}
+
+/// The content hash a mark is addressed by.
+///
+/// bb puts it in `logoUrl` as `?h=`, and serves a matching request as immutable:
+/// an icon cannot change without its URL changing, so a client may cache it
+/// forever. Sixteen hex characters, the same width bb uses.
+pub(crate) fn provider_mark_hash(provider_id: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(provider_mark(provider_id));
+    digest[..8]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+/// How an agent signs in, and how its mark is tinted when it is drawn large.
+pub(crate) struct ProviderBranding {
+    /// The command that signs the agent in, as its own CLI spells it.
+    pub sign_in_command: &'static str,
+    /// The vendor's install page, shown when the agent is missing.
+    pub install_url: &'static str,
+    /// The mark's ink on a light background, when the agent has a colour.
+    pub light: Option<&'static str>,
+    /// The mark's ink on a dark background, when the agent has a colour.
+    pub dark: Option<&'static str>,
+}
+
+/// What loom knows about presenting each agent, in bb's own values.
+///
+/// The tints are bb's, verbatim, from its agent definitions
+/// (`plugins/provider-acp/src/known-agents.ts` and the first-party provider
+/// plugins): most agents carry one colour for both themes, Cursor carries a real
+/// light/dark pair, and the rest carry none and are drawn in the theme's text
+/// colour. The sign-in commands and install pages are the vendors' too, and the
+/// client turns the command into the hint it shows.
+pub(crate) fn provider_branding(provider_id: &str) -> Option<ProviderBranding> {
+    let branding = match provider_id {
+        "pi" => ProviderBranding {
+            sign_in_command: "pi",
+            install_url: "https://pi.dev",
+            light: Some("#6D5DFB"),
+            dark: Some("#6D5DFB"),
+        },
+        "omp" => ProviderBranding {
+            sign_in_command: "omp login",
+            install_url: "https://github.com/can1357/omp",
+            light: Some("#9333EA"),
+            dark: Some("#9333EA"),
+        },
+        "opencode" => ProviderBranding {
+            sign_in_command: "opencode auth login",
+            install_url: "https://opencode.ai/docs",
+            light: Some("#2563EB"),
+            dark: Some("#2563EB"),
+        },
+        "cursor" => ProviderBranding {
+            sign_in_command: "cursor-agent login",
+            install_url: "https://cursor.com/docs/cli/installation",
+            light: Some("#111827"),
+            dark: Some("#F5F5F5"),
+        },
+        "codex" => ProviderBranding {
+            sign_in_command: "codex",
+            install_url: "https://developers.openai.com/codex/cli",
+            light: None,
+            dark: None,
+        },
+        "claude-code" => ProviderBranding {
+            sign_in_command: "claude",
+            install_url: "https://claude.com/claude-code",
+            light: Some("#D97757"),
+            dark: Some("#D97757"),
+        },
+        "hermes" => ProviderBranding {
+            sign_in_command: "hermes login",
+            install_url: "https://hermes-agent.nousresearch.com",
+            light: None,
+            dark: None,
+        },
+        "gemini" => ProviderBranding {
+            sign_in_command: "gemini",
+            install_url: "https://github.com/google-gemini/gemini-cli",
+            light: None,
+            dark: None,
+        },
+        _ => return None,
+    };
+    Some(branding)
+}
+
+/// What a logo request asked for.
+#[derive(Debug, Deserialize)]
+pub struct ProviderLogoQuery {
+    /// The content hash the client was given in `logoUrl`.
+    h: Option<String>,
+}
 
 /// `system.providerLogo`.
 ///
-/// Every provider the control plane offers has a mark, because the picker's
-/// provider tabs render the icon and nothing else: a URL that 404s is an
-/// invisible tab, not a missing decoration. Only an id that is not offered at
-/// all is a 404.
+/// Every offered provider has a mark — the picker's tabs render the icon and
+/// nothing else, so a URL that 404s is an invisible tab rather than a missing
+/// decoration — and an agent with no mark of its own gets the protocol's. Only
+/// an id that is not offered at all is a 404.
 pub async fn provider_logo(
     State(state): State<AppState>,
     AxumPath(provider_id): AxumPath<String>,
+    Query(query): Query<ProviderLogoQuery>,
 ) -> Response {
-    let Some(spec) = state.provider_spec_by_id(&provider_id) else {
+    if state.provider_spec_by_id(&provider_id).is_none() {
         return api_error(
             StatusCode::NOT_FOUND,
             "not_found",
             format!("provider {provider_id:?} is not offered"),
         );
-    };
-    let svg = if spec.name == "pi" {
-        PI_LOGO_SVG.to_vec()
-    } else {
-        provider_monogram_svg(&crate::http::provider_display_name(&spec.name)).into_bytes()
-    };
-    let mut response = Response::new(Body::from(svg));
-    response.headers_mut().insert(
+    }
+    let mark = provider_mark(&provider_id);
+    let mut response = Response::new(Body::from(mark.to_vec()));
+    let headers = response.headers_mut();
+    headers.insert(
         axum::http::header::CONTENT_TYPE,
         axum::http::HeaderValue::from_static("image/svg+xml"),
     );
+    // A request that names the current mark is immutable; anything else — an
+    // unknown hash, or none at all — is answered but not cached, so a client
+    // that guessed a URL cannot pin a stale icon.
+    headers.insert(
+        axum::http::header::CACHE_CONTROL,
+        if query.h.as_deref() == Some(provider_mark_hash(&provider_id).as_str()) {
+            axum::http::HeaderValue::from_static("public, max-age=31536000, immutable")
+        } else {
+            axum::http::HeaderValue::from_static("no-store")
+        },
+    );
+    // The mark is a document served from the application's own origin, and a
+    // browser renders one as a document when it is opened directly. Loom only
+    // ever uses it as a CSS mask, so a script inside one would have no purpose
+    // beyond running in that origin: the policy forbids them, while inline
+    // styles stay allowed because some marks use them.
+    headers.insert(
+        axum::http::header::CONTENT_SECURITY_POLICY,
+        axum::http::HeaderValue::from_static("default-src 'none'; style-src 'unsafe-inline'"),
+    );
+    headers.insert(
+        axum::http::header::X_CONTENT_TYPE_OPTIONS,
+        axum::http::HeaderValue::from_static("nosniff"),
+    );
     response
-}
-
-/// The mark for an agent that has no artwork loom can serve.
-///
-/// Generated rather than borrowed: loom does not ship third-party brand marks,
-/// and an agent discovered on a machine must still be recognisable. The initials
-/// come from the display name so `OMP` and `OpenCode` do not collapse into the
-/// same letter, and they are drawn as a silhouette because the client masks this
-/// image and fills it with the surrounding text colour.
-fn provider_monogram_svg(display_name: &str) -> String {
-    let initials = monogram_initials(display_name);
-    let initials = if initials.is_empty() {
-        "?".to_owned()
-    } else {
-        escape_xml(&initials)
-    };
-    // One glyph is drawn larger than two, so a monogram fills the tab either way.
-    let font_size = if initials.chars().count() > 1 {
-        300
-    } else {
-        420
-    };
-    format!(
-        concat!(
-            r##"<?xml version="1.0" encoding="UTF-8"?>"##,
-            r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 800">"##,
-            r##"<text x="400" y="400" fill="#000" text-anchor="middle" dominant-baseline="central" "##,
-            r##"font-family="system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif" "##,
-            r##"font-size="{}" font-weight="600">{}</text></svg>"##,
-        ),
-        font_size, initials
-    )
-}
-
-/// The one or two letters a provider is recognised by.
-///
-/// The letters have to distinguish the agents that actually share a first
-/// letter: `OMP` and `OpenCode` are one letter apart, not two spellings of `O`.
-/// So a single word contributes its own capitals when it has two — the shape the
-/// author chose — and its first two letters otherwise, while several words
-/// contribute one letter each.
-fn monogram_initials(display_name: &str) -> String {
-    let words: Vec<&str> = display_name.split_whitespace().collect();
-    let initials: String = match words.as_slice() {
-        [] => String::new(),
-        [word] => {
-            let capitals: String = word
-                .chars()
-                .filter(|letter| letter.is_uppercase())
-                .take(2)
-                .collect();
-            if capitals.chars().count() == 2 {
-                capitals
-            } else {
-                word.chars().take(2).collect()
-            }
-        }
-        _ => words
-            .iter()
-            .filter_map(|word| word.chars().next())
-            .take(2)
-            .collect(),
-    };
-    initials.to_uppercase()
-}
-
-/// Escapes the characters that would end a text node or an attribute value.
-///
-/// A provider id reaches this through a host's report, so it is input, not a
-/// constant: an id containing `<` must not be able to break the document.
-fn escape_xml(value: &str) -> String {
-    value
-        .replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&apos;")
 }
 
 /// `system.reloadConfig`.
@@ -481,11 +555,11 @@ pub async fn reset_ui_preference(
 mod tests {
     use super::*;
 
-    /// Every offered provider has a mark, and two agents whose names start with
-    /// the same letter do not get the same one — the picker's tabs render the
-    /// icon and nothing else, so an invisible or identical tab is a real defect.
+    /// Every offered provider is served a mark, the marks are the drawn glyphs
+    /// (never a vendor's colour artwork), and a request that names the current
+    /// hash is the only one a client may cache.
     #[tokio::test]
-    async fn every_offered_provider_has_a_mark_of_its_own() {
+    async fn every_offered_provider_is_served_a_mark() {
         let state = AppState::build(crate::state::AppConfig::default()).unwrap();
         state.record_host_providers(
             &loom_domain::HostId::mint(),
@@ -503,7 +577,12 @@ mod tests {
 
         let mut bodies = Vec::new();
         for spec in state.providers() {
-            let response = provider_logo(State(state.clone()), AxumPath(spec.name.clone())).await;
+            let response = provider_logo(
+                State(state.clone()),
+                AxumPath(spec.name.clone()),
+                Query(ProviderLogoQuery { h: None }),
+            )
+            .await;
             assert_eq!(
                 response.status(),
                 StatusCode::OK,
@@ -516,17 +595,41 @@ mod tests {
                 "{} is not served as an image",
                 spec.name
             );
+            // An unhashed request still answers — a client may have an old URL —
+            // but it must not be cached.
+            assert_eq!(
+                response.headers()[axum::http::header::CACHE_CONTROL],
+                "no-store"
+            );
+            assert_eq!(
+                response.headers()[axum::http::header::CONTENT_SECURITY_POLICY],
+                "default-src 'none'; style-src 'unsafe-inline'",
+                "a mark served as a document must not be able to run scripts"
+            );
+            assert_eq!(
+                response.headers()[axum::http::header::X_CONTENT_TYPE_OPTIONS],
+                "nosniff"
+            );
             let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
                 .await
                 .unwrap();
             let body = String::from_utf8(bytes.to_vec()).unwrap();
+            assert_eq!(
+                body.as_bytes(),
+                provider_mark(&spec.name),
+                "{} is not the mark loom ships",
+                spec.name
+            );
+            // The drawn glyphs paint themselves with the theme's text colour;
+            // a mark with a fixed fill would be invisible in one of the themes.
             assert!(
-                body.trim_end().ends_with("</svg>"),
-                "{} is not an SVG",
+                body.contains("currentColor"),
+                "{} does not follow the theme",
                 spec.name
             );
             bodies.push(body);
         }
+
         assert_eq!(bodies.len(), 5);
         for (index, body) in bodies.iter().enumerate() {
             assert!(
@@ -534,32 +637,149 @@ mod tests {
                 "a provider is drawing another provider's mark"
             );
         }
+
+        // The hashed URL a client is given is the immutable one.
+        let hash = provider_mark_hash("omp");
+        assert_eq!(hash.len(), 16, "bb addresses a mark with 16 hex characters");
+        let hashed = provider_logo(
+            State(state.clone()),
+            AxumPath("omp".into()),
+            Query(ProviderLogoQuery {
+                h: Some(hash.clone()),
+            }),
+        )
+        .await;
+        assert_eq!(
+            hashed.headers()[axum::http::header::CACHE_CONTROL],
+            "public, max-age=31536000, immutable"
+        );
+        // A stale or invented hash is answered but never cached.
+        let stale = provider_logo(
+            State(state.clone()),
+            AxumPath("omp".into()),
+            Query(ProviderLogoQuery {
+                h: Some("0000000000000000".into()),
+            }),
+        )
+        .await;
+        assert_eq!(
+            stale.headers()[axum::http::header::CACHE_CONTROL],
+            "no-store"
+        );
+
         // The id the worker reports is input, so an unknown one is a 404 rather
         // than a document built from it.
-        let missing = provider_logo(State(state.clone()), AxumPath("nope".into())).await;
+        let missing = provider_logo(
+            State(state.clone()),
+            AxumPath("nope".into()),
+            Query(ProviderLogoQuery { h: None }),
+        )
+        .await;
         assert_eq!(missing.status(), StatusCode::NOT_FOUND);
         state.shutdown();
     }
 
-    /// A provider name is input from a host's report, so a monogram cannot be a
-    /// way to inject markup into the served document.
-    #[test]
-    fn a_monogram_escapes_its_initials() {
-        let svg = provider_monogram_svg("<script>");
-        assert!(!svg.contains("<script>"), "{svg}");
-        assert!(svg.contains("&lt;"), "{svg}");
-        assert!(svg.ends_with("</svg>"), "{svg}");
+    /// An agent loom discovered but has no glyph for is drawn as an ACP agent
+    /// rather than as an invented logo — bb's fallback, kept.
+    #[tokio::test]
+    async fn an_unknown_agent_gets_the_protocol_mark() {
+        let state = AppState::build(crate::state::AppConfig::default()).unwrap();
+        state.record_host_providers(
+            &loom_domain::HostId::mint(),
+            vec![loom_provider_protocol::ProviderSpec {
+                name: "some-new-agent".into(),
+                launch: loom_provider_protocol::ProviderLaunch::AcpStdio,
+                command: "some-new-agent".into(),
+                args: Vec::new(),
+                cwd: None,
+            }],
+        );
+
+        let response = provider_logo(
+            State(state.clone()),
+            AxumPath("some-new-agent".into()),
+            Query(ProviderLogoQuery { h: None }),
+        )
+        .await;
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(bytes.as_ref(), ACP_MARK_SVG);
+        assert!(
+            provider_branding("some-new-agent").is_none(),
+            "an agent with no glyph has no sign-in hint to give either"
+        );
+        state.shutdown();
     }
 
-    /// The initials come from the display name, which is what keeps `OMP` and
-    /// `OpenCode` from collapsing into one letter.
+    /// Every shipped mark is a usable document that follows the theme, and each
+    /// names an id the worker can actually report — a typo here would be a
+    /// silently generic icon.
     #[test]
-    fn a_monogram_takes_its_initials_from_the_display_name() {
-        let of = |id: &str| provider_monogram_svg(&crate::http::provider_display_name(id));
-        assert!(of("omp").contains(">OM<"));
-        assert!(of("opencode").contains(">OC<"));
-        assert!(of("hermes").contains(">HE<"));
-        assert!(of("claude-code").contains(">CC<"));
+    fn every_shipped_mark_is_a_provider_id_and_a_themed_svg() {
+        assert!(!PROVIDER_MARKS.is_empty());
+        for (provider_id, svg) in PROVIDER_MARKS {
+            assert!(!provider_id.is_empty() && !provider_id.contains(char::is_whitespace));
+            let text = std::str::from_utf8(svg).expect("a mark is UTF-8 text");
+            assert!(text.contains("<svg"), "{provider_id} is not an SVG");
+            assert!(
+                text.trim_end().ends_with("</svg>"),
+                "{provider_id} is truncated"
+            );
+            assert!(
+                text.contains("currentColor"),
+                "{provider_id} would not follow the theme"
+            );
+            assert!(!text.contains("<script"), "{provider_id} carries a script");
+            let listed = PROVIDER_MARKS
+                .iter()
+                .filter(|(id, _)| id == provider_id)
+                .count();
+            assert_eq!(listed, 1, "{provider_id} is listed twice");
+        }
+        assert!(
+            String::from_utf8_lossy(ACP_MARK_SVG).contains("currentColor"),
+            "the fallback mark must follow the theme too"
+        );
+    }
+
+    /// Every agent with a glyph names who signs it in and where to get it, its
+    /// colours are ones CSS accepts, and its install page is a real link.
+    #[test]
+    fn every_shipped_mark_has_usable_branding() {
+        for (provider_id, _) in PROVIDER_MARKS {
+            let branding = provider_branding(provider_id)
+                .unwrap_or_else(|| panic!("{provider_id} ships a mark but no branding"));
+            assert!(
+                !branding.sign_in_command.is_empty(),
+                "{provider_id} has no sign-in command"
+            );
+            assert!(
+                branding.install_url.starts_with("https://"),
+                "{provider_id}: {} is not a link",
+                branding.install_url
+            );
+            match (branding.light, branding.dark) {
+                (None, None) => {}
+                (Some(light), Some(dark)) => {
+                    for colour in [light, dark] {
+                        let digits = colour.strip_prefix('#').unwrap_or_else(|| {
+                            panic!("{provider_id}: {colour} is not a hex colour")
+                        });
+                        assert!(
+                            matches!(digits.len(), 3 | 6 | 8)
+                                && digits.chars().all(|digit| digit.is_ascii_hexdigit()),
+                            "{provider_id}: {colour} is not a hex colour"
+                        );
+                    }
+                }
+                _ => panic!("{provider_id} has half a tint pair"),
+            }
+        }
+        assert!(
+            provider_branding("some-new-agent").is_none(),
+            "an agent loom does not know has no branding either"
+        );
     }
 
     #[tokio::test]
