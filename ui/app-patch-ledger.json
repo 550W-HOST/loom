@@ -3856,6 +3856,38 @@
       "issue": "W-585",
       "owner": "PuQing",
       "reason": "W-585 introduced the loom-native reader family this covers. The test pins URL/method/query mapping, undefined-query omission and HTTP error surfacing for the storage readers."
+    },
+    {
+      "kind": "modify",
+      "upstream": {
+        "path": "apps/app/src/components/pickers/ModelReasoningPicker.tsx",
+        "sha256": "701b75daf47fc232019e796dc47045ee4d3709cd9c9e170ba568b4c5bb599208",
+        "mode": "100644"
+      },
+      "local": {
+        "path": "apps/app/src/components/pickers/ModelReasoningPicker.tsx",
+        "sha256": "d4a6be38247de65713e849feca7ac6301dce79cb66e47ebc3a3a35c56c070c7d",
+        "mode": "100644"
+      },
+      "issue": "W-604",
+      "owner": "PuQing",
+      "reason": "W-604 introduced this path with the source-port snapshot. The Reasoning section now renders one row per level with the same row component the model list uses, matching the shipped bb app, instead of a single horizontal segmented row that squeezed seven levels into the popover width."
+    },
+    {
+      "kind": "modify",
+      "upstream": {
+        "path": "apps/app/src/components/pickers/ModelReasoningPicker.test.tsx",
+        "sha256": "970a20489765122daa18b6b7c544867eb2dc8e00d37cb451900a2d9a0e4112e3",
+        "mode": "100644"
+      },
+      "local": {
+        "path": "apps/app/src/components/pickers/ModelReasoningPicker.test.tsx",
+        "sha256": "f1975d3ba115fe55295b877f6fb962ab273c180010a2d8d86d47625cc95accd7",
+        "mode": "100644"
+      },
+      "issue": "W-604",
+      "owner": "PuQing",
+      "reason": "W-604 introduced this path with the source-port snapshot. It asserts the reasoning levels render as full-width rows and that clicking one selects it, and locates the section by its label now that it is no longer a radiogroup."
     }
   ]
 }
