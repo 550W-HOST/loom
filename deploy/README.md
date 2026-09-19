@@ -74,7 +74,16 @@ sudo systemctl restart loom-worker@builder-1
 ```
 
 For a single-box deployment, `sudo deploy/install.sh all builder-1 https://loom.example.com`
-installs the server and one worker on the same machine.
+installs the server and one worker on the same machine, as two units.
+
+If two units is one too many, the server can run both roles itself:
+`sudo deploy/install.sh server`, then set `LOOM_LOCAL_WORKER=1` in
+`/etc/loom/loom-server.env` and restart. The server starts and supervises one
+worker child on the same machine — same binary, separate process — and stops it
+with the server. It is the same boundary, one unit shorter; see
+[`../docs/process-model.md`](../docs/process-model.md) § Startup paths. The
+resulting unit is worker-friendly rather than locked down, so a machine that
+wants the control plane sandboxed on its own keeps the two units.
 
 Every `cargo build --release -p loom` above needs `pnpm --filter @bb/app run
 build` first: the product app is compiled into the server, so a checkout that has

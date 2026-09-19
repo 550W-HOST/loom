@@ -43,6 +43,7 @@ pub mod http;
 pub mod hub_actor;
 pub mod interactions;
 pub mod join_codes;
+pub mod local_worker;
 pub mod persistence;
 pub mod protocol;
 pub mod pump;
@@ -74,6 +75,7 @@ pub use host_files::{HostFileBroker, HostFileTransportError, HOST_FILE_TIMEOUT};
 pub use host_rpc::{HostRpcBroker, HostRpcTransportError, HOST_RPC_TIMEOUT};
 pub use hub_actor::{HubCommand, HubHandle};
 pub use interactions::DeliverOutcome;
+pub use local_worker::{server_url_for_bind, LocalWorker, LocalWorkerConfig};
 pub use persistence::{DomainSnapshot, SnapshotError, SNAPSHOT_FILE};
 pub use protocol::{
     ClientMessage, ServerMessage, SubscriptionTarget, WorkerClientMessage, WorkerServerMessage,

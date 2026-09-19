@@ -15,10 +15,15 @@ supervision relationship was merged.
 ## The decision
 
 They are two processes with one protocol between them, and neither owns the
-other.
+other. The single-box opt-in below adds a supervisor relationship between the two
+*processes*; it does not merge them.
 
 - **`loom-server` (Rust)** is the control plane role: state, HTTP, WebSocket, the
-  relay. It never starts, supervises, waits for, or requires a worker.
+  relay. It requires no worker and starts none by default. The one opt-in is
+  `loom server --local-worker` (`LOOM_LOCAL_WORKER=1`), which starts **one**
+  `loom worker` child on the same machine and supervises it; the child is still a
+  separate process with its own address space and its own reconnect loop, and a
+  server started without the flag is exactly the server-only role described here.
 - **`loom-worker`** is the execution plane role: it runs on a machine, dials the
   server *outbound*, enrolls as a host, and executes work. It never starts,
   supervises, or requires the server to be co-located or in the same process
@@ -30,10 +35,11 @@ other.
   harness. When the Node host daemon lands, it replaces the shell's body, not its
   boundary.
 
-There is no FFI, no embedded Node runtime, and no shared cgroup. A worker that
-cannot reach a server is a worker that reconnects; a server with no worker is a
-server that serves. That one-way dependency is what makes both deployment
-shapes in `architecture.md` fall out for free.
+There is no FFI, no embedded Node runtime, and no shared cgroup in the default
+two-process shape. A worker that cannot reach a server is a worker that
+reconnects; a server with no worker is a server that serves. That one-way
+dependency is what makes both deployment shapes in `architecture.md` fall out for
+free.
 
 ### Why not run the Node host daemon inside the Rust server
 
@@ -43,22 +49,34 @@ closing the execution plane takes the UI with it, and one machine exhausting
 itself drags the control plane along. Keeping the boundary as a network
 boundary is the point, not an implementation detail.
 
+`--local-worker` is not a step back toward that. It starts a second *process*
+that systemd or a terminal could have started instead; it does not import the
+execution plane into the server — no FFI, no embedded runtime, no shared address
+space, and the child is killed rather than spoken to. What it does trade away is
+unit-level isolation: one supervisor now owns both lifetimes, and the pair shares
+a cgroup when systemd runs the server, so the two-unit shape stays the answer for
+a machine that wants the control plane sandboxed on its own.
+
 ## Startup paths
 
-Three, and the first two are the primitives; the third is a convenience.
+Four, and the first two are the primitives; the last two are conveniences.
 
 | Path | Command | What it starts | What it assumes |
 | --- | --- | --- | --- |
 | **server-only** | `loom server` (installed as `loom-server`) | the control plane | nothing. No worker, no data dir |
 | **worker-only** | `loom worker --server-url <URL>` (installed as `loom-worker`) | one execution machine | a reachable server URL |
+| **single box** | `loom server --local-worker` | both, from one command | a writable data dir |
 | **full stack** | a supervisor starting both as *separate children* | both | a local server URL |
 
-The server role is server-only by construction. It does not probe for a worker,
-and it does not exit when none connects — see the test
+The server role is server-only unless asked. It does not probe for a worker, and
+it does not exit when none connects — see the test
 `a_server_with_no_worker_is_up_and_a_remote_worker_becomes_primary`. The
-full-stack path is retained as "single-machine convenience", but it is a
-supervisor over the same binary started twice: it starts two independent
-children and can stop either alone.
+single-box path is the one opt-in, and it is the server itself doing the
+supervising: one `loom worker` child, started from the same binary, restarted
+when it exits (including the `exit 0` a self-update leaves behind) and killed
+with the server. The full-stack path stays the shape that can stop either side
+alone: it is an outside supervisor over two independent children, which is what
+`deploy/install.sh all` plus two units and the compose file already are.
 
 ## The worker contract
 
@@ -146,9 +164,11 @@ machine A.
   loom`) that carries both roles, plus the `loom-server` / `loom-worker`
   symlinks an install adds beside it. Which role a start takes comes from the
   invocation name, so `loom server` and `loom-server` are the same start, and so
-  are `loom worker` and `loom-worker`. Nothing starts the other role.
-- **The server role** — server-only control plane, with host enrollment,
-  heartbeats, disconnects and primary-host resolution.
+  are `loom worker` and `loom-worker`. Nothing starts the other role except the
+  named opt-in: `loom server --local-worker`.
+- **The server role** — control plane, with host enrollment, heartbeats,
+  disconnects and primary-host resolution. Server-only unless `--local-worker`
+  starts and supervises one worker child on the same machine.
 - **The worker role** — the reference worker-only entry point. It enrolls,
   follows its `host:{id}` room through the relay with replay on reconnect, and
   runs the provider the control plane dispatches.
@@ -192,6 +212,23 @@ Both units start the same installed file in a different role — the
 use instead are symlinks onto it — and they have separate resource domains and
 separate lifetimes. Stopping the worker cannot stop the control plane, and vice
 versa.
+
+A single box can instead run both roles from one unit, with the server as the
+supervisor:
+
+```bash
+# /etc/systemd/system/loom-local.service
+[Service]
+ExecStart=/usr/local/bin/loom server --local-worker
+Environment=LOOM_BIND=127.0.0.1:38886
+Environment=LOOM_DATA_DIR=/var/lib/loom/server
+```
+
+`deploy/env/loom-server.env` carries the same switch as `LOOM_LOCAL_WORKER=1`,
+so an install that already runs `loom-server.service` only needs its environment
+file edited. That unit gets a worker-friendly sandbox, not the server-only
+unit's `ProtectSystem=strict`, because the child writes workspaces and runs
+provider CLIs.
 
 Keep `LOOM_BIND` on loopback. The API has no authentication and a worker
 executes commands and reads files on its machine, so binding it to a public

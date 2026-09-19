@@ -361,9 +361,11 @@ UI. Two consequences drive the implementation:
 Both are now implemented: the server role is server-only, the worker role is the
 independent execution-plane entry point, and primary-host resolution degrades
 instead of failing. They are `loom server` and `loom worker` — one binary, two
-roles, still two processes. The boundary contract — the wire protocol, the
-primary policy, and the desktop shell's two supervision switches — is specified
-in
+roles, still two processes. A single box may also run both from one command,
+`loom server --local-worker`, which starts and supervises one worker child
+without merging the roles: still two processes, now one supervisor. The boundary
+contract — the wire protocol, the primary policy, and the desktop shell's two
+supervision switches — is specified in
 [`process-model.md`](process-model.md).
 
 ## Open questions

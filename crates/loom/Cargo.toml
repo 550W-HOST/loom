@@ -20,4 +20,4 @@ loom-relay.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tempfile = "3"
-tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
+tokio = { workspace = true, features = ["macros", "process", "rt-multi-thread", "time"] }

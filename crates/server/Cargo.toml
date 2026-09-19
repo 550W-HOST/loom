@@ -26,7 +26,7 @@ serde_json.workspace = true
 # published". It is pure Rust with no C dependency, so it does not disturb the
 # static musl build.
 sha2 = "0.10"
-tokio = { workspace = true, features = ["fs", "io-util", "signal"] }
+tokio = { workspace = true, features = ["fs", "io-util", "process", "signal"] }
 
 [dev-dependencies]
 # The automation tests assert that a schedule is read in its zone — `nextRunAt`

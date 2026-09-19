@@ -123,8 +123,9 @@ cargo fmt --all
 `cargo build --release -p loom` puts the artifact at `target/release/loom`;
 `loom server` starts the control plane and `loom worker` an execution machine,
 and `deploy/install.sh` adds the `loom-server` / `loom-worker` symlinks so
-anything that spawns a binary by name keeps working. For a quick start,
-`cargo run -p loom -- server`.
+anything that spawns a binary by name keeps working. `loom server
+--local-worker` runs both on one box, with the server supervising the worker
+child. For a quick start, `cargo run -p loom -- server`.
 
 The ported `thread-view`, `client-core`, `core-ui`, `shared-ui`, and contract
 packages live under `ui/packages/` and are what the app builds against. Their
@@ -155,9 +156,12 @@ contract.
 Run it:
 
 ```bash
-# Server-only: the control plane and nothing else. It never starts a worker
-# and never exits because one is missing.
+# Server-only: the control plane and nothing else. It starts no worker and
+# never exits because one is missing.
 cargo run -p loom -- server       # listens on 127.0.0.1:38886
+
+# Single box: the same command also starts and supervises one local worker.
+cargo run -p loom -- server --local-worker
 
 curl localhost:38886/health
 curl localhost:38886/api/v1/hosts/primary

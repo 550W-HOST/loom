@@ -156,11 +156,13 @@ fn print_usage(argv0: &str) {
     println!("server: the control plane. Reads LOOM_BIND, LOOM_DATA_DIR, LOOM_NODE_ID,");
     println!("        LOOM_REDIS_URL, LOOM_LOCAL_HOST_ID, LOOM_UI_PROXY,");
     println!("        LOOM_ARTIFACT_DIR and LOOM_GIT_COMMIT from the environment.");
+    println!("        --local-worker also starts and supervises one worker on this machine.");
     println!("worker: the execution plane on one machine. Run `loom worker --help` for its");
     println!("        flags (--server-url, --name, --state, --provider-cmd, …).");
     println!();
-    println!("The two are separate processes with one protocol between them; one role never");
-    println!("starts or supervises the other. See docs/process-model.md.");
+    println!("The two are separate processes with one protocol between them. The server starts");
+    println!("no worker unless --local-worker asks for one, and a worker never starts a server;");
+    println!("that flag is the single-box convenience. See docs/process-model.md.");
 }
 
 #[cfg(test)]
