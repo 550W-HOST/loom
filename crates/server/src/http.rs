@@ -1361,7 +1361,12 @@ fn thread_summary_value(state: &AppState, thread: &Thread) -> Value {
         "id": thread.id.to_string(),
         "projectId": thread.project_id.to_string(),
         "environmentId": environment_id,
-        "providerId": configured_provider_id(state),
+        // The agent this thread runs on, which is the one its client picked;
+        // a thread that never picked one ran on the default.
+        "providerId": thread
+            .provider_id
+            .clone()
+            .unwrap_or_else(|| configured_provider_id(state)),
         "title": thread.title,
         "titleFallback": thread.title,
         "sectionId": thread.section_id,
@@ -2599,11 +2604,11 @@ async fn update_thread_tabs(
 /// changes nothing is accepted and answers the unchanged thread: every field in
 /// the contract's request is optional, so "no change" cannot be an error.
 ///
-/// `model` and `reasoningLevel` are recorded and reported
-/// (`threads.defaultExecutionOptions`); they are not yet carried into the
-/// dispatch, because the provider protocol's `ProviderSpec` has no field for
-/// them. That divergence is deliberate and documented rather than silently
-/// dropped: the values survive, and the client can read them back.
+/// `model`, `reasoningLevel` and `providerId` are recorded and reported
+/// (`threads.defaultExecutionOptions`), and all three are carried into the next
+/// dispatch: the worker hands the model and level to the agent, and the
+/// provider picks the agent itself. An id the server does not configure falls
+/// back to the default provider rather than failing the turn.
 async fn update_thread(
     State(state): State<AppState>,
     Path(raw_thread_id): Path<String>,
@@ -2699,6 +2704,10 @@ async fn thread_default_execution_options(
     if thread.model.is_none() && thread.reasoning_level.is_none() {
         return Json(Value::Null).into_response();
     }
+    // `providerId` is deliberately absent: this route's declared response is
+    // `additionalProperties: false` and does not carry it. The agent a thread is
+    // bound to is reported on the thread summary, which is where the client
+    // reads it.
     Json(json!({
         "model": thread
             .model

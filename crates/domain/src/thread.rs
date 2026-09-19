@@ -242,6 +242,10 @@ pub struct ThreadUpdate {
     /// for the server's default.
     #[serde(default, deserialize_with = "double_option")]
     pub reasoning_level: Option<Option<ReasoningLevel>>,
+    /// The provider this thread's next run uses, or `Some(None)` for the
+    /// server's default.
+    #[serde(default, deserialize_with = "double_option")]
+    pub provider_id: Option<Option<String>>,
     /// Whether the thread is shown in the default sidebar.
     #[serde(default)]
     pub visibility: Option<ThreadVisibility>,
@@ -436,14 +440,21 @@ pub struct Thread {
     pub visibility: ThreadVisibility,
     /// The model a new run of this thread starts with, when a client chose one.
     ///
-    /// Recorded and reported (`threads.defaultExecutionOptions`); the dispatch
-    /// path does not carry it yet, because [`loom_provider_protocol`]'s
-    /// `ProviderSpec` has no model field.
+    /// Recorded and reported (`threads.defaultExecutionOptions`), and carried
+    /// into the dispatch as the agent's own model id.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     /// The reasoning level a new run of this thread asks for, when chosen.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_level: Option<ReasoningLevel>,
+    /// The provider this thread runs on, when a client chose one.
+    ///
+    /// A machine may serve several agents, so a run must go to the one the
+    /// user picked rather than to whichever the control plane lists first.
+    /// `None` means the server's default provider, which is what every thread
+    /// created before this field existed gets.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_id: Option<String>,
     /// The thread's open tabs, exactly as the client sent them.
     ///
     /// View state, not domain state: the shape is the client's
@@ -527,6 +538,7 @@ impl Thread {
             visibility: ThreadVisibility::Visible,
             model: None,
             reasoning_level: None,
+            provider_id: None,
             tabs: Vec::new(),
             tabs_revision: 0,
             provider_session_id: None,
@@ -700,6 +712,15 @@ impl Thread {
         if let Some(level) = &update.reasoning_level {
             changed |= self.reasoning_level != *level;
             self.reasoning_level = level.clone();
+        }
+
+        if let Some(provider_id) = &update.provider_id {
+            let provider_id = provider_id
+                .as_ref()
+                .map(|provider_id| provider_id.trim().to_owned())
+                .filter(|provider_id| !provider_id.is_empty());
+            changed |= self.provider_id != provider_id;
+            self.provider_id = provider_id;
         }
 
         if let Some(visibility) = update.visibility {
@@ -1083,6 +1104,7 @@ mod tests {
             "visibility": "hidden",
             "model": "pi",
             "reasoningLevel": "xhigh",
+            "providerId": "  codex  ",
         }))
         .unwrap();
         let event = thread.apply_update(&update, 2_000).unwrap().unwrap();
@@ -1094,6 +1116,11 @@ mod tests {
         assert_eq!(updated.visibility, ThreadVisibility::Hidden);
         assert_eq!(updated.model.as_deref(), Some("pi"));
         assert_eq!(updated.reasoning_level, Some(ReasoningLevel::from("xhigh")));
+        assert_eq!(
+            updated.provider_id.as_deref(),
+            Some("codex"),
+            "the provider id is trimmed like a model id"
+        );
         assert_eq!(updated.updated_at_ms, 2_000);
         assert_eq!(updated.tabs_revision, 0, "an update must not move the tabs");
     }
@@ -1103,6 +1130,7 @@ mod tests {
         let mut thread = thread();
         thread.section_id = Some("sec-1".into());
         thread.model = Some("pi".into());
+        thread.provider_id = Some("codex".into());
 
         // Omitted: `sectionId` keeps its value while `model` is cleared.
         let update: ThreadUpdate =
@@ -1112,12 +1140,22 @@ mod tests {
         thread.apply_update(&update, 2_000).unwrap();
         assert_eq!(thread.section_id.as_deref(), Some("sec-1"));
         assert_eq!(thread.model, None);
+        assert_eq!(
+            thread.provider_id.as_deref(),
+            Some("codex"),
+            "an omitted provider is kept, not cleared alongside the model"
+        );
         assert_eq!(thread.title.as_deref(), Some("kept"));
 
         // Explicit null: `sectionId` is cleared.
         let update: ThreadUpdate = serde_json::from_value(json!({ "sectionId": null })).unwrap();
         thread.apply_update(&update, 2_001).unwrap();
         assert_eq!(thread.section_id, None);
+
+        // And so is the provider.
+        let update: ThreadUpdate = serde_json::from_value(json!({ "providerId": null })).unwrap();
+        thread.apply_update(&update, 2_002).unwrap();
+        assert_eq!(thread.provider_id, None);
     }
 
     #[test]

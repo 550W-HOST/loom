@@ -726,6 +726,7 @@ impl AppState {
                         deadline_ms: now,
                         turn_started: false,
                         provider_thread_id: None,
+                        provider_id: None,
                         provider_error_reported: false,
                         failure_reason: None,
                         terminal_published: false,

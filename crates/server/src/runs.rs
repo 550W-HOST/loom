@@ -76,6 +76,16 @@ pub struct RunRecord {
     /// used to resume an ACP session.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_thread_id: Option<String>,
+    /// The agent this run was dispatched to, as [`ProviderSpec::name`] spells
+    /// it.
+    ///
+    /// Recorded so the session binding the run teaches is attributed to the
+    /// agent that actually issued the id: a machine may serve several, and a
+    /// resume must never be handed to a different one. `None` only for a record
+    /// restored from a snapshot written before providers were selectable, which
+    /// then falls back to the default — exactly what that run used.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_id: Option<String>,
     /// Whether a provider error has already been published for this run.
     ///
     /// This avoids adding a duplicate diagnostic while recovering a run whose
@@ -545,16 +555,27 @@ impl AppState {
             deadline_ms: now.saturating_add(self.run_timeout_ms()),
             turn_started: false,
             provider_thread_id: None,
+            provider_id: None,
             provider_error_reported: false,
             failure_reason: None,
             terminal_published: false,
             terminal_outcome: None,
             pending_status_event: None,
         };
-        // The dispatched spec carries the working directory. The provider is
-        // otherwise exactly the one this server was configured with.
-        let mut provider = self.provider_spec().clone();
+        // The dispatched spec carries the working directory, and the agent is
+        // the one the thread's client chose. A thread that never chose one —
+        // every thread from before providers were selectable — gets the
+        // default, which is what it ran on anyway. A stored id this server no
+        // longer configures also falls back rather than failing the turn: the
+        // agent refuses a model it does not have, and the run still happens.
+        let mut provider = thread
+            .provider_id
+            .as_deref()
+            .and_then(|provider_id| self.provider_spec_by_id(provider_id))
+            .unwrap_or_else(|| self.provider_spec())
+            .clone();
         provider.cwd = Some(workspace.clone());
+        record.provider_id = Some(provider.name.clone());
         // Resume only when the recorded session belongs to this agent *and*
         // this workspace. A provider session id is the agent's own, unique only
         // within it, and a session is bound to the directory it was opened in —
@@ -823,7 +844,15 @@ impl AppState {
         // turn fresh rather than guessing.
         let binding = self.runs.get(&event.run_id).map(|record| {
             loom_domain::ProviderSessionBinding::new(
-                self.provider_spec().name.clone(),
+                // The agent the run was dispatched to, not whatever the server
+                // defaults to now: a resume handed to a different agent would
+                // mean an id it never issued. A record restored from a snapshot
+                // written before providers were selectable has none, and the
+                // default is what that run used.
+                record
+                    .provider_id
+                    .clone()
+                    .unwrap_or_else(|| self.provider_spec().name.clone()),
                 record.cwd.clone(),
             )
             .at(now)
@@ -1297,6 +1326,7 @@ impl AppState {
             deadline_ms: now,
             turn_started: false,
             provider_thread_id: None,
+            provider_id: None,
             provider_error_reported: false,
             failure_reason: Some(reason.clone()),
             terminal_published: false,
@@ -1524,6 +1554,7 @@ mod tests {
             deadline_ms: 10,
             turn_started: false,
             provider_thread_id: None,
+            provider_id: None,
             provider_error_reported: false,
             failure_reason: None,
             terminal_published: false,
@@ -1970,6 +2001,133 @@ mod tests {
             serde_json::from_str(frame["payload"].as_str().unwrap()).unwrap();
         assert_eq!(dispatch["provider"]["cwd"], workspace);
         assert_eq!(dispatch["provider_session_id"], "acp-session-1");
+        state.shutdown();
+    }
+
+    /// The provider spec of the single frame dispatched to `host_id`.
+    fn dispatched_provider(state: &AppState, host_id: &HostId) -> serde_json::Value {
+        let frames = state
+            .relay
+            .replay_scope(&Scope::Host(host_id.to_string()), 10)
+            .unwrap();
+        assert_eq!(frames.len(), 1, "exactly one dispatch frame");
+        let frame: serde_json::Value = serde_json::from_slice(&frames[0].payload).unwrap();
+        let dispatch: serde_json::Value =
+            serde_json::from_str(frame["payload"].as_str().unwrap()).unwrap();
+        dispatch["provider"].clone()
+    }
+
+    fn provider_spec(name: &str, command: &str) -> loom_provider_protocol::ProviderSpec {
+        loom_provider_protocol::ProviderSpec {
+            name: name.to_owned(),
+            launch: if name == "pi" {
+                loom_provider_protocol::ProviderLaunch::AcpEmbeddedPi
+            } else {
+                loom_provider_protocol::ProviderLaunch::AcpStdio
+            },
+            command: command.to_owned(),
+            args: Vec::new(),
+            cwd: None,
+        }
+    }
+
+    fn state_with_two_providers() -> AppState {
+        AppState::build(AppConfig {
+            reconcile_interval: Duration::ZERO,
+            providers: vec![provider_spec("pi", "pi"), provider_spec("codex", "codex")],
+            ..AppConfig::default()
+        })
+        .unwrap()
+    }
+
+    fn choose_provider(state: &AppState, thread_id: &ThreadId, provider_id: &str) {
+        state
+            .registry
+            .update_thread(
+                thread_id,
+                &loom_domain::ThreadUpdate {
+                    provider_id: Some(Some(provider_id.to_owned())),
+                    ..loom_domain::ThreadUpdate::default()
+                },
+                2,
+            )
+            .unwrap();
+    }
+
+    /// A run goes to the agent the thread's client chose, not to whichever the
+    /// server lists first.
+    #[tokio::test]
+    async fn a_dispatch_uses_the_provider_the_thread_chose() {
+        let state = state_with_two_providers();
+        let (host_id, thread, workspace) = thread_with_workspace(&state, "/srv/project-a");
+        choose_provider(&state, &thread.id, "codex");
+
+        let thread = state.registry.thread(&thread.id).unwrap();
+        assert!(matches!(
+            state.dispatch_thread(&thread, "hi"),
+            DispatchOutcome::Dispatched(_)
+        ));
+
+        let provider = dispatched_provider(&state, &host_id);
+        assert_eq!(provider["name"], "codex");
+        assert_eq!(provider["command"], "codex");
+        assert_eq!(provider["cwd"], workspace);
+        state.shutdown();
+    }
+
+    /// A thread that never chose a provider runs on the default, which is what
+    /// every thread created before providers were selectable gets.
+    #[tokio::test]
+    async fn a_dispatch_without_a_chosen_provider_uses_the_default() {
+        let state = state_with_two_providers();
+        let (host_id, thread, _) = thread_with_workspace(&state, "/srv/project-a");
+
+        let thread = state.registry.thread(&thread.id).unwrap();
+        assert!(matches!(
+            state.dispatch_thread(&thread, "hi"),
+            DispatchOutcome::Dispatched(_)
+        ));
+        assert_eq!(dispatched_provider(&state, &host_id)["name"], "pi");
+        state.shutdown();
+    }
+
+    /// A provider the server no longer configures falls back to the default
+    /// rather than failing the turn: the agent refuses a model it does not
+    /// have, and the conversation still happens.
+    #[tokio::test]
+    async fn a_dispatch_with_an_unknown_stored_provider_falls_back() {
+        let state = state_with_two_providers();
+        let (host_id, thread, _) = thread_with_workspace(&state, "/srv/project-a");
+        choose_provider(&state, &thread.id, "retired-agent");
+
+        let thread = state.registry.thread(&thread.id).unwrap();
+        assert!(matches!(
+            state.dispatch_thread(&thread, "hi"),
+            DispatchOutcome::Dispatched(_)
+        ));
+        assert_eq!(dispatched_provider(&state, &host_id)["name"], "pi");
+        state.shutdown();
+    }
+
+    /// The run record remembers the agent it went to, so the session id it
+    /// teaches is bound to that agent rather than to the current default.
+    #[tokio::test]
+    async fn a_run_records_the_provider_it_was_dispatched_to() {
+        let state = state_with_two_providers();
+        let (_host_id, thread, _) = thread_with_workspace(&state, "/srv/project-a");
+        choose_provider(&state, &thread.id, "codex");
+
+        let thread = state.registry.thread(&thread.id).unwrap();
+        let DispatchOutcome::Dispatched(run) = state.dispatch_thread(&thread, "hi") else {
+            panic!("expected a dispatch");
+        };
+        let record = state.runs.get(&run.run_id).expect("the run is in flight");
+        assert_eq!(record.provider_id.as_deref(), Some("codex"));
+        assert_eq!(
+            thread.resumable_session_id("codex", "/srv/project-a"),
+            None,
+            "no session has been learned yet"
+        );
         state.shutdown();
     }
 
