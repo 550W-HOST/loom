@@ -35,13 +35,34 @@ const UI_PREFERENCE_KEYS: [&str; 16] = [
     "sidebar.threadListProvider",
 ];
 
+/// The code theme a client falls back to when nothing is configured.
+///
+/// These are pierre's own built-in themes, and they are the names the client's
+/// `@bb/domain` defaults use, so a client that receives them highlights code and
+/// diffs without any configuration. The names must not be empty: the client's
+/// schema requires at least one character, and its highlighter fails outright on
+/// a name it has no loader for. An empty default is what left every file-change
+/// row drawing its header and nothing underneath it.
+const DEFAULT_CODE_THEME_DARK: &str = "pierre-dark";
+const DEFAULT_CODE_THEME_LIGHT: &str = "pierre-light";
+
 /// The code-theme projection required by bb's appearance response.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResolvedCodeTheme {
     pub dark: String,
     pub light: String,
     #[serde(default)]
     pub files: BTreeMap<String, Value>,
+}
+
+impl Default for ResolvedCodeTheme {
+    fn default() -> Self {
+        Self {
+            dark: DEFAULT_CODE_THEME_DARK.to_owned(),
+            light: DEFAULT_CODE_THEME_LIGHT.to_owned(),
+            files: BTreeMap::new(),
+        }
+    }
 }
 
 /// The active appearance selection.
@@ -477,6 +498,21 @@ fn normalize_snapshot(snapshot: &mut SettingsSnapshot, provider_id: &str, migrat
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_default_code_theme_is_one_the_client_can_load() {
+        // Not `""`: the client's schema rejects an empty name and its
+        // highlighter has no loader for one, which silently leaves a diff card
+        // with a header and an empty body.
+        let theme = ResolvedCodeTheme::default();
+        assert_eq!(theme.dark, "pierre-dark");
+        assert_eq!(theme.light, "pierre-light");
+        assert!(theme.files.is_empty());
+        // The appearance the client is served carries the same pair.
+        let state = SettingsRegistry::new("pi");
+        let appearance = state.appearance();
+        assert_eq!(appearance.resolved_code_theme, theme);
+    }
 
     #[test]
     fn defaults_cover_every_contract_preference() {
