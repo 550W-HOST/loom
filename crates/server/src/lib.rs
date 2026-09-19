@@ -53,6 +53,7 @@ pub mod runs;
 pub mod settings;
 pub mod state;
 pub mod terminals;
+pub mod tool_timeline;
 pub mod transport;
 pub mod ui;
 pub mod ws;

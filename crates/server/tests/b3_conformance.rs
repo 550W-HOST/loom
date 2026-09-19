@@ -1669,6 +1669,50 @@ fn publish_reasoning_delta(
         .unwrap();
 }
 
+/// Publishes one frame of a tool call the way a worker report would.
+///
+/// The shapes are the adapter's own: a start, any number of progress frames
+/// carrying what the agent is doing (the command line for a shell call), and a
+/// completion with the merged item.
+fn publish_tool_frame(
+    fixture: &Fixture,
+    run_id: &loom_domain::RunId,
+    event: loom_domain::ProviderEvent,
+) {
+    fixture
+        .state
+        .publish_domain_event(&loom_domain::DomainEvent::ThreadRunEvent {
+            run: Box::new(loom_domain::RunEvent::new(
+                fixture.thread_id(),
+                fixture
+                    .state
+                    .registry
+                    .thread(&fixture.thread_id())
+                    .unwrap()
+                    .project_id,
+                run_id.clone(),
+                loom_relay::now_ms(),
+                event,
+            )),
+        })
+        .unwrap();
+}
+
+fn tool_call_item(id: &str, status: loom_domain::ItemStatus) -> loom_domain::ThreadEventItem {
+    loom_domain::ThreadEventItem::ToolCall {
+        id: id.to_owned(),
+        server: None,
+        tool: "execute".to_owned(),
+        arguments: None,
+        status,
+        result: None,
+        error: None,
+        duration_ms: None,
+        presentation: None,
+        parent_tool_call_id: None,
+    }
+}
+
 async fn timeline_rows(fixture: &Fixture) -> Vec<Value> {
     fixture
         .get(&format!("/api/v1/threads/{}/timeline", fixture.thread_id))
@@ -1975,6 +2019,124 @@ async fn thinking_streams_into_one_row_the_client_can_expand() {
         "{}",
         serde_json::to_string_pretty(&rows).unwrap()
     );
+
+    fixture.state.shutdown();
+}
+
+/// A tool call renders, and it renders as *one* row that names what it ran.
+///
+/// The same hole as thinking: the route projected answers and nothing else, so
+/// a turn that ran `ls` twice showed two answers and no work. The command line
+/// arrives on the progress frames rather than the start, which is why the row
+/// cannot be built from `item/started` alone.
+#[tokio::test]
+async fn a_tool_call_becomes_one_work_row_that_names_the_command() {
+    let fixture = fixture().await;
+    let run_id = loom_domain::RunId::mint();
+    let call_id = "call_00_kxG3tifMoJvXBbK9JHSh1661|4110e0c9";
+
+    publish_tool_frame(
+        &fixture,
+        &run_id,
+        loom_domain::ProviderEvent::ItemStarted {
+            item: tool_call_item(call_id, loom_domain::ItemStatus::Pending),
+            provider_thread_id: fixture.thread_id.clone(),
+        },
+    );
+    for _ in 0..3 {
+        publish_tool_frame(
+            &fixture,
+            &run_id,
+            loom_domain::ProviderEvent::ItemToolCallProgress {
+                item_id: call_id.to_owned(),
+                message: Some("ls -la".to_owned()),
+                provider_thread_id: fixture.thread_id.clone(),
+                parent_tool_call_id: None,
+            },
+        );
+    }
+    publish_tool_frame(
+        &fixture,
+        &run_id,
+        loom_domain::ProviderEvent::ItemCompleted {
+            item: tool_call_item(call_id, loom_domain::ItemStatus::Completed),
+            provider_thread_id: fixture.thread_id.clone(),
+        },
+    );
+
+    let response = fixture
+        .get(&format!("/api/v1/threads/{}/timeline", fixture.thread_id))
+        .await;
+    assert_response("threads.timeline", 200, &response.body);
+    let rows = response.body["rows"].as_array().unwrap();
+    let work: Vec<&Value> = rows.iter().filter(|row| row["kind"] == "work").collect();
+    assert_eq!(
+        work.len(),
+        1,
+        "four frames of one call are one row: {}",
+        serde_json::to_string_pretty(&rows).unwrap()
+    );
+    assert_eq!(work[0]["workKind"], "tool");
+    assert_eq!(work[0]["callId"], call_id);
+    assert_eq!(work[0]["toolName"], "execute");
+    assert_eq!(work[0]["toolArgs"]["progress"], "ls -la");
+    assert_eq!(work[0]["status"], "completed");
+    assert!(work[0]["completedAt"].is_number());
+
+    fixture.state.shutdown();
+}
+
+/// A shell command gets the command row, which is the one that can show the
+/// command, its directory and its exit code.
+#[tokio::test]
+async fn a_shell_command_becomes_a_command_row() {
+    let fixture = fixture().await;
+    let run_id = loom_domain::RunId::mint();
+    let item = loom_domain::ThreadEventItem::CommandExecution {
+        id: "call-command".to_owned(),
+        command: "cargo test".to_owned(),
+        cwd: "/srv/project".to_owned(),
+        status: loom_domain::ItemStatus::Completed,
+        approval_status: None,
+        aggregated_output: Some("test result: ok".to_owned()),
+        exit_code: Some(0),
+        duration_ms: Some(900.0),
+        presentation: None,
+        parent_tool_call_id: None,
+    };
+    publish_tool_frame(
+        &fixture,
+        &run_id,
+        loom_domain::ProviderEvent::ItemStarted {
+            item: item.clone(),
+            provider_thread_id: fixture.thread_id.clone(),
+        },
+    );
+    publish_tool_frame(
+        &fixture,
+        &run_id,
+        loom_domain::ProviderEvent::ItemCompleted {
+            item,
+            provider_thread_id: fixture.thread_id.clone(),
+        },
+    );
+
+    let response = fixture
+        .get(&format!("/api/v1/threads/{}/timeline", fixture.thread_id))
+        .await;
+    assert_response("threads.timeline", 200, &response.body);
+    let rows = response.body["rows"].as_array().unwrap();
+    let work: Vec<&Value> = rows.iter().filter(|row| row["kind"] == "work").collect();
+    assert_eq!(
+        work.len(),
+        1,
+        "{}",
+        serde_json::to_string_pretty(&rows).unwrap()
+    );
+    assert_eq!(work[0]["workKind"], "command");
+    assert_eq!(work[0]["command"], "cargo test");
+    assert_eq!(work[0]["output"], "test result: ok");
+    assert_eq!(work[0]["exitCode"], 0);
 
     fixture.state.shutdown();
 }

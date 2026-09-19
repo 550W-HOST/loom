@@ -3668,6 +3668,59 @@ fn reasoning_row(
     })
 }
 
+/// The tool calls of a thread, folded from the frames that described them.
+fn tool_timeline(
+    entries: &[(String, u64, u64, DomainEvent)],
+) -> crate::tool_timeline::ToolTimeline {
+    let mut timeline = crate::tool_timeline::ToolTimeline::new();
+    for (_event_id, sequence, created_at_ms, event) in entries {
+        if let DomainEvent::ThreadRunEvent { run } = event {
+            timeline.absorb(
+                &run.run_id.to_string(),
+                &run.event.body,
+                *sequence,
+                *created_at_ms,
+            );
+        }
+    }
+    timeline
+}
+
+/// The item id a tool frame names, when it is one.
+///
+/// The three frames that make up a call are recognized here rather than inside
+/// the fold because the row is emitted by the *first* of them: a row per frame
+/// is what this projection exists to avoid.
+fn tool_frame_item_id(event: &loom_domain::ProviderEvent) -> Option<&str> {
+    match event {
+        loom_domain::ProviderEvent::ItemStarted { item, .. }
+            if crate::tool_timeline::ToolActivity::is_tool(item) =>
+        {
+            Some(tool_item_id(item))
+        }
+        loom_domain::ProviderEvent::ItemToolCallProgress { item_id, .. } => Some(item_id),
+        loom_domain::ProviderEvent::ItemCompleted { item, .. }
+            if crate::tool_timeline::ToolActivity::is_tool(item) =>
+        {
+            Some(tool_item_id(item))
+        }
+        _ => None,
+    }
+}
+
+/// The id a tool item carries.
+fn tool_item_id(item: &loom_domain::ThreadEventItem) -> &str {
+    match item {
+        loom_domain::ThreadEventItem::ToolCall { id, .. }
+        | loom_domain::ThreadEventItem::CommandExecution { id, .. }
+        | loom_domain::ThreadEventItem::FileChange { id, .. }
+        | loom_domain::ThreadEventItem::FileRead { id, .. }
+        | loom_domain::ThreadEventItem::Search { id, .. }
+        | loom_domain::ThreadEventItem::WebFetch { id, .. } => id,
+        _ => "",
+    }
+}
+
 /// One timeline row for a folded assistant message.
 ///
 /// The row id is the provider's item id prefixed with the thread, matching the
@@ -3870,10 +3923,15 @@ async fn thread_timeline(
     // line. Without this fold the reasoning never reaches a client at all — the
     // rows are built here, not in the browser.
     let reasoning_items = reasoning_timeline(&entries);
+    // A tool call is several frames too — a start, progress, a completion — and
+    // its row is the call, so it folds the same way before any row is built.
+    let tool_items = tool_timeline(&entries);
     let mut emitted: HashSet<(String, String)> = HashSet::new();
     let mut emitted_reasoning: HashSet<(String, String)> = HashSet::new();
+    let mut emitted_tools: HashSet<(String, String)> = HashSet::new();
     let mut assistant_rows: Vec<Value> = Vec::new();
     let mut reasoning_rows: Vec<Value> = Vec::new();
+    let mut tool_rows: Vec<Value> = Vec::new();
     let mut model_fallback: Option<Value> = None;
     let mut all_rows = entries
         .iter()
@@ -3890,6 +3948,18 @@ async fn thread_timeline(
                     if emitted_reasoning.insert((run_id.clone(), item_id.clone())) {
                         if let Some(item) = reasoning_items.get(&run_id, item_id) {
                             reasoning_rows.push(reasoning_row(&thread_id, &run_id, item));
+                        }
+                    }
+                    return None;
+                }
+                if let Some(item_id) = tool_frame_item_id(&run.event.body) {
+                    // A tool frame belongs to the tool projection either way, so
+                    // it never falls through to a generic row; it contributes
+                    // one only when it is the first frame of a call the fold
+                    // holds.
+                    if emitted_tools.insert((run_id.clone(), item_id.to_owned())) {
+                        if let Some(activity) = tool_items.get(&run_id, item_id) {
+                            tool_rows.push(activity.row(&thread_id.to_string()));
                         }
                     }
                     return None;
@@ -3939,6 +4009,7 @@ async fn thread_timeline(
         .collect::<Vec<_>>();
     all_rows.extend(assistant_rows);
     all_rows.extend(reasoning_rows);
+    all_rows.extend(tool_rows);
     all_rows.sort_by_key(|row| {
         row.get("sourceSeqStart")
             .and_then(Value::as_u64)
