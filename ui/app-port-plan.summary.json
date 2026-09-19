@@ -1,27 +1,27 @@
 {
   "format": "loom.app-port-plan-summary/v2",
   "plan": "ui/app-port-plan.json",
-  "planBytes": 1967492,
+  "planBytes": 1969036,
   "source": {
     "root": "apps/app/src",
-    "trackedFiles": 1383,
+    "trackedFiles": 1385,
     "disposition": "source-port",
     "baselineGitTree": "8ba6eb6f3d2f67f8ba2703f1fd0c123f788c6d52",
-    "localGitTree": "f0a671512b99d000389627889c12060031711b24"
+    "localGitTree": "9ac396c95eee82a43e1b3d0ddcae2af7aba26d4f"
   },
   "summary": {
-    "nodes": 1383,
-    "runtimeReachable": 690,
-    "runtimeCompileReachable": 702,
-    "runtimeEmittedReachable": 690,
+    "nodes": 1385,
+    "runtimeReachable": 691,
+    "runtimeCompileReachable": 703,
+    "runtimeEmittedReachable": 691,
     "dispositions": {
-      "retain-verbatim": 651,
+      "retain-verbatim": 652,
       "adapt-boundary": 27,
       "delete-unsupported": 0,
-      "verification-only": 677,
+      "verification-only": 678,
       "asset-build": 28
     },
-    "edges": 8264,
+    "edges": 8270,
     "blockers": {
       "runtime": 3,
       "test": 221,
@@ -31,10 +31,10 @@
     "workspacePackages": 124
   },
   "dispositions": {
-    "retain-verbatim": 651,
+    "retain-verbatim": 652,
     "adapt-boundary": 27,
     "delete-unsupported": 0,
-    "verification-only": 677,
+    "verification-only": 678,
     "asset-build": 28
   },
   "exceptions": {
@@ -3293,6 +3293,11 @@
         "reasonCode": "test-or-story-root"
       },
       {
+        "path": "src/loom/loom-thread-storage.test.ts",
+        "disposition": "verification-only",
+        "reasonCode": "test-or-story-root"
+      },
+      {
         "path": "src/loom/loom-ui-preferences.test.ts",
         "disposition": "verification-only",
         "reasonCode": "test-or-story-root"
@@ -3728,22 +3733,22 @@
     }
   },
   "compilerConsistency": {
-    "compilerSpecifiers": 8324,
-    "graphSpecifiers": 8324,
+    "compilerSpecifiers": 8330,
+    "graphSpecifiers": 8330,
     "missing": [],
     "extra": [],
     "preProcessFileParity": {
-      "compilerLiteralSpecifiers": 8323,
-      "preProcessFileSpecifiers": 8323,
+      "compilerLiteralSpecifiers": 8329,
+      "preProcessFileSpecifiers": 8329,
       "missing": [],
       "extra": []
     }
   },
   "parsers": {
     "typescript": {
-      "files": 1377,
-      "specifiers": 8324,
-      "preProcessFileSpecifiers": 8323
+      "files": 1379,
+      "specifiers": 8330,
+      "preProcessFileSpecifiers": 8329
     },
     "css": {
       "files": 4,
@@ -3755,18 +3760,18 @@
     }
   },
   "batchCoverage": {
-    "expected": 1383,
-    "assigned": 1383,
+    "expected": 1385,
+    "assigned": 1385,
     "missing": [],
     "duplicates": [],
-    "crossStageEdges": 2969,
+    "crossStageEdges": 2972,
     "missingCrossStageEdges": 0,
-    "crossChunkEdges": 2969,
-    "crossChunkOccurrences": 2982,
-    "crossIssueEdges": 1348,
-    "crossIssueOccurrences": 1355,
-    "crossIssueLogicalEdges": 1339,
-    "crossIssueLogicalOccurrences": 1346,
+    "crossChunkEdges": 2972,
+    "crossChunkOccurrences": 2985,
+    "crossIssueEdges": 1350,
+    "crossIssueOccurrences": 1357,
+    "crossIssueLogicalEdges": 1341,
+    "crossIssueLogicalOccurrences": 1348,
     "missingCrossIssueBatchDependencies": 0
   },
   "batchPlan": {
@@ -3801,10 +3806,10 @@
         "cyclic": true
       }
     ],
-    "crossIssueEdges": 1348,
-    "crossIssueLogicalEdges": 1339,
-    "crossIssueOccurrences": 1355,
-    "crossIssueLogicalOccurrences": 1346,
+    "crossIssueEdges": 1350,
+    "crossIssueLogicalEdges": 1341,
+    "crossIssueOccurrences": 1357,
+    "crossIssueLogicalOccurrences": 1348,
     "crossIssueCycles": 0,
     "crossStageConflict": true
   },
@@ -4129,12 +4134,12 @@
         "id": "W-603-06",
         "kind": "reviewChunk",
         "executable": false,
-        "fileCount": 106,
+        "fileCount": 107,
         "dispositions": [
           "adapt-boundary",
           "retain-verbatim"
         ],
-        "dependencyCount": 259,
+        "dependencyCount": 260,
         "dependsOnBatchIds": [
           "W-603-01",
           "W-603-02",
@@ -4317,11 +4322,11 @@
         "id": "W-604-06",
         "kind": "reviewChunk",
         "executable": false,
-        "fileCount": 77,
+        "fileCount": 78,
         "dispositions": [
           "verification-only"
         ],
-        "dependencyCount": 155,
+        "dependencyCount": 156,
         "dependsOnBatchIds": [
           "W-603-01",
           "W-603-02",
@@ -4400,8 +4405,8 @@
       "declaredAs": "dependencies",
       "actualImports": 369,
       "runtimeImports": 199,
-      "runtimeValueImports": 68,
-      "runtimeTypeImports": 131,
+      "runtimeValueImports": 67,
+      "runtimeTypeImports": 132,
       "verificationValueImports": 50,
       "verificationTypeImports": 115,
       "decision": "reuse",
@@ -4463,10 +4468,10 @@
     {
       "name": "@bb/server-contract",
       "declaredAs": "dependencies",
-      "actualImports": 246,
-      "runtimeImports": 131,
+      "actualImports": 247,
+      "runtimeImports": 132,
       "runtimeValueImports": 9,
-      "runtimeTypeImports": 122,
+      "runtimeTypeImports": 123,
       "verificationValueImports": 3,
       "verificationTypeImports": 109,
       "decision": "reuse",
@@ -5932,11 +5937,11 @@
     {
       "name": "vitest",
       "declaredAs": null,
-      "actualImports": 525,
+      "actualImports": 526,
       "runtimeImports": 0,
       "runtimeValueImports": 0,
       "runtimeTypeImports": 0,
-      "verificationValueImports": 524,
+      "verificationValueImports": 525,
       "verificationTypeImports": 0,
       "decision": "reuse",
       "reasonCode": "declared-external-package",
