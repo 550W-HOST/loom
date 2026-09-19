@@ -411,6 +411,9 @@ describe("loom typed apiClient seam", () => {
         }),
       ),
     ).toBe("/api/v1/hosts/h1/permission-ceiling");
+    expect(
+      toRelativeUrl(apiClient.hosts[":id"].delete.$url({ param: { id: "h1" } })),
+    ).toBe("/api/v1/hosts/h1");
     expect(toRelativeUrl(apiClient.hosts["join-codes"].$url({}))).toBe(
       "/api/v1/hosts/join-codes",
     );

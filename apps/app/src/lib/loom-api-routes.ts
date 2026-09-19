@@ -36,6 +36,7 @@ export const LOOM_API_ROUTES = [
   { id: "environments.diffFile", method: "GET", path: "/environments/:id/diff/file" },
   { id: "environments.get", method: "GET", path: "/environments/:id" },
   { id: "hosts.createJoinCode", method: "POST", path: "/hosts/join-codes" },
+  { id: "hosts.delete", method: "DELETE", path: "/hosts/:id" },
   { id: "hosts.list", method: "GET", path: "/hosts" },
   { id: "hosts.updatePermissionCeiling", method: "PATCH", path: "/hosts/:id/permission-ceiling" },
   { id: "projects.attachmentContent", method: "GET", path: "/projects/:id/attachments/content" },

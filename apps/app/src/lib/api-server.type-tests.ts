@@ -108,8 +108,11 @@ void apiClient.threads[":id"].worktree.files[":filePath{.+}"].$url({
 // @ts-expect-error a route with no :param cannot be given a param bag
 void apiClient.system.config.$get({ param: { id: "x" } });
 
-// @ts-expect-error `delete` is not a route on hosts
-void apiClient.hosts.delete.$url({ param: { id: "h1" } });
+// `hosts.delete` is a DELETE route at the `hosts[":id"]` seam.
+void apiClient.hosts[":id"].delete.$url({ param: { id: "h1" } });
+
+// @ts-expect-error hosts.delete is DELETE; there is no $get on it
+void apiClient.hosts[":id"].delete.$get({ param: { id: "h1" } });
 
 // @ts-expect-error an unknown top-level area is not a route
 void apiClient.nothing.$get({});

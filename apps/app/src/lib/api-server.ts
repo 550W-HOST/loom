@@ -185,6 +185,7 @@ export const apiClient = {
   },
   hosts: {
     ":id": {
+      delete: route("hosts.delete"),
       "permission-ceiling": route("hosts.updatePermissionCeiling"),
     },
     "join-codes": route("hosts.createJoinCode"),

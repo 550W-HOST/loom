@@ -93,6 +93,7 @@ export const LOOM_API_REQUEST_SPECS = {
   },
   "environments.get": { source: "none" },
   "hosts.createJoinCode": { source: "json", json: {} as Record<string, never> },
+  "hosts.delete": { source: "none" },
   "hosts.list": { source: "none" },
   "hosts.updatePermissionCeiling": {
     source: "json",
@@ -199,6 +200,7 @@ export interface LoomApiResponseSpecs {
   "environments.diffFile": { path: string; content: string; contentEncoding: "base64" | "utf8" };
   "environments.get": Environment;
   "hosts.createJoinCode": CreateHostJoinCodeResponse;
+  "hosts.delete": { ok: true };
   "hosts.list": Host[];
   "hosts.updatePermissionCeiling": unknown;
   "projects.attachmentContent": unknown;
