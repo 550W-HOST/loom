@@ -122,6 +122,10 @@ struct V2ToolState {
     locations: Vec<v2::ToolCallLocation>,
     raw_input: Option<Value>,
     raw_output: Option<Value>,
+    /// What pi-acp streamed through `_meta.terminal_output`, in arrival order.
+    terminal_output: String,
+    /// What pi-acp reported through `_meta.terminal_exit`.
+    terminal_exit_code: Option<i64>,
 }
 
 struct V2TerminalState {
@@ -829,6 +833,11 @@ impl AcpTranslator {
             if !patch.raw_output.is_undefined() {
                 state.raw_output = patch.raw_output.value().cloned();
             }
+            if !patch.meta.is_undefined() {
+                if let Some(meta) = patch.meta.value() {
+                    apply_terminal_meta(state, &key, meta);
+                }
+            }
             let started = !state.started;
             state.started = true;
             let status = item_status_v2(&state.status);
@@ -1102,6 +1111,46 @@ fn v2_tool_state() -> V2ToolState {
         locations: Vec::new(),
         raw_input: None,
         raw_output: None,
+        terminal_output: String::new(),
+        terminal_exit_code: None,
+    }
+}
+
+/// Applies the terminal pi-acp carries in a tool call's `_meta`.
+///
+/// pi-acp does not model a shell command with ACP's terminal content. It spells
+/// the command in the call's `title` and streams the terminal as `_meta`:
+/// `terminal_output { terminal_id, data }` per chunk, then
+/// `terminal_exit { terminal_id, exit_code, signal }`. Nothing else carries the
+/// command's output, so without this an `execute` call reached the timeline as a
+/// tool named "execute" whose only argument was its progress line, with no
+/// output and no exit code.
+///
+/// `exit_code` is pi-acp's own reading — `0` for a clean exit and `1` for a
+/// failed one — so a command that exited 7 reports `1` here, with pi-acp's
+/// `Command exited with code 7` note in the output beside it.
+fn apply_terminal_meta(state: &mut V2ToolState, tool_call_id: &str, meta: &v2::Meta) {
+    // pi-acp keys each entry by the tool call it belongs to; an entry naming
+    // another terminal is not this call's output.
+    let belongs = |entry: &Value| {
+        entry
+            .get("terminal_id")
+            .and_then(Value::as_str)
+            .is_none_or(|terminal_id| terminal_id == tool_call_id)
+    };
+    if let Some(entry) = meta.get("terminal_output") {
+        if belongs(entry) {
+            if let Some(data) = entry.get("data").and_then(Value::as_str) {
+                state.terminal_output.push_str(data);
+            }
+        }
+    }
+    if let Some(entry) = meta.get("terminal_exit") {
+        if belongs(entry) {
+            if let Some(exit_code) = entry.get("exit_code").and_then(Value::as_i64) {
+                state.terminal_exit_code = Some(exit_code);
+            }
+        }
     }
 }
 
@@ -1114,10 +1163,25 @@ fn v2_item_from_tool_state(
     let args = state.raw_input.as_ref();
     match state.kind {
         v2::ToolKind::Execute => {
-            if let Some(command) = args
+            // Where a command is spelled differs by agent. bb's own rule is the
+            // raw input's `command` when the agent sends one and the tool
+            // call's title otherwise, which is what pi-acp needs: it names the
+            // call `title: "pwd"` and sends no raw input at all, so a command
+            // read only from `raw_input` leaves the call looking like a tool
+            // with no arguments.
+            let command = args
                 .and_then(|input| input.get("command"))
                 .and_then(Value::as_str)
-            {
+                .map(str::to_owned)
+                .or_else(|| {
+                    state
+                        .title
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|title| !title.is_empty())
+                        .map(str::to_owned)
+                });
+            if let Some(command) = command {
                 let cwd = args
                     .and_then(|input| input.get("cwd"))
                     .and_then(Value::as_str)
@@ -1126,12 +1190,13 @@ fn v2_item_from_tool_state(
                     .unwrap_or_default();
                 return ThreadEventItem::CommandExecution {
                     id: id.to_owned(),
-                    command: command.to_owned(),
+                    command,
                     cwd,
                     status,
                     approval_status: None,
-                    aggregated_output: None,
-                    exit_code: None,
+                    aggregated_output: (!state.terminal_output.is_empty())
+                        .then(|| state.terminal_output.clone()),
+                    exit_code: state.terminal_exit_code,
                     duration_ms: None,
                     presentation: None,
                     parent_tool_call_id: None,

@@ -739,6 +739,159 @@ fn a_v2_tool_upsert_maps_to_the_existing_tool_lifecycle() {
 }
 
 #[test]
+fn a_v2_execute_call_takes_its_command_from_the_title() {
+    // pi-acp sends no raw input: the command is the call's title. Reading only
+    // `raw_input.command` left the call a tool named "execute" with no
+    // arguments, which is what a `pwd` run showed as.
+    let mut t = translator();
+    let started = v2::ToolCallUpdate::new("tool-1")
+        .title("pwd")
+        .kind(v2::ToolKind::Execute)
+        .status(v2::ToolCallStatus::Pending);
+    let events = t.on_v2_session_update(&v2::SessionUpdate::ToolCallUpdate(started));
+    assert!(matches!(
+        events.first(),
+        Some(ProviderEvent::ItemStarted {
+            item: ThreadEventItem::CommandExecution { command, status, aggregated_output, .. },
+            ..
+        }) if command == "pwd"
+            && *status == ItemStatus::Pending
+            && aggregated_output.is_none()
+    ));
+}
+
+/// pi-acp streams the terminal through `_meta`: one `terminal_output` chunk per
+/// piece of output and a `terminal_exit` at the end. Without reading them the
+/// command row carried an empty output and no exit code.
+#[test]
+fn a_v2_execute_call_reads_its_output_from_the_terminal_meta() {
+    let mut t = translator();
+    t.on_v2_session_update(&v2::SessionUpdate::ToolCallUpdate(
+        v2::ToolCallUpdate::new("tool-1")
+            .title("printf hello")
+            .kind(v2::ToolKind::Execute)
+            .status(v2::ToolCallStatus::Pending),
+    ));
+
+    let chunk = v2::ToolCallUpdate::new("tool-1")
+        .status(v2::ToolCallStatus::InProgress)
+        .meta(terminal_meta(&[(
+            "terminal_output",
+            serde_json::json!({"terminal_id": "tool-1", "data": "hello\n"}),
+        )]));
+    t.on_v2_session_update(&v2::SessionUpdate::ToolCallUpdate(chunk));
+    let chunk = v2::ToolCallUpdate::new("tool-1")
+        .status(v2::ToolCallStatus::InProgress)
+        .meta(terminal_meta(&[(
+            "terminal_output",
+            serde_json::json!({"terminal_id": "tool-1", "data": "world\n"}),
+        )]));
+    t.on_v2_session_update(&v2::SessionUpdate::ToolCallUpdate(chunk));
+
+    let done = v2::ToolCallUpdate::new("tool-1")
+        .status(v2::ToolCallStatus::Completed)
+        .meta(terminal_meta(&[
+            (
+                "terminal_output",
+                serde_json::json!({"terminal_id": "tool-1", "data": "done\n"}),
+            ),
+            (
+                "terminal_exit",
+                serde_json::json!({"terminal_id": "tool-1", "exit_code": 0, "signal": null}),
+            ),
+        ]));
+    let events = t.on_v2_session_update(&v2::SessionUpdate::ToolCallUpdate(done));
+    let Some(ProviderEvent::ItemCompleted { item, .. }) = events
+        .iter()
+        .find(|event| matches!(event, ProviderEvent::ItemCompleted { .. }))
+    else {
+        panic!("expected a completed item, got {events:?}");
+    };
+    let ThreadEventItem::CommandExecution {
+        command,
+        aggregated_output,
+        exit_code,
+        status,
+        ..
+    } = item
+    else {
+        panic!("expected a command execution, got {item:?}");
+    };
+    assert_eq!(command, "printf hello");
+    // Chunks accumulate in arrival order.
+    assert_eq!(aggregated_output.as_deref(), Some("hello\nworld\ndone\n"));
+    assert_eq!(*exit_code, Some(0));
+    assert_eq!(*status, ItemStatus::Completed);
+}
+
+/// The output is only the terminal's: an entry naming another terminal must not
+/// land on this call's row.
+#[test]
+fn a_v2_execute_call_ignores_another_terminals_meta() {
+    let mut t = translator();
+    t.on_v2_session_update(&v2::SessionUpdate::ToolCallUpdate(
+        v2::ToolCallUpdate::new("tool-1")
+            .title("pwd")
+            .kind(v2::ToolKind::Execute)
+            .status(v2::ToolCallStatus::Pending),
+    ));
+    let stale = v2::ToolCallUpdate::new("tool-1")
+        .status(v2::ToolCallStatus::Completed)
+        .meta(terminal_meta(&[
+            (
+                "terminal_output",
+                serde_json::json!({"terminal_id": "tool-other", "data": "not mine\n"}),
+            ),
+            (
+                "terminal_exit",
+                serde_json::json!({"terminal_id": "tool-other", "exit_code": 9}),
+            ),
+        ]));
+    let events = t.on_v2_session_update(&v2::SessionUpdate::ToolCallUpdate(stale));
+    let Some(ProviderEvent::ItemCompleted { item, .. }) = events
+        .iter()
+        .find(|event| matches!(event, ProviderEvent::ItemCompleted { .. }))
+    else {
+        panic!("expected a completed item, got {events:?}");
+    };
+    let ThreadEventItem::CommandExecution {
+        aggregated_output,
+        exit_code,
+        ..
+    } = item
+    else {
+        panic!("expected a command execution, got {item:?}");
+    };
+    assert_eq!(*aggregated_output, None);
+    assert_eq!(*exit_code, None);
+}
+
+/// A title on a call that is not an execute is not a command.
+#[test]
+fn a_v2_title_on_another_kind_stays_a_tool() {
+    let mut t = translator();
+    let call = v2::ToolCallUpdate::new("tool-1")
+        .title("Fetching the changelog")
+        .kind(v2::ToolKind::Other)
+        .status(v2::ToolCallStatus::Pending);
+    let events = t.on_v2_session_update(&v2::SessionUpdate::ToolCallUpdate(call));
+    assert!(matches!(
+        events.first(),
+        Some(ProviderEvent::ItemStarted {
+            item: ThreadEventItem::ToolCall { .. },
+            ..
+        })
+    ));
+}
+
+fn terminal_meta(entries: &[(&str, serde_json::Value)]) -> v2::Meta {
+    entries
+        .iter()
+        .map(|(key, value)| ((*key).to_owned(), value.clone()))
+        .collect()
+}
+
+#[test]
 fn a_v2_terminal_decodes_output_and_completes_once() {
     use base64::Engine as _;
 
