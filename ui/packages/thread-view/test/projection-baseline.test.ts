@@ -63,6 +63,50 @@ function providerFields(turnId = "turn-1") {
 }
 
 describe("thread-view projection baseline", () => {
+  it("projects a reasoning delta as a thinking row", () => {
+    const rows = [
+      eventRow(1, "turn/started", providerFields()),
+      eventRow(2, "item/reasoning/textDelta", {
+        ...providerFields(),
+        itemId: "reasoning-1",
+        delta: "**Calculating distinct letter arrangements**\n\n",
+      }),
+      eventRow(3, "item/reasoning/textDelta", {
+        ...providerFields(),
+        itemId: "reasoning-1",
+        delta: "There are 3 As and 2 Ns, so 60 arrangements.",
+      }),
+      eventRow(4, "item/agentMessage/delta", {
+        ...providerFields(),
+        itemId: "assistant-1",
+        delta: "60\n",
+      }),
+      eventRow(5, "turn/completed", {
+        ...providerFields(),
+        status: "completed",
+      }),
+    ];
+
+    const turn = turnEntries(project(rows))[0];
+    expect(turn).toBeDefined();
+    // Thinking arrives as reasoning deltas and nothing else — the worker emits
+    // no `item/started` for it — so a projection that needed one would show the
+    // answer with no thinking above it, which is exactly the report this covers.
+    expect(turnMessages(turn!)).toEqual([
+      expect.objectContaining({
+        kind: "operation",
+        opType: "reasoning",
+        status: "completed",
+        detail:
+          "**Calculating distinct letter arrangements**\n\nThere are 3 As and 2 Ns, so 60 arrangements.",
+      }),
+      expect.objectContaining({
+        kind: "assistant-text",
+        text: "60\n",
+      }),
+    ]);
+  });
+
   it("merges assistant deltas in arrival order and flushes the final chunk", () => {
     const prefix = [
       eventRow(1, "turn/started", providerFields()),
