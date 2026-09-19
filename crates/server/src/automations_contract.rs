@@ -224,9 +224,10 @@ fn execution_with_prompt(prompt_min_length: u64) -> Value {
                     "prompt": { "type": "string", "minLength": prompt_min_length },
                     "providerId": string(1),
                     "model": string(1),
-                    "reasoningLevel": {
-                        "enum": ["none", "low", "medium", "high", "xhigh", "ultracode", "max", "ultra"]
-                    },
+                    // The level is the *provider's* own id, not bb's closed
+                    // `reasoningLevelSchema`: which levels exist belongs to the
+                    // model an agent holds, so loom asks only that one is named.
+                    "reasoningLevel": string(1),
                     "serviceTier": { "enum": ["default", "fast"] },
                     "permissionMode": { "enum": ["accept-edits", "auto", "full"] },
                     "environment": environment(),
@@ -381,9 +382,10 @@ pub fn update_request() -> Value {
                     "prompt": string(1),
                     "providerId": string(1),
                     "model": string(1),
-                    "reasoningLevel": {
-                        "enum": ["none", "low", "medium", "high", "xhigh", "ultracode", "max", "ultra"]
-                    },
+                    // The level is the *provider's* own id, not bb's closed
+                    // `reasoningLevelSchema`: which levels exist belongs to the
+                    // model an agent holds, so loom asks only that one is named.
+                    "reasoningLevel": string(1),
                     "serviceTier": { "type": ["string", "null"], "enum": ["default", "fast", null] },
                     "permissionMode": { "enum": ["accept-edits", "auto", "full"] },
                     "target": {
