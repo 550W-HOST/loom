@@ -168,6 +168,9 @@ impl From<loom_relay::RelayError> for BuildStateError {
     }
 }
 
+/// The agents each host reported, in enrollment order.
+type HostProviders = Arc<Mutex<Vec<(HostId, Vec<ProviderSpec>)>>>;
+
 /// Everything a handler needs.
 #[derive(Clone)]
 pub struct AppState {
@@ -211,7 +214,17 @@ pub struct AppState {
     local_host_id: Option<HostId>,
     run_timeout_ms: u64,
     host_stale_after_ms: u64,
+    /// The agents the operator listed for the control plane itself.
+    ///
+    /// A fallback, not the source of truth: what each host discovered is.
     provider_specs: Vec<ProviderSpec>,
+    /// The agents each host found installed, in enrollment order.
+    ///
+    /// A `Vec` rather than a map so the advertised order is stable: the first
+    /// provider is the default, and a set that reordered itself between
+    /// requests would change which agent a thread with no explicit choice runs
+    /// on. Re-enrollment replaces a host's entry in place.
+    host_providers: HostProviders,
     reconcile_stop: Arc<AtomicBool>,
     snapshot_stop: Arc<AtomicBool>,
     schedule_stop: Arc<AtomicBool>,
@@ -219,6 +232,16 @@ pub struct AppState {
     snapshot_root: Option<PathBuf>,
     started_at: Instant,
     started_at_ms: u64,
+}
+
+/// Appends `spec` unless an Agent of the same name is already listed.
+///
+/// Merging hosts and configuration by name keeps one entry per agent while
+/// preserving the order the entries were first seen in.
+fn push_once(specs: &mut Vec<ProviderSpec>, spec: &ProviderSpec) {
+    if !specs.iter().any(|known| known.name == spec.name) {
+        specs.push(spec.clone());
+    }
 }
 
 impl AppState {
@@ -322,6 +345,7 @@ impl AppState {
                 .as_millis()
                 .min(u128::from(u64::MAX)) as u64,
             provider_specs,
+            host_providers: Arc::new(Mutex::new(Vec::new())),
             reconcile_stop: Arc::new(AtomicBool::new(false)),
             snapshot_stop: Arc::new(AtomicBool::new(false)),
             schedule_stop: Arc::new(AtomicBool::new(false)),
@@ -462,30 +486,110 @@ impl AppState {
         self.host_stale_after_ms
     }
 
+    /// Records the agents a host found installed, as it reported them at
+    /// enrollment.
+    ///
+    /// The host's list replaces whatever it reported before, so a machine that
+    /// uninstalled an agent stops offering it on its next connection. Nothing is
+    /// merged across hosts: a provider is only offered because some machine
+    /// found it, and a lost report is the honest signal that it is gone.
+    pub fn record_host_providers(&self, host_id: &HostId, providers: Vec<ProviderSpec>) {
+        let mut hosts = self
+            .host_providers
+            .lock()
+            .expect("the host provider lock is never poisoned");
+        match hosts.iter_mut().find(|(id, _)| id == host_id) {
+            Some((_, reported)) => *reported = providers,
+            None => hosts.push((host_id.clone(), providers)),
+        }
+    }
+
     /// Every agent the control plane can dispatch, in preference order.
-    pub fn providers(&self) -> &[ProviderSpec] {
-        &self.provider_specs
+    ///
+    /// The operator's list comes first because it decides the default: the
+    /// first entry is the agent a thread that chose none runs on, and a machine
+    /// finding extra agents must not silently change that. Discovered agents
+    /// follow, so the client can offer them without the control plane having had
+    /// to know about them in advance.
+    ///
+    /// A server with no connected worker therefore answers with exactly what it
+    /// did before anything was discovered.
+    pub fn providers(&self) -> Vec<ProviderSpec> {
+        let mut specs: Vec<ProviderSpec> = Vec::new();
+        for spec in &self.provider_specs {
+            push_once(&mut specs, spec);
+        }
+        {
+            let hosts = self
+                .host_providers
+                .lock()
+                .expect("the host provider lock is never poisoned");
+            for (_, reported) in hosts.iter() {
+                for spec in reported {
+                    push_once(&mut specs, spec);
+                }
+            }
+        }
+        // The configured list is normalised at construction, so this is only
+        // empty if a caller somehow built state without one.
+        if specs.is_empty() {
+            specs.push(ProviderSpec::pi());
+        }
+        specs
     }
 
     /// The agent a caller gets when it has not chosen one.
     ///
-    /// This is the first configured provider. Callers that resolve a provider
+    /// This is the first configured provider — discovery appends to the list, it
+    /// never displaces the operator's default. Callers that resolve a provider
     /// from a request must use [`AppState::provider_spec_by_id`] instead, so a
     /// request for one agent's models is never answered with another's.
     ///
     /// `pub` because a route's response (`projects.commands`) names the
     /// provider it runs, and an integration test exercises that route.
-    pub fn provider_spec(&self) -> &ProviderSpec {
-        self.provider_specs
-            .first()
-            .expect("the state normalises an empty provider list to the built-in provider")
+    pub fn provider_spec(&self) -> ProviderSpec {
+        self.providers()
+            .into_iter()
+            .next()
+            .expect("the provider list always has at least one entry")
     }
 
-    /// The configured agent with this id, when the operator listed one.
-    pub fn provider_spec_by_id(&self, provider_id: &str) -> Option<&ProviderSpec> {
+    /// The offered agent with this id, when a host reported one or the operator
+    /// listed one.
+    pub fn provider_spec_by_id(&self, provider_id: &str) -> Option<ProviderSpec> {
+        self.providers()
+            .into_iter()
+            .find(|spec| spec.name == provider_id)
+    }
+
+    /// The agent with this id **on this host**, for a dispatch.
+    ///
+    /// Two machines can report the same agent name with different executables,
+    /// and a dispatch must carry the one belonging to the machine that will run
+    /// it. The host's own report is therefore consulted first; the operator's
+    /// list is the fallback for a server that declared an agent no host
+    /// reported, and `None` lets the caller fall back to the default exactly as
+    /// it does for an id nothing knows.
+    pub fn provider_spec_for_host(
+        &self,
+        host_id: &HostId,
+        provider_id: &str,
+    ) -> Option<ProviderSpec> {
+        {
+            let hosts = self
+                .host_providers
+                .lock()
+                .expect("the host provider lock is never poisoned");
+            if let Some((_, reported)) = hosts.iter().find(|(id, _)| id == host_id) {
+                if let Some(spec) = reported.iter().find(|spec| spec.name == provider_id) {
+                    return Some(spec.clone());
+                }
+            }
+        }
         self.provider_specs
             .iter()
             .find(|spec| spec.name == provider_id)
+            .cloned()
     }
 
     /// The operator-declared local host, if any.

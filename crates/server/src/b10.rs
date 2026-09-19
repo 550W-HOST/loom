@@ -266,11 +266,11 @@ pub async fn usage_limits(
         return invalid_settings("providerId and hostId must not be empty");
     }
 
-    let configured = state.provider_spec().name.as_str();
+    let configured = state.provider_spec().name;
     let provider_ids = query
         .provider_id
         .map(|provider_id| vec![provider_id])
-        .unwrap_or_else(|| vec![configured.to_owned()]);
+        .unwrap_or_else(|| vec![configured.clone()]);
     let result = provider_ids
         .into_iter()
         .map(|provider_id| {

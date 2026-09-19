@@ -309,7 +309,7 @@ async fn a_v3_worker_fails_fast_when_deployed_before_a_v2_server() {
         let _ = axum::serve(listener, app).await;
     });
 
-    let config = WorkerConfig::new(format!("http://{addr}"), "new-worker");
+    let config = WorkerConfig::new(format!("http://{addr}"), "new-worker").without_discovery();
     let result = tokio::time::timeout(Duration::from_secs(2), Worker::connect(config))
         .await
         .expect("a missing internal endpoint must fail rather than hang");

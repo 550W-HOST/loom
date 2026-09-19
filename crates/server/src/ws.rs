@@ -234,8 +234,10 @@ async fn handle_worker(socket: WebSocket, state: AppState) {
         &ServerMessage::Hello {
             protocol_version: crate::PROTOCOL_VERSION,
             // The agents this server can dispatch, so a worker can read each
-            // one's catalogue at enrollment instead of waiting for a run.
-            providers: state.providers().to_vec(),
+            // one's catalogue at enrollment instead of waiting for a run. They
+            // include what other hosts discovered, which is how a worker learns
+            // the name of an agent the operator declared.
+            providers: state.providers(),
         },
     )
     .await
@@ -419,6 +421,19 @@ async fn handle_command(
                     message: error.to_string(),
                 }),
             }
+        }
+        ClientCommand::HostProviders { host_id, providers } => {
+            if enrolled_host.as_ref() != Some(&host_id) {
+                return Some(ServerMessage::Error {
+                    message: "this connection is not enrolled as that host".into(),
+                });
+            }
+            // The machine is the authority on what it has installed, so the
+            // report replaces whatever this host offered before — including
+            // with nothing, when its probes verified nothing. A worker that
+            // never sends one leaves its previous record standing.
+            state.record_host_providers(&host_id, providers);
+            None
         }
         ClientCommand::HostHeartbeat { host_id } => {
             if enrolled_host.as_ref() != Some(&host_id) {

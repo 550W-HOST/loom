@@ -797,11 +797,11 @@ fn configured_provider_id(state: &AppState) -> String {
 
 /// The agent a system query is about.
 ///
-/// A request that names a configured provider gets it; one that names an
-/// unknown id, or none at all, gets the default. The client only ever names a
-/// provider this server advertised, so the fallback covers a stale tab rather
-/// than a normal path.
-fn query_provider<'a>(state: &'a AppState, query: &ProviderQuery) -> &'a ProviderSpec {
+/// A request that names an offered provider gets it; one that names an unknown
+/// id, or none at all, gets the default. The client only ever names a provider
+/// this server advertised, so the fallback covers a stale tab rather than a
+/// normal path.
+fn query_provider(state: &AppState, query: &ProviderQuery) -> ProviderSpec {
     query
         .provider_id
         .as_deref()
@@ -813,9 +813,19 @@ fn query_provider<'a>(state: &'a AppState, query: &ProviderQuery) -> &'a Provide
 ///
 /// Cosmetic, and deliberately a table rather than a field on [`ProviderSpec`]:
 /// that is the dispatch contract and carries launch metadata, not presentation.
+/// The keys are the ids discovery uses, so a tab reads "OpenCode" rather than
+/// "opencode" without the worker having to describe how its own name is
+/// capitalised.
 fn provider_display_name(provider_id: &str) -> String {
     match provider_id {
         "pi" => "Pi".to_owned(),
+        "omp" => "OMP".to_owned(),
+        "hermes" => "Hermes".to_owned(),
+        "opencode" => "OpenCode".to_owned(),
+        "gemini" => "Gemini".to_owned(),
+        "cursor" => "Cursor".to_owned(),
+        "codex" => "Codex".to_owned(),
+        "claude-code" => "Claude Code".to_owned(),
         other => other.to_owned(),
     }
 }
@@ -1182,7 +1192,7 @@ async fn execution_options(
 ) -> Json<Value> {
     let provider = query_provider(&state, &query);
     let catalog = catalog_for_query(&state, &provider.name, &query);
-    Json(execution_options_for(&state, provider, catalog.as_ref()))
+    Json(execution_options_for(&state, &provider, catalog.as_ref()))
 }
 
 async fn system_providers(

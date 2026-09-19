@@ -44,6 +44,7 @@
 //! [`RunDispatch`]: loom_provider_protocol::RunDispatch
 
 pub mod acp;
+pub mod discovery;
 pub mod host_files;
 pub mod provider;
 pub mod run;
@@ -250,6 +251,14 @@ pub struct WorkerConfig {
     /// provider named in the dispatch, which is the normal case; an operator
     /// sets this on a machine whose provider lives at a non-standard path.
     pub provider: Option<ProviderSpec>,
+    /// The agents this machine has installed.
+    ///
+    /// `None` — what the daemon leaves it as — discovers them from this machine
+    /// at every connect, so installing an agent and reconnecting is the whole
+    /// update path. `Some` is for a caller that has already decided: a test
+    /// wants the provider list to be a property of the test rather than of the
+    /// machine running it. See [`WorkerConfig::without_discovery`].
+    pub discovered: Option<Vec<ProviderSpec>>,
     /// How long one provider run may take before it is killed.
     pub run_timeout: Duration,
     /// How long an agent's permission request waits for a user before it is
@@ -312,6 +321,7 @@ impl WorkerConfig {
             host_id: None,
             heartbeat_interval: DEFAULT_HEARTBEAT_INTERVAL,
             provider: None,
+            discovered: None,
             run_timeout: DEFAULT_RUN_TIMEOUT,
             permission_timeout: DEFAULT_PERMISSION_TIMEOUT,
             environment_root: default_environment_root(),
@@ -321,6 +331,18 @@ impl WorkerConfig {
             replay_limit: 500,
             update,
         }
+    }
+
+    /// Declares that this worker has no installed agents to discover.
+    ///
+    /// A test wants the provider list to be a property of the test rather than
+    /// of the machine running it, and probing whatever happens to be installed
+    /// on a developer's machine makes a suite both slower and less
+    /// deterministic. Nothing a daemon does calls this: the real worker leaves
+    /// [`WorkerConfig::discovered`] unset and finds its own agents.
+    pub fn without_discovery(mut self) -> Self {
+        self.discovered = Some(Vec::new());
+        self
     }
 
     /// The internal worker WebSocket endpoint derived from
@@ -399,6 +421,13 @@ pub struct Worker {
     /// older server that sends none falls back to the worker's own spec, which
     /// is the single-provider behaviour this replaced.
     providers: Vec<ProviderSpec>,
+    /// The agents loom found installed on this machine.
+    ///
+    /// Discovered once at connect from [`crate::discovery::KNOWN_AGENTS`] and
+    /// this process's `PATH`. This — not the server's list — is what the host
+    /// reports it can run, because only the machine knows what is installed on
+    /// it.
+    discovered: Vec<ProviderSpec>,
     host_id: Option<HostId>,
     /// Highest host-scope event id applied, for reconnect replay.
     cursor: Option<EventId>,
@@ -418,6 +447,13 @@ pub struct Worker {
     /// reads the catalogue out of the config options it already holds.
     catalog_reports: mpsc::Receiver<ProviderCatalogReport>,
     catalog_reports_tx: mpsc::Sender<ProviderCatalogReport>,
+    /// The verified agent list waiting to be forwarded to the server.
+    ///
+    /// One per probe that answered, each the complete set verified so far, so a
+    /// candidate that never finishes its handshake delays its own appearance and
+    /// nothing else's. The last one is the full list.
+    provider_lists: mpsc::Receiver<Vec<ProviderSpec>>,
+    provider_lists_tx: mpsc::Sender<Vec<ProviderSpec>>,
     /// Permission requests raised by providers, waiting to be forwarded.
     ///
     /// The socket loop is the only thing that may write to the server socket,
@@ -475,6 +511,7 @@ impl Worker {
                 ensure_compatible_protocol(protocol_version)?;
                 let (reports_tx, reports) = mpsc::channel(REPORT_CHANNEL_CAPACITY);
                 let (catalog_reports_tx, catalog_reports) = mpsc::channel(REPORT_CHANNEL_CAPACITY);
+                let (provider_lists_tx, provider_lists) = mpsc::channel(1);
                 let (interactions_tx, interactions) = mpsc::channel(REPORT_CHANNEL_CAPACITY);
                 let (env_reports_tx, env_reports) = mpsc::channel(REPORT_CHANNEL_CAPACITY);
                 let (host_file_reports_tx, host_file_reports) =
@@ -484,11 +521,19 @@ impl Worker {
                 let (terminal_reports_tx, terminal_reports) =
                     mpsc::channel(REPORT_CHANNEL_CAPACITY);
                 let (script_reports_tx, script_reports) = mpsc::channel(REPORT_CHANNEL_CAPACITY);
+                // Discovery is per connection, not per process: an agent
+                // installed while the worker is running is offered as soon as
+                // it reconnects, without the daemon having to restart.
+                let discovered = config
+                    .discovered
+                    .clone()
+                    .unwrap_or_else(crate::discovery::candidates);
                 Ok(Self {
                     socket,
                     cursor: config.resume_cursor,
                     config,
                     providers,
+                    discovered,
                     host_id: None,
                     seen_events: SeenSet::new(DISPATCH_DEDUP_CAPACITY),
                     seen_runs: RunSeen::new(DISPATCH_DEDUP_CAPACITY),
@@ -496,6 +541,8 @@ impl Worker {
                     reports_tx,
                     catalog_reports,
                     catalog_reports_tx,
+                    provider_lists,
+                    provider_lists_tx,
                     interactions,
                     interactions_tx,
                     permissions: crate::acp::permission::PermissionRegistry::new(),
@@ -572,70 +619,117 @@ impl Worker {
         Ok(host_id)
     }
 
-    /// Asks each agent on this machine what it can run, and reports the answers.
+    /// Asks each candidate agent what it can run, and reports the ones that
+    /// answered.
     ///
-    /// The catalogue a fresh install needs cannot wait for a run to happen, so
-    /// every advertised agent is probed once per enrollment — and re-probed on
-    /// every reconnect, which is what keeps it current when an agent is
-    /// upgraded underneath a long-lived worker.
+    /// The probe is also the admission test. A candidate is only reported as
+    /// installed if it completes the ACP handshake — `initialize` and
+    /// `session/new` — so a binary that merely shares a name with a known agent
+    /// is dropped here rather than offered and failing at the first turn. The
+    /// catalogue and the verified list are both products of the same run: the
+    /// catalogue fills the picker, the list decides what the control plane may
+    /// dispatch.
     ///
-    /// Each probe runs in its own task: a slow or missing agent delays only its
-    /// own catalogue, never enrollment or its siblings'.
+    /// Every probe runs in its own task, and the verified list is reported as
+    /// each one settles: one slow candidate must not hold back the agents that
+    /// already answered, or a machine with one broken agent would look like a
+    /// machine with none.
     fn probe_catalog(&self, host_id: &HostId) {
-        for spec in self.probe_specs() {
-            // The probe opens a session in the worker's own directory: it is
-            // not about a project, it only needs a workspace the agent accepts.
-            let cwd = std::env::current_dir()
-                .map(|dir| dir.to_string_lossy().into_owned())
-                .unwrap_or_else(|_| ".".to_owned());
-            let transport = match spec.launch {
-                ProviderLaunch::AcpStdio => crate::acp::session::Transport::Stdio {
-                    command: spec.command,
-                    args: spec.args,
-                },
-                ProviderLaunch::AcpEmbeddedPi => crate::acp::session::Transport::EmbeddedPi {
-                    command: spec.command,
-                    args: spec.args,
-                },
-            };
-            let provider_id = spec.name;
-            let host_id = host_id.clone();
-            let reports = self.catalog_reports_tx.clone();
-            tokio::spawn(async move {
-                match crate::acp::catalog::read_catalog(
-                    transport,
-                    cwd,
-                    DEFAULT_CATALOG_PROBE_BUDGET,
-                )
-                .await
-                {
-                    crate::acp::catalog::CatalogProbeOutcome::Read(catalog)
-                        if !catalog.is_empty() =>
-                    {
-                        let _ = reports
-                            .send(ProviderCatalogReport {
-                                host_id,
-                                provider_id,
-                                catalog,
-                            })
-                            .await;
-                    }
-                    crate::acp::catalog::CatalogProbeOutcome::Read(_) => {
-                        eprintln!("loom-worker: {provider_id} advertised no models");
+        // The probe opens a session in the worker's own directory: it is not
+        // about a project, it only needs a workspace the agent accepts.
+        let cwd = std::env::current_dir()
+            .map(|dir| dir.to_string_lossy().into_owned())
+            .unwrap_or_else(|_| ".".to_owned());
+        let specs = self.probe_specs();
+        let reports = self.catalog_reports_tx.clone();
+        let verified_tx = self.provider_lists_tx.clone();
+        let host_id = host_id.clone();
+        tokio::spawn(async move {
+            let mut probes = tokio::task::JoinSet::new();
+            for (index, spec) in specs.iter().enumerate() {
+                let transport = match spec.launch {
+                    ProviderLaunch::AcpStdio => crate::acp::session::Transport::Stdio {
+                        command: spec.command.clone(),
+                        args: spec.args.clone(),
+                    },
+                    ProviderLaunch::AcpEmbeddedPi => crate::acp::session::Transport::EmbeddedPi {
+                        command: spec.command.clone(),
+                        args: spec.args.clone(),
+                    },
+                };
+                let provider_id = spec.name.clone();
+                let host_id = host_id.clone();
+                let reports = reports.clone();
+                let cwd = cwd.clone();
+                let spec = spec.clone();
+                probes.spawn(async move {
+                    let outcome = crate::acp::catalog::read_catalog(
+                        transport,
+                        cwd,
+                        DEFAULT_CATALOG_PROBE_BUDGET,
+                    )
+                    .await;
+                    (index, spec, provider_id, host_id, reports, outcome)
+                });
+            }
+
+            // The list is rebuilt in the table's order every time an answer
+            // arrives, so the report is a preference-ordered set of what has
+            // been verified *so far* — never a set of what has merely been
+            // tried. The final report, after the loop, is the complete one.
+            let mut settled: Vec<Option<ProviderSpec>> = vec![None; specs.len()];
+            while let Some(joined) = probes.join_next().await {
+                let Ok((index, spec, provider_id, host_id, reports, outcome)) = joined else {
+                    continue;
+                };
+                match outcome {
+                    crate::acp::catalog::CatalogProbeOutcome::Read(catalog) => {
+                        if catalog.is_empty() {
+                            eprintln!(
+                                "loom-worker: {provider_id} answered ACP but published no model \
+                                 catalogue"
+                            );
+                        } else {
+                            let _ = reports
+                                .send(ProviderCatalogReport {
+                                    host_id,
+                                    provider_id,
+                                    catalog,
+                                })
+                                .await;
+                        }
+                        settled[index] = Some(spec);
                     }
                     crate::acp::catalog::CatalogProbeOutcome::Failed { error } => {
                         eprintln!(
-                            "loom-worker: could not read the {provider_id} catalogue: {error}"
+                            "loom-worker: {provider_id} did not answer ACP and is not offered: \
+                             {error}"
                         );
                     }
                 }
-            });
-        }
+                let verified = settled.iter().flatten().cloned().collect();
+                let _ = verified_tx.send(verified).await;
+            }
+            // A machine whose every candidate failed — including one with no
+            // candidates at all — still says so, because an empty list is the
+            // fact that clears whatever it reported before.
+            let _ = verified_tx
+                .send(settled.into_iter().flatten().collect())
+                .await;
+        });
     }
 
     /// The specs to probe for this connection.
+    ///
+    /// Everything installed here, plus any agent the server named that the
+    /// table does not know: a server-declared agent still deserves a catalogue,
+    /// even though its presence is not evidence of a local installation.
     fn probe_specs(&self) -> Vec<ProviderSpec> {
-        probe_specs(&self.providers, self.config.provider.as_ref())
+        effective_specs(
+            &self.discovered,
+            &self.providers,
+            self.config.provider.as_ref(),
+        )
     }
 
     /// Sends one heartbeat. Frames are not awaited: heartbeats carry no reply
@@ -710,6 +804,15 @@ impl Worker {
                 report = self.catalog_reports.recv() => {
                     let Some(report) = report else { continue };
                     self.send(&ClientCommand::CatalogReport { report }).await?;
+                }
+                providers = self.provider_lists.recv() => {
+                    let Some(providers) = providers else { continue };
+                    // Enrollment precedes the probe run that produces this list,
+                    // so the host id is known here. A worker whose probes finish
+                    // before it enrolled has nothing to report them against and
+                    // drops the list rather than sending an unattributable one.
+                    let Some(host_id) = self.host_id.clone() else { continue };
+                    self.send(&ClientCommand::HostProviders { host_id, providers }).await?;
                 }
                 request = self.interactions.recv() => {
                     let Some(request) = request else { continue };
@@ -1140,43 +1243,45 @@ impl Worker {
     }
 }
 
-/// The specs a worker probes at enrollment, with the operator override applied.
+/// The agents a worker offers, given what it found and what it was told.
 ///
-/// The override replaces the **default** agent's executable, because that is
-/// the one dispatch hands a run when the caller names no provider. A machine
-/// that pins one binary therefore keeps its single-provider behaviour, while
-/// agents the server listed for itself are probed exactly as configured.
+/// Discovery leads: an agent installed here is offered whatever the control
+/// plane believes. Then any agent the server named that discovery did not find
+/// is appended, because a server-declared agent is still dispatchable even when
+/// the table does not know it.
 ///
-/// An empty `advertised` list means an older server, which sent no provider
-/// list at all; the worker then probes what a dispatch would carry.
-fn probe_specs(
+/// The operator override replaces the **default** agent's executable, because
+/// that is the one dispatch hands a run when the caller names no provider. A
+/// machine that pins one binary therefore keeps its single-provider behaviour
+/// for the default, while the agents discovery found stay selectable.
+///
+/// An empty result with an override means nothing was found and nothing was
+/// advertised: the override is then the only agent, which is the
+/// single-provider shape loom had before discovery.
+fn effective_specs(
+    discovered: &[ProviderSpec],
     advertised: &[ProviderSpec],
     override_spec: Option<&ProviderSpec>,
 ) -> Vec<ProviderSpec> {
-    let advertised = if advertised.is_empty() {
-        vec![override_spec.cloned().unwrap_or_default()]
-    } else {
-        advertised.to_vec()
-    };
-    let Some(override_spec) = override_spec else {
-        return advertised;
-    };
-    advertised
-        .into_iter()
-        .enumerate()
-        .map(|(index, spec)| {
-            if index != 0 {
-                return spec;
-            }
-            ProviderSpec {
-                name: spec.name,
-                launch: override_spec.launch,
-                command: override_spec.command.clone(),
-                args: override_spec.args.clone(),
-                cwd: spec.cwd,
-            }
-        })
-        .collect()
+    let mut specs = discovered.to_vec();
+    for spec in advertised {
+        if !specs.iter().any(|found| found.name == spec.name) {
+            specs.push(spec.clone());
+        }
+    }
+    if specs.is_empty() {
+        if let Some(override_spec) = override_spec {
+            specs.push(override_spec.clone());
+        }
+    }
+    if let Some(override_spec) = override_spec {
+        if let Some(default) = specs.first_mut() {
+            default.launch = override_spec.launch;
+            default.command = override_spec.command.clone();
+            default.args = override_spec.args.clone();
+        }
+    }
+    specs
 }
 
 /// Creates one managed environment's workspace under `root`.
@@ -1320,47 +1425,92 @@ mod tests {
         }
     }
 
-    /// Every agent the server advertised is probed, not just the default.
+    /// An agent found on this machine is offered, and one the server merely
+    /// listed is appended rather than dropped.
     #[test]
-    fn every_advertised_agent_is_probed() {
+    fn discovery_leads_and_advertised_agents_are_kept() {
+        let discovered = vec![spec("pi", "/usr/bin/pi"), spec("omp", "/usr/bin/omp")];
         let advertised = vec![spec("pi", "pi"), spec("codex", "codex")];
-        let probed = probe_specs(&advertised, None);
+        let probed = effective_specs(&discovered, &advertised, None);
         assert_eq!(
             probed
                 .iter()
                 .map(|spec| spec.name.as_str())
                 .collect::<Vec<_>>(),
-            vec!["pi", "codex"]
+            vec!["pi", "omp", "codex"],
+            "the installed agent wins its name, the declared one is still probed"
+        );
+        assert_eq!(
+            probed[0].command, "/usr/bin/pi",
+            "the local executable is the one that was found"
         );
     }
 
     /// An operator override replaces the default agent's executable, and only
     /// that one: a pinned machine keeps its single-provider behaviour without
-    /// breaking the agents the server listed for itself.
+    /// breaking the agents discovery found.
     #[test]
     fn the_override_replaces_only_the_default_agents_executable() {
-        let advertised = vec![spec("pi", "pi"), spec("codex", "codex")];
+        let discovered = vec![spec("pi", "/usr/bin/pi"), spec("omp", "/usr/bin/omp")];
         let override_spec = spec("acp", "/opt/custom/agent");
-        let probed = probe_specs(&advertised, Some(&override_spec));
+        let probed = effective_specs(&discovered, &[], Some(&override_spec));
 
         assert_eq!(probed[0].name, "pi", "the default keeps its identity");
         assert_eq!(probed[0].command, "/opt/custom/agent");
-        assert_eq!(probed[1].name, "codex");
-        assert_eq!(probed[1].command, "codex", "a sibling is left alone");
+        assert_eq!(probed[1].name, "omp");
+        assert_eq!(probed[1].command, "/usr/bin/omp", "a sibling is left alone");
     }
 
-    /// A server that sent no list (an older one) is probed with what a dispatch
-    /// would carry: the override when there is one, the built-in provider
-    /// otherwise.
+    /// A machine with nothing installed still honours an explicit command:
+    /// the operator's agent is the only one, which is the single-provider shape
+    /// loom had before discovery.
     #[test]
-    fn a_server_without_a_provider_list_falls_back_to_a_dispatch_spec() {
+    fn an_empty_machine_falls_back_to_the_operator_command() {
         let override_spec = spec("acp", "/opt/custom/agent");
-        let probed = probe_specs(&[], Some(&override_spec));
+        let probed = effective_specs(&[], &[], Some(&override_spec));
         assert_eq!(probed.len(), 1);
         assert_eq!(probed[0].command, "/opt/custom/agent");
 
-        let probed = probe_specs(&[], None);
-        assert_eq!(probed.len(), 1);
-        assert_eq!(probed[0].name, ProviderSpec::default().name);
+        assert!(
+            effective_specs(&[], &[], None).is_empty(),
+            "nothing found and nothing declared means no agent is offered"
+        );
+    }
+
+    /// A server that declares an agent discovery does not know still gets it
+    /// probed: the declaration is the only evidence the agent exists.
+    #[test]
+    fn a_declared_agent_is_probed_on_a_machine_that_found_nothing() {
+        let advertised = vec![spec("pi", "pi")];
+        let probed = effective_specs(&[], &advertised, None);
+        assert_eq!(
+            probed
+                .iter()
+                .map(|spec| spec.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["pi"]
+        );
+    }
+
+    /// An agent a sibling host offers is probed here too: the server's hello
+    /// carries every host's list, and probing one names the executable that host
+    /// uses. It only reaches the report if it answers on this machine as well,
+    /// which is the evidence a report needs.
+    #[test]
+    fn another_hosts_agent_is_probed_too() {
+        let discovered = vec![spec("pi", "/usr/bin/pi")];
+        let advertised = vec![spec("pi", "pi"), spec("omp", "/elsewhere/omp")];
+        let probed = effective_specs(&discovered, &advertised, None);
+        assert_eq!(
+            probed
+                .iter()
+                .map(|spec| spec.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["pi", "omp"]
+        );
+        assert_eq!(
+            probed[1].command, "/elsewhere/omp",
+            "the sibling's executable is what is tried, not a guess at a local one"
+        );
     }
 }

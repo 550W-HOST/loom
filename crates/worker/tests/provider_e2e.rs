@@ -94,7 +94,7 @@ async fn enroll_worker(
     provider: Option<ProviderSpec>,
     run_timeout: Duration,
 ) -> (HostId, tokio::task::JoinHandle<()>) {
-    let mut config = WorkerConfig::new(url, "test-worker");
+    let mut config = WorkerConfig::new(url, "test-worker").without_discovery();
     if let Some(data_dir) = data_dir {
         config.data_dir = data_dir;
     }
@@ -641,7 +641,7 @@ async fn a_dispatch_missed_while_disconnected_is_replayed_on_reconnect() {
 
     // First worker enrolls, so the dispatcher has a connected host, but it is
     // never driven: the dispatch below is written to its scope and not read.
-    let mut first_config = WorkerConfig::new(&url, "test-worker");
+    let mut first_config = WorkerConfig::new(&url, "test-worker").without_discovery();
     first_config.provider = Some(provider.clone());
     let mut first = Worker::connect(first_config).await.unwrap();
     let host_id = first.enroll().await.unwrap();
@@ -701,7 +701,7 @@ async fn a_run_on_a_silent_worker_is_reaped_by_the_stale_heartbeat_sweep() {
 
     // Enroll, but never start `run`: the socket stays open while no heartbeat
     // is ever sent. The host is "connected" and then goes silent.
-    let mut config = WorkerConfig::new(&url, "silent");
+    let mut config = WorkerConfig::new(&url, "silent").without_discovery();
     config.provider = Some(provider);
     let mut worker = Worker::connect(config).await.unwrap();
     let host_id = worker.enroll().await.unwrap();
@@ -736,7 +736,7 @@ async fn a_managed_environment_is_provisioned_by_the_worker() {
     let root = tempfile::tempdir().unwrap();
     let (url, state) = spawn_server(AppConfig::default()).await;
 
-    let mut config = WorkerConfig::new(&url, "test-worker");
+    let mut config = WorkerConfig::new(&url, "test-worker").without_discovery();
     config.environment_root = root.path().to_path_buf();
     config.heartbeat_interval = Duration::from_millis(50);
     let mut worker = Worker::connect(config).await.unwrap();
@@ -795,7 +795,7 @@ async fn a_failing_provision_records_the_worker_reason() {
     std::fs::write(&not_a_dir, "x").unwrap();
 
     let (url, state) = spawn_server(AppConfig::default()).await;
-    let mut config = WorkerConfig::new(&url, "test-worker");
+    let mut config = WorkerConfig::new(&url, "test-worker").without_discovery();
     config.environment_root = not_a_dir;
     config.heartbeat_interval = Duration::from_millis(50);
     let mut worker = Worker::connect(config).await.unwrap();
@@ -936,7 +936,7 @@ async fn a_reconnect_recovers_more_dispatches_than_one_replay_page() {
 
     // A worker enrolls so the dispatcher has a host, but it never runs its
     // event loop: every dispatch lands in its room and is left unread.
-    let mut first_config = WorkerConfig::new(&url, "test-worker");
+    let mut first_config = WorkerConfig::new(&url, "test-worker").without_discovery();
     first_config.provider = Some(provider.clone());
     let mut first = Worker::connect(first_config).await.unwrap();
     let host_id = first.enroll().await.unwrap();
@@ -971,7 +971,7 @@ async fn a_reconnect_recovers_more_dispatches_than_one_replay_page() {
     );
 
     // Restart with the persisted cursor and a page limit far below the backlog.
-    let mut resume_config = WorkerConfig::new(&url, "test-worker");
+    let mut resume_config = WorkerConfig::new(&url, "test-worker").without_discovery();
     resume_config.host_id = Some(host_id.clone());
     resume_config.provider = Some(provider);
     resume_config.run_timeout = Duration::from_secs(60);

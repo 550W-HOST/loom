@@ -563,17 +563,21 @@ impl AppState {
             pending_status_event: None,
         };
         // The dispatched spec carries the working directory, and the agent is
+        // The dispatched spec carries the working directory, and the agent is
         // the one the thread's client chose. A thread that never chose one —
         // every thread from before providers were selectable — gets the
         // default, which is what it ran on anyway. A stored id this server no
-        // longer configures also falls back rather than failing the turn: the
+        // longer offers also falls back rather than failing the turn: the
         // agent refuses a model it does not have, and the run still happens.
+        //
+        // Resolution is per host: two machines can report the same agent name
+        // against different executables, and this run is about to be published
+        // to exactly one of them.
         let mut provider = thread
             .provider_id
             .as_deref()
-            .and_then(|provider_id| self.provider_spec_by_id(provider_id))
-            .unwrap_or_else(|| self.provider_spec())
-            .clone();
+            .and_then(|provider_id| self.provider_spec_for_host(&host.id, provider_id))
+            .unwrap_or_else(|| self.provider_spec());
         provider.cwd = Some(workspace.clone());
         record.provider_id = Some(provider.name.clone());
         // Resume only when the recorded session belongs to this agent *and*

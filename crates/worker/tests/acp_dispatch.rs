@@ -56,7 +56,7 @@ async fn enroll_worker(
     provider: Option<ProviderSpec>,
     run_timeout: Duration,
 ) -> (HostId, tokio::task::JoinHandle<()>) {
-    let mut config = WorkerConfig::new(url, "acp-worker");
+    let mut config = WorkerConfig::new(url, "acp-worker").without_discovery();
     config.host_id = None;
     config.provider = provider;
     config.run_timeout = run_timeout;

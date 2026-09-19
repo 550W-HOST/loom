@@ -50,7 +50,7 @@ async fn a_server_with_no_worker_is_up_and_a_remote_worker_becomes_primary() {
     assert!(state.registry.primary_host(Some(&absent_local)).is_none());
 
     // A worker on another machine dials out and enrolls.
-    let mut worker = Worker::connect(WorkerConfig::new(&url, "remote-1"))
+    let mut worker = Worker::connect(WorkerConfig::new(&url, "remote-1").without_discovery())
         .await
         .unwrap();
     let host_id = worker.enroll().await.unwrap();
@@ -93,7 +93,7 @@ async fn a_server_with_no_worker_is_up_and_a_remote_worker_becomes_primary() {
 async fn stopping_a_worker_leaves_the_server_serving() {
     let (url, state) = spawn_server(AppConfig::default()).await;
 
-    let mut worker = Worker::connect(WorkerConfig::new(&url, "laptop"))
+    let mut worker = Worker::connect(WorkerConfig::new(&url, "laptop").without_discovery())
         .await
         .unwrap();
     let host_id = worker.enroll().await.unwrap();
@@ -120,7 +120,7 @@ async fn stopping_a_worker_leaves_the_server_serving() {
 async fn a_reconnecting_worker_keeps_its_identity() {
     let (url, state) = spawn_server(AppConfig::default()).await;
 
-    let mut first = Worker::connect(WorkerConfig::new(&url, "builder"))
+    let mut first = Worker::connect(WorkerConfig::new(&url, "builder").without_discovery())
         .await
         .unwrap();
     let host_id = first.enroll().await.unwrap();
@@ -135,7 +135,7 @@ async fn a_reconnecting_worker_keeps_its_identity() {
     );
 
     // A restart presents the identity it was given: one machine, reconnected.
-    let mut config = WorkerConfig::new(&url, "builder");
+    let mut config = WorkerConfig::new(&url, "builder").without_discovery();
     config.host_id = Some(host_id.clone());
     let mut second = Worker::connect(config).await.unwrap();
     assert_eq!(second.enroll().await.unwrap(), host_id);
@@ -164,7 +164,7 @@ async fn a_worker_answers_thread_storage_reads_from_its_own_disk() {
     std::fs::create_dir_all(&data_dir).unwrap();
 
     let (url, state) = spawn_server(AppConfig::default()).await;
-    let mut config = WorkerConfig::new(&url, "files");
+    let mut config = WorkerConfig::new(&url, "files").without_discovery();
     config.data_dir = data_dir.clone();
     config.heartbeat_interval = Duration::from_millis(25);
     let mut worker = Worker::connect(config).await.unwrap();
@@ -291,7 +291,7 @@ async fn a_worker_runs_a_terminal_and_streams_its_output() {
     std::fs::create_dir_all(&data_dir).unwrap();
 
     let (url, state) = spawn_server(AppConfig::default()).await;
-    let mut config = WorkerConfig::new(&url, "terminals");
+    let mut config = WorkerConfig::new(&url, "terminals").without_discovery();
     config.data_dir = data_dir.clone();
     config.heartbeat_interval = Duration::from_millis(25);
     let mut worker = Worker::connect(config).await.unwrap();

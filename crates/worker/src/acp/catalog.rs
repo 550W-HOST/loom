@@ -7,14 +7,17 @@
 //!
 //! There are two ways in, and they answer the same question at different
 //! moments. [`catalog_from_options`] reads the options a live session already
-//! holds, so every turn keeps the catalogue honest for free.
-//! [`read_catalog`] opens a throwaway session purely to ask, which is what lets
-//! a fresh install show real models before any run has happened.
+//! holds, so every turn keeps the catalogue honest for free. [`read_catalog`]
+//! opens a throwaway session purely to ask, which is what lets a fresh install
+//! show real models before any run has happened — and, because it is a real
+//! handshake, what decides whether an agent discovered on `PATH` is offered at
+//! all. A v1 agent has no config options to publish, so it passes the handshake
+//! with an empty catalogue rather than being turned away.
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use agent_client_protocol::schema::{v2, ProtocolVersion};
+use agent_client_protocol::schema::{v1, v2, ProtocolVersion};
 use agent_client_protocol::{on_receive_request, Agent, Client, ConnectTo, ConnectionTo, Error};
 use loom_domain::catalog::{CatalogModel, CatalogThinkingLevel, ProviderCatalog};
 
@@ -147,6 +150,11 @@ pub enum CatalogProbeOutcome {
 /// options, and closes it again. This is what lets a fresh install — where no
 /// run has happened yet — already show the agent's real models.
 ///
+/// A successful read is also the handshake an agent discovered on `PATH` must
+/// complete before the worker offers it. Under v1 there are no config options,
+/// so success carries an empty catalogue: the agent is admitted, with no model
+/// list to show yet.
+///
 /// `cwd` is the directory the probe session is opened in. It is not part of the
 /// answer, but the agent needs a workspace it can use.
 pub async fn read_catalog(
@@ -196,17 +204,27 @@ pub async fn read_catalog(
 }
 
 /// Runs the initialize-and-open conversation against a connected agent.
+///
+/// The handshake is the point and the catalogue is the dividend: both versions
+/// are registered, because a v1 agent is a working agent. It simply has no
+/// config options to publish, so its session yields an empty catalogue while
+/// still proving the agent answers — which is what admission is decided on.
 async fn probe<C, F>(agent_factory: F, cwd: String) -> Result<ProviderCatalog, String>
 where
     C: ConnectTo<Client>,
     F: FnMut() -> C + Send + 'static,
 {
     let state = Arc::new(CatalogProbeState::default());
+    let v1_cwd = cwd.clone();
     let result = Client
         .protocol_connector()
-        // Only v2 carries session config options. An agent that speaks v1 has
-        // no catalogue to read, and the probe reports that rather than
-        // inventing an empty one.
+        .with_v1({
+            let state = Arc::clone(&state);
+            move || V1CatalogClient {
+                state: Arc::clone(&state),
+                cwd: v1_cwd.clone(),
+            }
+        })
         .with_v2({
             let state = Arc::clone(&state);
             move || V2CatalogClient {
@@ -220,7 +238,7 @@ where
     result.map_err(|error| format!("the ACP connection ended: {error}"))?;
     state
         .take()
-        .ok_or_else(|| "the ACP agent ended without returning a catalogue".to_owned())
+        .ok_or_else(|| "the ACP agent ended without answering the probe".to_owned())
 }
 
 #[derive(Default)]
@@ -241,6 +259,63 @@ impl CatalogProbeState {
     }
 }
 
+/// The v1 half of the probe.
+///
+/// v1 has no config options, so there is no catalogue to read: opening a session
+/// is the whole answer, and the empty catalogue it records is the honest one.
+/// Registering this client is what lets an agent that only speaks v1 — Pi
+/// itself, under a v1 negotiation — be admitted rather than rejected for
+/// answering the version it actually supports.
+struct V1CatalogClient {
+    state: Arc<CatalogProbeState>,
+    cwd: String,
+}
+
+impl ConnectTo<Agent> for V1CatalogClient {
+    async fn connect_to(self, agent: impl ConnectTo<Client>) -> Result<(), Error> {
+        let state = self.state;
+        let cwd = self.cwd;
+        Client
+            .builder()
+            .on_receive_request(
+                async move |_request: v1::RequestPermissionRequest, responder, _cx| {
+                    let _ = responder.respond(v1::RequestPermissionResponse::new(
+                        v1::RequestPermissionOutcome::Cancelled,
+                    ));
+                    Ok(())
+                },
+                on_receive_request!(),
+            )
+            .connect_with(agent, |connection: ConnectionTo<Agent>| async move {
+                let initialized =
+                    connection
+                        .send_request(v1::InitializeRequest::new(ProtocolVersion::V1).client_info(
+                            v1::Implementation::new("loom", env!("CARGO_PKG_VERSION")),
+                        ))
+                        .block_task()
+                        .await?;
+                if initialized.protocol_version != ProtocolVersion::V1 {
+                    return Err(Error::internal_error().data(
+                        "the ACP agent negotiated an unsupported protocol version for the \
+                         catalogue probe",
+                    ));
+                }
+                // The probe's session is throwaway; dropping the connection at
+                // the end of this block is what ends it. The session id is not
+                // kept because nothing here resumes it.
+                let _created = connection
+                    .send_request(v1::NewSessionRequest::new(cwd))
+                    .block_task()
+                    .await?;
+                state.set(ProviderCatalog::default());
+                Ok(())
+            })
+            .await
+    }
+}
+
+/// The v2 half of the probe: the same handshake, plus the config options only
+/// v2 publishes.
 struct V2CatalogClient {
     state: Arc<CatalogProbeState>,
     cwd: String,

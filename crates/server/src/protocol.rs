@@ -448,6 +448,17 @@ pub enum WorkerClientMessage {
     CatalogReport {
         report: ProviderCatalogReport,
     },
+    /// The agents this host found installed, as its own probes verified them.
+    ///
+    /// Host-scoped and sent after enrollment, as the probes that decide it
+    /// settle. A candidate counts only once it has answered an ACP handshake, so
+    /// this is evidence about the machine rather than configuration for it. Each
+    /// frame is the complete list verified so far, including an empty one — a
+    /// host that found nothing replaces whatever it reported before.
+    HostProviders {
+        host_id: loom_domain::HostId,
+        providers: Vec<loom_provider_protocol::ProviderSpec>,
+    },
     InteractionRequest {
         request: Box<loom_provider_protocol::InteractionRequest>,
     },

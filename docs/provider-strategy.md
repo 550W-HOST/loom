@@ -348,12 +348,66 @@ adapter. The default Pi path can therefore continue to negotiate v1 while native
 agents that support v2 use message patches, terminal updates and idle
 completion.
 
+## Discovery, not configuration
+
+Which agents a machine offers is a property of that machine, so it is found
+rather than declared. There is no environment variable and no config key that
+lists providers: the worker carries a table of agents loom knows how to launch
+(`crates/worker/src/discovery.rs`), resolves each one on its own `PATH`, and
+reports what it found. Installing an agent *is* the provisioning step, and
+uninstalling one removes it on the next enrollment.
+
+Presence is necessary but not sufficient. Each candidate is then probed with a
+real ACP session — `initialize`, `session/new`, and on v2 the config options it
+publishes — and only an agent that answers is reported. A binary that shares a
+name with a known agent, an agent that is installed but broken, and a bridge
+package that was never installed are all simply absent from the list instead of
+offered and failing at the first user turn.
+
+The probe negotiates both protocol versions, because a v1 agent is a working
+agent: it has no config options to publish, so it is admitted with an empty
+catalogue rather than turned away for answering the version it supports. That is
+also why admission cannot be *the catalogue read*: the native agents in the field
+— OMP, Hermes, OpenCode — speak v1, and requiring v2 config options to prove
+liveness would have excluded exactly the agents this path exists to find. Pi
+does negotiate v2, which is what still gives it a real model ladder at
+enrollment rather than an empty catalogue.
+
+Answers are reported as they arrive rather than in one batch at the end, so a
+single agent that never completes its handshake — one waiting on a login, or a
+bridge that hangs — delays only its own appearance, not every other agent's.
+
+```
+worker PATH lookup ──▶ candidate specs ──▶ ACP handshake ──▶ HostProviders
+   (known-agent table)                    (the probe)        (verified list)
+                                                                   │
+                              server records it per host ◀─────────┘
+                                                                   │
+                    /system/providers + executionOptions ◀─────────┘
+```
+
+Two properties make this honest rather than optimistic:
+
+- **The report is the same run as the catalogue.** The probe that fills the
+  model picker is the probe that decides admission, so a provider can never be
+  advertised with a catalogue it did not produce.
+- **The host is the authority, not the control plane.** The server records what
+  each machine reported, keyed by host, and dispatch resolves a provider
+  *against the host that will run it* — two machines may report the same agent
+  name against different executables.
+
+The control plane keeps its own configured provider list as a fallback, which is
+what a server with no connected worker answers with. It is not the source of
+truth: an agent appears because a machine verified it, and disappears when the
+machine stops reporting it.
+
 ## Decisions taken
 
 | Question | Decision |
 | --- | --- |
 | One protocol or several? | **ACP only.** Pi is not special-cased at the client. |
 | How is Pi reached? | **`pi-acp` embedded as a library**, over `Channel::duplex()`. |
+| How are providers declared? | **Discovered at runtime.** A compiled-in known-agent table plus the machine's `PATH`, verified by an ACP handshake. No environment variable, no config key. |
 | ACP version | **v2 first, v1 fallback.** The SDK connector selects the highest configured protocol that the agent accepts; v1 remains for stable agents and the default Pi path. |
 | Resume entry point | **`loom resume <thread>`** — `session/resume` under v2, which replays nothing since loom has the log; `session/load` under v1, where it is the only restore method. |
 | Unsupported capability | **Reported, never worked around.** |
@@ -404,4 +458,7 @@ completion.
 - bb `plugins/provider-acp/src/known-agents.ts` — the five ACP agents
 - `crates/worker/src/provider.rs` — ACP run metadata and the shared terminal
   event; the old Pi-specific direct driver was removed
+- `crates/worker/src/discovery.rs` — the known-agent table and the `PATH`
+  lookup that turns it into candidates; the ACP probe in
+  `crates/worker/src/acp/catalog.rs` is what admits them
 - `docs/provider-sessions-research.md` — the storage survey this builds on
