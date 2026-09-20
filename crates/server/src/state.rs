@@ -41,6 +41,47 @@ const HISTORY_CACHE_THREADS: usize = 64;
 /// How many bytes of cached conversation rows the server may hold.
 const HISTORY_CACHE_BYTES: u64 = 64 * 1024 * 1024;
 
+/// Writes a run's state through to the store as the run changes.
+///
+/// A run's flags are what a restart reads to settle it: whether its turn
+/// started, whether its provider errored, whether its terminal was published,
+/// and which status change it still owes. Keeping them only in memory is what
+/// made a restart reconstruct them by replaying a bounded log, which is the read
+/// this is the first half of replacing.
+///
+/// A write that fails is reported rather than swallowed: the run continues in
+/// memory, but its flags are no longer crash-safe, and saying so is the only
+/// honest thing left — the alternative is a restart that settles a run from
+/// flags it never had.
+struct DurableRuns {
+    store: Arc<Mutex<crate::store::Store>>,
+}
+
+impl crate::runs::RunSink for DurableRuns {
+    fn stored(&self, record: &crate::runs::RunRecord) {
+        let store = self
+            .store
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Err(error) = store.upsert_run(record) {
+            eprintln!(
+                "loom-server: the state of run {} could not be stored: {error}",
+                record.run_id
+            );
+        }
+    }
+
+    fn forgotten(&self, run_id: &loom_domain::RunId) {
+        let store = self
+            .store
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Err(error) = store.forget_run(run_id) {
+            eprintln!("loom-server: run {run_id} could not be forgotten: {error}");
+        }
+    }
+}
+
 /// Why a conversation that outlived a stop that did not finish is marked.
 ///
 /// Nothing in the file can say *what* was lost — only that the process that had
@@ -414,6 +455,12 @@ impl AppState {
             STORE_WRITE_QUEUE,
             Arc::clone(&history) as Arc<dyn crate::store::WrittenRows>,
         ));
+        // Runs are durable as they change, not only at the periodic write: a
+        // restart settles them from these records.
+        let runs = Arc::new(RunRegistry::new());
+        runs.set_sink(Arc::new(DurableRuns {
+            store: Arc::clone(&store),
+        }));
         let ui = Ui::from_config(config.ui_proxy.clone())
             .map_err(|message| BuildStateError { message })?;
         let artifacts = Arc::new(Artifacts::from_config(config.artifact_dir.clone()));
@@ -450,7 +497,7 @@ impl AppState {
             pump,
             public_events,
             registry: Arc::new(DomainRegistry::new(started_at_ms)),
-            runs: Arc::new(RunRegistry::new()),
+            runs,
             settings: Arc::new(SettingsRegistry::new(&provider_id)),
             automations: Arc::new(AutomationsRegistry::new()),
             ui,
@@ -2109,6 +2156,47 @@ mod tests {
             .thread(&thread_id)
             .expect("the thread came back from the store, not from the log or the file");
         assert_eq!(thread.title.as_deref(), Some("only in the store"));
+        state.shutdown().unwrap();
+    }
+
+    /// A run's state is durable as it changes, not only at the periodic write.
+    ///
+    /// A restart settles in-flight runs from these records, so the flags have to
+    /// be there before the effect they guard: a run inserted and started is in
+    /// the store, and a run that leaves flight is gone.
+    #[tokio::test]
+    async fn a_run_state_is_written_when_it_changes() {
+        let dir = TempDir::new().unwrap();
+        let state = AppState::build(durable_config(&dir)).unwrap();
+        let run_id = loom_domain::RunId::mint();
+        state.runs.insert(crate::runs::RunRecord {
+            run_id: run_id.clone(),
+            thread_id: loom_domain::ThreadId::mint(),
+            project_id: loom_domain::ProjectId::sentinel().unwrap(),
+            host_id: loom_domain::HostId::mint(),
+            cwd: "/srv/project".to_owned(),
+            started_at_ms: 10,
+            deadline_ms: 20,
+            turn_started: false,
+            provider_thread_id: None,
+            provider_id: None,
+            provider_error_reported: false,
+            failure_reason: None,
+            terminal_published: false,
+            terminal_outcome: None,
+            pending_status_event: None,
+        });
+        assert_eq!(state.store().runs().unwrap().len(), 1);
+
+        state.runs.mark_started(&run_id, "acp-session-1".to_owned());
+        let stored = state.store().runs().unwrap();
+        assert!(
+            stored[0].turn_started && stored[0].provider_thread_id.is_some(),
+            "the start is on disk before the effect it guards: {stored:?}"
+        );
+
+        state.runs.remove(&run_id);
+        assert!(state.store().runs().unwrap().is_empty());
         state.shutdown().unwrap();
     }
 

@@ -81,6 +81,49 @@ impl Store {
         Ok(())
     }
 
+    /// Writes one run's state, or replaces what is stored for it.
+    ///
+    /// Called as a run changes rather than at the periodic write, because the
+    /// flags a restart reads — the turn started, an error reported, a terminal
+    /// seen, a status change still owed — are only worth having if they are on
+    /// disk before the effect they guard.
+    pub fn upsert_run(&self, run: &RunRecord) -> Result<(), StoreError> {
+        block_on(self.connection().execute(
+            "INSERT INTO entity (kind, id, parent_id, json) VALUES ('run', ?1, ?2, ?3)
+             ON CONFLICT(kind, id) DO UPDATE SET parent_id = ?2, json = ?3",
+            params![
+                run.run_id.to_string(),
+                run.thread_id.to_string(),
+                encode(run)?
+            ],
+        ))?;
+        Ok(())
+    }
+
+    /// Forgets a run that is no longer in flight.
+    pub fn forget_run(&self, run_id: &loom_domain::RunId) -> Result<(), StoreError> {
+        block_on(self.connection().execute(
+            "DELETE FROM entity WHERE kind = 'run' AND id = ?1",
+            params![run_id.to_string()],
+        ))?;
+        Ok(())
+    }
+
+    /// Every run the store holds, which are the ones that were in flight.
+    pub fn runs(&self) -> Result<Vec<RunRecord>, StoreError> {
+        let mut rows = block_on(self.connection().query(
+            "SELECT id, json FROM entity WHERE kind = 'run' ORDER BY id",
+            (),
+        ))?;
+        let mut runs = Vec::new();
+        while let Some(row) = block_on(rows.next())? {
+            let id = column_text(&row, 0)?;
+            let json = column_text(&row, 1)?;
+            runs.push(decode::<RunRecord>("run", &id, &json)?);
+        }
+        Ok(runs)
+    }
+
     /// The entity view, or `None` when this store has never held one.
     ///
     /// `None` and an empty view are different answers: the first says recovery
@@ -364,6 +407,41 @@ mod tests {
             error.to_string().contains("is not one any more"),
             "the failure names the entity: {error}"
         );
+    }
+
+    /// A run written as it changes comes back as it was, and a run that is no
+    /// longer in flight is gone.
+    #[test]
+    fn run_state_is_written_and_forgotten_one_row_at_a_time() {
+        let store = Store::open_in_memory().unwrap();
+        let run = RunRecord {
+            run_id: loom_domain::RunId::mint(),
+            thread_id: loom_domain::ThreadId::mint(),
+            project_id: loom_domain::ProjectId::sentinel().unwrap(),
+            host_id: loom_domain::HostId::mint(),
+            cwd: "/srv/project".to_owned(),
+            started_at_ms: 10,
+            deadline_ms: 20,
+            turn_started: true,
+            provider_thread_id: Some("acp-session-1".to_owned()),
+            provider_id: Some("pi".to_owned()),
+            provider_error_reported: true,
+            failure_reason: None,
+            terminal_published: true,
+            terminal_outcome: Some(loom_domain::RunOutcome::Completed),
+            pending_status_event: None,
+        };
+        store.upsert_run(&run).unwrap();
+        assert_eq!(store.runs().unwrap(), vec![run.clone()]);
+
+        // The same run, changed: one row, replaced.
+        let mut changed = run.clone();
+        changed.turn_started = false;
+        store.upsert_run(&changed).unwrap();
+        assert_eq!(store.runs().unwrap(), vec![changed]);
+
+        store.forget_run(&run.run_id).unwrap();
+        assert!(store.runs().unwrap().is_empty());
     }
 
     /// A thread's project is a column, so a lookup by parent does not read every

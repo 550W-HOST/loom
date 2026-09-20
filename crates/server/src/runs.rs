@@ -27,7 +27,7 @@
 //! that caused the failure.
 
 use std::collections::HashMap;
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use loom_domain::AutomationRunOutcome;
 use loom_domain::{
@@ -157,19 +157,45 @@ impl PendingStatusChange {
     }
 }
 
+/// Where a run's state is kept after the process that had it goes away.
+///
+/// Called after every change to a record, on the thread that made it. A run's
+/// state changes a handful of times per turn — a turn started, an error
+/// reported, a terminal seen, a status change still owed — not once per provider
+/// frame, which is what makes writing each change worth doing.
+pub trait RunSink: Send + Sync {
+    /// The record as it now stands.
+    fn stored(&self, record: &RunRecord);
+    /// The run is no longer in flight.
+    fn forgotten(&self, run_id: &RunId);
+}
+
 /// Runs currently in flight, keyed by run id.
 ///
-/// In-memory during normal operation, and included in the durable domain
-/// snapshot when the disk relay backend is enabled. A restarted server restores
-/// these records only long enough to close them with a contract-valid terminal
+/// In-memory during normal operation, and written to the store as each record
+/// changes when the disk backend is enabled. A restarted server restores these
+/// records only long enough to close them with a contract-valid terminal
 /// sequence; a provider report arriving after that is an idempotent no-op.
-#[derive(Debug, Default)]
 pub struct RunRegistry {
     /// Serializes lifecycle publication with dispatch and reconciliation. The
     /// relay append is synchronous, so holding this lock makes a start and a
     /// terminal event one indivisible state-machine step to other callers.
     lifecycle: Mutex<()>,
     inner: Mutex<RunRegistryState>,
+    /// Installed once, when the server is built. A registry with none is a
+    /// registry whose runs live only as long as the process, which is what a
+    /// test that does not care about recovery gets.
+    sink: OnceLock<Arc<dyn RunSink>>,
+}
+
+impl Default for RunRegistry {
+    fn default() -> Self {
+        Self {
+            lifecycle: Mutex::new(()),
+            inner: Mutex::new(RunRegistryState::default()),
+            sink: OnceLock::new(),
+        }
+    }
 }
 
 #[derive(Debug, Default)]
@@ -187,6 +213,26 @@ impl RunRegistry {
         Self::default()
     }
 
+    /// Installs where a run's state is kept. The first call wins: the sink is a
+    /// property of the server, not of a run.
+    pub fn set_sink(&self, sink: Arc<dyn RunSink>) {
+        let _ = self.sink.set(sink);
+    }
+
+    /// Tells the sink that a record changed.
+    fn announce(&self, record: &RunRecord) {
+        if let Some(sink) = self.sink.get() {
+            sink.stored(record);
+        }
+    }
+
+    /// Tells the sink that a run is no longer in flight.
+    fn announce_forgotten(&self, run_id: &RunId) {
+        if let Some(sink) = self.sink.get() {
+            sink.forgotten(run_id);
+        }
+    }
+
     /// Locks run lifecycle transitions and event publication.
     pub(crate) fn lifecycle_lock(&self) -> MutexGuard<'_, ()> {
         self.lifecycle
@@ -197,16 +243,20 @@ impl RunRegistry {
     /// Records a run. Returns the previous record if the id was reused, which
     /// cannot happen for minted ids but keeps the API total.
     pub fn insert(&self, record: RunRecord) -> Option<RunRecord> {
-        let mut state = self.lock();
-        let previous = state.records.insert(record.run_id.clone(), record.clone());
-        if let Some(previous) = &previous {
-            if state.thread_claims.get(&previous.thread_id) == Some(&previous.run_id) {
-                state.thread_claims.remove(&previous.thread_id);
+        let previous = {
+            let mut state = self.lock();
+            let previous = state.records.insert(record.run_id.clone(), record.clone());
+            if let Some(previous) = &previous {
+                if state.thread_claims.get(&previous.thread_id) == Some(&previous.run_id) {
+                    state.thread_claims.remove(&previous.thread_id);
+                }
             }
-        }
-        state
-            .thread_claims
-            .insert(record.thread_id.clone(), record.run_id.clone());
+            state
+                .thread_claims
+                .insert(record.thread_id.clone(), record.run_id.clone());
+            previous
+        };
+        self.announce(&record);
         previous
     }
 
@@ -247,11 +297,15 @@ impl RunRegistry {
 
     /// Removes a run, returning it if it was in flight.
     pub fn remove(&self, run_id: &RunId) -> Option<RunRecord> {
-        let mut state = self.lock();
-        let record = state.records.remove(run_id)?;
-        if state.thread_claims.get(&record.thread_id) == Some(run_id) {
-            state.thread_claims.remove(&record.thread_id);
-        }
+        let record = {
+            let mut state = self.lock();
+            let record = state.records.remove(run_id)?;
+            if state.thread_claims.get(&record.thread_id) == Some(run_id) {
+                state.thread_claims.remove(&record.thread_id);
+            }
+            record
+        };
+        self.announce_forgotten(run_id);
         Some(record)
     }
 
@@ -261,53 +315,75 @@ impl RunRegistry {
     /// this only after the event append succeeds so a failed append never
     /// suppresses the synthetic start needed by a later terminal path.
     pub fn mark_started(&self, run_id: &RunId, provider_thread_id: String) -> bool {
-        let mut state = self.lock();
-        let Some(record) = state.records.get_mut(run_id) else {
-            return false;
+        let changed = {
+            let mut state = self.lock();
+            let Some(record) = state.records.get_mut(run_id) else {
+                return false;
+            };
+            if record.turn_started {
+                return false;
+            }
+            record.turn_started = true;
+            record.provider_thread_id = Some(provider_thread_id);
+            record.clone()
         };
-        if record.turn_started {
-            return false;
-        }
-        record.turn_started = true;
-        record.provider_thread_id = Some(provider_thread_id);
+        self.announce(&changed);
         true
     }
 
     /// Records that a provider error has been published for a run.
     pub fn mark_provider_error(&self, run_id: &RunId) {
-        if let Some(record) = self.lock().records.get_mut(run_id) {
+        let changed = {
+            let mut state = self.lock();
+            let Some(record) = state.records.get_mut(run_id) else {
+                return;
+            };
             record.provider_error_reported = true;
-        }
+            record.clone()
+        };
+        self.announce(&changed);
     }
 
     /// Records that the terminal run event reached the relay.
     pub fn mark_terminal(&self, run_id: &RunId, outcome: RunOutcome) -> bool {
-        let mut state = self.lock();
-        let Some(record) = state.records.get_mut(run_id) else {
-            return false;
+        let changed = {
+            let mut state = self.lock();
+            let Some(record) = state.records.get_mut(run_id) else {
+                return false;
+            };
+            record.terminal_published = true;
+            record.terminal_outcome = Some(outcome);
+            record.clone()
         };
-        record.terminal_published = true;
-        record.terminal_outcome = Some(outcome);
+        self.announce(&changed);
         true
     }
 
     /// Keeps the status event needed to finish a terminal run.
     pub fn set_pending_status_event(&self, run_id: &RunId, event: PendingStatusChange) -> bool {
-        let mut state = self.lock();
-        let Some(record) = state.records.get_mut(run_id) else {
-            return false;
+        let changed = {
+            let mut state = self.lock();
+            let Some(record) = state.records.get_mut(run_id) else {
+                return false;
+            };
+            record.pending_status_event = Some(event);
+            record.clone()
         };
-        record.pending_status_event = Some(event);
+        self.announce(&changed);
         true
     }
 
     /// Clears a status event after its relay append succeeds.
     pub fn clear_pending_status_event(&self, run_id: &RunId) -> bool {
-        let mut state = self.lock();
-        let Some(record) = state.records.get_mut(run_id) else {
-            return false;
+        let changed = {
+            let mut state = self.lock();
+            let Some(record) = state.records.get_mut(run_id) else {
+                return false;
+            };
+            record.pending_status_event = None;
+            record.clone()
         };
-        record.pending_status_event = None;
+        self.announce(&changed);
         true
     }
 
@@ -1481,6 +1557,66 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
     use std::time::Duration;
+
+    /// A run's state reaches the sink as it changes, and leaving flight forgets
+    /// it: what a restart reads is the state the run actually ended in.
+    #[test]
+    fn every_run_change_reaches_the_sink() {
+        use std::sync::Mutex as StdMutex;
+
+        #[derive(Default)]
+        struct Recording {
+            stored: StdMutex<Vec<RunRecord>>,
+            forgotten: StdMutex<Vec<RunId>>,
+        }
+        impl RunSink for Recording {
+            fn stored(&self, record: &RunRecord) {
+                self.stored.lock().unwrap().push(record.clone());
+            }
+            fn forgotten(&self, run_id: &RunId) {
+                self.forgotten.lock().unwrap().push(run_id.clone());
+            }
+        }
+
+        let registry = RunRegistry::new();
+        let sink = Arc::new(Recording::default());
+        registry.set_sink(sink.clone());
+
+        let run_id = RunId::mint();
+        registry.insert(RunRecord {
+            run_id: run_id.clone(),
+            thread_id: ThreadId::mint(),
+            project_id: loom_domain::ProjectId::sentinel().unwrap(),
+            host_id: loom_domain::HostId::mint(),
+            cwd: "/srv/project".to_owned(),
+            started_at_ms: 10,
+            deadline_ms: 20,
+            turn_started: false,
+            provider_thread_id: None,
+            provider_id: None,
+            provider_error_reported: false,
+            failure_reason: None,
+            terminal_published: false,
+            terminal_outcome: None,
+            pending_status_event: None,
+        });
+        assert!(registry.mark_started(&run_id, "acp-session-1".to_owned()));
+        registry.mark_provider_error(&run_id);
+        assert!(registry.mark_terminal(&run_id, RunOutcome::Completed));
+        registry.remove(&run_id);
+
+        let stored = sink.stored.lock().unwrap();
+        assert_eq!(
+            stored.len(),
+            4,
+            "insert, start, error and terminal each wrote the record"
+        );
+        assert!(
+            stored.last().unwrap().terminal_outcome == Some(RunOutcome::Completed),
+            "the last write carries the terminal"
+        );
+        assert_eq!(sink.forgotten.lock().unwrap().len(), 1);
+    }
 
     struct FailOnAppendBackend {
         inner: MemoryBackend,
