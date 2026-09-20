@@ -2153,6 +2153,34 @@ mod tests {
         state.shutdown();
     }
 
+    /// A brand-new thread has no session yet, and the message the user just
+    /// sent still belongs on screen. Without this, switching the timeline to
+    /// the cache would show an empty conversation until the first run finished
+    /// — "no history" would look like "no conversation".
+    #[tokio::test]
+    async fn a_user_message_on_a_thread_with_no_session_is_still_shown() {
+        let state = state();
+        let (_host_id, thread, _workspace) = thread_with_workspace(&state, "/srv/project-a");
+        let events = state
+            .registry
+            .post_message(&thread.id, MessageRole::User, "hello".into(), 3)
+            .unwrap();
+        for event in &events {
+            state.publish_domain_event(event).unwrap();
+        }
+
+        let view = state
+            .history
+            .view(&thread.id)
+            .expect("the user's own message is shown before any run has happened");
+        assert_eq!(view.rows.len(), 1);
+        assert!(
+            !view.complete,
+            "nothing has confirmed it is the whole conversation"
+        );
+        state.shutdown();
+    }
+
     /// The provider spec of the single frame dispatched to `host_id`.
     fn dispatched_provider(state: &AppState, host_id: &HostId) -> serde_json::Value {
         let frames = state

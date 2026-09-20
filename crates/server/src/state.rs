@@ -697,34 +697,65 @@ impl AppState {
 
     /// Adds one live thread event to the timeline cache's overlay.
     ///
-    /// Only a thread's own run events belong here: they are the conversation.
-    /// An event the cache cannot attribute — a thread with no session binding,
-    /// or a binding with no host — is skipped, because without a binding there
-    /// is no baseline it could be an overlay of.
+    /// Two shapes reach the timeline: a run's provider frames, and the user's
+    /// own message, which the control plane appends itself. Both go in, because
+    /// a thread whose agent has not reported a session yet still has a
+    /// conversation as far as the user is concerned — the message they just
+    /// sent.
+    ///
+    /// The binding is offered when it is known and omitted when it is not: a
+    /// thread with no session yet has events but nothing to load a history
+    /// from, which the cache records as a partial conversation rather than
+    /// pretending it is the whole one.
     fn cache_live_event(&self, event: &loom_domain::DomainEvent) {
-        let loom_domain::DomainEvent::ThreadRunEvent { run } = event else {
+        let (thread_id, body) = match event {
+            loom_domain::DomainEvent::ThreadRunEvent { run } => {
+                (run.thread_id.clone(), run.event.body.clone())
+            }
+            // The user's own message. The live timeline renders it from this
+            // domain event; the cache renders it from the frame the agent would
+            // have replayed, so it is converted once, here.
+            loom_domain::DomainEvent::ThreadMessageAdded { thread_id, message }
+                if message.role == loom_domain::MessageRole::User =>
+            {
+                (
+                    thread_id.clone(),
+                    loom_domain::ProviderEvent::ItemStarted {
+                        item: loom_domain::ThreadEventItem::UserMessage {
+                            id: message.id.to_string(),
+                            content: vec![loom_domain::UserContent::Text {
+                                text: message.content.clone(),
+                            }],
+                            client_request_id: None,
+                            parent_tool_call_id: None,
+                        },
+                        provider_thread_id: String::new(),
+                    },
+                )
+            }
+            _ => return,
+        };
+
+        let Some(thread) = self.registry.thread(&thread_id) else {
             return;
         };
-        let Some(thread) = self.registry.thread(&run.thread_id) else {
-            return;
+        let binding = match (
+            thread.provider_session_id.clone(),
+            thread.provider_session_binding.as_ref(),
+        ) {
+            (Some(provider_session_id), Some(binding)) => {
+                binding.host_id.clone().map(|host_id| {
+                    crate::history_cache::CacheBinding {
+                        host_id,
+                        agent: binding.agent.clone(),
+                        provider_session_id,
+                        cwd: binding.cwd.clone(),
+                    }
+                })
+            }
+            _ => None,
         };
-        let Some(provider_session_id) = thread.provider_session_id.clone() else {
-            return;
-        };
-        let Some(binding) = thread.provider_session_binding.as_ref() else {
-            return;
-        };
-        let Some(host_id) = binding.host_id.clone() else {
-            return;
-        };
-        let binding = crate::history_cache::CacheBinding {
-            host_id,
-            agent: binding.agent.clone(),
-            provider_session_id,
-            cwd: binding.cwd.clone(),
-        };
-        self.history
-            .append_live(&run.thread_id, &binding, run.event.body.clone());
+        self.history.append_live(&thread_id, binding.as_ref(), body);
     }
 
     /// Publishes a durable public cache invalidation with no domain-event peer.

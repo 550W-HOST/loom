@@ -51,6 +51,10 @@ pub struct CacheBinding {
 pub enum HistoryStatus {
     /// A baseline is being loaded and there is none to show yet.
     Loading,
+    /// Some of the conversation is here and it is not all of it: the live
+    /// overlay of a thread whose history has not been loaded yet. Showing it is
+    /// better than showing nothing, and calling it complete would be a lie.
+    Partial,
     /// A complete baseline is installed.
     Ready,
     /// Something is cached but a newer view is pending.
@@ -99,7 +103,12 @@ pub enum LoadTicket {
 
 struct Entry {
     generation: u64,
-    binding: CacheBinding,
+    /// What this conversation is bound to, when a session is known.
+    ///
+    /// `None` is a thread the agent has not reported a session for yet: it can
+    /// still show what the user has said, but nothing has confirmed it is the
+    /// whole conversation.
+    binding: Option<CacheBinding>,
     status: HistoryStatus,
     reason: Option<String>,
     rows: Vec<CachedRow>,
@@ -204,7 +213,7 @@ impl HistoryCache {
             thread_id.clone(),
             Entry {
                 generation,
-                binding,
+                binding: Some(binding),
                 status: HistoryStatus::Ready,
                 reason: None,
                 rows,
@@ -220,25 +229,56 @@ impl HistoryCache {
     /// Appends one live event to a thread's cached conversation.
     ///
     /// Returns the sequence it was given, or `None` when the event was
-    /// refused. A refusal is the safe answer for every case: no baseline yet
-    /// (the event will arrive again from the next load, and inventing a
-    /// partial conversation is worse), or a different binding (this event
-    /// belongs to a conversation the cache is not holding).
+    /// refused. A refusal is the safe answer for a mismatched binding: this
+    /// event belongs to a conversation the cache is not holding.
+    ///
+    /// A thread with no entry yet gets one. That is the thread the agent has
+    /// not reported a session for — a brand-new conversation, or one whose
+    /// first run is still in flight — and what the user has already said
+    /// belongs on screen. It is marked partial, because nothing has confirmed
+    /// it is the whole conversation, and the next load replaces it with the
+    /// baseline the agent replays.
     pub fn append_live(
         &self,
         thread_id: &ThreadId,
-        binding: &CacheBinding,
+        binding: Option<&CacheBinding>,
         event: ProviderEvent,
     ) -> Option<u64> {
         let mut inner = self.lock();
         inner.next_tick += 1;
         let tick = inner.next_tick;
         let size = row_bytes(&event);
+        let binding = binding.cloned();
+
+        if !inner.entries.contains_key(thread_id) {
+            let generation = inner.take_generation();
+            inner.insert(
+                thread_id.clone(),
+                Entry {
+                    generation,
+                    binding: binding.clone(),
+                    status: HistoryStatus::Partial,
+                    reason: Some("the conversation's history has not been loaded yet".to_owned()),
+                    rows: Vec::new(),
+                    next_seq: 1,
+                    bytes: 0,
+                    last_used: tick,
+                },
+            );
+        }
 
         let seq = {
-            let entry = inner.entries.get_mut(thread_id)?;
-            if &entry.binding != binding {
-                return None;
+            let entry = inner
+                .entries
+                .get_mut(thread_id)
+                .expect("the entry exists or was just created");
+            match (entry.binding.as_ref(), binding.as_ref()) {
+                // A different conversation: this event must not land in this
+                // one.
+                (Some(known), Some(offered)) if known != offered => return None,
+                // The first event that names a session adopts it.
+                (None, Some(offered)) => entry.binding = Some(offered.clone()),
+                _ => {}
             }
             let seq = entry.next_seq;
             entry.next_seq += 1;
@@ -288,7 +328,7 @@ impl HistoryCache {
         let same_conversation = inner
             .entries
             .get(thread_id)
-            .is_some_and(|entry| entry.binding == binding);
+            .is_some_and(|entry| entry.binding.as_ref() == Some(&binding));
 
         if same_conversation {
             let entry = inner
@@ -307,7 +347,7 @@ impl HistoryCache {
             thread_id.clone(),
             Entry {
                 generation,
-                binding,
+                binding: Some(binding),
                 status: HistoryStatus::Unavailable,
                 reason: Some(reason),
                 rows: Vec::new(),
@@ -331,7 +371,9 @@ impl HistoryCache {
         let refresh = inner
             .entries
             .get(thread_id)
-            .is_some_and(|entry| entry.binding == binding && !entry.rows.is_empty());
+            .is_some_and(|entry| {
+                entry.binding.as_ref() == Some(&binding) && !entry.rows.is_empty()
+            });
 
         if refresh {
             let entry = inner
@@ -350,7 +392,7 @@ impl HistoryCache {
             thread_id.clone(),
             Entry {
                 generation,
-                binding,
+                binding: Some(binding),
                 status: HistoryStatus::Loading,
                 reason: None,
                 rows: Vec::new(),
@@ -518,8 +560,14 @@ mod tests {
         let binding = binding("pi");
         cache.install_baseline(&thread, binding.clone(), vec![identity()]);
 
-        assert_eq!(cache.append_live(&thread, &binding, identity()), Some(2));
-        assert_eq!(cache.append_live(&thread, &binding, identity()), Some(3));
+        assert_eq!(
+            cache.append_live(&thread, Some(&binding), identity()),
+            Some(2)
+        );
+        assert_eq!(
+            cache.append_live(&thread, Some(&binding), identity()),
+            Some(3)
+        );
 
         let view = cache.view(&thread).unwrap();
         assert_eq!(
@@ -554,18 +602,47 @@ mod tests {
         let cache = cache();
         let thread = ThreadId::mint();
         cache.install_baseline(&thread, binding("pi"), vec![identity()]);
-        assert_eq!(cache.append_live(&thread, &binding("omp"), identity()), None);
+        assert_eq!(
+            cache.append_live(&thread, Some(&binding("omp")), identity()),
+            None
+        );
         assert_eq!(cache.view(&thread).unwrap().rows.len(), 1);
     }
 
-    /// A live event with no baseline is refused rather than starting a
-    /// conversation from its middle: the next load will bring it again.
+    /// A thread whose agent has not reported a session yet still has a
+    /// conversation as far as the user is concerned: the message they just
+    /// sent. It is shown, and it is marked partial — nothing has confirmed it
+    /// is the whole conversation, and the next load replaces it with the
+    /// baseline the agent replays.
     #[test]
-    fn a_live_event_without_a_baseline_is_refused() {
+    fn a_live_event_without_a_baseline_starts_a_partial_conversation() {
         let cache = cache();
         let thread = ThreadId::mint();
-        assert_eq!(cache.append_live(&thread, &binding("pi"), identity()), None);
-        assert!(cache.view(&thread).is_none());
+        assert_eq!(cache.append_live(&thread, None, identity()), Some(1));
+
+        let view = cache.view(&thread).expect("the conversation is shown");
+        assert_eq!(view.status, HistoryStatus::Partial);
+        assert!(!view.complete, "an overlay is not a whole conversation");
+        assert_eq!(view.rows.len(), 1);
+    }
+
+    /// The first event that names a session adopts it, so the load that follows
+    /// knows what to ask for.
+    #[test]
+    fn a_partial_conversation_adopts_the_first_binding_it_sees() {
+        let cache = cache();
+        let thread = ThreadId::mint();
+        let pi = binding("pi");
+        cache.append_live(&thread, None, identity());
+        assert_eq!(
+            cache.append_live(&thread, Some(&pi), identity()),
+            Some(2)
+        );
+        // A different conversation is still refused.
+        assert_eq!(
+            cache.append_live(&thread, Some(&binding("omp")), identity()),
+            None
+        );
     }
 
     /// A real empty session is `Ready` with no rows, which is a different
