@@ -257,6 +257,9 @@ pub struct AppState {
     store: Arc<Mutex<crate::store::Store>>,
     /// The thread that turns conversation rows into transactions.
     store_writer: Arc<crate::store::StoreWriter>,
+    /// The numbering every conversation row is written in, seeded from the
+    /// store so a restart continues a conversation instead of numbering over it.
+    seqs: Arc<crate::store::SeqAllocator>,
     pub history: Arc<crate::history_cache::HistoryCache>,
     /// Who is waiting on which in-flight history load.
     pub history_waits: Arc<crate::history::HistoryWaits>,
@@ -312,6 +315,10 @@ impl AppState {
         &self.store_writer
     }
 
+    pub fn seqs(&self) -> &crate::store::SeqAllocator {
+        &self.seqs
+    }
+
     pub fn store(&self) -> std::sync::MutexGuard<'_, crate::store::Store> {
         self.store
             .lock()
@@ -351,6 +358,11 @@ impl AppState {
             None => crate::store::Store::open_in_memory()?,
         };
         let store = Arc::new(Mutex::new(store));
+        let seqs = Arc::new(crate::store::SeqAllocator::seeded_from(
+            &store
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        )?);
         let store_writer = Arc::new(crate::store::StoreWriter::spawn(
             Arc::clone(&store),
             STORE_WRITE_QUEUE,
@@ -409,6 +421,7 @@ impl AppState {
             )),
             store,
             store_writer,
+            seqs,
             history_waits: Arc::new(crate::history::HistoryWaits::new()),
             terminal: Arc::new(crate::terminals::TerminalBroker::new()),
             catalogs: Arc::new(crate::catalogs::CatalogRegistry::new()),
@@ -830,13 +843,25 @@ impl AppState {
             }
             _ => None,
         };
+        // The number is reserved once and travels with the row into both
+        // places it exists: the overlay a reader sees now, and the store the row
+        // is written to behind it. Reserving it here — rather than letting each
+        // side count its own — is what makes the two agree, and what lets a
+        // restarted server continue the conversation instead of numbering over
+        // it.
+        let seq = self.seqs.reserve(&thread_id, 1);
         // Display first: the overlay is what a reader sees, and it must not wait
         // for a disk. The store gets the same row behind it, through a bounded
         // queue — a refusal or a failed write marks the thread as unsaved rather
         // than growing without bound or pretending it was stored.
-        self.history
-            .append_live(&thread_id, binding.as_ref(), source.clone(), body.clone());
-        self.store_writer.enqueue(&thread_id, source, body);
+        self.history.append_live(
+            &thread_id,
+            binding.as_ref(),
+            seq,
+            source.clone(),
+            body.clone(),
+        );
+        self.store_writer.enqueue(&thread_id, seq, source, body);
     }
 
     /// Publishes a durable public cache invalidation with no domain-event peer.

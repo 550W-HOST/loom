@@ -8,9 +8,11 @@
 //!
 //! Identity rules, and why they are here rather than in SQL:
 //!
-//! * **`seq` is assigned on insert and never recomputed.** It is what a client's
-//!   cursor names. Deriving it from a row's position in a list is the bug the
-//!   relay's retained-window index had.
+//! * **`seq` is reserved by the publisher and never recomputed.** It is what a
+//!   client's cursor names, and the publisher reserves it because the same
+//!   number has to name the row in two places at once: the durable one here and
+//!   the displayable one before the write lands. Deriving it from a row's
+//!   position in a list is the bug the relay's retained-window index had.
 //! * **`revision` only moves forward, and only a rebuild moves it.** A live row
 //!   appended to the current conversation keeps the revision: the client's
 //!   cursor is still a position in the same numbering.
@@ -190,24 +192,76 @@ impl Store {
         Ok(u64::try_from(count).unwrap_or(0))
     }
 
-    /// Appends one live row, returning the sequence it was given.
+    /// Appends one live row at the sequence its publisher reserved.
     ///
-    /// The sequence is `MAX(seq) + 1` *inside the transaction*, so two writers
-    /// cannot be handed the same one and a row's number never depends on where
-    /// it sits in a list.
+    /// The sequence arrives from [`Store::next_seq`]'s numbering rather than
+    /// being derived here, because the publisher has already shown the row with
+    /// that number: see [`crate::store::SeqAllocator`]. A number this thread
+    /// already holds is refused by the primary key rather than overwriting it.
     pub fn append_row(
         &self,
         thread_id: &ThreadId,
+        seq: u64,
         source: &RowSource,
         event: &ProviderEvent,
-    ) -> Result<u64, StoreError> {
+    ) -> Result<(), StoreError> {
         let connection = self.connection();
         let transaction = connection.unchecked_transaction()?;
         self.ensure_header(&transaction, thread_id)?;
-        let seq = take_seq(&transaction, thread_id, 1)?;
         insert_row(&transaction, thread_id, seq, source, event)?;
+        bump_next_seq(&transaction, thread_id, seq)?;
         transaction.commit()?;
-        Ok(seq)
+        Ok(())
+    }
+
+    /// The sequence the next row stored for a thread would take.
+    ///
+    /// This is the durable half of the numbering: a server that restarts
+    /// numbers the rest of the conversation after what it already wrote, so a
+    /// cursor from before the restart is still a position in this conversation.
+    pub fn next_seq(&self, thread_id: &ThreadId) -> Result<u64, StoreError> {
+        let connection = self.connection();
+        let counter: Option<i64> = connection
+            .query_row(
+                "SELECT next_seq FROM thread_history WHERE thread_id = ?1",
+                params![thread_id.to_string()],
+                |row| row.get(0),
+            )
+            .optional()?;
+        // `MAX(seq) + 1` as well: a header is written with every row, but the
+        // counter is the authority only as long as it is never behind the rows
+        // it is supposed to be ahead of.
+        let highest: Option<i64> = connection.query_row(
+            "SELECT MAX(seq) FROM thread_history_row WHERE thread_id = ?1",
+            params![thread_id.to_string()],
+            |row| row.get(0),
+        )?;
+        let counter = counter.map(|value| u64::try_from(value).unwrap_or(1));
+        let highest = highest
+            .map(|value| u64::try_from(value).unwrap_or(0).saturating_add(1))
+            .unwrap_or(1);
+        Ok(counter.unwrap_or(1).max(highest))
+    }
+
+    /// Every thread the store holds a conversation header for, with the
+    /// sequence its next row would take.
+    ///
+    /// This is what a starting server seeds its numbering from: nothing that was
+    /// written before it may be numbered again.
+    pub fn next_sequences(&self) -> Result<Vec<(ThreadId, u64)>, StoreError> {
+        let connection = self.connection();
+        let mut statement = connection.prepare("SELECT thread_id, next_seq FROM thread_history")?;
+        let mut rows = statement.query([])?;
+        let mut sequences = Vec::new();
+        while let Some(row) = rows.next()? {
+            let raw: String = row.get(0)?;
+            let thread_id = raw
+                .parse::<ThreadId>()
+                .map_err(|error| StoreError::new(format!("a stored thread id {raw:?}: {error}")))?;
+            let next = u64::try_from(row.get::<_, i64>(1)?).unwrap_or(1);
+            sequences.push((thread_id, next));
+        }
+        Ok(sequences)
     }
 
     /// Replaces the replayed conversation with a freshly loaded one.
@@ -224,6 +278,7 @@ impl Store {
         &self,
         thread_id: &ThreadId,
         binding: &CacheBinding,
+        first_seq: u64,
         events: &[ProviderEvent],
         at_ms: u64,
     ) -> Result<u64, StoreError> {
@@ -238,10 +293,16 @@ impl Store {
             "DELETE FROM thread_history_row WHERE thread_id = ?1 AND source_kind = 'replayed'",
             params![thread_id.to_string()],
         )?;
-        let first = take_seq(&transaction, thread_id, events.len())?;
         for (offset, event) in events.iter().enumerate() {
-            let seq = first + offset as u64;
+            let seq = first_seq.saturating_add(offset as u64);
             insert_row(&transaction, thread_id, seq, &RowSource::Replayed, event)?;
+        }
+        if let Some(last) = events.len().checked_sub(1) {
+            bump_next_seq(
+                &transaction,
+                thread_id,
+                first_seq.saturating_add(last as u64),
+            )?;
         }
         transaction.execute(
             "UPDATE thread_history
@@ -323,31 +384,25 @@ impl Store {
     }
 }
 
-/// Reserves `count` sequence numbers for a thread, inside the caller's
+/// Moves a thread's next-sequence counter past `seq`, inside the caller's
 /// transaction.
 ///
-/// The counter is what makes "a number is never reused" hold across a rebuild:
-/// `MAX(seq)` would hand back the numbers a deleted replay used to hold.
-fn take_seq(
+/// The counter only moves forward, which is what makes "a number is never
+/// reused" hold across a rebuild: `MAX(seq)` would hand back the numbers a
+/// deleted replay used to hold.
+fn bump_next_seq(
     transaction: &Connection,
     thread_id: &ThreadId,
-    count: usize,
-) -> Result<u64, StoreError> {
-    let current: i64 = transaction.query_row(
-        "SELECT next_seq FROM thread_history WHERE thread_id = ?1",
-        params![thread_id.to_string()],
-        |row| row.get(0),
-    )?;
-    let reserved = u64::try_from(current).unwrap_or(1);
-    let next = reserved.saturating_add(count as u64);
+    seq: u64,
+) -> Result<(), StoreError> {
     transaction.execute(
-        "UPDATE thread_history SET next_seq = ?2 WHERE thread_id = ?1",
+        "UPDATE thread_history SET next_seq = MAX(next_seq, ?2) WHERE thread_id = ?1",
         params![
             thread_id.to_string(),
-            i64::try_from(next).unwrap_or(i64::MAX)
+            i64::try_from(seq.saturating_add(1)).unwrap_or(i64::MAX)
         ],
     )?;
-    Ok(reserved)
+    Ok(())
 }
 
 fn insert_row(
@@ -423,8 +478,7 @@ mod tests {
         };
         let event = message("hello");
 
-        let seq = store.append_row(&thread_id, &source, &event).unwrap();
-        assert_eq!(seq, 1);
+        store.append_row(&thread_id, 1, &source, &event).unwrap();
 
         let rows = store.rows(&thread_id).unwrap();
         assert_eq!(
@@ -438,20 +492,101 @@ mod tests {
     }
 
     #[test]
-    fn sequences_are_assigned_in_order_and_keep_the_thread_open() {
+    fn the_counter_follows_the_highest_row_written() {
         let store = Store::open_in_memory().unwrap();
         let thread_id = thread();
         for index in 1..=3 {
-            let seq = store
+            store
                 .append_row(
                     &thread_id,
+                    index,
                     &RowSource::Message { at_ms: index },
                     &message(&index.to_string()),
                 )
                 .unwrap();
-            assert_eq!(seq, index, "the next row takes the next number");
+            assert_eq!(
+                store.next_seq(&thread_id).unwrap(),
+                index + 1,
+                "the counter is one past the row just written"
+            );
         }
         assert_eq!(store.row_count(&thread_id).unwrap(), 3);
+    }
+
+    /// A number a thread already holds is refused rather than overwritten: two
+    /// rows answering to one cursor is the failure a cursor cannot detect.
+    #[test]
+    fn a_sequence_already_used_is_refused() {
+        let store = Store::open_in_memory().unwrap();
+        let thread_id = thread();
+        store
+            .append_row(
+                &thread_id,
+                1,
+                &RowSource::Message { at_ms: 1 },
+                &message("first"),
+            )
+            .unwrap();
+        assert!(
+            store
+                .append_row(
+                    &thread_id,
+                    1,
+                    &RowSource::Message { at_ms: 2 },
+                    &message("second"),
+                )
+                .is_err(),
+            "a sequence names one row"
+        );
+        assert_eq!(store.row_count(&thread_id).unwrap(), 1);
+    }
+
+    /// The numbering outlives the process: a server that restarts continues the
+    /// conversation instead of numbering over what it already wrote.
+    #[test]
+    fn the_numbering_survives_a_reopen() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("loom.db");
+        let thread_id = thread();
+        let other = thread();
+        {
+            let store = Store::open(&path).unwrap();
+            for index in 1..=3 {
+                store
+                    .append_row(
+                        &thread_id,
+                        index,
+                        &RowSource::Message { at_ms: index },
+                        &message(&index.to_string()),
+                    )
+                    .unwrap();
+            }
+            store
+                .append_row(
+                    &other,
+                    7,
+                    &RowSource::Message { at_ms: 7 },
+                    &message("elsewhere"),
+                )
+                .unwrap();
+        }
+
+        let store = Store::open(&path).unwrap();
+        assert_eq!(store.next_seq(&thread_id).unwrap(), 4);
+        let seqs = store.next_sequences().unwrap();
+        assert!(
+            seqs.contains(&(thread_id.clone(), 4)) && seqs.contains(&(other, 8)),
+            "every thread's counter is readable: {seqs:?}"
+        );
+        store
+            .append_row(
+                &thread_id,
+                4,
+                &RowSource::Message { at_ms: 4 },
+                &message("after the restart"),
+            )
+            .unwrap();
+        assert_eq!(store.row_count(&thread_id).unwrap(), 4);
     }
 
     /// A rebuild replaces what the agent replayed and nothing else: loom's own
@@ -464,6 +599,7 @@ mod tests {
         store
             .append_row(
                 &thread_id,
+                1,
                 &RowSource::Message { at_ms: 10 },
                 &message("a prompt"),
             )
@@ -472,6 +608,7 @@ mod tests {
             .replace_replayed(
                 &thread_id,
                 &binding,
+                2,
                 &[message("first"), message("second")],
                 20,
             )
@@ -485,7 +622,7 @@ mod tests {
 
         // A second rebuild: the prompt stays, the old replay is gone.
         let revision = store
-            .replace_replayed(&thread_id, &binding, &[identity()], 30)
+            .replace_replayed(&thread_id, &binding, 4, &[identity()], 30)
             .unwrap();
         assert_eq!(revision, 2, "a rebuild moves the revision forward");
         let rows = store.rows(&thread_id).unwrap();
@@ -508,11 +645,12 @@ mod tests {
         let thread_id = thread();
         let binding = binding("pi");
         store
-            .replace_replayed(&thread_id, &binding, &[identity()], 10)
+            .replace_replayed(&thread_id, &binding, 1, &[identity()], 10)
             .unwrap();
         store
             .append_row(
                 &thread_id,
+                2,
                 &RowSource::Message { at_ms: 11 },
                 &message("later"),
             )
@@ -526,7 +664,7 @@ mod tests {
         let thread_id = thread();
         let binding = binding("pi");
         store
-            .replace_replayed(&thread_id, &binding, &[identity()], 10)
+            .replace_replayed(&thread_id, &binding, 1, &[identity()], 10)
             .unwrap();
         store
             .record_sync_failure(&thread_id, "the agent is offline")
@@ -547,12 +685,18 @@ mod tests {
         store
             .append_row(
                 &thread_id,
+                1,
                 &RowSource::Message { at_ms: 1 },
                 &message("mine"),
             )
             .unwrap();
         store
-            .append_row(&other, &RowSource::Message { at_ms: 1 }, &message("theirs"))
+            .append_row(
+                &other,
+                1,
+                &RowSource::Message { at_ms: 1 },
+                &message("theirs"),
+            )
             .unwrap();
 
         store.delete_thread(&thread_id).unwrap();

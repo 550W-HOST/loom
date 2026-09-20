@@ -567,9 +567,11 @@ mod tests {
         let failure = state
             .ensure_history(&thread, binding.clone(), move || async move {
                 // The thread says something while the load is in flight.
+                let seq = loading.seqs().reserve(&loading_thread, 1);
                 loading.history.append_live(
                     &loading_thread,
                     Some(&binding),
+                    seq,
                     crate::history_cache::RowSource::Message { at_ms: 1 },
                     identity(),
                 );
@@ -642,9 +644,11 @@ mod tests {
         );
 
         // An overlay behind a run is served as it is, and still starts nothing.
+        let seq = state.seqs().reserve(&thread.id, 1);
         state.history.append_live(
             &thread.id,
             None,
+            seq,
             crate::history_cache::RowSource::Message { at_ms: 1 },
             identity(),
         );
@@ -690,9 +694,11 @@ mod tests {
                 loom_relay::now_ms(),
             )
             .unwrap();
+        let seq = state.seqs().reserve(&thread.id, 1);
         state.history.append_live(
             &thread.id,
             None,
+            seq,
             crate::history_cache::RowSource::Message { at_ms: 1 },
             identity(),
         );

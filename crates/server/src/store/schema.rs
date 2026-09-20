@@ -9,7 +9,7 @@ use rusqlite::Connection;
 use super::StoreError;
 
 /// The schema this build writes and understands.
-pub const SCHEMA_VERSION: i64 = 1;
+pub const SCHEMA_VERSION: i64 = 2;
 
 /// The version the file currently holds.
 pub fn version(connection: &Connection) -> Result<i64, StoreError> {
@@ -39,10 +39,28 @@ pub fn migrate(connection: &Connection) -> Result<(), StoreError> {
     if current < 1 {
         transaction.execute_batch(V1)?;
     }
+    if current < 2 {
+        transaction.execute_batch(V2)?;
+    }
     transaction.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     transaction.commit()?;
     Ok(())
 }
+
+/// Version 2: the store's own identity.
+///
+/// A client's cursor is a position in a conversation, and it only means
+/// something together with *which* numbering it is a position in. That used to
+/// be an in-memory instance id, which a restart threw away — and a client that
+/// then compared revisions across the restart read the new numbering as an
+/// older one. The store is what outlives the process, so it is what mints and
+/// keeps the id.
+const V2: &str = "
+CREATE TABLE IF NOT EXISTS store_meta (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+";
 
 /// Version 1: the conversation, as the agent replayed it.
 ///
@@ -51,9 +69,8 @@ pub fn migrate(connection: &Connection) -> Result<(), StoreError> {
 /// itself: the same provider events the in-memory projection consumes, in the
 /// order they were written, each with the sequence a client's cursor names.
 ///
-/// `seq` is assigned from the thread's `next_seq` counter inside the writing
-/// transaction and never recomputed, and a deleted row's number is not handed
-/// out again. `source_kind` says where a row came from, which is what
+/// `seq` is reserved by the publisher from the thread's `next_seq` counter and
+/// never recomputed, and a deleted row's number is not handed out again. `source_kind` says where a row came from, which is what
 /// lets a rebuild replace the replayed conversation without discarding the
 /// diagnostics loom published itself.
 const V1: &str = "

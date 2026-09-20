@@ -277,6 +277,8 @@ loom 自有事实保留原来源：
 
 **进展（2026-09-21，续）**：1.3 已落地（`crates/server/src/store/writer.rs` 单写线程 + 1024 条有界队列；`publish_domain_event` → `cache_live_event` 先更内存 overlay 再 `enqueue`，入队不碰磁盘；入队被拒或写失败 → 该 thread 粘性 `unsaved` 标记并带原因；`shutdown()` 顺序为 停止周期写 → 快照 → 关 relay → 停 pump → **drain store writer** → flush relay，drain 失败会让 shutdown 返回错误）。3 个集成测试：发布的消息最终落库且带 `RowSource`、shutdown 排空 25 条积压后新开库能读回、库打不开则启动失败。
 
+**进展（2026-09-21，1.4a）**：编号归属已改到发布缝。`Store` schema 升到 v2，新增 `store_meta` 记 instance id（随文件mint、重启不变，客户端 cursor 的 instance 不再随进程变）；`append_row(thread, seq, …)` / `replace_replayed(thread, binding, first_seq, …)` 改为由调用方给号，库里只把 `next_seq` 单向前推（`MAX(next_seq, seq+1)`），重复号被主键拒绝；新增 `store::SeqAllocator`（启动时从 `thread_next_seq` 播种），`AppState` 持有它，`cache_live_event` 只 reserve 一次号，同一号同时进内存 overlay 和写队列。测试：重复号被拒、编号跨重开继续（`the_numbering_survives_a_reopen`）、instance 跨重开不变、不同 store 不同 instance。
+
 **1.4 必须解决的事**：`seq` 现在由写线程分配，而内存 overlay 不持有 `seq`；读路径要合并「库里的行」与「还没落库的行」，两边的 `seq` 必须同源。因此 1.4 把 `seq` 分配提到发布缝（每条 thread 一个分配器，启动时从库播种），overlay 行与库行共用同一个号码，读路径按未落库水位线拼接。
 
 **进展（2026-09-21）**：1.1 已落地（`220301a`：`rusqlite` bundled + `Store::open` 迁移/拒绝语义，MSRV 1.88 已验证）；1.2 已落地（`0ab49ca`：`store::history` 类型化读写 + `AppState` 开库，文件库/内存库同一条代码路径）。1.2 的两处实现选择：`seq` 来自线程自己的 `next_seq` 计数列（不是 `MAX(seq)`，否则重建删行后号码会复用）；`AppState.store` 在任何服务器上都存在，没有"跳过持久化"的分支。

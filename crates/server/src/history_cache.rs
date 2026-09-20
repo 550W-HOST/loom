@@ -9,10 +9,11 @@
 //! Two rules make the cache safe to reason about, and both are about identity
 //! rather than content:
 //!
-//! * **A sequence is assigned when a row is installed or appended, and never
-//!   recomputed.** Deriving it from a row's position in a list is what made
-//!   `sourceSeq` saturate once the relay's shard filled up; a stored counter
-//!   cannot do that, and trimming rows does not renumber the survivors.
+//! * **A sequence is reserved by the publisher and never recomputed here.**
+//!   Deriving it from a row's position in a list is what made `sourceSeq`
+//!   saturate once the relay's shard filled up; the number a row is given is the
+//!   number the store writes it under, so trimming rows does not renumber the
+//!   survivors and a row that moves from memory to disk keeps its identity.
 //! * **A generation is never reused.** Rebuilding a baseline, evicting a thread
 //!   and reloading it, and a binding change all mint a new one, so a cursor
 //!   from an older generation is recognised as stale instead of being read as a
@@ -162,8 +163,11 @@ struct Entry {
     status: HistoryStatus,
     reason: Option<String>,
     rows: Vec<CachedRow>,
-    /// The sequence the next appended row gets.
-    next_seq: u64,
+    /// How many rows have been appended since the last baseline. Not a
+    /// sequence: it is what "did the overlay move while a load was in flight"
+    /// is measured with, because a sequence now travels with the row instead of
+    /// counting this entry's appends.
+    appends: u64,
     /// Bytes of the serialized rows, for the budget.
     bytes: u64,
     /// Monotone access counter, so least-recently-used is exact and testable.
@@ -262,8 +266,7 @@ impl HistoryCache {
         generation
     }
 
-    /// The sequence the next appended row will get: how much live overlay the
-    /// entry holds.
+    /// How much live overlay the entry holds.
     ///
     /// A load records this when it starts and the install checks it again: an
     /// event that arrived while the replay was in flight is part of the
@@ -273,7 +276,7 @@ impl HistoryCache {
         self.lock()
             .entries
             .get(thread_id)
-            .map(|entry| entry.next_seq)
+            .map(|entry| entry.appends)
             .unwrap_or(0)
     }
 
@@ -296,7 +299,7 @@ impl HistoryCache {
         let current = inner
             .entries
             .get(thread_id)
-            .map(|entry| entry.next_seq)
+            .map(|entry| entry.appends)
             .unwrap_or(0);
         if current != mark {
             return false;
@@ -322,6 +325,7 @@ impl HistoryCache {
         &self,
         thread_id: &ThreadId,
         binding: Option<&CacheBinding>,
+        seq: u64,
         source: RowSource,
         event: ProviderEvent,
     ) -> Option<u64> {
@@ -341,14 +345,14 @@ impl HistoryCache {
                     status: HistoryStatus::Partial,
                     reason: Some("the conversation's history has not been loaded yet".to_owned()),
                     rows: Vec::new(),
-                    next_seq: 1,
+                    appends: 0,
                     bytes: 0,
                     last_used: tick,
                 },
             );
         }
 
-        let seq = {
+        {
             let entry = inner
                 .entries
                 .get_mut(thread_id)
@@ -361,8 +365,7 @@ impl HistoryCache {
                 (None, Some(offered)) => entry.binding = Some(offered.clone()),
                 _ => {}
             }
-            let seq = entry.next_seq;
-            entry.next_seq += 1;
+            entry.appends += 1;
             entry.bytes = entry.bytes.saturating_add(size);
             entry.rows.push(CachedRow { seq, source, event });
             // Rows arrived while a baseline was being loaded: there is
@@ -461,7 +464,7 @@ impl HistoryCache {
                 status: HistoryStatus::Unavailable,
                 reason: Some(reason),
                 rows: Vec::new(),
-                next_seq: 1,
+                appends: 0,
                 bytes: 0,
                 last_used: tick,
             },
@@ -507,7 +510,7 @@ impl HistoryCache {
                 status: HistoryStatus::Loading,
                 reason: None,
                 rows: Vec::new(),
-                next_seq: 1,
+                appends: 0,
                 bytes: 0,
                 last_used: tick,
             },
@@ -586,18 +589,17 @@ impl Inner {
         let generation = self.take_generation();
         let mut rows = Vec::with_capacity(events.len());
         let mut bytes = 0u64;
-        let mut seq = 0u64;
-        for event in events {
-            seq += 1;
+        for (offset, event) in events.into_iter().enumerate() {
             bytes = bytes.saturating_add(row_bytes(&event));
             rows.push(CachedRow {
-                seq,
+                seq: offset as u64 + 1,
                 // A baseline *is* a replay: the agent's own account of the
                 // conversation, with no loom times in it.
                 source: RowSource::Replayed,
                 event,
             });
         }
+        let appends = 0;
         self.remove(thread_id);
         self.insert(
             thread_id.clone(),
@@ -607,7 +609,7 @@ impl Inner {
                 status: HistoryStatus::Ready,
                 reason: None,
                 rows,
-                next_seq: seq + 1,
+                appends,
                 bytes,
                 last_used: 0,
             },
@@ -722,11 +724,11 @@ mod tests {
         cache.install_baseline(&thread, binding.clone(), vec![identity()]);
 
         assert_eq!(
-            cache.append_live(&thread, Some(&binding), live(), identity()),
+            cache.append_live(&thread, Some(&binding), 2, live(), identity()),
             Some(2)
         );
         assert_eq!(
-            cache.append_live(&thread, Some(&binding), live(), identity()),
+            cache.append_live(&thread, Some(&binding), 3, live(), identity()),
             Some(3)
         );
 
@@ -750,6 +752,7 @@ mod tests {
         cache.append_live(
             &thread,
             Some(&binding),
+            2,
             RowSource::Run {
                 run_id: run_id.clone(),
                 at_ms: 1_700_000_000_000,
@@ -759,6 +762,7 @@ mod tests {
         cache.append_live(
             &thread,
             Some(&binding),
+            3,
             RowSource::Message { at_ms: 5 },
             identity(),
         );
@@ -786,7 +790,7 @@ mod tests {
         // What a load records when it starts, and what the overlay holds then.
         let mark = cache.append_mark(&thread);
         assert_eq!(
-            cache.append_live(&thread, Some(&binding), live(), identity()),
+            cache.append_live(&thread, Some(&binding), 1, live(), identity()),
             Some(1)
         );
 
@@ -832,7 +836,7 @@ mod tests {
         cache.mark_loading(&thread, binding.clone());
         assert_eq!(cache.view(&thread).unwrap().status, HistoryStatus::Loading);
 
-        cache.append_live(&thread, Some(&binding), live(), identity());
+        cache.append_live(&thread, Some(&binding), 1, live(), identity());
         let view = cache.view(&thread).unwrap();
         assert_eq!(view.status, HistoryStatus::Partial);
         assert!(!view.complete);
@@ -846,14 +850,14 @@ mod tests {
     fn a_load_keeps_an_unknown_binding_overlay_and_blanks_a_mismatched_one() {
         let cache = cache();
         let thread = ThreadId::mint();
-        cache.append_live(&thread, None, live(), identity());
+        cache.append_live(&thread, None, 1, live(), identity());
         cache.mark_loading(&thread, binding("pi"));
         let view = cache.view(&thread).unwrap();
         assert_eq!(view.status, HistoryStatus::Stale);
         assert_eq!(view.rows.len(), 1, "the prompt is still shown");
 
         let other = ThreadId::mint();
-        cache.append_live(&other, Some(&binding("pi")), live(), identity());
+        cache.append_live(&other, Some(&binding("pi")), 1, live(), identity());
         cache.mark_loading(&other, binding("omp"));
         let view = cache.view(&other).unwrap();
         assert_eq!(view.status, HistoryStatus::Loading);
@@ -907,7 +911,7 @@ mod tests {
         let thread = ThreadId::mint();
         cache.install_baseline(&thread, binding("pi"), vec![identity()]);
         assert_eq!(
-            cache.append_live(&thread, Some(&binding("omp")), live(), identity()),
+            cache.append_live(&thread, Some(&binding("omp")), 1, live(), identity()),
             None
         );
         assert_eq!(cache.view(&thread).unwrap().rows.len(), 1);
@@ -923,7 +927,7 @@ mod tests {
         let cache = cache();
         let thread = ThreadId::mint();
         assert_eq!(
-            cache.append_live(&thread, None, live(), identity()),
+            cache.append_live(&thread, None, 1, live(), identity()),
             Some(1)
         );
 
@@ -940,14 +944,14 @@ mod tests {
         let cache = cache();
         let thread = ThreadId::mint();
         let pi = binding("pi");
-        cache.append_live(&thread, None, live(), identity());
+        cache.append_live(&thread, None, 1, live(), identity());
         assert_eq!(
-            cache.append_live(&thread, Some(&pi), live(), identity()),
+            cache.append_live(&thread, Some(&pi), 2, live(), identity()),
             Some(2)
         );
         // A different conversation is still refused.
         assert_eq!(
-            cache.append_live(&thread, Some(&binding("omp")), live(), identity()),
+            cache.append_live(&thread, Some(&binding("omp")), 1, live(), identity()),
             None
         );
     }

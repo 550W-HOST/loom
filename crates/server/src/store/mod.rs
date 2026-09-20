@@ -24,15 +24,17 @@
 
 mod history;
 mod schema;
+mod seq;
 mod writer;
 
 pub use history::{StoredHistory, StoredRow};
+pub use seq::SeqAllocator;
 pub use writer::StoreWriter;
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use rusqlite::Connection;
+use rusqlite::{params, Connection};
 
 pub use schema::SCHEMA_VERSION;
 
@@ -77,6 +79,9 @@ const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 pub struct Store {
     connection: Connection,
     path: PathBuf,
+    /// This store's identity, minted when the file is created and kept from then
+    /// on. See [`Store::instance`].
+    instance: String,
 }
 
 impl Store {
@@ -99,7 +104,12 @@ impl Store {
         })?;
         Self::configure(&connection, true)?;
         schema::migrate(&connection)?;
-        Ok(Self { connection, path })
+        let instance = instance_of(&connection)?;
+        Ok(Self {
+            connection,
+            path,
+            instance,
+        })
     }
 
     /// An in-memory store, for tests that need the schema and not the file.
@@ -110,15 +120,26 @@ impl Store {
         // failure to report.
         Self::configure(&connection, false)?;
         schema::migrate(&connection)?;
+        let instance = instance_of(&connection)?;
         Ok(Self {
             connection,
             path: PathBuf::from(":memory:"),
+            instance,
         })
     }
 
     /// Where this store lives, for diagnostics.
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    /// The identity of the numbering every cursor in this store names.
+    ///
+    /// Minted with the file and kept, so it survives a restart: a client
+    /// holding `(instance, revision)` can tell "this conversation was rebuilt"
+    /// from "the server restarted", which a bare revision cannot.
+    pub fn instance(&self) -> &str {
+        &self.instance
     }
 
     /// The connection itself, for the typed modules built on it.
@@ -157,6 +178,24 @@ impl Store {
     }
 }
 
+/// Reads the store's identity, minting it on first use.
+///
+/// `DO NOTHING` on conflict is what makes it idempotent, and the read-back is
+/// what makes concurrent first opens agree on one value instead of each keeping
+/// the id it tried to write.
+fn instance_of(connection: &Connection) -> Result<String, StoreError> {
+    connection.execute(
+        "INSERT INTO store_meta (key, value) VALUES ('instance', ?1)
+         ON CONFLICT(key) DO NOTHING",
+        params![loom_relay::EventId::new().to_string()],
+    )?;
+    Ok(connection.query_row(
+        "SELECT value FROM store_meta WHERE key = 'instance'",
+        [],
+        |row| row.get(0),
+    )?)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -165,6 +204,7 @@ mod tests {
     fn opening_creates_the_store_and_is_idempotent() {
         let dir = tempfile::TempDir::new().unwrap();
         let path = dir.path().join("loom.db");
+        let instance;
         {
             let store = Store::open(&path).unwrap();
             assert_eq!(store.schema_version().unwrap(), SCHEMA_VERSION);
@@ -173,12 +213,28 @@ mod tests {
                 .query_row("PRAGMA journal_mode", [], |row| row.get(0))
                 .unwrap();
             assert_eq!(mode, "wal");
+            instance = store.instance().to_owned();
         }
         assert!(path.exists(), "the store is a real file on disk");
 
         // Reopening an existing store is not a migration and must not fail.
         let again = Store::open(&path).unwrap();
         assert_eq!(again.schema_version().unwrap(), SCHEMA_VERSION);
+        assert_eq!(
+            again.instance(),
+            instance,
+            "the identity is the file's, not the process's: a client's cursor \
+             survives a restart"
+        );
+    }
+
+    /// Two stores are two numberings, so the identities differ — a cursor from
+    /// one must not be read as a position in the other.
+    #[test]
+    fn separate_stores_have_separate_identities() {
+        let first = Store::open_in_memory().unwrap();
+        let second = Store::open_in_memory().unwrap();
+        assert_ne!(first.instance(), second.instance());
     }
 
     /// A store written by a newer build is refused rather than used: this build

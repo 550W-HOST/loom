@@ -43,6 +43,9 @@ const IDLE: Duration = Duration::from_millis(50);
 #[derive(Clone, Debug)]
 struct StoreWrite {
     thread_id: ThreadId,
+    /// The number its publisher reserved, so the stored row and the row already
+    /// on screen name the same position.
+    seq: u64,
     source: RowSource,
     event: ProviderEvent,
 }
@@ -102,7 +105,13 @@ impl StoreWriter {
     /// Returns whether the row was accepted. A refusal is not silent: the thread
     /// is marked unsaved with the reason, so the status a reader sees says the
     /// stored conversation is incomplete.
-    pub fn enqueue(&self, thread_id: &ThreadId, source: RowSource, event: ProviderEvent) -> bool {
+    pub fn enqueue(
+        &self,
+        thread_id: &ThreadId,
+        seq: u64,
+        source: RowSource,
+        event: ProviderEvent,
+    ) -> bool {
         if self.shared.stopping.load(Ordering::SeqCst) {
             self.shared
                 .mark_unsaved(thread_id, "the server is stopping; the row was not stored");
@@ -110,6 +119,7 @@ impl StoreWriter {
         }
         let write = StoreWrite {
             thread_id: thread_id.clone(),
+            seq,
             source,
             event,
         };
@@ -228,7 +238,7 @@ fn write_one(store: &Arc<Mutex<Store>>, shared: &Shared, write: StoreWrite) {
     let store = store
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    match store.append_row(&write.thread_id, &write.source, &write.event) {
+    match store.append_row(&write.thread_id, write.seq, &write.source, &write.event) {
         Ok(_) => {
             shared.written.fetch_add(1, Ordering::SeqCst);
         }
@@ -281,9 +291,9 @@ mod tests {
         };
         let thread_id = ThreadId::mint();
 
-        assert!(writer.enqueue(&thread_id, source(1), message("first")));
+        assert!(writer.enqueue(&thread_id, 1, source(1), message("first")));
         assert!(
-            !writer.enqueue(&thread_id, source(2), message("second")),
+            !writer.enqueue(&thread_id, 2, source(2), message("second")),
             "a full queue refuses rather than blocking"
         );
         let reason = writer.unsaved(&thread_id).expect("the thread is marked");
@@ -304,7 +314,7 @@ mod tests {
         let writer = StoreWriter::spawn(Arc::clone(&store), 8);
         let thread_id = ThreadId::mint();
 
-        assert!(writer.enqueue(&thread_id, source(1), message("doomed")));
+        assert!(writer.enqueue(&thread_id, 1, source(1), message("doomed")));
         assert!(
             !writer.wait_for_writes(1, Duration::from_secs(2)),
             "the write cannot succeed"
@@ -326,7 +336,12 @@ mod tests {
         let writer = StoreWriter::spawn(Arc::clone(&store), 64);
         let thread_id = ThreadId::mint();
         for index in 1..=5 {
-            assert!(writer.enqueue(&thread_id, source(index), message(&index.to_string())));
+            assert!(writer.enqueue(
+                &thread_id,
+                index,
+                source(index),
+                message(&index.to_string())
+            ));
         }
         writer.flush().unwrap();
 
@@ -350,7 +365,7 @@ mod tests {
         let working = ThreadId::mint();
 
         // Drop the table after one row is stored, so the next write fails.
-        assert!(writer.enqueue(&working, source(1), message("kept")));
+        assert!(writer.enqueue(&working, 1, source(1), message("kept")));
         assert!(writer.wait_for_writes(1, Duration::from_secs(2)));
         store
             .lock()
@@ -358,7 +373,7 @@ mod tests {
             .connection()
             .execute_batch("DROP TABLE thread_history_row;")
             .unwrap();
-        assert!(writer.enqueue(&failing, source(2), message("dropped")));
+        assert!(writer.enqueue(&failing, 2, source(2), message("dropped")));
 
         let deadline = Instant::now() + Duration::from_secs(2);
         while writer.unsaved(&failing).is_none() && Instant::now() < deadline {
