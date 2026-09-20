@@ -828,6 +828,12 @@ export const threadTimelineQuerySchema = z
     beforeAnchorId: z.string().min(1),
     summaryOnly: z.enum(["true", "false"]),
     afterSequence: z.string().regex(/^\d+$/),
+    // The numbering the cursors above came from. A cache is in memory, so a
+    // restarted server (or a rebuilt baseline) numbers from one again; a
+    // request that cannot name the numbering its cursor belongs to is answered
+    // with the newest page rather than filtered by a position from another one.
+    cacheInstance: z.string().min(1),
+    generation: z.string().regex(/^\d+$/),
   })
   .partial()
   .superRefine((query, context) => {
@@ -963,9 +969,12 @@ export const threadTimelineResponseSchema = z.object({
   contextWindowUsage: threadContextWindowUsageSchema.optional(),
   timelinePage: timelinePageMetadataSchema,
   maxSeq: z.number().int().nonnegative(),
-  // The sequence numbering a page's cursors belong to. A rebuild renumbers
-  // every row, so a client holding a cursor from another generation must
-  // refetch rather than read its cursor as a position in this numbering.
+  // The numbering a page's cursors belong to: which cache instance, and which
+  // revision inside it. A rebuild or a restart renumbers every row, so a client
+  // holding a cursor from another identity must refetch rather than read its
+  // cursor as a position in this numbering. Null when nothing is cached yet,
+  // which is not a numbering at all.
+  cacheInstance: z.string().nullable(),
   generation: z.number().int().nonnegative(),
   history: threadTimelineHistorySchema,
   delta: timelineDeltaSchema.optional(),

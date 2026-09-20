@@ -76,6 +76,7 @@ function timelineResponse(
   olderCursor: TimelinePaginationCursor | null,
   maxSeq?: number,
   generation = 1,
+  cacheInstance: string | null = "cache-a",
 ): ThreadTimelineResponse {
   return {
     rows,
@@ -88,6 +89,7 @@ function timelineResponse(
     goal: null,
     modelFallback: null,
     maxSeq: maxSeq ?? Math.max(0, ...rows.map((row) => row.sourceSeqEnd)),
+    cacheInstance,
     generation,
     history: { status: "ready", complete: true, reason: null },
     timelinePage: {
@@ -106,6 +108,7 @@ function loadedState(
   latestWindowEndSequence: number,
 ): LoadedTimelineState {
   return {
+    cacheInstance: "cache-a",
     generation: 1,
     latestWindowEndSequence,
     rows,
@@ -237,7 +240,7 @@ describe("timeline page merging", () => {
   // A response can arrive after the one that replaced it — a refetch racing the
   // page it superseded. Applying it would roll the timeline back to a numbering
   // the server has already left, so it is dropped.
-  it("drops a response from an earlier generation instead of rolling back", () => {
+  it("drops a response from an earlier revision of the same server", () => {
     const current = {
       ...loadedState([userRow("newer", 3)], null, 3),
       generation: 2,
@@ -257,6 +260,47 @@ describe("timeline page merging", () => {
   // A rebuild renumbers every row from one, so the rows a new generation
   // carries cannot be merged with the ones it replaced: they share no
   // numbering, and the older cursor belongs to a window that no longer exists.
+  // A restarted server is a new cache instance that numbers from one. It is not
+  // a rollback: comparing bare integers would drop every page it ever sends.
+  it("accepts a new server instance even though its generation is lower", () => {
+    const current = {
+      ...loadedState([userRow("before-restart", 9)], null, 9),
+      generation: 9,
+    };
+    const restarted = timelineResponse(
+      [userRow("after-restart", 1)],
+      null,
+      1,
+      1,
+      "cache-b",
+    );
+
+    const merged = mergeLoadedTimelineWithLatest({
+      current,
+      latestTimeline: restarted,
+      surfaceKey: "thread-1:default",
+    });
+
+    expect(merged.cacheInstance).toBe("cache-b");
+    expect(merged.generation).toBe(1);
+    expect(merged.rows.map((row) => row.id)).toEqual(["after-restart"]);
+  });
+
+  // A response that carries no numbering at all (nothing cached yet) says
+  // nothing about what the client holds, so it must not blank it.
+  it("keeps what it has when the server has nothing cached yet", () => {
+    const current = loadedState([userRow("prompt", 1)], null, 1);
+    const loading = timelineResponse([], null, 0, 0, null);
+
+    const merged = mergeLoadedTimelineWithLatest({
+      current,
+      latestTimeline: loading,
+      surfaceKey: "thread-1:default",
+    });
+
+    expect(merged).toBe(current);
+  });
+
   it("replaces the rows when the server's generation changes", () => {
     const current = loadedState(
       [userRow("prompt", 1), userRow("answer", 8)],

@@ -15,6 +15,8 @@
 //! decision worth testing lives in the rest of this library, and the command
 //! line itself is [`crate::cli`].
 
+use std::path::PathBuf;
+
 use crate::cli::ServerArgs;
 use crate::http::router;
 use crate::local_worker::{server_url_for_bind, LocalWorker, LocalWorkerConfig};
@@ -34,9 +36,13 @@ pub async fn run(args: ServerArgs) -> Result<(), Box<dyn std::error::Error>> {
         local_worker_url,
     } = args;
 
-    // Without --data-dir the relay log is in-process and the server needs no
-    // configuration at all. Setting it turns on the durable backend.
-    let backend_path = data_dir;
+    // The server is persistent by default: `--data-dir` chooses the directory,
+    // it does not turn durability on. The default is the same place the worker
+    // keeps its own data, one level down, so the two never write the same root.
+    let backend_path = Some(match data_dir {
+        Some(path) => path,
+        None => default_server_data_dir()?,
+    });
     // A shared log across servers was removed with multi-server support. The
     // flag (and its environment fallback) is refused rather than ignored.
     reject_removed_shared_log(redis_url.as_deref())?;
@@ -123,6 +129,31 @@ pub async fn run(args: ServerArgs) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// The directory a server uses when the operator names none.
+///
+/// `$HOME/.loom/server` — the worker's own directory is `$HOME/.loom`, so this
+/// is its child rather than the same root. It is deliberately **not** the
+/// system temp directory: a server that cannot work out where its data lives
+/// must say so, because silently persisting to `/tmp` (or, worse, silently
+/// persisting nowhere) is a deployment that looks fine until the first restart
+/// loses everything.
+pub fn default_server_data_dir() -> Result<PathBuf, std::io::Error> {
+    let home = std::env::var_os("HOME").ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "HOME is not set, so the server cannot work out its default data directory; \
+             pass --data-dir",
+        )
+    })?;
+    Ok(server_data_dir_under(&home))
+}
+
+/// [`default_server_data_dir`] without the environment lookup, so the rule is
+/// testable without mutating the process environment.
+fn server_data_dir_under(home: &std::ffi::OsStr) -> PathBuf {
+    PathBuf::from(home).join(".loom").join("server")
+}
+
 /// Refuses the removed shared-log flag and its environment fallback.
 ///
 /// A deployment that still asks for a shared log is asking for a topology loom
@@ -174,7 +205,33 @@ async fn shutdown_signal() {
 
 #[cfg(test)]
 mod tests {
-    use super::reject_removed_shared_log;
+    use super::{reject_removed_shared_log, server_data_dir_under};
+
+    /// The default data directory is a real place under the user's home, not a
+    /// temp directory and not "no persistence".
+    #[test]
+    fn the_default_data_directory_is_under_the_users_home() {
+        assert_eq!(
+            server_data_dir_under(std::ffi::OsStr::new("/home/someone")),
+            std::path::PathBuf::from("/home/someone/.loom/server")
+        );
+    }
+
+    /// No home is a startup error with something to do about it, not a silent
+    /// fall back to `/tmp`.
+    #[test]
+    fn a_missing_home_is_an_error_that_names_the_flag() {
+        let error = super::default_server_data_dir()
+            .err()
+            .map(|error| error.to_string());
+        if std::env::var_os("HOME").is_some() {
+            assert!(error.is_none(), "a home is set here: {error:?}");
+        } else {
+            let message = error.expect("no HOME must be an error");
+            assert!(message.contains("HOME"), "{message}");
+            assert!(message.contains("--data-dir"), "{message}");
+        }
+    }
 
     /// The removed flag is a tombstone with a reason, not a flag that is
     /// ignored: a deployment that still passes it must hear about it at

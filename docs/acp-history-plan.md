@@ -332,7 +332,9 @@ ACP 缺失的历史时间允许为未知，不能把加载时刻冒充消息发�
 - **`a_thread_that_fills_its_shard_still_reports_its_newest_rows` 已解除 ignore。** §9 要求保留并适配它。它原本标注"ignored because it pins the behaviour the timeline rework has to deliver"，现在通过：序号在安装进基线或追加进覆盖层时分配、永不重算，所以 shard 满了也不会让 `maxSeq` 饱和。注释改为记录这条原因。
 - **客户端丢弃更早代次的迟到响应。** §7 要求"异步旧请求晚于新 generation 返回时，UI 丢弃旧结果，防止页面回退"。generation 只增不减，因此合并与恢复路径都先判 `latestTimeline.generation < current.generation` 并原样返回当前状态；新增测试 `drops a response from an earlier generation instead of rolling back`。
 
-一处与 §7 字面的偏差，记录备查：`generation` 目前只随**响应**返回，请求端没有携带所持 generation 的参数。因此"旧客户端带游标不带 generation"不会被服务端显式要求重取，而是客户端看到响应里的 generation 与本地不同（或更早）后重置/丢弃。§9 验收行"generation 校验阻止错页合并；UI 重置并重取"由此满足；若要按字面实现，需要在 `threads.timeline` 查询上加 generation 并在契约里体现。
+**游标身份已按复核 §6 A2 补齐（2026-09-20）。** 原先的偏差是 `generation` 只随响应返回，请求端不携带，于是"带旧游标但不带 identity"会被服务端用旧序号过滤新数据，客户端可能收到错误切片。现在：响应带 `cacheInstance`（哪一次 server 运行的缓存）+ `generation`（该实例内的第几次重建），请求也必须携带这两者；两者与当前服务内容不匹配时，服务端**在切片前**判定并直接返回最新页（客户端据此重置），而不是用另一个编号体系的序号过滤。客户端按"先比实例、同实例内再比 revision"判断：不同实例 = 新编号（接受），同实例更小 revision = 迟到响应（丢弃），更大 = 重建（重置）。测试：服务端 `a_cursor_from_another_numbering_is_a_reset_not_a_slice`，客户端 `drops a response from an earlier revision of the same server` / `accepts a new server instance even though its generation is lower`。
+
+注意这条身份是**内存缓存**的产物。`docs/sqlite-persistence-plan.md` 阶段一落地后，序号与 revision 都是持久且跨重启单调的，`cacheInstance` 应当删除。
 
 ### 刻意留下的两处
 

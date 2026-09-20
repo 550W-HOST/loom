@@ -35,8 +35,13 @@ pub struct ServerArgs {
     #[arg(long, value_name = "ADDR", default_value = DEFAULT_BIND)]
     pub bind: SocketAddr,
 
-    /// Directory for the durable relay log. Unset keeps the log in memory and
-    /// makes the server stateless across restarts.
+    /// Where the server keeps its data. Unset uses the default directory
+    /// (`$HOME/.loom/server`).
+    ///
+    /// This chooses *where*, never *whether*: a server is persistent by
+    /// default, and the default directory is not an optimisation anyone has to
+    /// discover. A path that cannot be created or written fails startup rather
+    /// than quietly running without persistence.
     #[arg(long, value_name = "PATH")]
     pub data_dir: Option<PathBuf>,
 

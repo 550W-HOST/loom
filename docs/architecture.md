@@ -260,7 +260,12 @@ never reused. It is disposable by construction:
 - reading a thread does not wait for a load: the response says `loading` and
   the client asks again, while every other reader joins the same load;
 - it is bounded (thread count and bytes, least-recently-used), and evicting a
-  thread drops the whole conversation rather than rows from its middle.
+  thread drops the whole conversation rather than rows from its middle;
+- its sequences are only positions inside one numbering, so a page response
+  names the numbering it belongs to (`cacheInstance` + `generation`) and a
+  request that carries a cursor must name the same pair. A request that cannot
+  match is answered with the newest page — a reset the client can see — rather
+  than filtered by a position from a numbering that no longer exists.
 
 What that costs, stated plainly:
 

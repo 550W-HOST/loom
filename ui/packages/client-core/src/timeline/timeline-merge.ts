@@ -9,14 +9,22 @@ type NullableTimelinePaginationCursor = TimelinePaginationCursor | null;
 
 export interface LoadedTimelineState {
   /**
-   * The server's numbering generation for the rows.
+   * Which cache instance the rows' sequences belong to.
    *
-   * Sequences are only comparable inside one generation: a rebuild renumbers
-   * every row from one, so a cursor read as a position in the new numbering
-   * would land in the wrong place, or past the end. Holding it here is what
-   * lets a page from another generation be recognised as a restart rather than
-   * stitched onto rows it shares no numbers with. It is `null` before any page
-   * has arrived, when there is no numbering to belong to.
+   * The timeline cache lives in the server's memory, so a restarted server
+   * numbers from one again. Without this, "the server restarted" and "this
+   * response is older than the one I have" are the same observation — a smaller
+   * generation — and treating the first as the second discards every page a
+   * restarted server ever sends. `null` before any page has arrived.
+   */
+  cacheInstance: string | null;
+  /**
+   * The revision, *inside* `cacheInstance`, that the rows belong to.
+   *
+   * Sequences are only comparable inside one revision: a rebuilt baseline
+   * renumbers every row from one. Both halves are needed to tell a rebuild
+   * (same instance, higher revision: start over) from a late response (same
+   * instance, lower revision: drop it).
    */
   generation: number | null;
   historySnapshot?: string;
@@ -27,6 +35,7 @@ export interface LoadedTimelineState {
 }
 
 interface BuildLoadedTimelineStateArgs {
+  cacheInstance: string | null;
   generation: number | null;
   historySnapshot?: string;
   latestWindowEndSequence: number | null;
@@ -88,6 +97,7 @@ interface RecoverLoadedTimelineAfterStaleCursorArgs {
 }
 
 export function buildLoadedTimelineState({
+  cacheInstance,
   generation,
   historySnapshot,
   latestWindowEndSequence,
@@ -96,6 +106,7 @@ export function buildLoadedTimelineState({
   surfaceKey,
 }: BuildLoadedTimelineStateArgs): LoadedTimelineState {
   return {
+    cacheInstance,
     generation,
     historySnapshot,
     latestWindowEndSequence,
@@ -361,20 +372,46 @@ function mergeLoadedTimelineOlderCursor(
 }
 
 /**
- * Whether this response belongs to a generation the client has already left.
+ * What a response's identity means next to what the client already holds.
  *
- * Generations only move forward, so an older one is a page the client asked for
- * before a rebuild and is only now receiving. Applying it would roll the
- * timeline back to a numbering that no longer describes the conversation, so a
- * late response is dropped instead of merged.
+ * `drop` is a response from the same server run but an older revision: it was
+ * asked for before a rebuild and is only now arriving, and applying it would
+ * roll the timeline back. `reset` is a different numbering — another revision,
+ * or another cache entirely — where nothing is comparable and the client starts
+ * from what the server sent. `merge` is the same numbering, so the window logic
+ * applies.
+ *
+ * The instance is compared before the revision on purpose: a restarted server
+ * sends generation 1 while the client may hold generation 9, and a bare integer
+ * comparison would read that as "older" and drop it forever.
  */
-function isFromAnEarlierGeneration(
+type IdentityRelation = "drop" | "reset" | "merge";
+
+function identityRelation(
   current: LoadedTimelineState,
   latestTimeline: ThreadTimelineResponse,
-): boolean {
-  return (
-    current.generation !== null && latestTimeline.generation < current.generation
-  );
+): IdentityRelation {
+  if (latestTimeline.cacheInstance === null) {
+    // Nothing is being served yet, so the response is not a position in any
+    // numbering: keep whatever the client already has.
+    return "drop";
+  }
+  if (current.cacheInstance === null) {
+    return "reset";
+  }
+  if (current.cacheInstance !== latestTimeline.cacheInstance) {
+    return "reset";
+  }
+  if (current.generation === null) {
+    return "reset";
+  }
+  if (latestTimeline.generation < current.generation) {
+    return "drop";
+  }
+  if (latestTimeline.generation > current.generation) {
+    return "reset";
+  }
+  return "merge";
 }
 
 export function mergeLoadedTimelineWithLatest({
@@ -382,16 +419,18 @@ export function mergeLoadedTimelineWithLatest({
   latestTimeline,
   surfaceKey,
 }: MergeLoadedTimelineWithLatestArgs): LoadedTimelineState {
-  if (isFromAnEarlierGeneration(current, latestTimeline)) {
+  const relation = identityRelation(current, latestTimeline);
+  if (relation === "drop") {
     return current;
   }
   if (
+    relation === "reset" ||
     current.surfaceKey !== surfaceKey ||
-    current.generation !== latestTimeline.generation ||
     current.historySnapshot !== latestTimeline.timelinePage.historySnapshot ||
     !timelineWindowsAreContiguous(current, latestTimeline)
   ) {
     return buildLoadedTimelineState({
+      cacheInstance: latestTimeline.cacheInstance,
       generation: latestTimeline.generation,
       historySnapshot: latestTimeline.timelinePage.historySnapshot,
       latestWindowEndSequence: latestTimeline.maxSeq,
@@ -420,6 +459,7 @@ export function mergeLoadedTimelineWithLatest({
   });
   if (!latestMerge.canMerge) {
     return buildLoadedTimelineState({
+      cacheInstance: latestTimeline.cacheInstance,
       generation: latestTimeline.generation,
       historySnapshot: latestTimeline.timelinePage.historySnapshot,
       latestWindowEndSequence: latestTimeline.maxSeq,
@@ -445,15 +485,17 @@ export function recoverLoadedTimelineAfterStaleCursor({
   latestTimeline,
   surfaceKey,
 }: RecoverLoadedTimelineAfterStaleCursorArgs): LoadedTimelineState {
-  if (isFromAnEarlierGeneration(current, latestTimeline)) {
+  const relation = identityRelation(current, latestTimeline);
+  if (relation === "drop") {
     return current;
   }
   if (
+    relation === "reset" ||
     current.surfaceKey !== surfaceKey ||
-    current.generation !== latestTimeline.generation ||
     current.historySnapshot !== latestTimeline.timelinePage.historySnapshot
   ) {
     return buildLoadedTimelineState({
+      cacheInstance: latestTimeline.cacheInstance,
       generation: latestTimeline.generation,
       historySnapshot: latestTimeline.timelinePage.historySnapshot,
       latestWindowEndSequence: latestTimeline.maxSeq,
@@ -470,6 +512,7 @@ export function recoverLoadedTimelineAfterStaleCursor({
   });
   if (!latestMerge.canMerge) {
     return buildLoadedTimelineState({
+      cacheInstance: latestTimeline.cacheInstance,
       generation: latestTimeline.generation,
       historySnapshot: latestTimeline.timelinePage.historySnapshot,
       latestWindowEndSequence: latestTimeline.maxSeq,
@@ -480,6 +523,7 @@ export function recoverLoadedTimelineAfterStaleCursor({
   }
 
   return {
+    cacheInstance: latestTimeline.cacheInstance,
     generation: latestTimeline.generation,
     historySnapshot: latestTimeline.timelinePage.historySnapshot,
     latestWindowEndSequence: latestTimeline.maxSeq,

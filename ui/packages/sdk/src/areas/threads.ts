@@ -747,6 +747,10 @@ function timelineQuery(args: ThreadTimelineArgs): ThreadTimelineQuery {
     ...(args.beforeAnchorId !== undefined
       ? { beforeAnchorId: args.beforeAnchorId }
       : {}),
+    ...(args.cacheInstance !== undefined
+      ? { cacheInstance: args.cacheInstance }
+      : {}),
+    ...(args.generation !== undefined ? { generation: args.generation } : {}),
     ...(args.afterSequence !== undefined
       ? { afterSequence: args.afterSequence }
       : {}),

@@ -64,6 +64,7 @@ export function useThreadTimelineController({
   const [loadedTimeline, setLoadedTimeline] = useState<LoadedTimelineState>(
     () =>
       buildLoadedTimelineState({
+        cacheInstance: null,
         generation: null,
         latestWindowEndSequence: null,
         latestRows: [],
@@ -81,6 +82,7 @@ export function useThreadTimelineController({
         current.surfaceKey === surfaceKey
           ? current
           : buildLoadedTimelineState({
+              cacheInstance: null,
               generation: null,
               latestWindowEndSequence: null,
               latestRows: [],
@@ -118,17 +120,34 @@ export function useThreadTimelineController({
 
     setIsLoadingOlderTimelineRows(true);
     try {
+      // A page request carries the numbering its cursor belongs to. Without
+      // it the server cannot tell "the older page after this anchor" from "a
+      // cursor out of a numbering that no longer exists", and answers the
+      // newest page — which must not be prepended as if it were older.
+      const cacheInstance = loadedTimeline.cacheInstance;
+      const generation = loadedTimeline.generation;
       const response = await sdk.threads.timeline({
         beforeAnchorId: nextOlderCursor.anchorId,
         beforeAnchorSeq: String(nextOlderCursor.anchorSeq),
+        ...(cacheInstance === null
+          ? {}
+          : {
+              cacheInstance,
+              generation: String(generation ?? 0),
+            }),
         threadId,
       });
       const olderRows = [...response.rows];
       setLoadedTimeline((current) => {
         if (
           current.surfaceKey !== surfaceKey ||
+          current.cacheInstance !== response.cacheInstance ||
+          current.generation !== response.generation ||
           current.historySnapshot !== response.timelinePage.historySnapshot
         ) {
+          // The numbering moved under this request: the response is a page of
+          // the conversation the client is no longer showing, so it is dropped
+          // and the latest fetch (which resets) is what lands.
           return current;
         }
         return {

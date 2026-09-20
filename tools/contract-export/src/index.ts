@@ -277,6 +277,7 @@ function applyLoomExtensions(serverApi: JsonValue): JsonValue {
     $defs?: Record<string, JsonValue>;
     routes?: Array<{
       id?: string;
+      request?: { schema?: Record<string, JsonValue> };
       responses?: Array<{ schema?: Record<string, JsonValue> }>;
     }>;
   };
@@ -285,6 +286,29 @@ function applyLoomExtensions(serverApi: JsonValue): JsonValue {
   if (!schema) {
     throw new Error("loom extensions: threads.timeline has no response schema");
   }
+  // The cursor identity travels both ways: the response says which numbering
+  // its sequences belong to, and the request says which numbering the cursors
+  // it carries came from. Without the second half a server that renumbered
+  // (a restart, a rebuild) would filter the new rows with an old position and
+  // answer a wrong page instead of a reset.
+  const requestProperties = route?.request?.schema?.properties as
+    | Record<string, JsonValue>
+    | undefined;
+  if (!requestProperties) {
+    throw new Error("loom extensions: threads.timeline has no query schema");
+  }
+  requestProperties.cacheInstance = {
+    type: "string",
+    minLength: 1,
+    description:
+      "The cache instance the cursors in this request came from. Omitted or mismatched means the cursors are not positions in what the server is serving, and the answer is the newest page.",
+  };
+  requestProperties.generation = {
+    type: "string",
+    pattern: "^\\d+$",
+    description:
+      "The revision, inside `cacheInstance`, the cursors in this request came from.",
+  };
   const properties = schema.properties as
     | Record<string, JsonValue>
     | undefined;
@@ -295,11 +319,16 @@ function applyLoomExtensions(serverApi: JsonValue): JsonValue {
     );
   }
 
+  properties.cacheInstance = {
+    type: ["string", "null"],
+    description:
+      "Which cache instance produced this response, or null when nothing is cached yet. A generation is only a revision inside one instance: a restarted server numbers from one again, so a client that compared bare integers across a restart would read the new numbering as a rollback.",
+  };
   properties.generation = {
     type: "integer",
     minimum: 0,
     description:
-      "The generation every sequence in this response belongs to. A cursor from another generation is stale, not a position in this one.",
+      "The revision, inside `cacheInstance`, every sequence in this response belongs to. A cursor from another instance or revision is stale, not a position in this one.",
   };
   properties.history = {
     type: "object",
@@ -323,7 +352,7 @@ function applyLoomExtensions(serverApi: JsonValue): JsonValue {
       },
     },
   };
-  for (const name of ["generation", "history"]) {
+  for (const name of ["cacheInstance", "generation", "history"]) {
     if (!required.includes(name)) {
       required.push(name);
     }

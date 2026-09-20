@@ -112,10 +112,20 @@ pub struct CachedRow {
     pub event: ProviderEvent,
 }
 
-/// What a reader gets: a whole conversation and the generation it belongs to.
+/// What a reader gets: a whole conversation and the identity it belongs to.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CacheView {
-    /// The generation every `seq` in `rows` belongs to.
+    /// Which cache instance produced this view.
+    ///
+    /// A generation is only a revision *within* one instance, and this cache
+    /// lives in memory: a restarted server numbers from one again. A client
+    /// holding `(instance, generation)` can therefore tell "the server restarted
+    /// and this is its first numbering" from "this response is older than the one
+    /// I already have", which a bare integer cannot — comparing integers across
+    /// a restart reads a new server's generation 1 as a rollback and would
+    /// discard every page it ever sends.
+    pub instance: String,
+    /// The revision every `seq` in `rows` belongs to, inside [`CacheView::instance`].
     pub generation: u64,
     /// How much the cache can offer.
     pub status: HistoryStatus,
@@ -176,6 +186,8 @@ pub struct HistoryCache {
     max_threads: usize,
     max_total_bytes: u64,
     max_concurrent_loads: usize,
+    /// This cache's identity, minted once per process. See [`CacheView::instance`].
+    instance: String,
 }
 
 impl HistoryCache {
@@ -193,7 +205,13 @@ impl HistoryCache {
             max_threads: max_threads.max(1),
             max_total_bytes: max_total_bytes.max(1),
             max_concurrent_loads: max_concurrent_loads.max(1),
+            instance: loom_relay::EventId::new().to_string(),
         }
+    }
+
+    /// This cache's identity, which every view it produces carries.
+    pub fn instance(&self) -> &str {
+        &self.instance
     }
 
     /// Claims the right to load `thread_id` under `binding`.
@@ -504,6 +522,7 @@ impl HistoryCache {
         let entry = inner.entries.get_mut(thread_id)?;
         entry.last_used = tick;
         Some(CacheView {
+            instance: self.instance.clone(),
             generation: entry.generation,
             status: entry.status,
             complete: entry.status == HistoryStatus::Ready,

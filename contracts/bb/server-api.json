@@ -28450,6 +28450,16 @@
               "pattern": "^[1-9]\\d*$",
               "type": "string"
             },
+            "cacheInstance": {
+              "description": "The cache instance the cursors in this request came from. Omitted or mismatched means the cursors are not positions in what the server is serving, and the answer is the newest page.",
+              "minLength": 1,
+              "type": "string"
+            },
+            "generation": {
+              "description": "The revision, inside `cacheInstance`, the cursors in this request came from.",
+              "pattern": "^\\d+$",
+              "type": "string"
+            },
             "includeNestedRows": {
               "enum": [
                 "true",
@@ -28544,6 +28554,13 @@
               "activeWorkflows": {
                 "$ref": "#/$defs/d70"
               },
+              "cacheInstance": {
+                "description": "Which cache instance produced this response, or null when nothing is cached yet. A generation is only a revision inside one instance: a restarted server numbers from one again, so a client that compared bare integers across a restart would read the new numbering as a rollback.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "contextBoundarySeq": {
                 "anyOf": [
                   {
@@ -28604,7 +28621,7 @@
                 ]
               },
               "generation": {
-                "description": "The generation every sequence in this response belongs to. A cursor from another generation is stale, not a position in this one.",
+                "description": "The revision, inside `cacheInstance`, every sequence in this response belongs to. A cursor from another instance or revision is stale, not a position in this one.",
                 "minimum": 0,
                 "type": "integer"
               },
@@ -31093,6 +31110,7 @@
               "modelFallback",
               "timelinePage",
               "maxSeq",
+              "cacheInstance",
               "generation",
               "history"
             ],

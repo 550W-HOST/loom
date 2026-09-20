@@ -1749,6 +1749,16 @@ struct ThreadTimelineQuery {
     include_nested_rows: Option<String>,
     segment_limit: Option<String>,
     summary_only: Option<String>,
+    /// The cache instance the caller's cursors came from.
+    ///
+    /// A sequence is a position in one instance's numbering and nowhere else:
+    /// this cache is in memory, so a restarted server numbers from one again.
+    /// A pair that does not match what the server is serving is answered with
+    /// the newest page instead of being filtered by a position that describes
+    /// nothing — see [`ThreadTimelineQuery::generation`].
+    cache_instance: Option<String>,
+    /// The revision, inside `cacheInstance`, the caller's cursors came from.
+    generation: Option<String>,
 }
 
 #[allow(clippy::result_large_err)]
@@ -4041,6 +4051,7 @@ mod restored_timeline_tests {
 
     fn view_of(rows: Vec<(RowSource, ProviderEvent)>) -> CacheView {
         CacheView {
+            instance: "test-cache".to_owned(),
             generation: 1,
             status: HistoryStatus::Ready,
             complete: true,
@@ -4528,6 +4539,10 @@ async fn thread_timeline(
         Ok(None) => 100,
         Err(response) => return response,
     };
+    let claimed_generation = match parse_query_sequence(query.generation.as_ref(), "generation") {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
 
     let entries = match thread_domain_events(&state, &thread_id) {
         Ok(entries) => entries,
@@ -4546,6 +4561,7 @@ async fn thread_timeline(
         all_rows,
         model_fallback,
         max_seq,
+        cache_instance,
         generation,
         history_status,
         history_complete,
@@ -4557,16 +4573,20 @@ async fn thread_timeline(
                 built.rows,
                 built.model_fallback,
                 built.max_seq,
+                Some(view.instance.clone()),
                 view.generation,
                 view.status,
                 view.complete,
                 view.reason.clone(),
             )
         }
+        // Nothing is cached, so this response is not a position in any
+        // numbering: the caller has nothing to compare and nothing to keep.
         crate::history::ThreadHistoryRead::Loading => (
             Vec::new(),
             None,
             0,
+            None,
             0,
             crate::history_cache::HistoryStatus::Loading,
             false,
@@ -4576,19 +4596,42 @@ async fn thread_timeline(
             Vec::new(),
             None,
             0,
+            None,
             0,
             crate::history_cache::HistoryStatus::Unavailable,
             false,
             Some(reason),
         ),
     };
-    let before_id_sequence = query.before_anchor_id.as_ref().and_then(|anchor_id| {
-        all_rows.iter().find_map(|row| {
-            (row.get("id").and_then(Value::as_str) == Some(anchor_id.as_str()))
-                .then(|| row.get("sourceSeqStart").and_then(Value::as_u64))
-                .flatten()
+    // A cursor is a position in one numbering, and this cache is in memory: a
+    // restarted server numbers from one again, and so does a baseline rebuild.
+    // A request whose identity does not match what is being served is answered
+    // with the **newest** page rather than filtered by a position from another
+    // numbering — which is what turns "the client holds a cursor from before
+    // the restart" into a reset instead of an empty or wrong slice.
+    let cursors_are_current = cache_instance
+        .as_deref()
+        .zip(query.cache_instance.as_deref().zip(claimed_generation));
+    let cursors_are_current =
+        cursors_are_current.is_some_and(|(instance, (claimed_instance, claimed))| {
+            instance == claimed_instance && generation == claimed
+        });
+    let (after, before_sequence) = if cursors_are_current {
+        (after, before_sequence)
+    } else {
+        (None, None)
+    };
+    let before_id_sequence = if cursors_are_current {
+        query.before_anchor_id.as_ref().and_then(|anchor_id| {
+            all_rows.iter().find_map(|row| {
+                (row.get("id").and_then(Value::as_str) == Some(anchor_id.as_str()))
+                    .then(|| row.get("sourceSeqStart").and_then(Value::as_u64))
+                    .flatten()
+            })
         })
-    });
+    } else {
+        None
+    };
     let before = before_sequence.or(before_id_sequence);
     let mut candidates = all_rows
         .into_iter()
@@ -4633,9 +4676,13 @@ async fn thread_timeline(
             "olderCursor": older_cursor
         },
         "maxSeq": max_seq,
-        // A cursor is only meaningful inside a generation: a rebuild renumbers
-        // from one, and a client that held a cursor across one must refetch
-        // rather than read its old cursor as a position in the new numbering.
+        // A cursor is only meaningful inside one numbering: this cache is in
+        // memory, so a restart renumbers from one, and a rebuild inside a
+        // running server does the same. `cacheInstance` says *which* server run
+        // the numbers belong to and `generation` which rebuild inside it, and a
+        // client that cannot match both must refetch rather than read its old
+        // cursor as a position in the new numbering.
+        "cacheInstance": cache_instance,
         "generation": generation,
         // How much of the conversation this is. "No rows" and "could not load"
         // are different answers, and a client that cannot tell them apart shows
@@ -7780,6 +7827,94 @@ mod tests {
             rows.iter().any(|row| row["text"] == "the newest message"),
             "the newest row must be visible after the cursor: {delta}"
         );
+        state.shutdown().unwrap();
+    }
+
+    /// A cursor is a position in one numbering, and the request has to say
+    /// which numbering it means.
+    ///
+    /// The cache is in memory, so a restarted server — and a rebuilt baseline
+    /// inside a running one — numbers from one again. A request that carries an
+    /// old cursor without the identity it belongs to cannot be filtered by it:
+    /// doing so answers a wrong or empty slice that looks like "nothing
+    /// happened". It must be answered with the newest page instead, which is a
+    /// reset the client can see.
+    #[tokio::test]
+    async fn a_cursor_from_another_numbering_is_a_reset_not_a_slice() {
+        let state = test_state();
+        let app = router(state.clone());
+        let (thread, created) = state
+            .registry
+            .create_thread(
+                Some(state.registry.personal_project_id()),
+                Some("cursors".into()),
+                None,
+                loom_relay::now_ms(),
+            )
+            .unwrap();
+        state.publish_domain_event(&created).unwrap();
+        for text in ["one", "two", "three"] {
+            for event in state
+                .registry
+                .post_message(
+                    &thread.id,
+                    MessageRole::User,
+                    text.into(),
+                    loom_relay::now_ms(),
+                )
+                .unwrap()
+            {
+                state.publish_domain_event(&event).unwrap();
+            }
+        }
+
+        let base = format!("/api/v1/threads/{}/timeline", thread.id);
+        let first = body_json(get(&app, &base).await).await;
+        let instance = first["cacheInstance"]
+            .as_str()
+            .expect("a served timeline names its cache instance")
+            .to_owned();
+        let generation = first["generation"].as_u64().unwrap();
+        let newest = first["rows"].as_array().unwrap().last().unwrap()["sourceSeqEnd"]
+            .as_u64()
+            .unwrap();
+
+        // The cursor and its identity agree with what is being served: the
+        // cursor keeps its meaning, and there is nothing after the newest row.
+        let current = body_json(
+            get(
+                &app,
+                &format!(
+                    "{base}?afterSequence={newest}&cacheInstance={instance}&generation={generation}"
+                ),
+            )
+            .await,
+        )
+        .await;
+        assert!(
+            current["rows"].as_array().unwrap().is_empty(),
+            "a current cursor filters: {current}"
+        );
+        assert_eq!(current["cacheInstance"], json!(instance));
+
+        // No identity, another instance, or a stale revision: each is answered
+        // with the newest page rather than filtered by a position that does not
+        // describe this numbering.
+        for query in [
+            format!("afterSequence={newest}"),
+            format!("afterSequence={newest}&cacheInstance=somewhere-else&generation={generation}"),
+            format!(
+                "afterSequence={newest}&cacheInstance={instance}&generation={}",
+                generation + 1
+            ),
+        ] {
+            let reset = body_json(get(&app, &format!("{base}?{query}")).await).await;
+            assert_eq!(
+                reset["rows"].as_array().unwrap().len(),
+                3,
+                "`{query}` must reset to the newest page: {reset}"
+            );
+        }
         state.shutdown().unwrap();
     }
 
