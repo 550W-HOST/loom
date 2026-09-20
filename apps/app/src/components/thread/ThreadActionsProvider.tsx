@@ -19,6 +19,7 @@ import {
   useDeleteThread,
   useMarkThreadRead,
   useMarkThreadUnread,
+  useRefreshThreadHistory,
   usePinThread,
   useUnarchiveThread,
   useUnpinThread,
@@ -53,6 +54,7 @@ export interface ThreadActionsContextValue {
   unarchiveThread: (thread: Thread) => void;
   togglePin: (thread: Thread) => void;
   toggleRead: (thread: Thread) => void;
+  refreshHistory: (thread: Thread) => void;
 }
 
 const ThreadActionsContext = createContext<ThreadActionsContextValue | null>(
@@ -99,6 +101,7 @@ export function ThreadActionsProvider({
   const unarchiveThreadMutation = useUnarchiveThread();
   const markThreadRead = useMarkThreadRead();
   const markThreadUnread = useMarkThreadUnread();
+  const refreshThreadHistoryMutation = useRefreshThreadHistory();
   const pinThread = usePinThread();
   const unpinThread = useUnpinThread();
   const deleteThread = useDeleteThread();
@@ -109,6 +112,7 @@ export function ThreadActionsProvider({
   const { mutate: unarchiveMutate } = unarchiveThreadMutation;
   const { mutate: markReadMutate } = markThreadRead;
   const { mutate: markUnreadMutate } = markThreadUnread;
+  const { mutate: refreshHistoryMutate } = refreshThreadHistoryMutation;
   const { mutate: pinMutate } = pinThread;
   const { mutate: unpinMutate } = unpinThread;
   const { mutate: deleteMutate } = deleteThread;
@@ -378,6 +382,22 @@ export function ThreadActionsProvider({
     [markReadMutate, markUnreadMutate],
   );
 
+  /// Asks for the conversation to be read from the agent that owns it, and
+  /// reads the timeline again when the ask is made: the rows arrive there.
+  const refreshHistory = useCallback(
+    (thread: Thread) => {
+      refreshHistoryMutate(thread.id, {
+        onError: (error) => {
+          showMutationErrorToast({
+            error,
+            fallbackMessage: "Failed to ask for the conversation again",
+          });
+        },
+      });
+    },
+    [refreshHistoryMutate],
+  );
+
   const togglePin = useCallback(
     (thread: Thread) => {
       if (thread.pinnedAt !== null) {
@@ -398,6 +418,7 @@ export function ThreadActionsProvider({
       unarchiveThread: unarchiveThreadAction,
       togglePin,
       toggleRead,
+      refreshHistory,
     }),
     [
       archiveThreadAndChildrenAction,
@@ -406,6 +427,7 @@ export function ThreadActionsProvider({
       requestDelete,
       togglePin,
       toggleRead,
+      refreshHistory,
       unarchiveThreadAction,
     ],
   );

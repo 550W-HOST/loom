@@ -70,6 +70,7 @@ export const LOOM_API_ROUTES = [
   { id: "threads.delete", method: "DELETE", path: "/threads/:id" },
   { id: "threads.deleteQueuedMessage", method: "DELETE", path: "/threads/:id/queued-messages/:queuedMessageId" },
   { id: "threads.get", method: "GET", path: "/threads/:id" },
+  { id: "threads.historyRefresh", method: "POST", path: "/threads/:id/history/refresh" },
   { id: "threads.hostFileContent", method: "GET", path: "/threads/:id/host-files/content" },
   { id: "threads.interactions", method: "GET", path: "/threads/:id/interactions" },
   { id: "threads.interaction", method: "GET", path: "/threads/:id/interactions/:interactionId" },

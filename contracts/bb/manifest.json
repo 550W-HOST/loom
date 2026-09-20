@@ -26,8 +26,8 @@
       "sha256": "bdb438dc84e874df36b7ccd397e3c8e51ffd0d9fe23fbd81fd19538bf1cc7381"
     },
     "server-api.json": {
-      "bytes": 737558,
-      "sha256": "9babedaba24b83afeaf8ddf636737fe494f32800131e3a70d11af7ee3c45da31"
+      "bytes": 738588,
+      "sha256": "36d99d4b617c8cbb1390aa72aa5854ba1bd89ecf2ca3c99f152e7ef06542fe63"
     },
     "thread-event.json": {
       "bytes": 893785,

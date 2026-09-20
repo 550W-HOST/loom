@@ -9,6 +9,7 @@ import type {
 } from "@bb/server-contract";
 import { sdk } from "@/lib/sdk";
 import type { LifecycleErrorOperation } from "@/lib/lifecycle-errors";
+import { threadTimelineQueryKeyPrefix } from "../queries/query-keys";
 import {
   applyReorderPinnedThreadResult,
   applyThreadPinStateResult,
@@ -385,6 +386,32 @@ export function useMarkThreadRead() {
     },
     onSuccess: (thread) => {
       applyThreadReadStateResult({ queryClient, thread });
+    },
+  });
+}
+
+/**
+ * Asks the server to read a thread's conversation from its agent again.
+ *
+ * The timeline read already asks for a load when what is stored looks old, so
+ * this is not how a conversation arrives. It is the explicit ask, for a session
+ * that moved on where this server cannot see it — and the rows come back through
+ * the timeline, so that is what is read again once the ask is made.
+ */
+export function useRefreshThreadHistory() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    meta: {
+      errorMessage: "Failed to ask the agent for the conversation again.",
+      showErrorToast: false,
+    },
+    mutationFn: (threadId: string) =>
+      sdk.threads.refreshHistory({ threadId }),
+    onSuccess: (_result, threadId) => {
+      void queryClient.invalidateQueries({
+        queryKey: threadTimelineQueryKeyPrefix(threadId),
+      });
     },
   });
 }

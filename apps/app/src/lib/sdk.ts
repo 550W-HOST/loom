@@ -9,6 +9,7 @@ import {
   loomListEnvironmentProviders,
   loomMarkThreadRead,
   loomMarkThreadUnread,
+  loomRefreshThreadHistory,
   loomPinThread,
   loomProjectDefaultExecutionOptions,
   loomReorderPinnedThread,
@@ -144,6 +145,7 @@ export const sdk = {
     },
     markRead: loomMarkThreadRead,
     markUnread: loomMarkThreadUnread,
+    refreshHistory: loomRefreshThreadHistory,
     pin: loomPinThread,
     queuedMessages: {
       ...compileOnlySdk.threads.queuedMessages,

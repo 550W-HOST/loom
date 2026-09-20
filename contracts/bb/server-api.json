@@ -32141,6 +32141,42 @@
           "status": 409
         }
       ]
+    },
+    {
+      "fullPath": "/api/v1/threads/:id/history/refresh",
+      "id": "threads.historyRefresh",
+      "method": "POST",
+      "path": "/threads/:id/history/refresh",
+      "request": {
+        "schema": null,
+        "source": "none"
+      },
+      "responses": [
+        {
+          "format": "json",
+          "schema": {
+            "additionalProperties": false,
+            "properties": {
+              "reason": {
+                "description": "Why the conversation is not fully available, when it is not.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "status": {
+                "description": "One of the timeline's history statuses: how much of the conversation can be offered now that the ask has been made.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "status"
+            ],
+            "type": "object"
+          },
+          "status": 200
+        }
+      ]
     }
   ],
   "x-loom-contract-format": "loom.bb-contract/v1"

@@ -1991,19 +1991,14 @@ async fn refresh_thread_history(
         return response;
     }
     match state.refresh_thread_history(&thread_id) {
-        crate::history::ThreadHistoryRead::Serve(view) => (
-            StatusCode::ACCEPTED,
-            Json(json!({
-                "status": view.status.token(),
-                "reason": view.reason,
-            })),
-        )
-            .into_response(),
-        crate::history::ThreadHistoryRead::Loading { reason } => (
-            StatusCode::ACCEPTED,
-            Json(json!({ "status": "loading", "reason": reason })),
-        )
-            .into_response(),
+        crate::history::ThreadHistoryRead::Serve(view) => Json(json!({
+            "status": view.status.token(),
+            "reason": view.reason,
+        }))
+        .into_response(),
+        crate::history::ThreadHistoryRead::Loading { reason } => {
+            Json(json!({ "status": "loading", "reason": reason })).into_response()
+        }
         // Nothing can be asked for — no session, no host that offers its agent
         // — and the reason is what the caller can act on.
         crate::history::ThreadHistoryRead::Unavailable(reason) => {

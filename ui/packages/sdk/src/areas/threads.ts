@@ -550,6 +550,17 @@ export interface ThreadsArea {
   listRunning(args?: { signal?: AbortSignal }): Promise<ThreadRunningResult>;
   markRead(args: ThreadActionArgs): Promise<ThreadReadStateResult>;
   markUnread(args: ThreadActionArgs): Promise<ThreadReadStateResult>;
+  /**
+   * Asks the server to read this thread's conversation from its agent again.
+   *
+   * The timeline read already asks for a load when the stored conversation looks
+   * old. This is the explicit ask, for a session that moved on where the server
+   * cannot see it, and it answers how the conversation stands now rather than
+   * the rows themselves.
+   */
+  refreshHistory(
+    args: ThreadActionArgs,
+  ): Promise<{ status: string; reason: string | null }>;
   open(args: ThreadOpenArgs): Promise<ThreadOpenResult>;
   paneAction(args: ThreadPaneActionArgs): Promise<ThreadPaneActionResult>;
   output(args: ThreadOutputArgs): Promise<ThreadOutputResponse>;

@@ -510,6 +510,24 @@ export async function loomMarkThreadRead(request: {
   return normalizeThreadProjectWithSidebar(thread, sidebar);
 }
 
+/**
+ * Asks the server to read a thread's conversation from its agent again.
+ *
+ * A read serves what is stored and asks for a load behind it, so this is not how
+ * a conversation arrives in the first place. It is the explicit ask, for the one
+ * case no poll can see — the session moved on somewhere this server cannot
+ * observe — and for a failure whose wait has not passed yet. The answer says how
+ * the conversation stands now; the rows themselves come from the timeline, which
+ * the caller refetches.
+ */
+export function loomRefreshThreadHistory(request: {
+  threadId: string;
+}): Promise<{ status: string; reason: string | null }> {
+  return loomApiJson("threads.historyRefresh", {
+    param: { id: request.threadId },
+  });
+}
+
 export async function loomMarkThreadUnread(request: {
   threadId: string;
 }): Promise<ThreadResponse> {

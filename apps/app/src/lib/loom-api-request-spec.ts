@@ -212,6 +212,7 @@ export const LOOM_API_REQUEST_SPECS = {
   "threads.delete": { source: "json", json: {} as DeleteThreadRequest },
   "threads.deleteQueuedMessage": { source: "none" },
   "threads.get": { source: "query", query: {} as ThreadGetQuery },
+  "threads.historyRefresh": { source: "none" },
   "threads.hostFileContent": {
     source: "query",
     query: {} as ThreadHostFileContentQuery,
@@ -341,6 +342,7 @@ export interface LoomApiResponseSpecs {
   "threads.delete": { ok: true };
   "threads.deleteQueuedMessage": { ok: true };
   "threads.get": ThreadResponse;
+  "threads.historyRefresh": { status: string; reason: string | null };
   "threads.hostFileContent": unknown;
   "threads.interaction": PendingInteraction;
   "threads.interactions": ThreadPendingInteractionsResponse;

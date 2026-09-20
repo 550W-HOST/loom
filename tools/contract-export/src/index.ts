@@ -297,6 +297,46 @@ function applyLoomExtensions(serverApi: JsonValue): JsonValue {
   if (!requestProperties) {
     throw new Error("loom extensions: threads.timeline has no query schema");
   }
+  // A route loom's server has and bb's does not: asking for a thread's
+  // conversation to be read from its agent again. It is declared here because
+  // the exported contract is generated from bb's server, so a loom-only route
+  // has no other place to come from.
+  document.routes ??= [];
+  document.routes.push({
+    fullPath: "/api/v1/threads/:id/history/refresh",
+    id: "threads.historyRefresh",
+    method: "POST",
+    path: "/threads/:id/history/refresh",
+    request: { schema: null, source: "none" },
+    responses: [
+      {
+        format: "json",
+        // What the refresh answers: how the conversation stands now, with the
+        // reason when there is one. The conversation itself is not in this
+        // body — it is read from the timeline, which is where the rows are.
+        // Inline, because the exporter interns response schemas itself.
+        schema: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            status: {
+              type: "string",
+              description:
+                "One of the timeline's history statuses: how much of the conversation can be offered now that the ask has been made.",
+            },
+            reason: {
+              type: ["string", "null"],
+              description:
+                "Why the conversation is not fully available, when it is not.",
+            },
+          },
+          required: ["status"],
+        },
+        status: 200,
+      },
+    ],
+  });
+
   requestProperties.cacheInstance = {
     type: "string",
     minLength: 1,

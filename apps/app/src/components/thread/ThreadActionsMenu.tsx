@@ -185,6 +185,7 @@ function ThreadActionsMenuItems({
     requestDelete,
     togglePin,
     toggleRead,
+    refreshHistory,
     unarchiveThread,
   } = useThreadActions();
   const isCompactViewport = useIsCompactViewport();
@@ -263,6 +264,15 @@ function ThreadActionsMenuItems({
         }}
       >
         {isRead ? "Mark unread" : "Mark read"}
+      </ActionMenuItem>
+      <ActionMenuItem
+        surface={surface}
+        icon="RotateCcw"
+        onSelect={() => {
+          refreshHistory(thread);
+        }}
+      >
+        Read history from the agent
       </ActionMenuItem>
       <ActionMenuItem
         surface={surface}
