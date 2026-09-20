@@ -38,6 +38,7 @@ pub mod cli;
 pub mod domain_state;
 pub mod environments;
 pub mod file_previews;
+pub mod history;
 pub mod history_cache;
 pub mod history_rpc;
 pub mod host_files;

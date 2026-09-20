@@ -223,6 +223,8 @@ pub struct AppState {
     /// The per-thread timeline cache: a rebuildable, bounded view of a
     /// conversation whose authority lives with the agent that owns it.
     pub history: Arc<crate::history_cache::HistoryCache>,
+    /// Who is waiting on which in-flight history load.
+    pub history_waits: Arc<crate::history::HistoryWaits>,
     /// HTTP requests waiting on a host's answer to a terminal operation.
     pub terminal: Arc<crate::terminals::TerminalBroker>,
     /// What each host's agent reported it can run.
@@ -362,6 +364,7 @@ impl AppState {
                 HISTORY_CACHE_BYTES,
                 HISTORY_CACHE_CONCURRENT_LOADS,
             )),
+            history_waits: Arc::new(crate::history::HistoryWaits::new()),
             terminal: Arc::new(crate::terminals::TerminalBroker::new()),
             catalogs: Arc::new(crate::catalogs::CatalogRegistry::new()),
             terminals: Arc::new(crate::terminals::TerminalSessions::new()),
