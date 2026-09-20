@@ -410,6 +410,21 @@ pub enum DispatchOutcome {
         /// Why the thread could not run, as in [`DispatchOutcome::NoEnvironment`].
         reason: String,
     },
+    /// The thread's stored session cannot be attributed to a machine.
+    ///
+    /// Resuming it is impossible — the id names a file on one host's disk — and
+    /// starting a fresh session would silently replace a conversation that
+    /// still exists somewhere. The run fails with a reason a person can act on
+    /// (name the host, or start a new session) and the thread's mapping is left
+    /// exactly as it was.
+    SessionRebindRequired {
+        /// The synthetic run id reported in the terminal event.
+        run_id: RunId,
+        /// The session id that could not be placed.
+        session: String,
+        /// Why the run was refused, as in [`DispatchOutcome::NoEnvironment`].
+        reason: String,
+    },
     /// The relay rejected the append; the run was failed on the spot.
     PublishFailed {
         /// The run or preflight attempt whose lifecycle could not be published.
@@ -497,6 +512,21 @@ pub enum SteerOutcome {
     },
 }
 
+/// The machine-readable code the API answers an unattributed session with.
+pub const SESSION_REBIND_REQUIRED: &str = "session_rebind_required";
+
+/// Why a stored session that cannot be attributed to a machine is not resumed.
+///
+/// Shared by the dispatcher (which fails the run) and the HTTP paths (which
+/// refuse before anything moves), so the diagnostic on the timeline and the
+/// error a client receives say the same thing.
+pub fn session_rebind_reason(session: &str) -> String {
+    format!(
+        "this thread's conversation (session {session}) is not bound to a machine, so it \
+         cannot be resumed; choose the host that owns it, or start a new session"
+    )
+}
+
 impl AppState {
     /// Mints a run, records it, and publishes the dispatch to `host:{id}`.
     ///
@@ -521,6 +551,23 @@ impl AppState {
         // Keep the entity view aligned with the claim while the dispatcher is
         // resolving the environment. A preflight failure clears it below.
         let _ = self.registry.set_thread_run(&thread.id, &run_id, now);
+
+        // A stored session with no machine to attribute it to. This is a
+        // preflight refusal, like a missing environment: the run ends with a
+        // diagnostic and the thread's session mapping is untouched, because the
+        // conversation it names still exists somewhere and replacing it is not
+        // this code's decision to make.
+        if let Some(session) = thread.unattributed_session() {
+            let reason = session_rebind_reason(session);
+            return match self.fail_thread(thread, run_id.clone(), reason.clone(), now) {
+                Ok(()) => DispatchOutcome::SessionRebindRequired {
+                    run_id,
+                    session: session.to_owned(),
+                    reason,
+                },
+                Err(error) => DispatchOutcome::PublishFailed { run_id, error },
+            };
+        }
 
         let environment = match self.resolve_environment(thread) {
             Ok(environment) => environment,
@@ -2252,6 +2299,83 @@ mod tests {
         assert_eq!(provider["name"], "codex");
         assert_eq!(provider["command"], "codex");
         assert_eq!(provider["cwd"], workspace);
+        state.shutdown().unwrap();
+    }
+
+    /// A dispatch for a session loom cannot place is refused, not resumed and
+    /// not replaced.
+    ///
+    /// The gate runs before the environment is even resolved, because where the
+    /// conversation lives is not a question the dispatcher may answer by
+    /// choosing a machine: the id names a file on one host's disk, and the
+    /// thread's mapping is what says which. A fresh session here would look
+    /// like a working turn while quietly starting a second conversation.
+    #[tokio::test]
+    async fn a_dispatch_for_a_session_without_a_host_is_refused() {
+        let state = state();
+        let (thread, created) = state
+            .registry
+            .create_thread(
+                Some(state.registry.personal_project_id()),
+                Some("legacy".into()),
+                None,
+                loom_relay::now_ms(),
+            )
+            .unwrap();
+        state.publish_domain_event(&created).unwrap();
+        let bound = state
+            .registry
+            .set_provider_session_id(
+                &thread.id,
+                "sess-legacy",
+                Some(loom_domain::ProviderSessionBinding::new(
+                    "pi",
+                    "/srv/project",
+                )),
+                loom_relay::now_ms(),
+            )
+            .unwrap();
+        state.publish_domain_event(&bound).unwrap();
+        // The prompt that moves the thread to `working`, exactly as a send
+        // does; the gate is what stops the run from arriving behind it.
+        for event in state
+            .registry
+            .post_message(
+                &thread.id,
+                MessageRole::User,
+                "hello".into(),
+                loom_relay::now_ms(),
+            )
+            .unwrap()
+        {
+            state.publish_domain_event(&event).unwrap();
+        }
+        let thread = state.registry.thread(&thread.id).unwrap();
+        assert_eq!(thread.status, ThreadStatus::Working);
+
+        let outcome = state.dispatch_thread(&thread, "hello");
+        let DispatchOutcome::SessionRebindRequired {
+            session, reason, ..
+        } = outcome
+        else {
+            panic!("an unattributed session must be refused, got {outcome:?}");
+        };
+        assert_eq!(session, "sess-legacy");
+        assert!(reason.contains("sess-legacy"), "{reason}");
+
+        let after = state.registry.thread(&thread.id).unwrap();
+        assert_eq!(
+            after.provider_session_id.as_deref(),
+            Some("sess-legacy"),
+            "the mapping is kept, not replaced"
+        );
+        assert_eq!(after.unattributed_session(), Some("sess-legacy"));
+        assert_eq!(
+            after.status,
+            ThreadStatus::Error,
+            "the refused run ends the thread rather than leaving it working"
+        );
+        assert!(after.active_run_id.is_none());
         state.shutdown().unwrap();
     }
 

@@ -891,6 +891,24 @@ impl Thread {
             .flatten()
     }
 
+    /// The stored session, when loom cannot say which machine owns it.
+    ///
+    /// A provider session id names a file on one host's disk. Loom did not
+    /// always record *which* host, and an id without that half of the binding
+    /// is a conversation that can be neither resumed nor safely replaced: it
+    /// still exists somewhere, and guessing a machine would restore one
+    /// thread's history under another's name. Callers refuse to start a run
+    /// while this is `Some`, and keep the mapping exactly as it is until a
+    /// person says where the session lives.
+    pub fn unattributed_session(&self) -> Option<&str> {
+        let session = self.provider_session_id.as_deref()?;
+        let attributed = self
+            .provider_session_binding
+            .as_ref()
+            .is_some_and(|binding| binding.host_id.is_some());
+        (!attributed).then_some(session)
+    }
+
     /// Appends a message and returns the events the append produces.
     ///
     /// A user message is what drives the thread forward: from `idle` it starts
@@ -1390,6 +1408,32 @@ mod tests {
             )
             .unwrap();
         assert!(!thread.may_resume_session("pi", "/srv/a", &HostId::mint()));
+    }
+
+    /// The half of the binding loom did not always record: an id with no
+    /// machine is not resumable *and* must not be silently replaced.
+    #[test]
+    fn a_session_without_a_host_is_unattributed() {
+        let mut thread = thread();
+        assert_eq!(thread.unattributed_session(), None, "no session yet");
+
+        thread
+            .set_provider_session_id(
+                "acp-1",
+                Some(ProviderSessionBinding::new("pi", "/srv/a")),
+                1,
+            )
+            .unwrap();
+        assert_eq!(thread.unattributed_session(), Some("acp-1"));
+
+        thread
+            .set_provider_session_id(
+                "acp-1",
+                Some(ProviderSessionBinding::new("pi", "/srv/a").on_host(HostId::mint())),
+                2,
+            )
+            .unwrap();
+        assert_eq!(thread.unattributed_session(), None);
     }
 
     #[test]

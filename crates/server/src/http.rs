@@ -3455,6 +3455,16 @@ async fn retry_thread(
             format!("thread {thread_id} is archived"),
         );
     }
+    // A retry repeats the same turn against the same conversation, so it needs
+    // the same placement a send does. `None` (or a host) falls through; see
+    // `Thread::unattributed_session`.
+    if let Some(session) = thread.unattributed_session() {
+        return error_response_with_code(
+            StatusCode::CONFLICT,
+            crate::runs::SESSION_REBIND_REQUIRED,
+            crate::runs::session_rebind_reason(session),
+        );
+    }
 
     // The contract's validator does not enforce `pattern`, so a client-supplied
     // id is checked here, before anything changes: echoing one back outside
@@ -3603,6 +3613,13 @@ async fn retry_thread(
             "attempt": attempt,
         }))
         .into_response(),
+        crate::runs::DispatchOutcome::SessionRebindRequired { reason, .. } => {
+            error_response_with_code(
+                StatusCode::CONFLICT,
+                crate::runs::SESSION_REBIND_REQUIRED,
+                reason,
+            )
+        }
         crate::runs::DispatchOutcome::NoEnvironment { .. } => error_response_with_code(
             StatusCode::CONFLICT,
             "thread_environment_unavailable",
@@ -6488,6 +6505,12 @@ pub enum TurnError {
     Command(CommandError),
     /// The events could not be published.
     Publish(String),
+    /// The thread's stored session cannot be attributed to a machine.
+    ///
+    /// Refused *before* the message is appended: a prompt that can never run
+    /// would move the thread to `working` with no run behind it, and the caller
+    /// would have no way back.
+    SessionRebindRequired { reason: String },
 }
 
 impl TurnError {
@@ -6496,6 +6519,7 @@ impl TurnError {
         match self {
             Self::Command(error) => error.to_string(),
             Self::Publish(message) => message.clone(),
+            Self::SessionRebindRequired { reason } => reason.clone(),
         }
     }
 
@@ -6503,6 +6527,11 @@ impl TurnError {
         match self {
             Self::Command(error) => command_error_response(error),
             Self::Publish(message) => error_response(StatusCode::INTERNAL_SERVER_ERROR, message),
+            Self::SessionRebindRequired { reason } => error_response_with_code(
+                StatusCode::CONFLICT,
+                crate::runs::SESSION_REBIND_REQUIRED,
+                reason,
+            ),
         }
     }
 }
@@ -6542,6 +6571,22 @@ fn append_thread(
     role: MessageRole,
     content: String,
 ) -> Result<ThreadTurn, TurnError> {
+    // A prompt is what resumes the conversation, so it is refused while the
+    // stored session cannot be attributed to a machine. Appending it first and
+    // failing the dispatch afterwards would leave the prompt in a thread that
+    // can never run it. An assistant or system message starts no turn and is
+    // therefore unaffected.
+    if role == MessageRole::User {
+        if let Some(session) = state
+            .registry
+            .thread(thread_id)
+            .and_then(|thread| thread.unattributed_session().map(str::to_owned))
+        {
+            return Err(TurnError::SessionRebindRequired {
+                reason: crate::runs::session_rebind_reason(&session),
+            });
+        }
+    }
     let events = state
         .registry
         .post_message(thread_id, role, content.clone(), loom_relay::now_ms())
@@ -7826,6 +7871,103 @@ mod tests {
         assert!(
             rows.iter().any(|row| row["text"] == "the newest message"),
             "the newest row must be visible after the cursor: {delta}"
+        );
+        state.shutdown().unwrap();
+    }
+
+    /// A prompt for a conversation loom cannot place is refused **before** it
+    /// is appended.
+    ///
+    /// The stored id is real — the session exists on some machine — so resuming
+    /// it is impossible and starting a new one would silently replace it.
+    /// Refusing after the append would be worse than the refusal: the prompt
+    /// would sit in a thread moved to `working` with no run behind it.
+    #[tokio::test]
+    async fn a_prompt_for_a_session_without_a_host_is_refused() {
+        let state = test_state();
+        let app = router(state.clone());
+        let (thread, created) = state
+            .registry
+            .create_thread(
+                Some(state.registry.personal_project_id()),
+                Some("legacy".into()),
+                None,
+                loom_relay::now_ms(),
+            )
+            .unwrap();
+        state.publish_domain_event(&created).unwrap();
+        // A session recorded before loom stored the host: the agent and the
+        // workspace are known, the machine is not.
+        let bound = state
+            .registry
+            .set_provider_session_id(
+                &thread.id,
+                "sess-legacy",
+                Some(loom_domain::ProviderSessionBinding::new(
+                    "pi",
+                    "/srv/project",
+                )),
+                loom_relay::now_ms(),
+            )
+            .expect("binding a session changes the thread");
+        state.publish_domain_event(&bound).unwrap();
+
+        let response = post(
+            &app,
+            &format!("/api/v1/threads/{}/send", thread.id),
+            json!({ "input": [{ "type": "text", "text": "hello" }], "mode": "auto" }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let body = body_json(response).await;
+        assert_eq!(body["code"], "session_rebind_required", "{body}");
+        assert!(
+            body["message"].as_str().unwrap().contains("sess-legacy"),
+            "the refusal names the session it could not place: {body}"
+        );
+
+        // Nothing moved: no prompt was appended, the thread did not start a
+        // turn, and the mapping is exactly what it was.
+        let messages = thread_domain_events(&state, &thread.id)
+            .unwrap()
+            .into_iter()
+            .filter(|(_, _, _, event)| matches!(event, DomainEvent::ThreadMessageAdded { .. }))
+            .count();
+        assert_eq!(messages, 0, "a refused prompt is not appended");
+        let now = state.registry.thread(&thread.id).unwrap();
+        assert_eq!(now.status, ThreadStatus::Idle);
+        assert_eq!(now.provider_session_id.as_deref(), Some("sess-legacy"));
+        assert_eq!(now.unattributed_session(), Some("sess-legacy"));
+
+        // ... and a retry repeats the same conversation, so it is refused too.
+        for event in state
+            .registry
+            .post_message(
+                &thread.id,
+                MessageRole::User,
+                "hello".into(),
+                loom_relay::now_ms(),
+            )
+            .unwrap()
+        {
+            state.publish_domain_event(&event).unwrap();
+        }
+        let retry = post(
+            &app,
+            &format!("/api/v1/threads/{}/retry", thread.id),
+            json!({}),
+        )
+        .await;
+        assert_eq!(retry.status(), StatusCode::CONFLICT);
+        let body = body_json(retry).await;
+        assert_eq!(body["code"], "session_rebind_required", "{body}");
+        assert_eq!(
+            state
+                .registry
+                .thread(&thread.id)
+                .unwrap()
+                .unattributed_session(),
+            Some("sess-legacy")
         );
         state.shutdown().unwrap();
     }
