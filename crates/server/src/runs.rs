@@ -945,10 +945,8 @@ impl AppState {
         // The binding is read from the *in-flight run*, not the thread's
         // current environment: the environment can be re-bound between runs,
         // and the binding must describe the run that actually opened the
-        // session. A run that is no longer in the table (a report after the
-        // deadline reaped it) leaves the binding unknown, which starts the next
-        // turn fresh rather than guessing.
-        let binding = self.runs.get(&event.run_id).map(|record| {
+        // session.
+        let Some(binding) = self.runs.get(&event.run_id).map(|record| {
             loom_domain::ProviderSessionBinding::new(
                 // The agent the run was dispatched to, not whatever the server
                 // defaults to now: a resume handed to a different agent would
@@ -966,10 +964,18 @@ impl AppState {
             // agent for an id it never issued.
             .on_host(record.host_id.clone())
             .at(now)
-        });
+        }) else {
+            // The run is gone — the deadline reaped it before this report
+            // arrived — so there is nothing to bind the id to. Recording it
+            // alone would claim a conversation loom cannot place: no machine to
+            // resume on, and no way to replace it without silently dropping it.
+            // Nothing is learned, and the next turn opens a session of its own,
+            // which is what "the binding is unknown" has always meant.
+            return;
+        };
         if let Some(learned) =
             self.registry
-                .set_provider_session_id(&event.thread_id, session_id, binding, now)
+                .set_provider_session_id(&event.thread_id, session_id, Some(binding), now)
         {
             // The thread's own record changed, so the sidebar sees it. Nothing
             // in the contract's thread shape carries this value; the event is
@@ -2376,6 +2382,57 @@ mod tests {
             "the refused run ends the thread rather than leaving it working"
         );
         assert!(after.active_run_id.is_none());
+        state.shutdown().unwrap();
+    }
+
+    /// An identity report whose run was already reaped teaches the thread
+    /// nothing.
+    ///
+    /// The report carries an agent's session id and nothing about where it
+    /// lives — the binding comes from the in-flight run — so a report that
+    /// arrives after the deadline reaped the run cannot be bound. Storing the id
+    /// alone would claim a conversation with no machine to resume it on and no
+    /// safe way to replace it; the next turn opening its own session is the
+    /// honest outcome.
+    #[tokio::test]
+    async fn an_identity_report_after_the_run_is_reaped_teaches_nothing() {
+        let state = state();
+        let (thread, created) = state
+            .registry
+            .create_thread(
+                Some(state.registry.personal_project_id()),
+                Some("late identity".into()),
+                None,
+                loom_relay::now_ms(),
+            )
+            .unwrap();
+        state.publish_domain_event(&created).unwrap();
+
+        // A run id no record knows: the reaper got there first.
+        let orphan = loom_domain::RunId::mint();
+        let identity = RunEvent::new(
+            thread.id.clone(),
+            thread.project_id.clone(),
+            orphan.clone(),
+            loom_relay::now_ms(),
+            ProviderEvent::ThreadIdentity {
+                provider_thread_id: "sess-late".into(),
+            },
+        );
+        state.apply_run_report(
+            &loom_domain::HostId::mint(),
+            ProviderReport {
+                host_id: loom_domain::HostId::mint(),
+                event: identity,
+            },
+        );
+
+        let after = state.registry.thread(&thread.id).unwrap();
+        assert_eq!(
+            after.provider_session_id, None,
+            "an id loom cannot place is not recorded"
+        );
+        assert_eq!(after.unattributed_session(), None);
         state.shutdown().unwrap();
     }
 
