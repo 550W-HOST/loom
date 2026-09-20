@@ -25,6 +25,7 @@
 
 use std::collections::HashMap;
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use loom_domain::{HostId, ProviderEvent, RunId, ThreadId};
 
@@ -187,6 +188,14 @@ struct Inner {
     /// Loads in flight, keyed by thread. A second caller for the same thread
     /// waits rather than loading the same conversation twice.
     loads: HashMap<ThreadId, CacheBinding>,
+    /// When a thread's last attempt to load failed, if it did.
+    ///
+    /// This is what keeps a failure from being retried by every single read: a
+    /// reader that finds the conversation old will ask again, and asking an
+    /// agent that is down is slow enough that asking on every poll is a way to
+    /// make a bad situation worse. In memory on purpose — how long to wait is a
+    /// property of this process, not of the conversation.
+    failed_at: HashMap<ThreadId, Instant>,
 }
 
 /// The unwritten tail of every conversation, and the loads in flight.
@@ -207,6 +216,7 @@ impl HistoryCache {
                 bytes: 0,
                 next_tick: 0,
                 loads: HashMap::new(),
+                failed_at: HashMap::new(),
             }),
             max_threads: max_threads.max(1),
             max_total_bytes: max_total_bytes.max(1),
@@ -244,6 +254,37 @@ impl HistoryCache {
     /// Whether a load is in flight for a thread.
     pub fn is_loading(&self, thread_id: &ThreadId) -> bool {
         self.lock().loads.contains_key(thread_id)
+    }
+
+    /// Records that a thread's last attempt to load failed.
+    pub fn mark_sync_failed(&self, thread_id: &ThreadId) {
+        self.lock()
+            .failed_at
+            .insert(thread_id.clone(), Instant::now());
+    }
+
+    /// Records that a thread's conversation is current again.
+    pub fn clear_sync_failure(&self, thread_id: &ThreadId) {
+        self.lock().failed_at.remove(thread_id);
+    }
+
+    /// Whether enough time has passed to try a failed load again.
+    ///
+    /// A thread that has never failed may always be tried. One that just failed
+    /// waits `backoff` first, so a reader polling an agent that is down does not
+    /// turn its own page into a stream of failed loads.
+    pub fn may_retry(&self, thread_id: &ThreadId, backoff: Duration) -> bool {
+        let mut inner = self.lock();
+        match inner.failed_at.get(thread_id) {
+            None => true,
+            Some(failed_at) if failed_at.elapsed() >= backoff => {
+                // The wait is over: this attempt is the retry, and it records
+                // its own outcome like any other.
+                inner.failed_at.remove(thread_id);
+                true
+            }
+            Some(_) => false,
+        }
     }
 
     /// Records which conversation a thread's rows now belong to.
@@ -679,6 +720,39 @@ mod tests {
         }
         assert!(cache.bytes() <= one_row * 2 + one_row / 2);
         assert_eq!(cache.len(), 1, "the older thread's rows are dropped whole");
+    }
+
+    /// A failure is not retried by every read: asking an agent that is down is
+    /// slow, and a polling reader must not turn one failure into a stream.
+    #[test]
+    fn a_failed_load_waits_before_it_is_tried_again() {
+        let cache = cache();
+        let thread = ThreadId::mint();
+        assert!(cache.may_retry(&thread, Duration::from_secs(30)));
+
+        cache.mark_sync_failed(&thread);
+        assert!(
+            !cache.may_retry(&thread, Duration::from_secs(30)),
+            "a fresh failure is not retried immediately"
+        );
+        assert!(
+            cache.may_retry(&thread, Duration::ZERO),
+            "and waiting long enough opens it again"
+        );
+        // Admitting a retry consumes the failure: the attempt that was just let
+        // through records its own outcome, so an attempt still in flight is not
+        // blocked here but by the load claim.
+        assert!(
+            cache.may_retry(&thread, Duration::from_secs(30)),
+            "the admitted retry is no longer holding the gate shut"
+        );
+
+        cache.mark_sync_failed(&thread);
+        cache.clear_sync_failure(&thread);
+        assert!(
+            cache.may_retry(&thread, Duration::from_secs(30)),
+            "a conversation that is current again needs no wait"
+        );
     }
 
     #[test]

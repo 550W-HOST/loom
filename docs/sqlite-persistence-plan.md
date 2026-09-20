@@ -295,6 +295,8 @@ loom 自有事实保留原来源：
 - 反向风险（重复显示）由集成测试盯住：`real_pi.rs` 里「跑一轮 → 再 load 历史」不得出现重复的
   user/assistant 行；发现 id 不匹配导致的重复，再补规则。
 
+**进展（2026-09-21，1.8 的自动部分 + 服务端入口）**：失败后的重试不再是「每次读都问一遍」。新增 `HistoryCache` 的失败时间记录（`mark_sync_failed`/`clear_sync_failure`/`may_retry`，内存态，因为「等多久」是进程属性不是会话属性），`read_thread_history` 在 `partial`/`stale`/`unavailable` 三种状态下都要先过 `may_retry(HISTORY_RETRY_BACKOFF = 30s)` 才发起加载——所以 agent 恢复后下一次读（或页面刷新）会自己接上，而 agent 不在时不会把页面变成失败请求流。加载成功清标记，失败/被拒/写库失败都记标记。显式入口：`AppState::refresh_thread_history`（清掉退避、无条件发起加载、返回当前存储视图）+ `POST /api/v1/threads/{id}/history/refresh`（202 + `{status, reason}`，无 binding/未知 provider 时 409 + 原因）——这是唯一能发现「会话在本服务看不到的地方又聊了」的手段，定时轮询做不到。测试：`a_failed_load_waits_before_the_next_read_retries_it`、`a_refresh_asks_for_the_conversation_again`、`a_failed_load_waits_before_it_is_tried_again`。**还差 UI 上的入口**（下一步）。
+
 **进展（2026-09-21，1.4b 落地）**：读路径已统一到库，内存缓存退化为「还没落盘的尾巴 + 正在加载的登记」。具体：`HistoryCache` 删掉 baseline/`generation`/`instance`/状态机，只留 `rows`（未落盘行）、binding、`begin_load/finish_load`、`confirm_written`（写盘成功后由写线程回调裁掉）；新增 `AppState::stored_view`：库行 + overlay 中库里没有的行，按号排序，`instance`/`revision` 取自库，**状态是推导出来的**（是否已同步、是否有加载在飞、上次失败原因），因此重启后状态不会丢；`read_thread_history`/`complete_view`/`settle_history_load` 全部改走它，加载成功即 `replace_replayed` 落库 + `adopt_binding` + `clear_unsaved`，失败只写 `last_error`（旧基线原样保留）。`http.rs` 的 timeline 与 turn 细节都从 `stored_view` 投影。
 
 **4.4 的去重已实现并有测试**：`replayed_copies_loom_already_recorded` 按角色、按顺序把 replay 里的消息与 loom 自己记的 `message` 行配对（assistant 的正文取 delta 累加后的整段，而不是单帧文本），配上的**整条消息的所有帧**都不再投影，loom 那条留下（它有真实时间）；replay 独有的是保留的。测试：`a_replayed_copy_of_a_recorded_message_does_not_open_a_second_row`（单元）+ `crates/server/tests/history.rs` 的重启端到端（4 行、顺序、两类行各自的时间语义）。

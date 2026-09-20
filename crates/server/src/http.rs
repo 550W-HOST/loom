@@ -111,6 +111,10 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/v1/threads/{id}/output", get(thread_output))
         .route("/api/v1/threads/{id}/read", post(read_thread))
+        .route(
+            "/api/v1/threads/{id}/history/refresh",
+            post(refresh_thread_history),
+        )
         .route("/api/v1/threads/{id}/unread", post(mark_thread_unread))
         .route("/api/v1/threads/{id}/archive", post(archive_thread))
         .route(
@@ -1964,6 +1968,48 @@ async fn thread_output(
         Some(assistant_messages.concatenated_text())
     };
     Json(json!({ "output": output })).into_response()
+}
+
+/// Asks for a thread's conversation to be read from its agent again.
+///
+/// The timeline read serves what is stored and asks for a load behind it, so
+/// this is not how a conversation arrives in the first place. It is the explicit
+/// ask, for the one case no poll can see — the session moved on somewhere this
+/// server cannot observe — and for a failure whose wait has not passed yet.
+///
+/// An accepted answer means a load is on its way, not that one finished: the
+/// caller refetches the timeline, which is where the conversation is.
+async fn refresh_thread_history(
+    State(state): State<AppState>,
+    Path(raw_thread_id): Path<String>,
+) -> Response {
+    let thread_id = match parse_thread_id(&raw_thread_id) {
+        Ok(thread_id) => thread_id,
+        Err(response) => return response,
+    };
+    if let Err(response) = public_thread_or_response(&state, &thread_id) {
+        return response;
+    }
+    match state.refresh_thread_history(&thread_id) {
+        crate::history::ThreadHistoryRead::Serve(view) => (
+            StatusCode::ACCEPTED,
+            Json(json!({
+                "status": view.status.token(),
+                "reason": view.reason,
+            })),
+        )
+            .into_response(),
+        crate::history::ThreadHistoryRead::Loading { reason } => (
+            StatusCode::ACCEPTED,
+            Json(json!({ "status": "loading", "reason": reason })),
+        )
+            .into_response(),
+        // Nothing can be asked for — no session, no host that offers its agent
+        // — and the reason is what the caller can act on.
+        crate::history::ThreadHistoryRead::Unavailable(reason) => {
+            error_response(StatusCode::CONFLICT, reason)
+        }
+    }
 }
 
 async fn read_thread(State(state): State<AppState>, Path(raw_thread_id): Path<String>) -> Response {

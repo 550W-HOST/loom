@@ -29,6 +29,12 @@ const HISTORY_MAX_BATCH_BYTES: u64 = 256 * 1024;
 const HISTORY_MAX_TOTAL_BYTES: u64 = 8 * 1024 * 1024;
 /// How long a load may take. It covers an agent's cold start and a full replay.
 const HISTORY_LOAD_DEADLINE: Duration = Duration::from_secs(90);
+/// How long a thread waits after a failed load before a read may try again.
+///
+/// Long enough that a reader polling a page does not turn an agent that is down
+/// into a stream of failed loads, short enough that an agent coming back is
+/// picked up without anyone having to do anything.
+const HISTORY_RETRY_BACKOFF: Duration = Duration::from_secs(30);
 
 /// Why a thread's conversation could not be produced.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -198,11 +204,26 @@ impl AppState {
             // may start is the loader's decision, not the reader's: it is the
             // same decision as the claim, and splitting it across two steps is
             // what let a run slip in between them.
+            //
+            // A failure waits out its backoff first: a page that polls is not a
+            // reason to ask an agent that just said no, over and over.
             HistoryStatus::Partial | HistoryStatus::Stale => {
-                let _ = self.start_thread_history_load(thread_id);
+                if self.history.may_retry(thread_id, HISTORY_RETRY_BACKOFF) {
+                    let _ = self.start_thread_history_load(thread_id);
+                }
                 ThreadHistoryRead::Serve(view)
             }
-            HistoryStatus::Ready | HistoryStatus::Unavailable => ThreadHistoryRead::Serve(view),
+            // A conversation with nothing in it whose load failed is the one
+            // state a read cannot improve by showing what it has — there is
+            // nothing to show. It is still retried, on the same terms: a thread
+            // must not need a person to type something before it can recover.
+            HistoryStatus::Unavailable => {
+                if self.history.may_retry(thread_id, HISTORY_RETRY_BACKOFF) {
+                    let _ = self.start_thread_history_load(thread_id);
+                }
+                ThreadHistoryRead::Serve(view)
+            }
+            HistoryStatus::Ready => ThreadHistoryRead::Serve(view),
         }
     }
 
@@ -282,6 +303,32 @@ impl AppState {
             reason,
             rows,
         })
+    }
+
+    /// Re-reads a thread's conversation from the agent that owns it.
+    ///
+    /// A read is a poll: it serves what is stored and, when something suggests
+    /// the stored conversation may not be current, asks for a load behind it.
+    /// This is the explicit ask. It is the only thing that can notice a session
+    /// that moved on somewhere this server cannot see — a terminal running the
+    /// agent against the same session, another machine — and nothing here polls
+    /// for that, because noticing would mean asking a machine on every page.
+    ///
+    /// It is also the way back from a failure before its backoff has passed.
+    pub fn refresh_thread_history(&self, thread_id: &ThreadId) -> ThreadHistoryRead {
+        // Explicit means now: this does not wait out a failed attempt's backoff.
+        self.history.clear_sync_failure(thread_id);
+        match self.start_thread_history_load(thread_id) {
+            // Already loading, at the concurrency bound, or behind a run that
+            // owns the session: what is stored is the answer either way, and
+            // the status says so.
+            Ok(()) | Err(HistoryUnavailable::Busy) | Err(HistoryUnavailable::RunInFlight) => {}
+            Err(error) => return ThreadHistoryRead::Unavailable(error.to_string()),
+        }
+        match self.stored_view(thread_id) {
+            Ok(view) => ThreadHistoryRead::Serve(view),
+            Err(error) => ThreadHistoryRead::Unavailable(error.to_string()),
+        }
     }
 
     /// Whether a run owns this thread right now.
@@ -437,6 +484,7 @@ impl AppState {
                     if let Err(error) = self.store().record_sync_failure(thread_id, reason) {
                         eprintln!("loom-server: recording a refused rebuild failed: {error}");
                     }
+                    self.history.mark_sync_failed(thread_id);
                     self.history_waits.wake(thread_id);
                     return Err(HistoryUnavailable::Incomplete(reason.to_owned()));
                 }
@@ -454,6 +502,7 @@ impl AppState {
                         // answer, and rows that arrive next are checked against
                         // it rather than against what was known before.
                         self.history.adopt_binding(thread_id, &binding);
+                        self.history.clear_sync_failure(thread_id);
                         // A rebuilt baseline replaces what is stored, holes
                         // included, so the thread is no longer unsaved.
                         self.store_writer().clear_unsaved(thread_id);
@@ -463,6 +512,7 @@ impl AppState {
                         if let Err(record) = self.store().record_sync_failure(thread_id, &reason) {
                             eprintln!("loom-server: recording a failed rebuild failed: {record}");
                         }
+                        self.history.mark_sync_failed(thread_id);
                         self.history_waits.wake(thread_id);
                         return Err(HistoryUnavailable::Incomplete(reason));
                     }
@@ -473,6 +523,7 @@ impl AppState {
                 if let Err(record) = self.store().record_sync_failure(thread_id, &reason) {
                     eprintln!("loom-server: recording a failed load failed: {record}");
                 }
+                self.history.mark_sync_failed(thread_id);
                 self.history_waits.wake(thread_id);
                 return Err(HistoryUnavailable::from(error));
             }
@@ -680,6 +731,120 @@ mod tests {
         assert_eq!(
             second.instance, first.instance,
             "the numbering is the same store's, only its revision moved"
+        );
+        state.shutdown().unwrap();
+    }
+
+    /// A refresh is the explicit ask: it starts a load even when the stored
+    /// conversation is complete, because the thing it exists for is a session
+    /// that moved on somewhere this server cannot see.
+    #[tokio::test]
+    async fn a_refresh_asks_for_the_conversation_again() {
+        let state = test_state();
+        let (thread, _) = state
+            .registry
+            .create_thread(
+                Some(state.registry.personal_project_id()),
+                Some("refresh".into()),
+                None,
+                loom_relay::now_ms(),
+            )
+            .unwrap();
+        state
+            .registry
+            .set_provider_session_id(
+                &thread.id,
+                "acp-session-1",
+                Some(
+                    loom_domain::ProviderSessionBinding::new("pi", "/srv/project")
+                        .on_host(HostId::mint()),
+                ),
+                loom_relay::now_ms(),
+            )
+            .unwrap();
+        seed_baseline(&state, &thread.id, &cache_binding(), &[identity()]);
+
+        // A complete conversation is served without a load.
+        assert!(matches!(
+            state.read_thread_history(&thread.id),
+            ThreadHistoryRead::Serve(ref view) if view.status == HistoryStatus::Ready
+        ));
+        assert!(!state.history.is_loading(&thread.id));
+
+        // The explicit ask does not take that for an answer.
+        match state.refresh_thread_history(&thread.id) {
+            ThreadHistoryRead::Serve(view) => assert_eq!(
+                view.status,
+                HistoryStatus::Stale,
+                "a load is now behind what is stored: {view:?}"
+            ),
+            other => panic!("a refresh serves what is stored, got {other:?}"),
+        }
+        assert!(
+            state.history.is_loading(&thread.id),
+            "the refresh started a load"
+        );
+        state.shutdown().unwrap();
+    }
+
+    /// A failed load is not retried by the very next read: the wait is what
+    /// keeps a page that polls from asking an agent that is down over and over.
+    /// The thread here is fully loadable, so the only thing holding the second
+    /// attempt back is the backoff.
+    #[tokio::test]
+    async fn a_failed_load_waits_before_the_next_read_retries_it() {
+        let state = test_state();
+        let (thread, _) = state
+            .registry
+            .create_thread(
+                Some(state.registry.personal_project_id()),
+                Some("offline".into()),
+                None,
+                loom_relay::now_ms(),
+            )
+            .unwrap();
+        state
+            .registry
+            .set_provider_session_id(
+                &thread.id,
+                "acp-session-1",
+                Some(
+                    loom_domain::ProviderSessionBinding::new("pi", "/srv/project")
+                        .on_host(HostId::mint()),
+                ),
+                loom_relay::now_ms(),
+            )
+            .unwrap();
+
+        let failure = state
+            .ensure_history(&thread.id, cache_binding(), || async {
+                Err(HistoryTransportError::Failed {
+                    code: "offline".to_owned(),
+                    message: "the agent is not there".to_owned(),
+                })
+            })
+            .await
+            .expect_err("the load failed");
+        assert!(
+            matches!(failure, HistoryUnavailable::Host { .. }),
+            "{failure:?}"
+        );
+
+        match state.read_thread_history(&thread.id) {
+            ThreadHistoryRead::Serve(view) => {
+                assert_eq!(view.status, HistoryStatus::Unavailable, "{view:?}");
+                assert!(
+                    view.reason
+                        .as_deref()
+                        .is_some_and(|reason| reason.contains("not there")),
+                    "the reason it failed is what the reader is told: {view:?}"
+                );
+            }
+            other => panic!("expected the failure to be served, got {other:?}"),
+        }
+        assert!(
+            !state.history.is_loading(&thread.id),
+            "the retry waits out its backoff rather than starting on this read"
         );
         state.shutdown().unwrap();
     }
