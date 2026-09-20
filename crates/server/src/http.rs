@@ -3102,6 +3102,14 @@ async fn search_threads(
 
 /// Everything a search found in one thread: the title first, then each message
 /// that matches, in log order.
+///
+/// Search reads the **retained log**, deliberately, and that is a limited
+/// reach: it sees `ThreadMessageAdded` events inside the shard's window and
+/// nothing older. A conversation the timeline can now show by replaying the
+/// agent's session is therefore not fully searchable, and no amount of caching
+/// changes that — an index over conversations would be a durable store this
+/// design does not add. The limit is documented in
+/// `docs/architecture.md` § The conversation is not in the log.
 #[allow(clippy::result_large_err)]
 fn thread_search_matches(
     state: &AppState,
@@ -4531,6 +4539,9 @@ async fn thread_timeline(
     // The log is still read above, but for loom's own facts — a goal, a
     // reported occupancy — which are not the conversation and must keep their
     // own meaning.
+    // The read is also what asks for the conversation when the cache does not
+    // hold it: it must not wait for an agent to start — a load can take as long
+    // as a cold start — so it answers `loading` and the client asks again.
     let (
         all_rows,
         model_fallback,
@@ -4539,8 +4550,8 @@ async fn thread_timeline(
         history_status,
         history_complete,
         history_reason,
-    ) = match state.history.view(&thread_id) {
-        Some(view) => {
+    ) = match state.read_thread_history(&thread_id) {
+        crate::history::ThreadHistoryRead::Serve(view) => {
             let built = cached_timeline_rows(&thread_id, &view);
             (
                 built.rows,
@@ -4552,22 +4563,24 @@ async fn thread_timeline(
                 view.reason.clone(),
             )
         }
-        None => {
-            // Nothing is cached yet. Reading a thread asks for its history, and
-            // the read must not wait for an agent to start — a load can take as
-            // long as a cold start. The answer is `loading`, and the client
-            // asks again; every other reader joins the same load.
-            let (status, reason) = match state.start_thread_history_load(&thread_id) {
-                Ok(()) | Err(crate::history::HistoryUnavailable::Busy) => {
-                    (crate::history_cache::HistoryStatus::Loading, None)
-                }
-                Err(error) => (
-                    crate::history_cache::HistoryStatus::Unavailable,
-                    Some(error.to_string()),
-                ),
-            };
-            (Vec::new(), None, 0, 0, status, false, reason)
-        }
+        crate::history::ThreadHistoryRead::Loading => (
+            Vec::new(),
+            None,
+            0,
+            0,
+            crate::history_cache::HistoryStatus::Loading,
+            false,
+            None,
+        ),
+        crate::history::ThreadHistoryRead::Unavailable(reason) => (
+            Vec::new(),
+            None,
+            0,
+            0,
+            crate::history_cache::HistoryStatus::Unavailable,
+            false,
+            Some(reason),
+        ),
     };
     let before_id_sequence = query.before_anchor_id.as_ref().and_then(|anchor_id| {
         all_rows.iter().find_map(|row| {

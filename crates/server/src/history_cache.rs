@@ -239,37 +239,53 @@ impl HistoryCache {
         events: Vec<ProviderEvent>,
     ) -> u64 {
         let mut inner = self.lock();
-        let generation = inner.take_generation();
-        let mut rows = Vec::with_capacity(events.len());
-        let mut bytes = 0u64;
-        let mut seq = 0u64;
-        for event in events {
-            seq += 1;
-            bytes = bytes.saturating_add(row_bytes(&event));
-            rows.push(CachedRow {
-                seq,
-                // A baseline *is* a replay: the agent's own account of the
-                // conversation, with no loom times in it.
-                source: RowSource::Replayed,
-                event,
-            });
-        }
-        inner.remove(thread_id);
-        inner.insert(
-            thread_id.clone(),
-            Entry {
-                generation,
-                binding: Some(binding),
-                status: HistoryStatus::Ready,
-                reason: None,
-                rows,
-                next_seq: seq + 1,
-                bytes,
-                last_used: 0,
-            },
-        );
+        let generation = inner.install_baseline(thread_id, binding, events);
         inner.evict_to_fit(self.max_threads, self.max_total_bytes);
         generation
+    }
+
+    /// The sequence the next appended row will get: how much live overlay the
+    /// entry holds.
+    ///
+    /// A load records this when it starts and the install checks it again: an
+    /// event that arrived while the replay was in flight is part of the
+    /// conversation too, and the replay that was collected before it is no
+    /// longer the whole of it.
+    pub fn append_mark(&self, thread_id: &ThreadId) -> u64 {
+        self.lock()
+            .entries
+            .get(thread_id)
+            .map(|entry| entry.next_seq)
+            .unwrap_or(0)
+    }
+
+    /// Replaces a thread's baseline, unless the live overlay moved since
+    /// `mark`.
+    ///
+    /// The check and the swap are one critical section on purpose. A replay is
+    /// the whole conversation *at the moment it was collected*, and the instant
+    /// the thread says something new it stops being one: installing it then
+    /// would drop the newer rows instead of showing them. Returns `false` when
+    /// the overlay moved and nothing was installed.
+    pub fn install_baseline_if_unchanged(
+        &self,
+        thread_id: &ThreadId,
+        binding: CacheBinding,
+        mark: u64,
+        events: Vec<ProviderEvent>,
+    ) -> bool {
+        let mut inner = self.lock();
+        let current = inner
+            .entries
+            .get(thread_id)
+            .map(|entry| entry.next_seq)
+            .unwrap_or(0);
+        if current != mark {
+            return false;
+        }
+        inner.install_baseline(thread_id, binding, events);
+        inner.evict_to_fit(self.max_threads, self.max_total_bytes);
+        true
     }
 
     /// Appends one live event to a thread's cached conversation.
@@ -331,6 +347,14 @@ impl HistoryCache {
             entry.next_seq += 1;
             entry.bytes = entry.bytes.saturating_add(size);
             entry.rows.push(CachedRow { seq, source, event });
+            // Rows arrived while a baseline was being loaded: there is
+            // something to show now, so the entry is an overlay rather than a
+            // spinner, and `complete` stays false until a baseline lands.
+            if entry.status == HistoryStatus::Loading {
+                entry.status = HistoryStatus::Partial;
+                entry.reason =
+                    Some("the conversation's history has not been loaded yet".to_owned());
+            }
             entry.last_used = tick;
             seq
         };
@@ -342,14 +366,24 @@ impl HistoryCache {
         Some(seq)
     }
 
-    /// Records that a live overlay is no longer current for a thread.
+    /// Records that what is cached is no longer current for a thread.
+    ///
+    /// The reason is kept for every status, because "here is what I have and
+    /// here is why it is not the whole conversation" is the answer a caller
+    /// needs — including when the answer is an overlay that will not be
+    /// replaced after all.
     pub fn mark_stale(&self, thread_id: &ThreadId, reason: impl Into<String>) {
         let mut inner = self.lock();
         if let Some(entry) = inner.entries.get_mut(thread_id) {
-            if entry.status == HistoryStatus::Ready {
-                entry.status = HistoryStatus::Stale;
-                entry.reason = Some(reason.into());
-            }
+            entry.status = match entry.status {
+                // Old rows are stale rows.
+                HistoryStatus::Ready | HistoryStatus::Stale => HistoryStatus::Stale,
+                // An overlay is still an overlay, and a load that ended
+                // without installing one must not leave a spinner behind.
+                HistoryStatus::Loading | HistoryStatus::Partial => HistoryStatus::Partial,
+                HistoryStatus::Unavailable => HistoryStatus::Unavailable,
+            };
+            entry.reason = Some(reason.into());
         }
     }
 
@@ -371,18 +405,29 @@ impl HistoryCache {
 
         // The match is resolved before the mutable borrow starts: the entry is
         // either updated in place (it describes this same conversation) or
-        // replaced, which needs `inner` for more than the map.
+        // replaced, which needs `inner` for more than the map. An entry whose
+        // binding is not known yet counts as the same conversation: nothing
+        // contradicts the one that failed, and replacing it would throw away
+        // what the user has already said.
         let same_conversation = inner
             .entries
             .get(thread_id)
-            .is_some_and(|entry| entry.binding.as_ref() == Some(&binding));
+            .is_some_and(|entry| entry.binding.as_ref().is_none_or(|known| known == &binding));
 
         if same_conversation {
             let entry = inner
                 .entries
                 .get_mut(thread_id)
                 .expect("the entry was checked above");
-            entry.status = HistoryStatus::Unavailable;
+            entry.status = match entry.status {
+                // A complete baseline stays visible when a refresh fails: it is
+                // old, not gone, and the reason says why it may be old.
+                HistoryStatus::Ready | HistoryStatus::Stale => HistoryStatus::Stale,
+                // An overlay is what the user has said so far; it is still not
+                // the whole conversation.
+                HistoryStatus::Partial => HistoryStatus::Partial,
+                HistoryStatus::Loading | HistoryStatus::Unavailable => HistoryStatus::Unavailable,
+            };
             entry.reason = Some(reason);
             entry.last_used = tick;
             return;
@@ -413,10 +458,14 @@ impl HistoryCache {
         let tick = inner.next_tick;
 
         // A cached conversation stays visible while it is refreshed: it is
-        // stale, not loading, because there is something to show. Resolved
-        // before the mutable borrow for the same reason as `mark_unavailable`.
+        // stale, not loading, because there is something to show. Rows for
+        // *another* conversation are the one thing that must not be shown under
+        // this load, so a known binding has to match; an entry whose binding is
+        // not known yet (an overlay that arrived before a session was reported)
+        // has nothing to contradict. Resolved before the mutable borrow for the
+        // same reason as `mark_unavailable`.
         let refresh = inner.entries.get(thread_id).is_some_and(|entry| {
-            entry.binding.as_ref() == Some(&binding) && !entry.rows.is_empty()
+            !entry.rows.is_empty() && entry.binding.as_ref().is_none_or(|known| known == &binding)
         });
 
         if refresh {
@@ -507,6 +556,46 @@ impl HistoryCache {
 }
 
 impl Inner {
+    /// Installs a baseline under a new generation. The caller holds the lock,
+    /// which is what lets a checked install decide and swap atomically.
+    fn install_baseline(
+        &mut self,
+        thread_id: &ThreadId,
+        binding: CacheBinding,
+        events: Vec<ProviderEvent>,
+    ) -> u64 {
+        let generation = self.take_generation();
+        let mut rows = Vec::with_capacity(events.len());
+        let mut bytes = 0u64;
+        let mut seq = 0u64;
+        for event in events {
+            seq += 1;
+            bytes = bytes.saturating_add(row_bytes(&event));
+            rows.push(CachedRow {
+                seq,
+                // A baseline *is* a replay: the agent's own account of the
+                // conversation, with no loom times in it.
+                source: RowSource::Replayed,
+                event,
+            });
+        }
+        self.remove(thread_id);
+        self.insert(
+            thread_id.clone(),
+            Entry {
+                generation,
+                binding: Some(binding),
+                status: HistoryStatus::Ready,
+                reason: None,
+                rows,
+                next_seq: seq + 1,
+                bytes,
+                last_used: 0,
+            },
+        );
+        generation
+    }
+
     /// Mints a generation. Never reused, so a cursor from an older one can
     /// never be read as a position in a newer one.
     fn take_generation(&mut self) -> u64 {
@@ -665,6 +754,111 @@ mod tests {
             }
         );
         assert_eq!(view.rows[2].source, RowSource::Message { at_ms: 5 });
+    }
+
+    /// A replay is the whole conversation as of the moment it was collected.
+    /// An event that arrived after that makes it a *past* view, and installing
+    /// it would drop the newer rows instead of showing them.
+    #[test]
+    fn an_install_is_refused_when_the_overlay_moved() {
+        let cache = cache();
+        let thread = ThreadId::mint();
+        let binding = binding("pi");
+        // What a load records when it starts, and what the overlay holds then.
+        let mark = cache.append_mark(&thread);
+        assert_eq!(
+            cache.append_live(&thread, Some(&binding), live(), identity()),
+            Some(1)
+        );
+
+        let installed = cache.install_baseline_if_unchanged(
+            &thread,
+            binding,
+            mark,
+            vec![identity(), identity(), identity()],
+        );
+        assert!(!installed, "a replay the thread outgrew is not installed");
+
+        let view = cache.view(&thread).unwrap();
+        assert_eq!(view.rows.len(), 1, "the newer event is still there");
+        assert_eq!(view.status, HistoryStatus::Partial);
+    }
+
+    #[test]
+    fn an_unchanged_overlay_accepts_the_install() {
+        let cache = cache();
+        let thread = ThreadId::mint();
+        let binding = binding("pi");
+        let mark = cache.append_mark(&thread);
+
+        assert!(cache.install_baseline_if_unchanged(
+            &thread,
+            binding,
+            mark,
+            vec![identity(), identity()]
+        ));
+        let view = cache.view(&thread).unwrap();
+        assert_eq!(view.status, HistoryStatus::Ready);
+        assert_eq!(view.rows.len(), 2);
+    }
+
+    /// Rows that arrive while a baseline is being loaded are worth showing:
+    /// the entry becomes an overlay again rather than staying a spinner, and it
+    /// still does not claim to be the whole conversation.
+    #[test]
+    fn rows_arriving_during_a_load_make_the_entry_an_overlay() {
+        let cache = cache();
+        let thread = ThreadId::mint();
+        let binding = binding("pi");
+        cache.mark_loading(&thread, binding.clone());
+        assert_eq!(cache.view(&thread).unwrap().status, HistoryStatus::Loading);
+
+        cache.append_live(&thread, Some(&binding), live(), identity());
+        let view = cache.view(&thread).unwrap();
+        assert_eq!(view.status, HistoryStatus::Partial);
+        assert!(!view.complete);
+        assert_eq!(view.rows.len(), 1);
+    }
+
+    /// An overlay whose binding is not known yet is still what the user said,
+    /// so a load must not blank it; a load for a *different* known binding must,
+    /// because those rows are another conversation's.
+    #[test]
+    fn a_load_keeps_an_unknown_binding_overlay_and_blanks_a_mismatched_one() {
+        let cache = cache();
+        let thread = ThreadId::mint();
+        cache.append_live(&thread, None, live(), identity());
+        cache.mark_loading(&thread, binding("pi"));
+        let view = cache.view(&thread).unwrap();
+        assert_eq!(view.status, HistoryStatus::Stale);
+        assert_eq!(view.rows.len(), 1, "the prompt is still shown");
+
+        let other = ThreadId::mint();
+        cache.append_live(&other, Some(&binding("pi")), live(), identity());
+        cache.mark_loading(&other, binding("omp"));
+        let view = cache.view(&other).unwrap();
+        assert_eq!(view.status, HistoryStatus::Loading);
+        assert!(
+            view.rows.is_empty(),
+            "another conversation's rows are not shown under this load"
+        );
+    }
+
+    /// A failed refresh is not a lost conversation: what was complete stays
+    /// visible as stale, with the failure as the reason.
+    #[test]
+    fn a_failed_refresh_keeps_a_complete_baseline_as_stale() {
+        let cache = cache();
+        let thread = ThreadId::mint();
+        let binding = binding("pi");
+        cache.install_baseline(&thread, binding.clone(), vec![identity()]);
+        cache.mark_unavailable(&thread, binding, "the agent is offline");
+
+        let view = cache.view(&thread).unwrap();
+        assert_eq!(view.status, HistoryStatus::Stale);
+        assert!(!view.complete);
+        assert_eq!(view.rows.len(), 1, "the old rows are still shown");
+        assert_eq!(view.reason.as_deref(), Some("the agent is offline"));
     }
 
     #[test]

@@ -128,7 +128,74 @@ impl HistoryWaits {
     }
 }
 
+/// What a read of a thread's conversation should answer.
+///
+/// A read is more than a lookup: it is the only thing that knows somebody
+/// wants the conversation, so it is also where "this needs loading" is
+/// decided.
+pub enum ThreadHistoryRead {
+    /// Serve these rows, whatever their status.
+    Serve(CacheView),
+    /// Nothing to serve yet. A load is in flight — possibly started by this
+    /// read — and the caller asks again.
+    Loading,
+    /// Nothing to serve and nothing that can be loaded, with the reason.
+    Unavailable(String),
+}
+
 impl AppState {
+    /// Reads a thread's conversation, asking for a load when one is needed.
+    ///
+    /// The triggers are the ones a read can act on:
+    ///
+    /// * **nothing cached** — ask for a load and answer `loading`, because a
+    ///   load can take as long as an agent's cold start;
+    /// * **an overlay with no baseline** — the thread has said something since
+    ///   this server started but nobody has loaded its past. Load it, *unless a
+    ///   run is in flight*: the run owns the session, the worker serializes a
+    ///   load against a prompt, and what the overlay holds is worth showing in
+    ///   the meantime. After a restart no run is in flight, which is exactly
+    ///   the case this exists for;
+    /// * **stale** — serve what is cached and load a newer view behind it;
+    /// * **ready** — serve it. A cache hit costs no ACP call;
+    /// * **unavailable** — serve the reason. A retry is an explicit act, not
+    ///   something every poll does: a deleted session would otherwise be asked
+    ///   for again on each read.
+    pub fn read_thread_history(&self, thread_id: &ThreadId) -> ThreadHistoryRead {
+        let Some(view) = self.history.view(thread_id) else {
+            return match self.start_thread_history_load(thread_id) {
+                Ok(()) | Err(HistoryUnavailable::Busy) => ThreadHistoryRead::Loading,
+                Err(error) => ThreadHistoryRead::Unavailable(error.to_string()),
+            };
+        };
+        match view.status {
+            HistoryStatus::Ready | HistoryStatus::Loading | HistoryStatus::Unavailable => {
+                ThreadHistoryRead::Serve(view)
+            }
+            HistoryStatus::Stale => {
+                let _ = self.start_thread_history_load(thread_id);
+                ThreadHistoryRead::Serve(view)
+            }
+            HistoryStatus::Partial => {
+                if !self.thread_has_run_in_flight(thread_id) {
+                    let _ = self.start_thread_history_load(thread_id);
+                }
+                ThreadHistoryRead::Serve(view)
+            }
+        }
+    }
+
+    /// Whether a run owns this thread right now.
+    ///
+    /// A run in flight is what a history load must not race: it holds the
+    /// provider session, and a load started behind it would either be refused
+    /// or wait for the turn to end. The overlay is the honest answer until then.
+    fn thread_has_run_in_flight(&self, thread_id: &ThreadId) -> bool {
+        self.registry
+            .thread(thread_id)
+            .is_some_and(|thread| thread.active_run_id.is_some())
+    }
+
     /// The conversation for a thread, loading it from its host if needed.
     pub async fn ensure_thread_history(
         &self,
@@ -182,8 +249,9 @@ impl AppState {
                 // is marked stale, not blanked, because the user may be
                 // reading it right now.
                 self.history.mark_loading(thread_id, binding.clone());
+                let mark = self.history.append_mark(thread_id);
                 let outcome = load().await;
-                self.settle_history_load(thread_id, binding, outcome)
+                self.settle_history_load(thread_id, binding, mark, outcome)
             }
             LoadTicket::Follower => self.await_leader(thread_id).await,
             LoadTicket::Refused => Err(HistoryUnavailable::Busy),
@@ -209,13 +277,17 @@ impl AppState {
         match self.history.begin_load(thread_id, &binding) {
             LoadTicket::Leader => {
                 self.history.mark_loading(thread_id, binding.clone());
+                // What the overlay holds when the load starts. An event that
+                // arrives before the replay does means the replay is not the
+                // whole conversation any more; see `settle_history_load`.
+                let mark = self.history.append_mark(thread_id);
                 let state = self.clone();
                 let thread_id = thread_id.clone();
                 tokio::spawn(async move {
                     let outcome = state
                         .load_thread_history(&binding.host_id, operation, HISTORY_LOAD_DEADLINE)
                         .await;
-                    let _ = state.settle_history_load(&thread_id, binding, outcome);
+                    let _ = state.settle_history_load(&thread_id, binding, mark, outcome);
                 });
                 Ok(())
             }
@@ -235,12 +307,30 @@ impl AppState {
         &self,
         thread_id: &ThreadId,
         binding: CacheBinding,
+        mark: u64,
         outcome: Result<Vec<ProviderEvent>, HistoryTransportError>,
     ) -> Result<CacheView, HistoryUnavailable> {
         self.history.finish_load(thread_id);
         match outcome {
             Ok(events) => {
-                self.history.install_baseline(thread_id, binding, events);
+                // A replay is the whole conversation as of the moment it was
+                // collected. If the thread has said something since, this one
+                // is not that whole any more, and replacing the overlay with it
+                // would drop what just arrived. The result is dropped instead,
+                // and the next read after the run ends loads again.
+                if !self
+                    .history
+                    .install_baseline_if_unchanged(thread_id, binding, mark, events)
+                {
+                    self.history.mark_stale(
+                        thread_id,
+                        "the thread changed while its history was loading",
+                    );
+                    self.history_waits.wake(thread_id);
+                    return Err(HistoryUnavailable::Incomplete(
+                        "the thread changed while its history was loading".to_owned(),
+                    ));
+                }
             }
             Err(error) => {
                 self.history
@@ -429,6 +519,107 @@ mod tests {
 
         assert!(view.generation > first, "a rebuild mints a new generation");
         assert_eq!(view.rows.len(), 3);
+        state.shutdown();
+    }
+
+    /// A thread that talks while its replay is in flight has outgrown that
+    /// replay: installing it would drop what just arrived, so the result is
+    /// discarded and the overlay keeps its rows.
+    #[tokio::test]
+    async fn a_baseline_the_thread_outgrew_is_dropped_instead_of_installed() {
+        let state = test_state();
+        let thread = ThreadId::mint();
+        let binding = cache_binding();
+        let loading = state.clone();
+        let loading_thread = thread.clone();
+
+        let failure = state
+            .ensure_history(&thread, binding.clone(), move || async move {
+                // The thread says something while the load is in flight.
+                loading.history.append_live(
+                    &loading_thread,
+                    Some(&binding),
+                    crate::history_cache::RowSource::Message { at_ms: 1 },
+                    identity(),
+                );
+                Ok(vec![identity(), identity(), identity()])
+            })
+            .await
+            .expect_err("a replay the thread outgrew is not a conversation");
+
+        assert!(
+            matches!(failure, HistoryUnavailable::Incomplete(ref message)
+                if message.contains("changed while its history was loading")),
+            "{failure:?}"
+        );
+        let view = state.history.view(&thread).unwrap();
+        assert_eq!(
+            view.rows.len(),
+            1,
+            "the live event survived the refused install"
+        );
+        assert_ne!(view.status, HistoryStatus::Ready);
+        state.shutdown();
+    }
+
+    /// A read of an overlay with no run behind it asks for the conversation.
+    /// After a restart this is the only thing that turns a diagnostic row into
+    /// the thread's actual history, so the read must not be a plain lookup.
+    #[tokio::test]
+    async fn a_read_of_an_overlay_asks_for_the_conversation() {
+        let state = test_state();
+        let (thread, _) = state
+            .registry
+            .create_thread(
+                Some(state.registry.personal_project_id()),
+                Some("old".into()),
+                None,
+                loom_relay::now_ms(),
+            )
+            .unwrap();
+        let host_id = HostId::mint();
+        state
+            .registry
+            .set_provider_session_id(
+                &thread.id,
+                "acp-session-1",
+                Some(
+                    loom_domain::ProviderSessionBinding::new("pi", "/srv/project").on_host(host_id),
+                ),
+                loom_relay::now_ms(),
+            )
+            .unwrap();
+        state.history.append_live(
+            &thread.id,
+            None,
+            crate::history_cache::RowSource::Message { at_ms: 1 },
+            identity(),
+        );
+        assert_eq!(
+            state.history.view(&thread.id).unwrap().status,
+            HistoryStatus::Partial
+        );
+
+        let read = state.read_thread_history(&thread.id);
+        assert!(matches!(read, ThreadHistoryRead::Serve(ref view)
+            if view.status == HistoryStatus::Partial && view.rows.len() == 1));
+
+        // The read asked for the load. The host here owns no session, so the
+        // attempt fails; what it must not do is leave the entry an overlay
+        // nobody ever tried to complete.
+        for _ in 0..200 {
+            if state.history.view(&thread.id).unwrap().status != HistoryStatus::Partial {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        let view = state.history.view(&thread.id).unwrap();
+        assert_ne!(
+            view.status,
+            HistoryStatus::Partial,
+            "the read asked for the conversation: {view:?}"
+        );
+        assert_eq!(view.rows.len(), 1, "the overlay stayed visible meanwhile");
         state.shutdown();
     }
 
