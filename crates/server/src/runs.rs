@@ -812,6 +812,7 @@ impl AppState {
                     self.runs.mark_provider_error(&run_id);
                 }
                 self.learn_provider_session(&event_for_learning, now);
+                self.learn_thread_name(&event_for_learning, now);
             }
         }
         ReportOutcome::Applied
@@ -868,6 +869,30 @@ impl AppState {
             // The thread's own record changed, so the sidebar sees it. Nothing
             // in the contract's thread shape carries this value; the event is
             // how a client could observe it.
+            let _ = self.publish_domain_event(&learned);
+        }
+    }
+
+    /// Names the thread from the agent's own title for the conversation.
+    ///
+    /// An ACP agent reports its session title as `thread/name/updated` once it
+    /// has one (for pi, derived from the first message). loom generates no
+    /// titles of its own, so without this the sidebar shows every thread as
+    /// the last-resort `Thread <short id>` the client falls back to.
+    ///
+    /// The domain applies it only to an untitled thread: a title from
+    /// `threads.create` or a client rename outranks the agent's guess, and the
+    /// agent re-reports its name on later turns of the same session.
+    fn learn_thread_name(&self, event: &RunEvent, now: u64) {
+        let ProviderEvent::ThreadNameUpdated { thread_name, .. } = &event.event.body else {
+            return;
+        };
+        if let Some(learned) = self
+            .registry
+            .set_provider_title(&event.thread_id, thread_name, now)
+        {
+            // `ThreadUpdated` is what makes the sidebar re-render: the client
+            // projects it as a `title-changed` invalidation.
             let _ = self.publish_domain_event(&learned);
         }
     }
@@ -2376,6 +2401,122 @@ mod tests {
             thread.resumable_session_id(&state.provider_spec().name, "/srv/project-a"),
             None,
             "a session id is only meaningful to the agent that issued it"
+        );
+
+        state.shutdown();
+    }
+
+    /// An agent that names its session names the thread: the server stores the
+    /// name and publishes the thread change a sidebar refetches on.
+    ///
+    /// Without it an untitled thread is `Thread <short id>` forever, because
+    /// loom generates no titles of its own.
+    #[tokio::test]
+    async fn a_provider_name_titles_an_untitled_thread() {
+        let state = state();
+        let (host_id, thread, _) = thread_with_workspace(&state, "/srv/project-a");
+        // The helper names its thread; an agent's name must not replace a
+        // title a client already had, so start from untitled.
+        state
+            .registry
+            .update_thread(
+                &thread.id,
+                &loom_domain::ThreadUpdate {
+                    title: Some(None),
+                    ..loom_domain::ThreadUpdate::default()
+                },
+                2,
+            )
+            .unwrap();
+        state
+            .registry
+            .post_message(&thread.id, MessageRole::User, "hi".into(), 3)
+            .unwrap();
+        let thread = state.registry.thread(&thread.id).unwrap();
+        let run = match state.dispatch_thread(&thread, "hi") {
+            DispatchOutcome::Dispatched(run) => run,
+            other => panic!("expected a dispatch, got {other:?}"),
+        };
+
+        let named = RunEvent::new(
+            thread.id.clone(),
+            thread.project_id.clone(),
+            run.run_id.clone(),
+            4,
+            ProviderEvent::ThreadNameUpdated {
+                provider_thread_id: "acp-session-1".into(),
+                thread_name: "  rename the sidebar  ".into(),
+            },
+        );
+        assert_eq!(
+            state.apply_run_report(
+                &host_id,
+                ProviderReport {
+                    host_id: host_id.clone(),
+                    event: named,
+                }
+            ),
+            ReportOutcome::Applied
+        );
+        assert_eq!(
+            state.registry.thread(&thread.id).unwrap().title.as_deref(),
+            Some("rename the sidebar")
+        );
+
+        // The change is published, not just stored: that is what the client's
+        // `title-changed` invalidation reads.
+        let frames = state
+            .relay
+            .replay_scope(&Scope::Project(thread.project_id.to_string()), 100)
+            .unwrap();
+        let published = frames.iter().any(|frame| {
+            let Ok(frame_value) = serde_json::from_slice::<serde_json::Value>(&frame.payload)
+            else {
+                return false;
+            };
+            let Some(payload) = frame_value["payload"].as_str() else {
+                return false;
+            };
+            let Ok(event) = serde_json::from_str::<serde_json::Value>(payload) else {
+                return false;
+            };
+            event["type"] == "thread_updated" && event["thread"]["title"] == "rename the sidebar"
+        });
+        assert!(published, "the title change reaches the project scope");
+
+        // The agent re-reports its name every turn; a client rename outranks
+        // it, and the report changes nothing.
+        state
+            .registry
+            .update_thread(
+                &thread.id,
+                &loom_domain::ThreadUpdate {
+                    title: Some(Some("mine".into())),
+                    ..loom_domain::ThreadUpdate::default()
+                },
+                5,
+            )
+            .unwrap();
+        let again = RunEvent::new(
+            thread.id.clone(),
+            thread.project_id.clone(),
+            run.run_id.clone(),
+            6,
+            ProviderEvent::ThreadNameUpdated {
+                provider_thread_id: "acp-session-1".into(),
+                thread_name: "rename the sidebar".into(),
+            },
+        );
+        state.apply_run_report(
+            &host_id,
+            ProviderReport {
+                host_id: host_id.clone(),
+                event: again,
+            },
+        );
+        assert_eq!(
+            state.registry.thread(&thread.id).unwrap().title.as_deref(),
+            Some("mine")
         );
 
         state.shutdown();

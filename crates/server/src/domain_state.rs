@@ -1995,6 +1995,26 @@ impl DomainRegistry {
             .and_then(|thread| thread.set_provider_session_id(session_id, binding, now_ms))
     }
 
+    /// Names an untitled thread from the agent's own title for the
+    /// conversation.
+    ///
+    /// Returns the event when the title changed, and `None` when it did not,
+    /// the thread already has one, or the thread is gone — the same
+    /// forgiveness as [`Self::set_provider_session_id`], because this is
+    /// learned from a report rather than requested by a client.
+    pub fn set_provider_title(
+        &self,
+        thread_id: &ThreadId,
+        title: &str,
+        now_ms: u64,
+    ) -> Option<DomainEvent> {
+        let mut inner = self.lock();
+        inner
+            .threads
+            .get_mut(thread_id)
+            .and_then(|thread| thread.set_provider_title(title, now_ms))
+    }
+
     /// Clears a thread's recorded run once it has ended.
     pub fn clear_thread_run(&self, thread_id: &ThreadId, now_ms: u64) -> Result<(), CommandError> {
         let mut inner = self.lock();

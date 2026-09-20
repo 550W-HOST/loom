@@ -62,7 +62,7 @@ provider bridge.
 | 3 | `turn/started` | produced | worker; synthesized before `session/prompt` because ACP has no turn event. |
 | 4 | `turn/completed` | produced | worker (ACP prompt stop reason, connection failure, timeout) and server (deadline, stale host, restart, no host). The single terminal event. |
 | 5 | `turn/input/accepted` | not produced | loom dispatches one prompt synchronously; acceptance is the `turn/started` boundary. There is no client request id to echo yet. |
-| 6 | `thread/name/updated` | not produced | ACP session metadata is translated only when the agent sends a concrete title; the current adapter does not receive a Pi-specific rename command. |
+| 6 | `thread/name/updated` | produced | worker; ACP `session_info_update` with a concrete title (pi derives its name from the first message). The server applies it as the thread's title while the thread has none; a title a client set outranks it. |
 | 7 | `thread/compacted` | produced | worker; an ACP adapter's compaction update when one is available. |
 | 8 | `thread/context/cleared` | not produced | ACP has no provider-neutral context-clear update that the current adapter drives. |
 | 9 | `thread/goal/updated` | not produced | The current ACP adapter does not synthesize a goal object from agent text or tool calls. |

@@ -801,6 +801,33 @@ impl Thread {
         })
     }
 
+    /// Names an untitled thread from the agent's own title for the
+    /// conversation.
+    ///
+    /// The ACP adapter reports the agent's session title as
+    /// `thread/name/updated`, and for an agent like pi it is derived from the
+    /// first message. loom generates no titles of its own, so this is the one
+    /// automatic source a thread has.
+    ///
+    /// It is applied only while the thread has no title: a title a client
+    /// created the thread with, or set through `threads.update`, outranks the
+    /// agent's guess. The agent re-reports its name on later turns of the same
+    /// session, so an unconditional write would silently undo a rename.
+    ///
+    /// Returns the event when the title changed, and `None` when it did not or
+    /// the thread already had one.
+    pub fn set_provider_title(&mut self, title: &str, now_ms: u64) -> Option<DomainEvent> {
+        let title = title.trim();
+        if title.is_empty() || self.title.is_some() {
+            return None;
+        }
+        self.title = Some(title.to_owned());
+        self.updated_at_ms = now_ms;
+        Some(DomainEvent::ThreadUpdated {
+            thread: self.clone(),
+        })
+    }
+
     /// Whether a run in `cwd` by `agent` may resume this thread's session.
     ///
     /// The whole point of recording the binding: a session opened by a
@@ -1170,6 +1197,67 @@ mod tests {
             Err(DomainError::InvalidField { field: "title", .. })
         ));
         assert_eq!(thread.title.as_deref(), Some("first"));
+    }
+
+    // --- provider title ---------------------------------------------------
+
+    #[test]
+    fn a_provider_title_names_an_untitled_thread_only() {
+        // A title a client set outranks the agent's name, whether it came from
+        // `threads.create` or a later rename.
+        let mut titled = thread();
+        assert_eq!(titled.set_provider_title("from the agent", 2_000), None);
+        assert_eq!(titled.title.as_deref(), Some("first"));
+
+        let mut thread = thread();
+        thread
+            .apply_update(
+                &ThreadUpdate {
+                    title: Some(None),
+                    ..ThreadUpdate::default()
+                },
+                1_500,
+            )
+            .unwrap();
+        assert_eq!(thread.title, None);
+
+        let event = thread
+            .set_provider_title("  from the agent  ", 2_000)
+            .expect("an untitled thread takes the agent's name");
+        let DomainEvent::ThreadUpdated { thread: updated } = &event else {
+            panic!("expected a thread_updated event, got {event:?}");
+        };
+        assert_eq!(updated.title.as_deref(), Some("from the agent"));
+        assert_eq!(updated.updated_at_ms, 2_000);
+
+        // The agent re-reports its name every turn; only the first is a fact.
+        assert_eq!(thread.set_provider_title("from the agent", 3_000), None);
+
+        // And once a client renames the thread, the agent's name cannot undo it.
+        thread
+            .apply_update(
+                &ThreadUpdate {
+                    title: Some(Some("renamed".into())),
+                    ..ThreadUpdate::default()
+                },
+                3_000,
+            )
+            .unwrap();
+        assert_eq!(thread.set_provider_title("from the agent", 3_001), None);
+        assert_eq!(thread.title.as_deref(), Some("renamed"));
+
+        // A blank name is not a title.
+        thread
+            .apply_update(
+                &ThreadUpdate {
+                    title: Some(None),
+                    ..ThreadUpdate::default()
+                },
+                4_000,
+            )
+            .unwrap();
+        assert_eq!(thread.set_provider_title("   ", 4_001), None);
+        assert_eq!(thread.title, None);
     }
 
     #[test]
