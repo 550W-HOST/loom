@@ -331,6 +331,9 @@ importers:
         specifier: ^4.6.2
         version: 4.6.2
     devDependencies:
+      '@bb/test-helpers':
+        specifier: workspace:*
+        version: link:../../ui/packages/test-helpers
       '@bb/tsconfig':
         specifier: workspace:*
         version: link:../../ui/packages/tsconfig
@@ -766,6 +769,25 @@ importers:
       vitest:
         specifier: ^3.2.4
         version: 3.2.7(@types/debug@4.1.13)(@types/node@22.20.2)(jiti@2.7.0)(jsdom@29.1.1)(lightningcss@1.33.0)(msw@2.15.0(@types/node@22.20.2)(typescript@5.9.3))(tsx@4.23.13)
+
+  ui/packages/test-helpers:
+    dependencies:
+      '@bb/domain':
+        specifier: workspace:*
+        version: link:../domain
+      zod:
+        specifier: ^4.6.2
+        version: 4.6.2
+    devDependencies:
+      '@bb/tsconfig':
+        specifier: workspace:*
+        version: link:../tsconfig
+      typescript:
+        specifier: npm:@typescript/typescript6@^6.0.2
+        version: '@typescript/typescript6@6.0.2'
+      typescript-7:
+        specifier: npm:typescript@^7.0.2
+        version: typescript@7.0.2
 
   ui/packages/thread-view:
     dependencies:

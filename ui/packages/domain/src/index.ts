@@ -68,7 +68,9 @@ export type {
   WorkspaceChangeStats,
   WorkspaceCommitSummary,
   WorkspaceFileStatus,
+  WorkspaceMergeBase,
   WorkspaceStatus,
+  WorkspaceWorkingTree,
 } from "./thread.js";
 
 import type { EnvironmentStatus } from "./environment.js";

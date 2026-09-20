@@ -121,6 +121,7 @@
     "bb-plugin-automations": "workspace:*"
   },
   "devDependencies": {
+    "@bb/test-helpers": "workspace:*",
     "@bb/tsconfig": "workspace:*",
     "@ladle/react": "^5.0.3",
     "@rolldown/plugin-babel": "^0.2.3",
