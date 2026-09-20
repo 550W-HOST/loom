@@ -137,24 +137,6 @@ impl PendingStatusChange {
             at_ms: self.at_ms,
         }
     }
-
-    /// Whether a replayed event is the pending append.
-    pub(crate) fn matches_event(&self, event: &DomainEvent) -> bool {
-        matches!(
-            event,
-            DomainEvent::ThreadStatusChanged {
-                thread_id,
-                project_id,
-                from,
-                to,
-                at_ms,
-            } if thread_id == &self.thread_id
-                && project_id == &self.project_id
-                && from == &self.from
-                && to == &self.to
-                && at_ms == &self.at_ms
-        )
-    }
 }
 
 /// Where a run's state is kept after the process that had it goes away.
@@ -344,15 +326,34 @@ impl RunRegistry {
         self.announce(&changed);
     }
 
+    /// Records the run's verdict — how it ended — before anything is published.
+    ///
+    /// This is the flag a restart trusts: it is written before the terminal
+    /// frame, so a crash between the two leaves a run whose verdict is known and
+    /// whose frame may be missing, which recovery can finish. Recording it after
+    /// the frame would leave the opposite window, where the frame exists and
+    /// nothing knows whether it was the last thing that happened.
+    pub fn mark_verdict(&self, run_id: &RunId, outcome: RunOutcome) -> bool {
+        let changed = {
+            let mut state = self.lock();
+            let Some(record) = state.records.get_mut(run_id) else {
+                return false;
+            };
+            record.terminal_outcome = Some(outcome);
+            record.clone()
+        };
+        self.announce(&changed);
+        true
+    }
+
     /// Records that the terminal run event reached the relay.
-    pub fn mark_terminal(&self, run_id: &RunId, outcome: RunOutcome) -> bool {
+    pub fn mark_terminal(&self, run_id: &RunId) -> bool {
         let changed = {
             let mut state = self.lock();
             let Some(record) = state.records.get_mut(run_id) else {
                 return false;
             };
             record.terminal_published = true;
-            record.terminal_outcome = Some(outcome);
             record.clone()
         };
         self.announce(&changed);
@@ -1146,7 +1147,7 @@ impl AppState {
 
     /// Publishes the server's own terminal event, clears the run, and moves
     /// the thread out of `working`.
-    fn finish_run(
+    pub(crate) fn finish_run(
         &self,
         record: &RunRecord,
         outcome: RunOutcome,
@@ -1333,6 +1334,11 @@ impl AppState {
                 body,
             )
         });
+        // The verdict is written before the frame it is about. A crash between
+        // the two leaves a run whose ending is known and whose frame may be
+        // missing — which recovery publishes — rather than a frame whose ending
+        // nothing recorded.
+        self.runs.mark_verdict(&record.run_id, outcome);
         if let Err(error) = self.publish_run_event(&record, terminal) {
             return FinishRunResult::PublishFailed(error.to_string());
         }
@@ -1340,7 +1346,7 @@ impl AppState {
         // The terminal append is the first commit point. Keep the record until
         // the follow-up thread-status append also succeeds, so a transient
         // relay failure can retry the same lifecycle without another terminal.
-        self.runs.mark_terminal(&record.run_id, outcome);
+        self.runs.mark_terminal(&record.run_id);
         let record = self
             .runs
             .get(&record.run_id)
@@ -1602,14 +1608,15 @@ mod tests {
         });
         assert!(registry.mark_started(&run_id, "acp-session-1".to_owned()));
         registry.mark_provider_error(&run_id);
-        assert!(registry.mark_terminal(&run_id, RunOutcome::Completed));
+        assert!(registry.mark_verdict(&run_id, RunOutcome::Completed));
+        assert!(registry.mark_terminal(&run_id));
         registry.remove(&run_id);
 
         let stored = sink.stored.lock().unwrap();
         assert_eq!(
             stored.len(),
-            4,
-            "insert, start, error and terminal each wrote the record"
+            5,
+            "insert, start, error, verdict and terminal each wrote the record"
         );
         assert!(
             stored.last().unwrap().terminal_outcome == Some(RunOutcome::Completed),

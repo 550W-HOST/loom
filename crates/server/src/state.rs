@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use loom_domain::{DomainEvent, DomainScope, HostId, RunId, RunOutcome, ThreadId, ThreadStatus};
+use loom_domain::{DomainEvent, DomainScope, HostId, RunId, RunOutcome, ThreadStatus};
 use loom_provider_protocol::ProviderSpec;
 use loom_relay::retention::Retention;
 use loom_relay::{now_ms, Relay, Result as RelayResult, Scope};
@@ -1088,56 +1088,51 @@ impl AppState {
         applied
     }
 
-    /// Fails every run that was in flight when the previous process stopped.
+    /// Settles every run a restart did not survive.
     ///
-    /// A restarted server cannot prove a provider is still running, so the
-    /// invariant it protects instead is that no thread is left `working` and no
-    /// run is left without a terminal event. The worker's later report is an
-    /// idempotent no-op (`ReportOutcome::Unknown`). Returns how many runs were
-    /// failed.
+    /// A stored record is the authority on how its run ended: its verdict is
+    /// written before the frame it is about, so a crash leaves a run whose
+    /// ending is known and whose frame may be missing. Nothing here reads the
+    /// log to find out what a run did — that is the read this replaces.
     fn fail_in_flight_runs(&self, records: Vec<RunRecord>, now: u64) -> usize {
         let mut restored = Vec::new();
-        for mut record in records {
-            let terminal = self.recover_run_flags(&mut record);
+        for record in records {
+            let verdict = record.terminal_outcome;
             let Some(thread) = self.registry.thread(&record.thread_id) else {
                 continue;
             };
-            if terminal.is_none()
+            if verdict.is_none()
                 && !matches!(thread.status, ThreadStatus::Working | ThreadStatus::Waiting)
             {
                 continue;
             }
-            restored.push((record, terminal));
+            restored.push((record, verdict));
         }
         self.runs
             .restore(restored.iter().map(|(record, _)| record.clone()));
 
         let mut failed = 0;
-        for (record, terminal) in &restored {
-            let settled = match terminal {
-                Some(outcome) => self.recover_published_terminal(record, *outcome, now),
+        for (record, verdict) in &restored {
+            let settled = match verdict {
+                Some(outcome) => self.settle_run_from_verdict(record, *outcome, now),
                 None => self.fail_run_after_restart(record, now),
             };
             if settled {
                 failed += 1;
             }
         }
-        // A run dispatched after the last snapshot has no record here, but its
-        // thread is still `working`. Sweep those too, using the run id the
-        // thread recorded when it was dispatched.
+        // A thread that is still `working` with no stored run is a thread whose
+        // run the store never saw — a dispatch the process did not survive. It
+        // has no verdict to trust, so it is failed from what the thread itself
+        // recorded, and a run id it never got is minted for the terminal.
         for thread in self.registry.threads() {
             if !matches!(thread.status, ThreadStatus::Working | ThreadStatus::Waiting) {
                 continue;
             }
-            let (record, terminal) = self.runs.for_thread(&thread.id).map_or_else(
+            let (record, verdict) = self.runs.for_thread(&thread.id).map_or_else(
                 || {
-                    let run_id = thread
-                        .active_run_id
-                        .clone()
-                        .or_else(|| self.latest_active_run_id(&thread.id))
-                        .unwrap_or_else(RunId::mint);
-                    let mut record = RunRecord {
-                        run_id,
+                    let record = RunRecord {
+                        run_id: thread.active_run_id.clone().unwrap_or_else(RunId::mint),
                         thread_id: thread.id.clone(),
                         project_id: thread.project_id.clone(),
                         host_id: HostId::mint(),
@@ -1153,18 +1148,16 @@ impl AppState {
                         terminal_outcome: None,
                         pending_status_event: None,
                     };
-                    let terminal = self.recover_run_flags(&mut record);
                     self.runs.insert(record.clone());
-                    (record, terminal)
+                    (record, None)
                 },
                 |record| {
-                    let mut record = record;
-                    let terminal = self.recover_run_flags(&mut record);
-                    (record, terminal)
+                    let verdict = record.terminal_outcome;
+                    (record, verdict)
                 },
             );
-            let settled = match terminal {
-                Some(outcome) => self.recover_published_terminal(&record, outcome, now),
+            let settled = match verdict {
+                Some(outcome) => self.settle_run_from_verdict(&record, outcome, now),
                 None => self.fail_run_after_restart(&record, now),
             };
             if settled {
@@ -1174,120 +1167,16 @@ impl AppState {
         failed
     }
 
-    /// Finds the last run event after the current thread entered `working`.
+    /// Settles a run whose ending the store knows.
     ///
-    /// A terminal run event clears `Thread::active_run_id` while replaying, so
-    /// a thread can still be `working` with no run record or active id when a
-    /// snapshot was taken before the terminal append. The status transition is
-    /// the durable boundary that lets recovery distinguish that terminal from
-    /// a previous turn's terminal event.
-    ///
-    /// This asks the **log**, not the timeline cache: "did this thread's turn
-    /// finish" is loom's own fact, and an agent's session replay cannot answer
-    /// it. It is therefore still bounded by whatever the backend retains — a
-    /// burst larger than `backend_max_len` can evict the boundary event and
-    /// make this decide wrongly. That is a recovery-correctness limitation
-    /// tracked separately from the conversation cache; see
-    /// `docs/architecture.md` § The conversation is not in the log.
-    fn latest_active_run_id(&self, thread_id: &ThreadId) -> Option<RunId> {
-        let scope = Scope::Thread(thread_id.to_string());
-        // Recovery reads history, so it must not be bounded by the replay
-        // window: after a downtime longer than the grace window, a windowed
-        // read would find no boundary and mis-recover the run.
-        let Ok(envelopes) = self.relay.retained_scope(&scope, usize::MAX) else {
-            return None;
-        };
-        let mut active = false;
-        let mut run_id = None;
-        for envelope in envelopes {
-            let Some(event) = domain_event_from_envelope(&envelope) else {
-                continue;
-            };
-            match event {
-                DomainEvent::ThreadStatusChanged {
-                    to: ThreadStatus::Working,
-                    ..
-                } => {
-                    active = true;
-                    run_id = None;
-                }
-                DomainEvent::ThreadStatusChanged {
-                    to: ThreadStatus::Idle | ThreadStatus::Error | ThreadStatus::Archived,
-                    ..
-                } => {
-                    active = false;
-                    run_id = None;
-                }
-                DomainEvent::ThreadRunEvent { run } if active => {
-                    run_id = Some(run.run_id.clone());
-                }
-                _ => {}
-            }
+    /// A run whose terminal frame was published only needs its thread brought
+    /// out of `working`; one whose frame never made it is finished normally, so
+    /// the terminal exists exactly once.
+    fn settle_run_from_verdict(&self, record: &RunRecord, outcome: RunOutcome, now: u64) -> bool {
+        if record.terminal_published {
+            return self.recover_published_terminal(record, outcome, now);
         }
-        run_id
-    }
-
-    /// Reconciles lifecycle progress for a run in an older or concurrently
-    /// captured snapshot with the retained relay log. Returns the terminal
-    /// outcome when that terminal has already been committed.
-    ///
-    /// Like [`AppState::latest_active_run_id`], this reads loom's own run
-    /// events rather than the conversation cache, and is bounded by what the
-    /// backend still retains: a terminal evicted past the shard cap is a run
-    /// this cannot settle from the log.
-    fn recover_run_flags(&self, record: &mut RunRecord) -> Option<RunOutcome> {
-        let scope = Scope::Thread(record.thread_id.to_string());
-        let Ok(envelopes) = self.relay.retained_scope(&scope, usize::MAX) else {
-            return record.terminal_outcome;
-        };
-        let mut terminal = None;
-        let pending_status_event = record.pending_status_event.clone();
-        let mut pending_status_published = false;
-        for envelope in envelopes {
-            let Some(event) = domain_event_from_envelope(&envelope) else {
-                continue;
-            };
-            match event {
-                DomainEvent::ThreadStatusChanged { .. } => {
-                    if pending_status_event
-                        .as_ref()
-                        .is_some_and(|pending| pending.matches_event(&event))
-                    {
-                        pending_status_published = true;
-                    }
-                }
-                DomainEvent::ThreadRunEvent { run }
-                    if run.run_id == record.run_id && run.thread_id == record.thread_id =>
-                {
-                    match run.kind() {
-                        "turn/started" => {
-                            record.turn_started = true;
-                            record.provider_thread_id = run.provider_thread_id().map(str::to_owned);
-                        }
-                        "provider/error" => {
-                            record.provider_error_reported = true;
-                            if record.provider_thread_id.is_none() {
-                                record.provider_thread_id =
-                                    run.provider_thread_id().map(str::to_owned);
-                            }
-                        }
-                        "turn/completed" if terminal.is_none() => {
-                            terminal = Some(run.terminal_outcome().unwrap_or(RunOutcome::Failed));
-                        }
-                        _ => {}
-                    }
-                }
-                _ => {}
-            }
-        }
-        if pending_status_published {
-            record.pending_status_event = None;
-        }
-        if let Some(outcome) = terminal {
-            record.terminal_published = true;
-            record.terminal_outcome = Some(outcome);
-        }
-        terminal.or(record.terminal_outcome)
+        self.finish_run(record, outcome, record.failure_reason.clone(), now)
     }
 
     /// Writes the entity view to the store, with the log's watermark.
@@ -1683,185 +1572,14 @@ mod tests {
         let store = crate::store::Store::open(dir.path().join("loom.db")).unwrap();
         crate::store::block_on(store.connection().execute("DELETE FROM entity", ())).unwrap();
     }
-
-    /// Every state change a thread's log ended with, oldest first.
-    fn thread_status_changes(state: &AppState, thread: &ThreadId) -> Vec<String> {
-        let frames = state
-            .relay
-            .replay_scope(&Scope::Thread(thread.to_string()), 100)
-            .unwrap();
-        let mut changes = Vec::new();
-        for frame in &frames {
-            let Ok(message) =
-                serde_json::from_slice::<crate::protocol::WorkerServerMessage>(&frame.payload)
-            else {
-                continue;
-            };
-            let crate::protocol::WorkerServerMessage::Event { payload, .. } = message else {
-                continue;
-            };
-            let Ok(event) = serde_json::from_str::<DomainEvent>(&payload) else {
-                continue;
-            };
-            if let DomainEvent::ThreadStatusChanged { to, .. } = event {
-                changes.push(to.to_string());
-            }
-        }
-        changes
-    }
-
+    /// A run whose verdict the store knows but whose terminal frame never
+    /// reached the log is finished on recovery — once.
+    ///
+    /// The verdict is written before the frame, so this is the reachable crash
+    /// window: the run's ending is known, its frame may be missing, and
+    /// recovery publishes what is missing instead of guessing from the log.
     #[tokio::test]
-    async fn the_entity_view_survives_a_restart() {
-        use loom_domain::EnvironmentKind;
-
-        let dir = TempDir::new().unwrap();
-        let (project_id, host_id, environment_id, thread_id);
-        {
-            let state = AppState::build(durable_config(&dir)).unwrap();
-            project_id = state.registry.personal_project_id();
-            let (host, _) = state
-                .registry
-                .enroll_host(None, "laptop".into(), now_ms())
-                .unwrap();
-            host_id = host.id.clone();
-            let (environment, _) = state
-                .registry
-                .create_environment(
-                    Some(state.registry.personal_project_id()),
-                    host_id.clone(),
-                    EnvironmentKind::Unmanaged,
-                    Some("/srv/loom".into()),
-                    now_ms(),
-                )
-                .unwrap();
-            environment_id = environment.id.clone();
-            let (thread, _) = state
-                .registry
-                .create_thread(
-                    Some(state.registry.personal_project_id()),
-                    Some("persisted".into()),
-                    Some(environment_id.clone()),
-                    now_ms(),
-                )
-                .unwrap();
-            thread_id = thread.id.clone();
-            state.shutdown().unwrap();
-        }
-
-        let state = AppState::build(durable_config(&dir)).unwrap();
-        // The personal project keeps its identity: it is never an event, so
-        // only the snapshot can carry it.
-        assert_eq!(state.registry.personal_project_id(), project_id);
-        assert_eq!(state.registry.host(&host_id).unwrap().name, "laptop");
-        let environment = state.registry.environment(&environment_id).unwrap();
-        assert_eq!(environment.path.as_deref(), Some("/srv/loom"));
-        let thread = state.registry.thread(&thread_id).unwrap();
-        assert_eq!(thread.title.as_deref(), Some("persisted"));
-        assert_eq!(thread.status, ThreadStatus::Idle);
-        assert_eq!(thread.environment_id.as_ref(), Some(&environment_id));
-        state.shutdown().unwrap();
-    }
-
-    #[tokio::test]
-    async fn a_run_in_flight_at_shutdown_is_failed_on_restart() {
-        use loom_domain::{EnvironmentKind, MessageRole};
-
-        let dir = TempDir::new().unwrap();
-        let thread_id;
-        {
-            let state = AppState::build(durable_config(&dir)).unwrap();
-            let (host, _) = state
-                .registry
-                .enroll_host(None, "laptop".into(), now_ms())
-                .unwrap();
-            let (environment, _) = state
-                .registry
-                .create_environment(
-                    Some(state.registry.personal_project_id()),
-                    host.id.clone(),
-                    EnvironmentKind::Unmanaged,
-                    Some("/srv/loom".into()),
-                    now_ms(),
-                )
-                .unwrap();
-            let (thread, _) = state
-                .registry
-                .create_thread(
-                    Some(state.registry.personal_project_id()),
-                    Some("t".into()),
-                    Some(environment.id),
-                    now_ms(),
-                )
-                .unwrap();
-            thread_id = thread.id.clone();
-            state
-                .registry
-                .post_message(&thread_id, MessageRole::User, "hi".into(), now_ms())
-                .unwrap();
-            let thread = state.registry.thread(&thread_id).unwrap();
-            assert!(matches!(
-                state.dispatch_thread(&thread, "hi"),
-                crate::runs::DispatchOutcome::Dispatched(_)
-            ));
-            assert_eq!(
-                state.registry.thread(&thread_id).unwrap().status,
-                ThreadStatus::Working
-            );
-            state.shutdown().unwrap();
-        }
-
-        let state = AppState::build(durable_config(&dir)).unwrap();
-        // The run cannot be proven alive, so it is failed and the thread leaves
-        // `working`; the recovered run is already terminal.
-        assert_eq!(
-            state.registry.thread(&thread_id).unwrap().status,
-            ThreadStatus::Error
-        );
-        assert!(state.runs.is_empty());
-        // State and log agree: the last status change the log holds is the one
-        // recovery published, not the stale `working` from before the restart.
-        assert_eq!(
-            thread_status_changes(&state, &thread_id).last().unwrap(),
-            "error"
-        );
-        let run_events = state
-            .relay
-            .replay_scope(&Scope::Thread(thread_id.to_string()), 100)
-            .unwrap()
-            .into_iter()
-            .filter_map(|envelope| domain_event_from_envelope(&envelope))
-            .filter_map(|event| match event {
-                DomainEvent::ThreadRunEvent { run } => Some(run),
-                _ => None,
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(
-            run_events.iter().map(|run| run.kind()).collect::<Vec<_>>(),
-            vec!["turn/started", "provider/error", "turn/completed"]
-        );
-        let run_id = run_events[0].run_id.clone();
-        assert!(run_events.iter().all(|run| {
-            run.run_id == run_id && run.event.scope.turn_id() == Some(run_id.to_string()).as_deref()
-        }));
-        assert_eq!(
-            run_events[1].event.body,
-            loom_domain::ProviderEvent::ProviderError {
-                provider_thread_id: loom_domain::RunEvent::synthetic_provider_thread_id(&run_id),
-                message: "server restarted while the run was in flight".into(),
-                detail: None,
-                error_info: None,
-                will_retry: Some(false),
-            }
-        );
-        assert_eq!(
-            run_events[2].terminal_error(),
-            Some("server restarted while the run was in flight")
-        );
-        state.shutdown().unwrap();
-    }
-
-    #[tokio::test]
-    async fn a_committed_terminal_is_not_published_again_during_recovery() {
+    async fn a_run_whose_frame_never_reached_the_log_is_finished_on_recovery() {
         use loom_domain::{EnvironmentKind, MessageRole, RunEvent};
 
         let dir = TempDir::new().unwrap();
@@ -1893,7 +1611,7 @@ mod tests {
                 .registry
                 .create_thread(
                     Some(state.registry.personal_project_id()),
-                    Some("terminal already committed".into()),
+                    Some("verdict without a frame".into()),
                     Some(environment.id),
                     now_ms(),
                 )
@@ -1913,10 +1631,6 @@ mod tests {
                 other => panic!("expected a dispatch, got {other:?}"),
             };
             run_id = run.run_id.clone();
-
-            // Simulate the crash window after the run path appended its start
-            // and terminal events but before it removed the registry record or
-            // published the thread's final status.
             state
                 .publish_domain_event(&DomainEvent::ThreadRunEvent {
                     run: Box::new(RunEvent::started(
@@ -1928,17 +1642,12 @@ mod tests {
                     )),
                 })
                 .unwrap();
+            // What the run path does with a start frame, and then the verdict:
+            // the process dies before the terminal frame is appended.
+            state.runs.mark_started(&run_id, "provider-1".to_owned());
             state
-                .publish_domain_event(&DomainEvent::ThreadRunEvent {
-                    run: Box::new(RunEvent::completed(
-                        thread.id,
-                        thread.project_id,
-                        run.run_id,
-                        now_ms(),
-                        Some("provider-1".into()),
-                    )),
-                })
-                .unwrap();
+                .runs
+                .mark_verdict(&run_id, loom_domain::RunOutcome::Completed);
             state.shutdown().unwrap();
         }
 
@@ -1947,7 +1656,6 @@ mod tests {
             state.registry.thread(&thread_id).unwrap().status,
             ThreadStatus::Idle
         );
-        assert!(state.runs.is_empty());
         let run_events = state
             .relay
             .replay_scope(&Scope::Thread(thread_id.to_string()), 100)
@@ -1961,19 +1669,24 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(
             run_events.iter().map(|run| run.kind()).collect::<Vec<_>>(),
-            vec!["turn/started", "turn/completed"]
+            vec!["turn/started", "turn/completed"],
+            "recovery publishes the terminal the run never got to"
         );
         assert!(run_events.iter().all(|run| run.run_id == run_id));
         state.shutdown().unwrap();
     }
 
+    /// A run the store never knew about is failed rather than guessed at.
+    ///
+    /// This is the other side of the same window: with no stored run there is no
+    /// verdict to trust, so the thread is brought out of `working` with a
+    /// failure instead of a terminal nobody recorded.
     #[tokio::test]
-    async fn a_terminal_in_the_log_is_recovered_without_a_run_snapshot() {
+    async fn a_working_thread_with_no_stored_run_is_failed_on_recovery() {
         use loom_domain::{EnvironmentKind, MessageRole, RunEvent};
 
         let dir = TempDir::new().unwrap();
         let thread_id;
-        let run_id;
         {
             let state = AppState::build(durable_config(&dir)).unwrap();
             let (host, host_event) = state
@@ -2000,7 +1713,7 @@ mod tests {
                 .registry
                 .create_thread(
                     Some(state.registry.personal_project_id()),
-                    Some("terminal without snapshot".into()),
+                    Some("no record".into()),
                     Some(environment.id),
                     now_ms(),
                 )
@@ -2019,7 +1732,6 @@ mod tests {
                 crate::runs::DispatchOutcome::Dispatched(run) => run,
                 other => panic!("expected a dispatch, got {other:?}"),
             };
-            run_id = run.run_id.clone();
             state
                 .publish_domain_event(&DomainEvent::ThreadRunEvent {
                     run: Box::new(RunEvent::started(
@@ -2031,42 +1743,18 @@ mod tests {
                     )),
                 })
                 .unwrap();
-            state
-                .publish_domain_event(&DomainEvent::ThreadRunEvent {
-                    run: Box::new(RunEvent::completed(
-                        thread.id,
-                        thread.project_id,
-                        run.run_id,
-                        now_ms(),
-                        Some("provider-1".into()),
-                    )),
-                })
-                .unwrap();
             state.shutdown().unwrap();
         }
 
+        // The store loses the run: what is left is a thread still `working`
+        // with nothing to say what its run did.
         drop_entity_view(&dir);
         let state = AppState::build(durable_config(&dir)).unwrap();
         assert_eq!(
             state.registry.thread(&thread_id).unwrap().status,
-            ThreadStatus::Idle
+            ThreadStatus::Error,
+            "a run nothing recorded is failed, not left working"
         );
-        let run_events = state
-            .relay
-            .replay_scope(&Scope::Thread(thread_id.to_string()), 100)
-            .unwrap()
-            .into_iter()
-            .filter_map(|envelope| domain_event_from_envelope(&envelope))
-            .filter_map(|event| match event {
-                DomainEvent::ThreadRunEvent { run } => Some(run),
-                _ => None,
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(
-            run_events.iter().map(|run| run.kind()).collect::<Vec<_>>(),
-            vec!["turn/started", "turn/completed"]
-        );
-        assert!(run_events.iter().all(|run| run.run_id == run_id));
         state.shutdown().unwrap();
     }
 
