@@ -363,9 +363,17 @@ impl AppState {
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner()),
         )?);
+        // The overlay has to exist before the writer, because the writer tells
+        // it which rows are committed.
+        let history = Arc::new(crate::history_cache::HistoryCache::new(
+            HISTORY_CACHE_THREADS,
+            HISTORY_CACHE_BYTES,
+            HISTORY_CACHE_CONCURRENT_LOADS,
+        ));
         let store_writer = Arc::new(crate::store::StoreWriter::spawn(
             Arc::clone(&store),
             STORE_WRITE_QUEUE,
+            Arc::clone(&history) as Arc<dyn crate::store::WrittenRows>,
         ));
         let ui = Ui::from_config(config.ui_proxy.clone())
             .map_err(|message| BuildStateError { message })?;
@@ -414,11 +422,7 @@ impl AppState {
             host_files: Arc::new(HostFileBroker::new()),
             host_rpc: Arc::new(HostRpcBroker::new()),
             history_rpc: Arc::new(HistoryBroker::new()),
-            history: Arc::new(crate::history_cache::HistoryCache::new(
-                HISTORY_CACHE_THREADS,
-                HISTORY_CACHE_BYTES,
-                HISTORY_CACHE_CONCURRENT_LOADS,
-            )),
+            history,
             store,
             store_writer,
             seqs,

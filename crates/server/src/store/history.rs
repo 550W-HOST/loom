@@ -22,9 +22,12 @@
 //!   must not erase it.
 
 use loom_domain::{HostId, ProviderEvent, RunId, ThreadId};
-use rusqlite::{params, Connection, OptionalExtension};
+use turso::{params, Connection};
 
-use super::{Store, StoreError};
+use super::{
+    block_on, column_integer, column_optional_integer, column_optional_text, column_text, Store,
+    StoreError,
+};
 use crate::history_cache::{CacheBinding, RowSource};
 
 /// One stored row, as the projection wants it.
@@ -109,29 +112,22 @@ fn decode_source(
 impl Store {
     /// What is known about a thread's stored conversation.
     pub fn history(&self, thread_id: &ThreadId) -> Result<Option<StoredHistory>, StoreError> {
-        let row = self
-            .connection()
-            .query_row(
-                "SELECT provider_session_id, binding_agent, binding_cwd, binding_host_id,
-                        revision, synced_at_ms, last_error
-                 FROM thread_history WHERE thread_id = ?1",
-                params![thread_id.to_string()],
-                |row| {
-                    Ok((
-                        row.get::<_, Option<String>>(0)?,
-                        row.get::<_, Option<String>>(1)?,
-                        row.get::<_, Option<String>>(2)?,
-                        row.get::<_, Option<String>>(3)?,
-                        row.get::<_, i64>(4)?,
-                        row.get::<_, Option<i64>>(5)?,
-                        row.get::<_, Option<String>>(6)?,
-                    ))
-                },
-            )
-            .optional()?;
-        let Some((session, agent, cwd, host, revision, synced_at_ms, last_error)) = row else {
+        let mut rows = block_on(self.connection().query(
+            "SELECT provider_session_id, binding_agent, binding_cwd, binding_host_id,
+                    revision, synced_at_ms, last_error
+             FROM thread_history WHERE thread_id = ?1",
+            (thread_id.to_string(),),
+        ))?;
+        let Some(row) = block_on(rows.next())? else {
             return Ok(None);
         };
+        let session = column_optional_text(&row, 0)?;
+        let agent = column_optional_text(&row, 1)?;
+        let cwd = column_optional_text(&row, 2)?;
+        let host = column_optional_text(&row, 3)?;
+        let revision = column_integer(&row, 4)?;
+        let synced_at_ms = column_optional_integer(&row, 5)?;
+        let last_error = column_optional_text(&row, 6)?;
 
         // A binding is only a binding when every part of it is there: a session
         // id with no machine is not one this server can ask for, and reporting
@@ -157,19 +153,18 @@ impl Store {
 
     /// The stored conversation, oldest first.
     pub fn rows(&self, thread_id: &ThreadId) -> Result<Vec<StoredRow>, StoreError> {
-        let connection = self.connection();
-        let mut statement = connection.prepare(
+        let mut rows = block_on(self.connection().query(
             "SELECT seq, source_kind, source_run_id, source_at_ms, event_json
              FROM thread_history_row WHERE thread_id = ?1 ORDER BY seq",
-        )?;
-        let mut rows = statement.query(params![thread_id.to_string()])?;
+            (thread_id.to_string(),),
+        ))?;
         let mut stored = Vec::new();
-        while let Some(row) = rows.next()? {
-            let seq = u64::try_from(row.get::<_, i64>(0)?).unwrap_or(0);
-            let kind: String = row.get(1)?;
-            let run_id: Option<String> = row.get(2)?;
-            let at_ms: Option<i64> = row.get(3)?;
-            let json: String = row.get(4)?;
+        while let Some(row) = block_on(rows.next())? {
+            let seq = u64::try_from(column_integer(&row, 0)?).unwrap_or(0);
+            let kind = column_text(&row, 1)?;
+            let run_id = column_optional_text(&row, 2)?;
+            let at_ms = column_optional_integer(&row, 3)?;
+            let json = column_text(&row, 4)?;
             let event: ProviderEvent = serde_json::from_str(&json).map_err(|error| {
                 StoreError::new(format!("a stored row is not a provider event: {error}"))
             })?;
@@ -184,11 +179,14 @@ impl Store {
 
     /// How many rows a thread has stored.
     pub fn row_count(&self, thread_id: &ThreadId) -> Result<u64, StoreError> {
-        let count: i64 = self.connection().query_row(
+        let mut rows = block_on(self.connection().query(
             "SELECT COUNT(*) FROM thread_history_row WHERE thread_id = ?1",
-            params![thread_id.to_string()],
-            |row| row.get(0),
-        )?;
+            (thread_id.to_string(),),
+        ))?;
+        let count = match block_on(rows.next())? {
+            Some(row) => column_integer(&row, 0)?,
+            None => 0,
+        };
         Ok(u64::try_from(count).unwrap_or(0))
     }
 
@@ -205,12 +203,11 @@ impl Store {
         source: &RowSource,
         event: &ProviderEvent,
     ) -> Result<(), StoreError> {
-        let connection = self.connection();
-        let transaction = connection.unchecked_transaction()?;
+        let transaction = block_on(self.connection().unchecked_transaction())?;
         self.ensure_header(&transaction, thread_id)?;
         insert_row(&transaction, thread_id, seq, source, event)?;
         bump_next_seq(&transaction, thread_id, seq)?;
-        transaction.commit()?;
+        block_on(transaction.commit())?;
         Ok(())
     }
 
@@ -220,27 +217,28 @@ impl Store {
     /// numbers the rest of the conversation after what it already wrote, so a
     /// cursor from before the restart is still a position in this conversation.
     pub fn next_seq(&self, thread_id: &ThreadId) -> Result<u64, StoreError> {
-        let connection = self.connection();
-        let counter: Option<i64> = connection
-            .query_row(
-                "SELECT next_seq FROM thread_history WHERE thread_id = ?1",
-                params![thread_id.to_string()],
-                |row| row.get(0),
-            )
-            .optional()?;
+        let mut rows = block_on(self.connection().query(
+            "SELECT next_seq FROM thread_history WHERE thread_id = ?1",
+            (thread_id.to_string(),),
+        ))?;
+        let counter = match block_on(rows.next())? {
+            Some(row) => column_integer(&row, 0)?,
+            None => 1,
+        };
         // `MAX(seq) + 1` as well: a header is written with every row, but the
         // counter is the authority only as long as it is never behind the rows
         // it is supposed to be ahead of.
-        let highest: Option<i64> = connection.query_row(
+        let mut rows = block_on(self.connection().query(
             "SELECT MAX(seq) FROM thread_history_row WHERE thread_id = ?1",
-            params![thread_id.to_string()],
-            |row| row.get(0),
-        )?;
-        let counter = counter.map(|value| u64::try_from(value).unwrap_or(1));
-        let highest = highest
-            .map(|value| u64::try_from(value).unwrap_or(0).saturating_add(1))
-            .unwrap_or(1);
-        Ok(counter.unwrap_or(1).max(highest))
+            (thread_id.to_string(),),
+        ))?;
+        let highest = match block_on(rows.next())? {
+            Some(row) => column_optional_integer(&row, 0)?
+                .map(|value| u64::try_from(value).unwrap_or(0).saturating_add(1))
+                .unwrap_or(1),
+            None => 1,
+        };
+        Ok(u64::try_from(counter).unwrap_or(1).max(highest))
     }
 
     /// Every thread the store holds a conversation header for, with the
@@ -249,16 +247,17 @@ impl Store {
     /// This is what a starting server seeds its numbering from: nothing that was
     /// written before it may be numbered again.
     pub fn next_sequences(&self) -> Result<Vec<(ThreadId, u64)>, StoreError> {
-        let connection = self.connection();
-        let mut statement = connection.prepare("SELECT thread_id, next_seq FROM thread_history")?;
-        let mut rows = statement.query([])?;
+        let mut rows = block_on(
+            self.connection()
+                .query("SELECT thread_id, next_seq FROM thread_history", ()),
+        )?;
         let mut sequences = Vec::new();
-        while let Some(row) = rows.next()? {
-            let raw: String = row.get(0)?;
+        while let Some(row) = block_on(rows.next())? {
+            let raw = column_text(&row, 0)?;
             let thread_id = raw
                 .parse::<ThreadId>()
                 .map_err(|error| StoreError::new(format!("a stored thread id {raw:?}: {error}")))?;
-            let next = u64::try_from(row.get::<_, i64>(1)?).unwrap_or(1);
+            let next = u64::try_from(column_integer(&row, 1)?).unwrap_or(1);
             sequences.push((thread_id, next));
         }
         Ok(sequences)
@@ -282,17 +281,16 @@ impl Store {
         events: &[ProviderEvent],
         at_ms: u64,
     ) -> Result<u64, StoreError> {
-        let connection = self.connection();
-        let transaction = connection.unchecked_transaction()?;
-        transaction.execute(
+        let transaction = block_on(self.connection().unchecked_transaction())?;
+        block_on(transaction.execute(
             "INSERT INTO thread_history (thread_id) VALUES (?1)
              ON CONFLICT(thread_id) DO NOTHING",
             params![thread_id.to_string()],
-        )?;
-        transaction.execute(
+        ))?;
+        block_on(transaction.execute(
             "DELETE FROM thread_history_row WHERE thread_id = ?1 AND source_kind = 'replayed'",
             params![thread_id.to_string()],
-        )?;
+        ))?;
         for (offset, event) in events.iter().enumerate() {
             let seq = first_seq.saturating_add(offset as u64);
             insert_row(&transaction, thread_id, seq, &RowSource::Replayed, event)?;
@@ -304,7 +302,7 @@ impl Store {
                 first_seq.saturating_add(last as u64),
             )?;
         }
-        transaction.execute(
+        block_on(transaction.execute(
             "UPDATE thread_history
                 SET provider_session_id = ?2, binding_agent = ?3, binding_cwd = ?4,
                     binding_host_id = ?5, revision = revision + 1,
@@ -312,19 +310,22 @@ impl Store {
               WHERE thread_id = ?1",
             params![
                 thread_id.to_string(),
-                binding.provider_session_id,
-                binding.agent,
-                binding.cwd,
+                binding.provider_session_id.clone(),
+                binding.agent.clone(),
+                binding.cwd.clone(),
                 binding.host_id.to_string(),
                 i64::try_from(at_ms).unwrap_or(i64::MAX),
             ],
-        )?;
-        let revision: i64 = transaction.query_row(
+        ))?;
+        let mut rows = block_on(transaction.query(
             "SELECT revision FROM thread_history WHERE thread_id = ?1",
             params![thread_id.to_string()],
-            |row| row.get(0),
-        )?;
-        transaction.commit()?;
+        ))?;
+        let revision = match block_on(rows.next())? {
+            Some(row) => column_integer(&row, 0)?,
+            None => 0,
+        };
+        block_on(transaction.commit())?;
         Ok(u64::try_from(revision).unwrap_or(0))
     }
 
@@ -338,14 +339,13 @@ impl Store {
         thread_id: &ThreadId,
         reason: &str,
     ) -> Result<(), StoreError> {
-        let connection = self.connection();
-        let transaction = connection.unchecked_transaction()?;
+        let transaction = block_on(self.connection().unchecked_transaction())?;
         self.ensure_header(&transaction, thread_id)?;
-        transaction.execute(
+        block_on(transaction.execute(
             "UPDATE thread_history SET last_error = ?2 WHERE thread_id = ?1",
             params![thread_id.to_string(), reason],
-        )?;
-        transaction.commit()?;
+        ))?;
+        block_on(transaction.commit())?;
         Ok(())
     }
 
@@ -354,17 +354,16 @@ impl Store {
     /// The rows go with the header in one transaction; nothing of a deleted
     /// thread is left behind for a later read to resurrect.
     pub fn delete_thread(&self, thread_id: &ThreadId) -> Result<(), StoreError> {
-        let connection = self.connection();
-        let transaction = connection.unchecked_transaction()?;
-        transaction.execute(
+        let transaction = block_on(self.connection().unchecked_transaction())?;
+        block_on(transaction.execute(
             "DELETE FROM thread_history_row WHERE thread_id = ?1",
             params![thread_id.to_string()],
-        )?;
-        transaction.execute(
+        ))?;
+        block_on(transaction.execute(
             "DELETE FROM thread_history WHERE thread_id = ?1",
             params![thread_id.to_string()],
-        )?;
-        transaction.commit()?;
+        ))?;
+        block_on(transaction.commit())?;
         Ok(())
     }
 
@@ -375,11 +374,11 @@ impl Store {
         transaction: &Connection,
         thread_id: &ThreadId,
     ) -> Result<(), StoreError> {
-        transaction.execute(
+        block_on(transaction.execute(
             "INSERT INTO thread_history (thread_id) VALUES (?1)
              ON CONFLICT(thread_id) DO NOTHING",
             params![thread_id.to_string()],
-        )?;
+        ))?;
         Ok(())
     }
 }
@@ -395,13 +394,13 @@ fn bump_next_seq(
     thread_id: &ThreadId,
     seq: u64,
 ) -> Result<(), StoreError> {
-    transaction.execute(
+    block_on(transaction.execute(
         "UPDATE thread_history SET next_seq = MAX(next_seq, ?2) WHERE thread_id = ?1",
         params![
             thread_id.to_string(),
             i64::try_from(seq.saturating_add(1)).unwrap_or(i64::MAX)
         ],
-    )?;
+    ))?;
     Ok(())
 }
 
@@ -414,7 +413,7 @@ fn insert_row(
 ) -> Result<(), StoreError> {
     let json = serde_json::to_string(event)
         .map_err(|error| StoreError::new(format!("a provider event did not serialize: {error}")))?;
-    transaction.execute(
+    block_on(transaction.execute(
         "INSERT INTO thread_history_row
             (thread_id, seq, source_kind, source_run_id, source_at_ms, event_json)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
@@ -426,7 +425,7 @@ fn insert_row(
             source_at_ms(source),
             json,
         ],
-    )?;
+    ))?;
     Ok(())
 }
 
@@ -715,14 +714,12 @@ mod tests {
     fn an_incomplete_binding_reads_as_no_binding() {
         let store = Store::open_in_memory().unwrap();
         let thread_id = thread();
-        store
-            .connection()
-            .execute(
-                "INSERT INTO thread_history (thread_id, provider_session_id, binding_agent)
-                 VALUES (?1, 'acp-1', 'pi')",
-                params![thread_id.to_string()],
-            )
-            .unwrap();
+        block_on(store.connection().execute(
+            "INSERT INTO thread_history (thread_id, provider_session_id, binding_agent)
+             VALUES (?1, 'acp-1', 'pi')",
+            params![thread_id.to_string()],
+        ))
+        .unwrap();
         let history = store.history(&thread_id).unwrap().unwrap();
         assert_eq!(history.binding, None);
     }

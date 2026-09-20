@@ -19,7 +19,7 @@ use loom_domain::{HostId, ProviderEvent, ThreadId};
 use loom_provider_protocol::HostRpcOperation;
 use tokio::sync::Notify;
 
-use crate::history_cache::{CacheBinding, CacheView, HistoryStatus, LoadTicket};
+use crate::history_cache::{CacheBinding, CacheView, CachedRow, HistoryStatus, LoadTicket};
 use crate::history_rpc::HistoryTransportError;
 use crate::state::AppState;
 
@@ -173,8 +173,19 @@ impl AppState {
     ///   something every poll does: a deleted session would otherwise be asked
     ///   for again on each read.
     pub fn read_thread_history(&self, thread_id: &ThreadId) -> ThreadHistoryRead {
-        let Some(view) = self.history.view(thread_id) else {
-            return match self.start_thread_history_load(thread_id) {
+        let view = match self.stored_view(thread_id) {
+            Ok(view) => view,
+            Err(error) => {
+                return ThreadHistoryRead::Unavailable(format!(
+                    "the stored conversation could not be read: {error}"
+                ))
+            }
+        };
+        match view.status {
+            // Nothing stored and nothing on screen: this read is what asks for
+            // the conversation, and the answer is `loading` because a load can
+            // take as long as an agent's cold start.
+            HistoryStatus::Loading => match self.start_thread_history_load(thread_id) {
                 Ok(()) | Err(HistoryUnavailable::Busy) => {
                     ThreadHistoryRead::Loading { reason: None }
                 }
@@ -182,21 +193,95 @@ impl AppState {
                     reason: Some(HistoryUnavailable::RunInFlight.to_string()),
                 },
                 Err(error) => ThreadHistoryRead::Unavailable(error.to_string()),
-            };
-        };
-        match view.status {
-            HistoryStatus::Ready | HistoryStatus::Loading | HistoryStatus::Unavailable => {
-                ThreadHistoryRead::Serve(view)
-            }
-            // A stale or partial view is worth showing while a newer one loads.
-            // Whether a load may start is the loader's decision, not the
-            // reader's: it is the same decision as the claim, and splitting it
-            // across two steps is what let a run slip in between them.
-            HistoryStatus::Stale | HistoryStatus::Partial => {
+            },
+            // Rows are worth showing while a newer view loads. Whether a load
+            // may start is the loader's decision, not the reader's: it is the
+            // same decision as the claim, and splitting it across two steps is
+            // what let a run slip in between them.
+            HistoryStatus::Partial | HistoryStatus::Stale => {
                 let _ = self.start_thread_history_load(thread_id);
                 ThreadHistoryRead::Serve(view)
             }
+            HistoryStatus::Ready | HistoryStatus::Unavailable => ThreadHistoryRead::Serve(view),
         }
+    }
+
+    /// The conversation as it stands: what the store holds, plus what has been
+    /// published and not written yet.
+    ///
+    /// One source per read: the stored rows are the conversation, and the
+    /// overlay supplies only the tail that has not reached the disk. They are
+    /// matched by sequence and the stored row wins, so a row that is in both
+    /// places is not shown twice.
+    ///
+    /// The status is *derived* rather than remembered — what is stored, whether
+    /// a load is in flight, and why the last one failed — which is what lets it
+    /// survive a restart that empties the in-memory overlay.
+    pub(crate) fn stored_view(
+        &self,
+        thread_id: &ThreadId,
+    ) -> Result<CacheView, crate::store::StoreError> {
+        let (instance, history, rows) = {
+            let store = self.store();
+            let history = store.history(thread_id)?;
+            let rows: Vec<CachedRow> = store
+                .rows(thread_id)?
+                .into_iter()
+                .map(CachedRow::from)
+                .collect();
+            let stored: std::collections::HashSet<u64> = rows.iter().map(|row| row.seq).collect();
+            let mut merged = rows;
+            if let Some(overlay) = self.history.rows(thread_id) {
+                merged.extend(overlay.into_iter().filter(|row| !stored.contains(&row.seq)));
+            }
+            merged.sort_by_key(|row| row.seq);
+            (store.instance().to_owned(), history, merged)
+        };
+
+        let synced_at_ms = history.as_ref().and_then(|stored| stored.synced_at_ms);
+        let last_error = history
+            .as_ref()
+            .and_then(|stored| stored.last_error.clone());
+        let revision = history.as_ref().map(|stored| stored.revision).unwrap_or(0);
+        let loading = self.history.is_loading(thread_id);
+        let empty = rows.is_empty();
+        let not_loaded = "the conversation's history has not been loaded yet".to_owned();
+
+        let (status, complete, reason) = if loading && synced_at_ms.is_some() {
+            (
+                HistoryStatus::Stale,
+                false,
+                Some("a newer view is being loaded".to_owned()),
+            )
+        } else if loading && !empty {
+            (HistoryStatus::Partial, false, Some(not_loaded))
+        } else if loading {
+            (HistoryStatus::Loading, false, None)
+        } else if synced_at_ms.is_some() {
+            match last_error {
+                Some(error) => (HistoryStatus::Stale, false, Some(error)),
+                None => (HistoryStatus::Ready, true, None),
+            }
+        } else if !empty {
+            (
+                HistoryStatus::Partial,
+                false,
+                Some(last_error.unwrap_or(not_loaded)),
+            )
+        } else if let Some(error) = last_error {
+            (HistoryStatus::Unavailable, false, Some(error))
+        } else {
+            (HistoryStatus::Loading, false, None)
+        };
+
+        Ok(CacheView {
+            instance,
+            generation: revision,
+            status,
+            complete,
+            reason,
+            rows,
+        })
     }
 
     /// Whether a run owns this thread right now.
@@ -267,8 +352,7 @@ impl AppState {
                 // A cached conversation stays visible while it is replaced; it
                 // is marked stale, not blanked, because the user may be
                 // reading it right now.
-                self.history.mark_loading(thread_id, binding.clone());
-                let mark = self.history.append_mark(thread_id);
+                let mark = self.seqs().position(thread_id);
                 let outcome = load().await;
                 self.settle_history_load(thread_id, binding, mark, outcome)
             }
@@ -307,11 +391,10 @@ impl AppState {
         }
         match self.history.begin_load(thread_id, &binding) {
             LoadTicket::Leader => {
-                self.history.mark_loading(thread_id, binding.clone());
-                // What the overlay holds when the load starts. An event that
-                // arrives before the replay does means the replay is not the
-                // whole conversation any more; see `settle_history_load`.
-                let mark = self.history.append_mark(thread_id);
+                // Where the numbering stood when the load starts. A row
+                // reserved after this means the replay is not the whole
+                // conversation any more; see `settle_history_load`.
+                let mark = self.seqs().position(thread_id);
                 let state = self.clone();
                 let thread_id = thread_id.clone();
                 tokio::spawn(async move {
@@ -345,27 +428,51 @@ impl AppState {
         match outcome {
             Ok(events) => {
                 // A replay is the whole conversation as of the moment it was
-                // collected. If the thread has said something since, this one
-                // is not that whole any more, and replacing the overlay with it
-                // would drop what just arrived. The result is dropped instead,
-                // and the next read after the run ends loads again.
-                if !self
-                    .history
-                    .install_baseline_if_unchanged(thread_id, binding, mark, events)
-                {
-                    self.history.mark_stale(
-                        thread_id,
-                        "the thread changed while its history was loading",
-                    );
+                // collected. If the thread has said something since, this one is
+                // not that whole any more, and installing it would put a
+                // baseline under rows that came after it. The result is dropped
+                // instead, and the next read after the run ends loads again.
+                if self.seqs().position(thread_id) != mark {
+                    let reason = "the thread changed while its history was loading";
+                    if let Err(error) = self.store().record_sync_failure(thread_id, reason) {
+                        eprintln!("loom-server: recording a refused rebuild failed: {error}");
+                    }
                     self.history_waits.wake(thread_id);
-                    return Err(HistoryUnavailable::Incomplete(
-                        "the thread changed while its history was loading".to_owned(),
-                    ));
+                    return Err(HistoryUnavailable::Incomplete(reason.to_owned()));
+                }
+                let first = self.seqs().reserve(thread_id, events.len());
+                let synced_at_ms = loom_relay::now_ms();
+                match self.store().replace_replayed(
+                    thread_id,
+                    &binding,
+                    first,
+                    &events,
+                    synced_at_ms,
+                ) {
+                    Ok(_revision) => {
+                        // Which conversation a thread is now is the store's
+                        // answer, and rows that arrive next are checked against
+                        // it rather than against what was known before.
+                        self.history.adopt_binding(thread_id, &binding);
+                        // A rebuilt baseline replaces what is stored, holes
+                        // included, so the thread is no longer unsaved.
+                        self.store_writer().clear_unsaved(thread_id);
+                    }
+                    Err(error) => {
+                        let reason = format!("the conversation could not be stored: {error}");
+                        if let Err(record) = self.store().record_sync_failure(thread_id, &reason) {
+                            eprintln!("loom-server: recording a failed rebuild failed: {record}");
+                        }
+                        self.history_waits.wake(thread_id);
+                        return Err(HistoryUnavailable::Incomplete(reason));
+                    }
                 }
             }
             Err(error) => {
-                self.history
-                    .mark_unavailable(thread_id, binding, error.to_string());
+                let reason = error.to_string();
+                if let Err(record) = self.store().record_sync_failure(thread_id, &reason) {
+                    eprintln!("loom-server: recording a failed load failed: {record}");
+                }
                 self.history_waits.wake(thread_id);
                 return Err(HistoryUnavailable::from(error));
             }
@@ -394,21 +501,22 @@ impl AppState {
         self.complete_view_result(thread_id)
     }
 
-    /// The cached view when it is complete and nothing else is needed.
+    /// The conversation when it is complete and nothing else is needed.
     fn complete_view(&self, thread_id: &ThreadId) -> Option<CacheView> {
-        let view = self.history.view(thread_id)?;
-        (view.status == HistoryStatus::Ready).then_some(view)
+        self.stored_view(thread_id)
+            .ok()
+            .filter(|view| view.complete)
     }
 
-    /// The cached view, or the reason there is not a usable one.
+    /// The conversation, or the reason there is not a usable one.
     fn complete_view_result(&self, thread_id: &ThreadId) -> Result<CacheView, HistoryUnavailable> {
-        match self.history.view(thread_id) {
-            Some(view) if view.status == HistoryStatus::Ready => Ok(view),
-            Some(view) => Err(HistoryUnavailable::Incomplete(
+        match self.stored_view(thread_id) {
+            Ok(view) if view.complete => Ok(view),
+            Ok(view) => Err(HistoryUnavailable::Incomplete(
                 view.reason
                     .unwrap_or_else(|| "the conversation could not be loaded".to_owned()),
             )),
-            None => Err(HistoryUnavailable::NoBinding),
+            Err(error) => Err(HistoryUnavailable::Incomplete(error.to_string())),
         }
     }
 
@@ -470,6 +578,21 @@ mod tests {
         .unwrap()
     }
 
+    /// Writes a loaded baseline where a load writes it: the store. The
+    /// in-memory overlay is only ever the tail that has not been written.
+    fn seed_baseline(
+        state: &AppState,
+        thread: &ThreadId,
+        binding: &CacheBinding,
+        events: &[ProviderEvent],
+    ) -> u64 {
+        let first = state.seqs().reserve(thread, events.len());
+        state
+            .store()
+            .replace_replayed(thread, binding, first, events, loom_relay::now_ms())
+            .expect("the baseline is stored")
+    }
+
     fn cache_binding() -> CacheBinding {
         CacheBinding {
             host_id: HostId::mint(),
@@ -510,9 +633,7 @@ mod tests {
         let state = test_state();
         let thread = ThreadId::mint();
         let binding = cache_binding();
-        state
-            .history
-            .install_baseline(&thread, binding.clone(), vec![identity()]);
+        seed_baseline(&state, &thread, &binding, &[identity()]);
         let loads = Arc::new(AtomicUsize::new(0));
 
         let loads_for_loader = Arc::clone(&loads);
@@ -529,27 +650,37 @@ mod tests {
         state.shutdown().unwrap();
     }
 
-    /// A refresh is a load: the view is `Stale`, so it is rebuilt under a new
-    /// generation rather than served as current.
+    /// A rebuild moves the durable revision, and a client holding a cursor from
+    /// before it is told to refetch. The revision lives with the file, so this
+    /// holds across a restart too.
     #[tokio::test]
-    async fn a_stale_conversation_is_rebuilt_under_a_new_generation() {
+    async fn a_rebuild_moves_the_durable_revision() {
         let state = test_state();
         let thread = ThreadId::mint();
         let binding = cache_binding();
-        let first = state
-            .history
-            .install_baseline(&thread, binding.clone(), vec![identity()]);
-        state.history.mark_stale(&thread, "a turn finished");
+        seed_baseline(&state, &thread, &binding, &[identity()]);
 
-        let view = state
-            .ensure_history(&thread, binding, || async {
-                Ok(vec![identity(), identity(), identity()])
-            })
-            .await
-            .expect("the refresh produced a conversation");
+        let first = state.stored_view(&thread).unwrap();
+        assert_eq!(first.status, HistoryStatus::Ready);
+        assert!(
+            first.complete,
+            "a stored baseline is the whole conversation"
+        );
+        assert_eq!(first.rows.len(), 1);
+        assert_eq!(first.generation, 1);
 
-        assert!(view.generation > first, "a rebuild mints a new generation");
-        assert_eq!(view.rows.len(), 3);
+        // A second load of the same session replaces the replay.
+        seed_baseline(&state, &thread, &binding, &[identity(), identity()]);
+        let second = state.stored_view(&thread).unwrap();
+        assert!(
+            second.generation > first.generation,
+            "a rebuild must not reuse a revision"
+        );
+        assert_eq!(second.rows.len(), 2);
+        assert_eq!(
+            second.instance, first.instance,
+            "the numbering is the same store's, only its revision moved"
+        );
         state.shutdown().unwrap();
     }
 
@@ -585,7 +716,7 @@ mod tests {
                 if message.contains("changed while its history was loading")),
             "{failure:?}"
         );
-        let view = state.history.view(&thread).unwrap();
+        let view = state.stored_view(&thread).unwrap();
         assert_eq!(
             view.rows.len(),
             1,
@@ -703,7 +834,7 @@ mod tests {
             identity(),
         );
         assert_eq!(
-            state.history.view(&thread.id).unwrap().status,
+            state.stored_view(&thread.id).unwrap().status,
             HistoryStatus::Partial
         );
 
@@ -712,19 +843,27 @@ mod tests {
             if view.status == HistoryStatus::Partial && view.rows.len() == 1));
 
         // The read asked for the load. The host here owns no session, so the
-        // attempt fails; what it must not do is leave the entry an overlay
-        // nobody ever tried to complete.
+        // attempt fails; what it must not do is leave an overlay nobody ever
+        // tried to complete. The conversation stays `partial` — that is still
+        // an honest description of what is stored — and the *reason* is what
+        // changes to the failure.
+        let initial = state.stored_view(&thread.id).unwrap().reason;
         for _ in 0..200 {
-            if state.history.view(&thread.id).unwrap().status != HistoryStatus::Partial {
+            if state.stored_view(&thread.id).unwrap().reason != initial {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
-        let view = state.history.view(&thread.id).unwrap();
+        let view = state.stored_view(&thread.id).unwrap();
         assert_ne!(
-            view.status,
-            HistoryStatus::Partial,
+            view.reason, initial,
             "the read asked for the conversation: {view:?}"
+        );
+        assert!(
+            view.reason
+                .as_deref()
+                .is_some_and(|reason| reason.contains("not enrolled")),
+            "the stored failure is reported: {view:?}"
         );
         assert_eq!(view.rows.len(), 1, "the overlay stayed visible meanwhile");
         state.shutdown().unwrap();
@@ -751,10 +890,7 @@ mod tests {
                 message: "the agent no longer has it".to_owned(),
             }
         );
-        let view = state
-            .history
-            .view(&thread)
-            .expect("the failure is recorded");
+        let view = state.stored_view(&thread).expect("the failure is recorded");
         assert_eq!(view.status, HistoryStatus::Unavailable);
         assert!(
             view.rows.is_empty(),

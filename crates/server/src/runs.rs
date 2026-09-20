@@ -2135,18 +2135,19 @@ mod tests {
             .and_then(|thread| thread.provider_session_id)
             .expect("the binding was just recorded");
 
-        // An overlay needs a baseline to overlay: without one the event is
-        // refused, and the next load brings it again in the replay.
-        state.history.install_baseline(
-            &thread.id,
-            crate::history_cache::CacheBinding {
-                host_id: host_id.clone(),
-                agent: state.provider_spec().name.clone(),
-                provider_session_id: session_id,
-                cwd: workspace.clone(),
-            },
-            Vec::new(),
-        );
+        // A live row belongs to the conversation the store holds, so the
+        // baseline is written there first: the overlay is only the tail.
+        let binding = crate::history_cache::CacheBinding {
+            host_id: host_id.clone(),
+            agent: state.provider_spec().name.clone(),
+            provider_session_id: session_id,
+            cwd: workspace.clone(),
+        };
+        state
+            .store()
+            .replace_replayed(&thread.id, &binding, 1, &[], 2)
+            .expect("the baseline is stored");
+        state.history.adopt_binding(&thread.id, &binding);
 
         let event = RunEvent::new(
             thread.id.clone(),
@@ -2164,11 +2165,10 @@ mod tests {
             .unwrap();
 
         let view = state
-            .history
-            .view(&thread.id)
-            .expect("the thread is cached");
+            .stored_view(&thread.id)
+            .expect("the thread's conversation is readable");
         assert_eq!(view.rows.len(), 1, "the live event reached the overlay");
-        assert_eq!(view.rows[0].seq, 1, "and was numbered by the cache");
+        assert_eq!(view.rows[0].seq, 1, "and was numbered by the allocator");
         state.shutdown().unwrap();
     }
 
@@ -2189,8 +2189,7 @@ mod tests {
         }
 
         let view = state
-            .history
-            .view(&thread.id)
+            .stored_view(&thread.id)
             .expect("the user's own message is shown before any run has happened");
         assert_eq!(view.rows.len(), 1);
         assert!(

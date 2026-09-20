@@ -60,7 +60,18 @@ serde = { version = "1.0", features = ["derive"] }
 # and no second service. SQLite's own file is written with WAL; loom's logical
 # rules — an append-only per-thread sequence, a revision that only moves
 # forward — are the server's, not the database's.
-rusqlite = { version = "0.37", features = ["bundled"] }
+# The embedded store's engine. turso is SQLite-compatible and its driver is
+# async; the store drives those futures synchronously (`futures-executor`),
+# because every caller — HTTP reads, the store writer thread, tests — is
+# synchronous and turso needs no Tokio runtime to make progress.
+#
+# Two build facts, both recorded in docs/sqlite-persistence-plan.md:
+#   * `roaring` is pinned to 0.11.2 in Cargo.lock: 0.11.3+ require rustc 1.90,
+#     and this workspace's MSRV is 1.88. A `cargo update` must keep the pin.
+#   * turso is a pre-release and is not a C-free build: `cc` compiles the SIMD
+#     and AEAD kernels, and `bindgen`/libclang generate the extension ABI.
+turso = { version = "=0.8.0-pre.11", default-features = false }
+futures-executor = "0.3"
 # A v1 ACP agent hands over a file's old and new text rather than a patch, and
 # the timeline draws a patch: `similar` is the diff, so loom does not carry a
 # second, hand-rolled implementation of one.

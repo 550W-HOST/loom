@@ -39,6 +39,27 @@ use crate::history_cache::RowSource;
 /// a shutdown waits for an idle writer, not a latency on any row.
 const IDLE: Duration = Duration::from_millis(50);
 
+/// What learns that a row reached the store.
+///
+/// The overlay holds a row until it is on disk, and this is how it finds out: a
+/// committed row is dropped from memory, a refused one stays on screen with the
+/// thread marked unsaved.
+pub trait WrittenRows: Send + Sync {
+    /// Records that `seq` for `thread_id` is committed.
+    fn written(&self, thread_id: &ThreadId, seq: u64);
+}
+
+/// Nothing to tell, for tests and for a writer with no overlay behind it.
+impl WrittenRows for () {
+    fn written(&self, _thread_id: &ThreadId, _seq: u64) {}
+}
+
+impl WrittenRows for crate::history_cache::HistoryCache {
+    fn written(&self, thread_id: &ThreadId, seq: u64) {
+        self.confirm_written(thread_id, seq);
+    }
+}
+
 /// One row waiting to be stored.
 #[derive(Clone, Debug)]
 struct StoreWrite {
@@ -85,13 +106,13 @@ pub struct StoreWriter {
 
 impl StoreWriter {
     /// Starts a writer over `store`, accepting at most `capacity` pending rows.
-    pub fn spawn(store: Arc<Mutex<Store>>, capacity: usize) -> Self {
+    pub fn spawn(store: Arc<Mutex<Store>>, capacity: usize, ack: Arc<dyn WrittenRows>) -> Self {
         let (sender, receiver) = std::sync::mpsc::sync_channel(capacity.max(1));
         let shared = Arc::new(Shared::default());
         let writer_shared = Arc::clone(&shared);
         let handle = std::thread::Builder::new()
             .name("loom-store-writer".to_owned())
-            .spawn(move || run(store, receiver, writer_shared))
+            .spawn(move || run(store, receiver, writer_shared, ack))
             .expect("the store writer thread could not be started");
         Self {
             sender,
@@ -216,7 +237,12 @@ impl StoreWriter {
 }
 
 /// The writer thread: drain the queue, one transaction per row.
-fn run(store: Arc<Mutex<Store>>, receiver: Receiver<StoreWrite>, shared: Arc<Shared>) {
+fn run(
+    store: Arc<Mutex<Store>>,
+    receiver: Receiver<StoreWrite>,
+    shared: Arc<Shared>,
+    ack: Arc<dyn WrittenRows>,
+) {
     loop {
         let write = match receiver.recv_timeout(IDLE) {
             Ok(write) => write,
@@ -230,17 +256,20 @@ fn run(store: Arc<Mutex<Store>>, receiver: Receiver<StoreWrite>, shared: Arc<Sha
             }
             Err(RecvTimeoutError::Disconnected) => return,
         };
-        write_one(&store, &shared, write);
+        write_one(&store, &shared, &*ack, write);
     }
 }
 
-fn write_one(store: &Arc<Mutex<Store>>, shared: &Shared, write: StoreWrite) {
+fn write_one(store: &Arc<Mutex<Store>>, shared: &Shared, ack: &dyn WrittenRows, write: StoreWrite) {
     let store = store
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     match store.append_row(&write.thread_id, write.seq, &write.source, &write.event) {
         Ok(_) => {
             shared.written.fetch_add(1, Ordering::SeqCst);
+            // The overlay drops the row now that it is durable. A row that
+            // reached the disk is not held twice.
+            ack.written(&write.thread_id, write.seq);
         }
         Err(error) => {
             // The row is lost, so the thread stays marked until a rebuild
@@ -305,13 +334,15 @@ mod tests {
     #[test]
     fn a_failed_write_marks_the_thread_and_stays_marked() {
         let store = Arc::new(Mutex::new(Store::open_in_memory().unwrap()));
-        store
-            .lock()
-            .unwrap()
-            .connection()
-            .execute_batch("DROP TABLE thread_history_row;")
-            .unwrap();
-        let writer = StoreWriter::spawn(Arc::clone(&store), 8);
+        crate::store::block_on(
+            store
+                .lock()
+                .unwrap()
+                .connection()
+                .execute_batch("DROP TABLE thread_history_row;"),
+        )
+        .unwrap();
+        let writer = StoreWriter::spawn(Arc::clone(&store), 8, Arc::new(()));
         let thread_id = ThreadId::mint();
 
         assert!(writer.enqueue(&thread_id, 1, source(1), message("doomed")));
@@ -333,7 +364,7 @@ mod tests {
     #[test]
     fn a_flush_stores_what_was_queued() {
         let store = Arc::new(Mutex::new(Store::open_in_memory().unwrap()));
-        let writer = StoreWriter::spawn(Arc::clone(&store), 64);
+        let writer = StoreWriter::spawn(Arc::clone(&store), 64, Arc::new(()));
         let thread_id = ThreadId::mint();
         for index in 1..=5 {
             assert!(writer.enqueue(
@@ -360,19 +391,21 @@ mod tests {
     #[test]
     fn a_failure_is_reported_per_thread() {
         let store = Arc::new(Mutex::new(Store::open_in_memory().unwrap()));
-        let writer = StoreWriter::spawn(Arc::clone(&store), 64);
+        let writer = StoreWriter::spawn(Arc::clone(&store), 64, Arc::new(()));
         let failing = ThreadId::mint();
         let working = ThreadId::mint();
 
         // Drop the table after one row is stored, so the next write fails.
         assert!(writer.enqueue(&working, 1, source(1), message("kept")));
         assert!(writer.wait_for_writes(1, Duration::from_secs(2)));
-        store
-            .lock()
-            .unwrap()
-            .connection()
-            .execute_batch("DROP TABLE thread_history_row;")
-            .unwrap();
+        crate::store::block_on(
+            store
+                .lock()
+                .unwrap()
+                .connection()
+                .execute_batch("DROP TABLE thread_history_row;"),
+        )
+        .unwrap();
         assert!(writer.enqueue(&failing, 2, source(2), message("dropped")));
 
         let deadline = Instant::now() + Duration::from_secs(2);

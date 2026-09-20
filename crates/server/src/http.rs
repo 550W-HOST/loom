@@ -3957,10 +3957,13 @@ fn build_timeline_rows(thread_id: &ThreadId, inputs: &[TimelineInput<'_>]) -> Ti
 ///   not the moment anything in it happened.
 fn cached_timeline_inputs(view: &crate::history_cache::CacheView) -> Vec<TimelineInput<'_>> {
     use crate::history_cache::RowSource;
+    let superseded = replayed_copies_loom_already_recorded(view);
     let mut local: u32 = 0;
     view.rows
         .iter()
-        .map(|row| {
+        .enumerate()
+        .filter(|(position, _)| !superseded.contains(position))
+        .map(|(_, row)| {
             let (group, at_ms, turn_id) = match &row.source {
                 RowSource::Run { run_id, at_ms } => {
                     let group = run_id.to_string();
@@ -4003,6 +4006,140 @@ fn cached_timeline_inputs(view: &crate::history_cache::CacheView) -> Vec<Timelin
         .collect()
 }
 
+/// The frames a replay repeats, which loom already recorded itself.
+///
+/// A stored conversation holds both: the rows loom published while the thread
+/// was live, and the replay the agent produced when the conversation was loaded,
+/// which carries the same turns again. Loom mints its own message ids, so the
+/// two copies cannot be folded by identity; they are paired by **what was said,
+/// in order**, per role, and the row loom recorded wins — it knows when it
+/// happened and which turn it belongs to, and the replay's copy is not a second
+/// message.
+///
+/// A replayed answer arrives as deltas that fold into one message, so the text
+/// a pairing compares is the whole message's, not one frame's.
+///
+/// Nothing is dropped when the replay carries something loom does not have — a
+/// message the agent never received, a turn from before this server started —
+/// because there is no loom row left to pair it with.
+fn replayed_copies_loom_already_recorded(
+    view: &crate::history_cache::CacheView,
+) -> std::collections::HashSet<usize> {
+    use crate::history_cache::RowSource;
+    use loom_domain::{ProviderEvent, ThreadEventItem, UserContent};
+    use std::collections::{HashMap, HashSet, VecDeque};
+
+    /// One message a replay carried: its role, its whole text, and the frames
+    /// that said it.
+    struct Carried {
+        role: &'static str,
+        text: String,
+        frames: Vec<usize>,
+    }
+
+    /// The text of a user message, whose content is a list of parts.
+    fn user_text(content: &[UserContent]) -> String {
+        content
+            .iter()
+            .filter_map(|part| match part {
+                UserContent::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("")
+    }
+
+    // What loom recorded itself, in the order it recorded it, per role.
+    let mut recorded_user: VecDeque<String> = VecDeque::new();
+    let mut recorded_assistant: VecDeque<String> = VecDeque::new();
+    for row in &view.rows {
+        if !matches!(row.source, RowSource::Message { .. }) {
+            continue;
+        }
+        match &row.event {
+            ProviderEvent::ItemStarted {
+                item: ThreadEventItem::UserMessage { content, .. },
+                ..
+            } => recorded_user.push_back(user_text(content)),
+            ProviderEvent::ItemCompleted {
+                item: ThreadEventItem::AgentMessage { text, .. },
+                ..
+            } => recorded_assistant.push_back(text.clone()),
+            _ => {}
+        }
+    }
+
+    // What the replay carried, message by message, in the order it carried them.
+    let mut slots: HashMap<String, usize> = HashMap::new();
+    let mut carried: Vec<(String, Carried)> = Vec::new();
+    for (position, row) in view.rows.iter().enumerate() {
+        if !matches!(row.source, RowSource::Replayed) {
+            continue;
+        }
+        let (item_id, role) = match &row.event {
+            ProviderEvent::ItemStarted {
+                item: ThreadEventItem::UserMessage { id, .. },
+                ..
+            } => (id.clone(), "user"),
+            ProviderEvent::ItemAgentMessageDelta { item_id, .. } => (item_id.clone(), "assistant"),
+            ProviderEvent::ItemCompleted {
+                item: ThreadEventItem::AgentMessage { id, .. },
+                ..
+            } => (id.clone(), "assistant"),
+            _ => continue,
+        };
+        let slot = *slots.entry(item_id.clone()).or_insert_with(|| {
+            carried.push((
+                item_id.clone(),
+                Carried {
+                    role,
+                    text: String::new(),
+                    frames: Vec::new(),
+                },
+            ));
+            carried.len() - 1
+        });
+        match &row.event {
+            ProviderEvent::ItemStarted {
+                item: ThreadEventItem::UserMessage { content, .. },
+                ..
+            } => carried[slot].1.text.push_str(&user_text(content)),
+            // A completion repeats what the deltas already said; it only
+            // supplies text for a replay that sent no deltas.
+            ProviderEvent::ItemCompleted {
+                item: ThreadEventItem::AgentMessage { text, .. },
+                ..
+            } => {
+                if carried[slot].1.text.is_empty() {
+                    carried[slot].1.text.push_str(text);
+                }
+            }
+            ProviderEvent::ItemAgentMessageDelta { delta, .. } => {
+                carried[slot].1.text.push_str(delta);
+            }
+            _ => {}
+        }
+        carried[slot].1.frames.push(position);
+    }
+
+    let mut superseded = HashSet::new();
+    for (_, message) in &carried {
+        if message.text.is_empty() {
+            continue;
+        }
+        let recorded = if message.role == "user" {
+            &mut recorded_user
+        } else {
+            &mut recorded_assistant
+        };
+        if recorded.front().is_some_and(|front| *front == message.text) {
+            recorded.pop_front();
+            superseded.extend(message.frames.iter().copied());
+        }
+    }
+    superseded
+}
+
 /// The rows a cached conversation projects to.
 ///
 /// The source for [`build_timeline_rows`]: the folds are a live thread's,
@@ -4022,9 +4159,10 @@ fn cached_timeline_rows(
 /// time, which is what keeps a row it answers byte-identical to the row the
 /// timeline showed.
 fn cached_thread_timeline_rows(state: &AppState, thread_id: &ThreadId) -> TimelineRows {
+    // The conversation comes from the store, with the unpublished tail merged
+    // in: one read, whichever route asked for it.
     state
-        .history
-        .view(thread_id)
+        .stored_view(thread_id)
         .map(|view| cached_timeline_rows(thread_id, &view))
         .unwrap_or(TimelineRows {
             rows: Vec::new(),
@@ -4082,6 +4220,18 @@ mod restored_timeline_tests {
         }
     }
 
+    fn assistant_completed(item_id: &str, text: &str) -> ProviderEvent {
+        ProviderEvent::ItemCompleted {
+            item: ThreadEventItem::AgentMessage {
+                id: item_id.to_owned(),
+                text: text.to_owned(),
+                presentation: None,
+                parent_tool_call_id: None,
+            },
+            provider_thread_id: "acp-session-1".to_owned(),
+        }
+    }
+
     fn assistant_delta(item_id: &str, text: &str) -> ProviderEvent {
         ProviderEvent::ItemAgentMessageDelta {
             item_id: item_id.to_owned(),
@@ -4132,6 +4282,66 @@ mod restored_timeline_tests {
         let mut sorted = sequences.clone();
         sorted.sort_unstable();
         assert_eq!(sequences, sorted, "rows are ordered by their source");
+    }
+
+    /// A replay carries the same turns loom recorded while the thread was live.
+    /// The recorded row wins — it knows when it happened — and the replayed copy
+    /// is not a second message on the timeline.
+    #[test]
+    fn a_replayed_copy_of_a_recorded_message_does_not_open_a_second_row() {
+        let thread_id = ThreadId::mint();
+        let rows = cached_timeline_rows(
+            &thread_id,
+            &view_of(vec![
+                (
+                    RowSource::Message {
+                        at_ms: 1_700_000_000_000,
+                    },
+                    user_message("msg_loom_1", "how many?"),
+                ),
+                // The same turn again, under the agent's own item ids.
+                (
+                    RowSource::Replayed,
+                    user_message("restored-user-1", "how many?"),
+                ),
+                (
+                    RowSource::Replayed,
+                    assistant_delta("restored-assistant-1", "sixty."),
+                ),
+                (
+                    RowSource::Replayed,
+                    assistant_completed("restored-assistant-1", "sixty."),
+                ),
+                // A turn loom never saw: nothing pairs with it, so it stays.
+                (
+                    RowSource::Replayed,
+                    user_message("restored-user-2", "and then?"),
+                ),
+            ]),
+        )
+        .rows;
+
+        let conversation: Vec<(&str, &str)> = rows
+            .iter()
+            .filter(|row| row["kind"] == "conversation")
+            .map(|row| (row["role"].as_str().unwrap(), row["text"].as_str().unwrap()))
+            .collect();
+        assert_eq!(
+            conversation,
+            [
+                ("user", "how many?"),
+                ("assistant", "sixty."),
+                ("user", "and then?"),
+            ],
+            "the recorded copy wins and the replay adds only what loom lacks"
+        );
+        // And the recorded row is the one that survived: it is the row that
+        // knows when the message was sent.
+        let first = rows
+            .iter()
+            .find(|row| row["kind"] == "conversation")
+            .expect("a row");
+        assert!(first["startedAt"].is_number(), "{first}");
     }
 
     /// The property that keeps a run action off a row that belongs to no run.

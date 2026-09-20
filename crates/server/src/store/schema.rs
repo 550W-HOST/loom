@@ -4,16 +4,21 @@
 //! transaction that changes the tables: there is no second place for "what shape
 //! is this file" to disagree with the file.
 
-use rusqlite::Connection;
+use turso::Connection;
 
-use super::StoreError;
+use super::{block_on, column_integer, StoreError};
 
 /// The schema this build writes and understands.
 pub const SCHEMA_VERSION: i64 = 2;
 
 /// The version the file currently holds.
 pub fn version(connection: &Connection) -> Result<i64, StoreError> {
-    Ok(connection.query_row("PRAGMA user_version", [], |row| row.get(0))?)
+    let mut rows = block_on(connection.query("PRAGMA user_version", ()))?;
+    match block_on(rows.next())? {
+        Some(row) => column_integer(&row, 0),
+        // A store that answers nothing has no version yet, which is zero.
+        None => Ok(0),
+    }
 }
 
 /// Brings the file up to [`SCHEMA_VERSION`], or refuses it.
@@ -35,15 +40,15 @@ pub fn migrate(connection: &Connection) -> Result<(), StoreError> {
 
     // One transaction per step, with the version bump inside it: a process that
     // dies mid-migration comes back to either the old shape or the new one.
-    let transaction = connection.unchecked_transaction()?;
+    let transaction = block_on(connection.unchecked_transaction())?;
     if current < 1 {
-        transaction.execute_batch(V1)?;
+        block_on(transaction.execute_batch(V1))?;
     }
     if current < 2 {
-        transaction.execute_batch(V2)?;
+        block_on(transaction.execute_batch(V2))?;
     }
-    transaction.pragma_update(None, "user_version", SCHEMA_VERSION)?;
-    transaction.commit()?;
+    block_on(transaction.pragma_update("user_version", SCHEMA_VERSION))?;
+    block_on(transaction.commit())?;
     Ok(())
 }
 

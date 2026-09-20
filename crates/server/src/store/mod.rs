@@ -1,17 +1,24 @@
 //! The server's embedded store.
 //!
-//! One SQLite file under the data directory is where the server keeps what must
-//! outlive it. Phase one puts the **conversation** there: the normalized events
-//! an agent replayed, in the order it replayed them, so a thread can be read
-//! after the worker that owns its session has gone away. The relay's log and
-//! the entity snapshot keep their jobs until their own phases move them.
+//! One database file under the data directory is where the server keeps what
+//! must outlive it. Phase one puts the **conversation** there: the normalized
+//! events an agent replayed, in the order it replayed them, so a thread can be
+//! read after the worker that owns its session has gone away. The relay's log
+//! and the entity snapshot keep their jobs until their own phases move them.
+//!
+//! The engine is [`turso`], an in-process SQLite-compatible database written in
+//! Rust. Its driver is async; this module drives those futures with
+//! [`futures_executor::block_on`] so the store's own API stays synchronous,
+//! which is what every caller is: an HTTP read, the store's writer thread, a
+//! test. turso needs no Tokio runtime to make progress, and driving it on the
+//! calling thread is the same shape the previous embedded engine had.
 //!
 //! Two rules are the server's, not the database's, and both are about identity:
 //!
-//! * **A row's sequence is assigned when it is written and never recomputed.**
-//!   It is the position a client's cursor names, so deriving it from an offset
-//!   in a list — which is what the relay's retained-window index did — is the
-//!   bug this store exists to remove.
+//! * **A row's sequence is reserved by the publisher and never recomputed.** It
+//!   is the position a client's cursor names, so deriving it from an offset in a
+//!   list — which is what the relay's retained-window index did — is the bug this
+//!   store exists to remove.
 //! * **A thread's revision only moves forward.** A rebuild of the replayed
 //!   conversation bumps it, and a client holding a cursor from another revision
 //!   is told to refetch rather than reading that cursor as a position here.
@@ -29,12 +36,13 @@ mod writer;
 
 pub use history::{StoredHistory, StoredRow};
 pub use seq::SeqAllocator;
-pub use writer::StoreWriter;
+pub use writer::{StoreWriter, WrittenRows};
 
+use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use rusqlite::{params, Connection};
+use turso::{Builder, Connection, Row, Value};
 
 pub use schema::SCHEMA_VERSION;
 
@@ -52,8 +60,8 @@ impl std::fmt::Display for StoreError {
 
 impl std::error::Error for StoreError {}
 
-impl From<rusqlite::Error> for StoreError {
-    fn from(error: rusqlite::Error) -> Self {
+impl From<turso::Error> for StoreError {
+    fn from(error: turso::Error) -> Self {
         Self {
             message: error.to_string(),
         }
@@ -68,15 +76,68 @@ impl StoreError {
     }
 }
 
-/// How long a writer waits for a lock another connection holds.
+/// How long a statement waits for a lock another connection holds.
 ///
 /// The server is the only writer, so waiting is almost never needed; the bound
 /// exists so a stray reader cannot turn into a hang.
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// The server's store: one connection, opened once, migrated on the way in.
+/// Drives one turso future to completion on this thread.
+///
+/// turso's IO is its own: the futures make progress without a Tokio runtime, so
+/// this works from an HTTP worker, from the writer thread, and from a test.
+pub(crate) fn block_on<F: Future>(future: F) -> F::Output {
+    futures_executor::block_on(future)
+}
+
+/// The text in a column, or an error naming what was there instead.
+pub(crate) fn column_text(row: &Row, index: usize) -> Result<String, StoreError> {
+    match row.get_value(index)? {
+        Value::Text(text) => Ok(text),
+        other => Err(StoreError::new(format!(
+            "column {index} was {other:?}, not text"
+        ))),
+    }
+}
+
+/// The text in a column, or `None` when it is null.
+pub(crate) fn column_optional_text(row: &Row, index: usize) -> Result<Option<String>, StoreError> {
+    match row.get_value(index)? {
+        Value::Text(text) => Ok(Some(text)),
+        Value::Null => Ok(None),
+        other => Err(StoreError::new(format!(
+            "column {index} was {other:?}, not text or null"
+        ))),
+    }
+}
+
+/// The integer in a column.
+pub(crate) fn column_integer(row: &Row, index: usize) -> Result<i64, StoreError> {
+    match row.get_value(index)? {
+        Value::Integer(value) => Ok(value),
+        other => Err(StoreError::new(format!(
+            "column {index} was {other:?}, not an integer"
+        ))),
+    }
+}
+
+/// The integer in a column, or `None` when it is null.
+pub(crate) fn column_optional_integer(row: &Row, index: usize) -> Result<Option<i64>, StoreError> {
+    match row.get_value(index)? {
+        Value::Integer(value) => Ok(Some(value)),
+        Value::Null => Ok(None),
+        other => Err(StoreError::new(format!(
+            "column {index} was {other:?}, not an integer or null"
+        ))),
+    }
+}
+
+/// The server's store: one database, opened once, migrated on the way in.
 #[derive(Debug)]
 pub struct Store {
+    /// Kept alive for as long as the connection is: it owns the engine's
+    /// background IO and the file handle behind every connection to it.
+    _database: turso::Database,
     connection: Connection,
     path: PathBuf,
     /// This store's identity, minted when the file is created and kept from then
@@ -96,16 +157,24 @@ impl Store {
                 ))
             })?;
         }
-        let connection = Connection::open(&path).map_err(|error| {
+        let location = path.to_str().ok_or_else(|| {
+            StoreError::new(format!(
+                "the store path {} is not valid UTF-8",
+                path.display()
+            ))
+        })?;
+        let database = block_on(Builder::new_local(location).build()).map_err(|error| {
             StoreError::new(format!(
                 "could not open the store {}: {error}",
                 path.display()
             ))
         })?;
+        let connection = database.connect()?;
         Self::configure(&connection, true)?;
         schema::migrate(&connection)?;
         let instance = instance_of(&connection)?;
         Ok(Self {
+            _database: database,
             connection,
             path,
             instance,
@@ -114,14 +183,16 @@ impl Store {
 
     /// An in-memory store, for tests that need the schema and not the file.
     pub fn open_in_memory() -> Result<Self, StoreError> {
-        let connection = Connection::open_in_memory()?;
-        // An in-memory store has no file to write ahead of, and SQLite says so
-        // by answering `memory`; asking for WAL there is a mistake, not a
+        let database = block_on(Builder::new_local(":memory:").build())?;
+        let connection = database.connect()?;
+        // An in-memory store has no file to write ahead of, and the engine says
+        // so by answering `memory`; asking for WAL there is a mistake, not a
         // failure to report.
         Self::configure(&connection, false)?;
         schema::migrate(&connection)?;
         let instance = instance_of(&connection)?;
         Ok(Self {
+            _database: database,
             connection,
             path: PathBuf::from(":memory:"),
             instance,
@@ -157,22 +228,23 @@ impl Store {
         // level that pairs with it (a crash can lose the last commits, which is
         // exactly what the plan already promises for uncommitted history).
         //
-        // `journal_mode` answers with the mode it settled on, so it is read
-        // rather than executed: `execute_batch` would discard the answer this
-        // has to check.
+        // Setting `journal_mode` answers with the mode it settled on, so the
+        // answer is read rather than discarded.
         if wal {
-            let mode: String =
-                connection.query_row("PRAGMA journal_mode = WAL", [], |row| row.get(0))?;
+            let rows = block_on(connection.pragma_update("journal_mode", "WAL"))?;
+            let mode = rows
+                .first()
+                .map(|row| column_text(row, 0))
+                .transpose()?
+                .unwrap_or_default();
             if !mode.eq_ignore_ascii_case("wal") {
                 return Err(StoreError::new(format!(
                     "the store could not be put in WAL mode (it answered {mode:?})"
                 )));
             }
         }
-        connection.execute_batch(
-            "PRAGMA synchronous = NORMAL;
-             PRAGMA foreign_keys = ON;",
-        )?;
+        block_on(connection.pragma_update("synchronous", "NORMAL"))?;
+        block_on(connection.pragma_update("foreign_keys", "ON"))?;
         connection.busy_timeout(BUSY_TIMEOUT)?;
         Ok(())
     }
@@ -184,16 +256,17 @@ impl Store {
 /// what makes concurrent first opens agree on one value instead of each keeping
 /// the id it tried to write.
 fn instance_of(connection: &Connection) -> Result<String, StoreError> {
-    connection.execute(
+    block_on(connection.execute(
         "INSERT INTO store_meta (key, value) VALUES ('instance', ?1)
          ON CONFLICT(key) DO NOTHING",
-        params![loom_relay::EventId::new().to_string()],
-    )?;
-    Ok(connection.query_row(
-        "SELECT value FROM store_meta WHERE key = 'instance'",
-        [],
-        |row| row.get(0),
-    )?)
+        (loom_relay::EventId::new().to_string(),),
+    ))?;
+    let mut rows =
+        block_on(connection.query("SELECT value FROM store_meta WHERE key = 'instance'", ()))?;
+    match block_on(rows.next())? {
+        Some(row) => column_text(&row, 0),
+        None => Err(StoreError::new("the store has no identity row")),
+    }
 }
 
 #[cfg(test)]
@@ -208,11 +281,9 @@ mod tests {
         {
             let store = Store::open(&path).unwrap();
             assert_eq!(store.schema_version().unwrap(), SCHEMA_VERSION);
-            let mode: String = store
-                .connection()
-                .query_row("PRAGMA journal_mode", [], |row| row.get(0))
-                .unwrap();
-            assert_eq!(mode, "wal");
+            let mut rows = block_on(store.connection().query("PRAGMA journal_mode", ())).unwrap();
+            let row = block_on(rows.next()).unwrap().expect("a journal mode");
+            assert_eq!(column_text(&row, 0).unwrap(), "wal");
             instance = store.instance().to_owned();
         }
         assert!(path.exists(), "the store is a real file on disk");
@@ -246,10 +317,12 @@ mod tests {
         let path = dir.path().join("loom.db");
         {
             let store = Store::open(&path).unwrap();
-            store
-                .connection()
-                .pragma_update(None, "user_version", SCHEMA_VERSION + 1)
-                .unwrap();
+            block_on(
+                store
+                    .connection()
+                    .pragma_update("user_version", SCHEMA_VERSION + 1),
+            )
+            .unwrap();
         }
         let error = Store::open(&path).expect_err("a newer schema is refused");
         assert!(

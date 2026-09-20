@@ -349,8 +349,8 @@ async fn a_conversation_outside_the_relay_window_is_loaded_from_the_agent() {
 
     // A read does not wait for a load that can take as long as a cold start.
     // Nor does it claim to be complete: the recovery diagnostic the restart
-    // published is real and worth showing, but it is not this thread's
-    // conversation, and a `partial` answer is how the API says so.
+    // published is real and worth showing, and nothing has confirmed this is the
+    // whole conversation, so a `partial` answer is how the API says so.
     let base = format!("/api/v1/threads/{thread_id}/timeline");
     let first = http_json(&addr, &base).await;
     assert_eq!(first["history"]["complete"], false, "{first}");
@@ -361,13 +361,20 @@ async fn a_conversation_outside_the_relay_window_is_loaded_from_the_agent() {
         ),
         "a read of an unsynced thread asks for a load rather than refusing: {first}"
     );
+    // The conversation is here *before* the load, and that is the point of this
+    // phase: the messages were posted through the API and then aged out of the
+    // relay's retained window, and they are still on the timeline because the
+    // store has them. Nothing about a restart depends on the log's depth.
+    let texts: Vec<&str> = first["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|row| row["kind"] == "conversation")
+        .filter_map(|row| row["text"].as_str())
+        .collect();
     assert!(
-        first["rows"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .all(|row| row["kind"] != "conversation"),
-        "the conversation is not in the log, so none of it is here yet: {first}"
+        texts.contains(&"how many?") && texts.contains(&"sixty."),
+        "the stored conversation survived the restart: {first}"
     );
 
     // The load reaches the *owning host*, names the session the server
@@ -478,9 +485,26 @@ async fn a_conversation_outside_the_relay_window_is_loaded_from_the_agent() {
         ["user", "assistant", "user", "assistant"]
     );
 
-    // A restored row reports what the replay carried and nothing more: no
-    // timestamps, and a local turn key that cannot be mistaken for a run.
+    // The timeline mixes two kinds of row, and each keeps what it knows:
+    //
+    // * what the **replay** carried reports nothing more than the replay — no
+    //   timestamps, and a local turn key that cannot be mistaken for a run;
+    // * what **loom recorded itself** keeps the time it happened, and belongs to
+    //   no turn. The prompts and answers of the first turn are loom's own rows,
+    //   because the replay carried that turn again and the recorded copy won.
     for row in &conversation {
+        let id = row["id"].as_str().unwrap();
+        if id.contains(":msg_") {
+            assert!(
+                row["startedAt"].is_number() && row["createdAt"].is_number(),
+                "a recorded row keeps when it happened: {row}"
+            );
+            assert!(
+                row["turnId"].is_null(),
+                "a message belongs to no run: {row}"
+            );
+            continue;
+        }
         assert!(row["startedAt"].is_null(), "no invented time: {row}");
         assert!(row["createdAt"].is_null(), "no invented time: {row}");
         let turn = row["turnId"]

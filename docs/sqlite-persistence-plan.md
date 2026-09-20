@@ -277,13 +277,37 @@ loom 自有事实保留原来源：
 
 **进展（2026-09-21，续）**：1.3 已落地（`crates/server/src/store/writer.rs` 单写线程 + 1024 条有界队列；`publish_domain_event` → `cache_live_event` 先更内存 overlay 再 `enqueue`，入队不碰磁盘；入队被拒或写失败 → 该 thread 粘性 `unsaved` 标记并带原因；`shutdown()` 顺序为 停止周期写 → 快照 → 关 relay → 停 pump → **drain store writer** → flush relay，drain 失败会让 shutdown 返回错误）。3 个集成测试：发布的消息最终落库且带 `RowSource`、shutdown 排空 25 条积压后新开库能读回、库打不开则启动失败。
 
+### 4.4 重建时「保留去重」的落地方式（2026-09-21 决定，1.4b 前）
+
+`replace_replayed` 只删 `replayed` 行，**loom 自有的 `run`/`message` 行一行不删**：
+
+- 理由一（不丢数据）：基线替换发生在「会话内容被 ACP 重放覆盖」时，但 loom 行里有两类 ACP 会话
+  **不会**包含的东西——用户发了但 agent 从未收到的 prompt、以及 provider error/恢复诊断。按 `seq < mark`
+  一刀切删除会把这些一起删掉，且是静默的。
+- 理由二（去重有现成的位置）：重复的**可见**后果只在投影层。assistant/tool/reasoning 帧按 provider
+  item id 折叠（run 的 delta 与 replay 的 completed 同 id 合并成一行，已有测试覆盖）；用户消息是唯一
+  按内容配对的：replay 的 user 帧带 agent 的 item id，而 loom 自己记的 prompt 用的是 loom message id，
+  两者不可能按 id 合并。因此 `cached_timeline_inputs` 做一次**有序文本配对**：按 seq 顺序维护 loom
+  `Message` 用户消息的文本队列，遇到 `Replayed` 用户消息时若队首文本相同，则这一帧不开新行
+  （`user_frame_opens_row=false`），否则照常开行。
+- 未覆盖的情况：用户在离线时发的 prompt 文本若恰好与 session 里已有的一条相同，则只显示一条，
+  但失败诊断行仍在（用户仍能看到「这条没发出去」）。这是可接受的取舍，且不丢存储中的数据。
+- 反向风险（重复显示）由集成测试盯住：`real_pi.rs` 里「跑一轮 → 再 load 历史」不得出现重复的
+  user/assistant 行；发现 id 不匹配导致的重复，再补规则。
+
+**进展（2026-09-21，1.4b 落地）**：读路径已统一到库，内存缓存退化为「还没落盘的尾巴 + 正在加载的登记」。具体：`HistoryCache` 删掉 baseline/`generation`/`instance`/状态机，只留 `rows`（未落盘行）、binding、`begin_load/finish_load`、`confirm_written`（写盘成功后由写线程回调裁掉）；新增 `AppState::stored_view`：库行 + overlay 中库里没有的行，按号排序，`instance`/`revision` 取自库，**状态是推导出来的**（是否已同步、是否有加载在飞、上次失败原因），因此重启后状态不会丢；`read_thread_history`/`complete_view`/`settle_history_load` 全部改走它，加载成功即 `replace_replayed` 落库 + `adopt_binding` + `clear_unsaved`，失败只写 `last_error`（旧基线原样保留）。`http.rs` 的 timeline 与 turn 细节都从 `stored_view` 投影。
+
+**4.4 的去重已实现并有测试**：`replayed_copies_loom_already_recorded` 按角色、按顺序把 replay 里的消息与 loom 自己记的 `message` 行配对（assistant 的正文取 delta 累加后的整段，而不是单帧文本），配上的**整条消息的所有帧**都不再投影，loom 那条留下（它有真实时间）；replay 独有的是保留的。测试：`a_replayed_copy_of_a_recorded_message_does_not_open_a_second_row`（单元）+ `crates/server/tests/history.rs` 的重启端到端（4 行、顺序、两类行各自的时间语义）。
+
+**同批完成：数据库引擎换成 turso**（见 §1.1 的三条事实：pre-release、`roaring` 钉 0.11.2、仍需 C 编译器 + libclang）。全仓库 `cargo test --workspace --locked`、`clippy -D warnings`、`cargo +1.88 check --workspace --all-targets --locked` 全绿。
+
 **进展（2026-09-21，1.4a）**：编号归属已改到发布缝。`Store` schema 升到 v2，新增 `store_meta` 记 instance id（随文件mint、重启不变，客户端 cursor 的 instance 不再随进程变）；`append_row(thread, seq, …)` / `replace_replayed(thread, binding, first_seq, …)` 改为由调用方给号，库里只把 `next_seq` 单向前推（`MAX(next_seq, seq+1)`），重复号被主键拒绝；新增 `store::SeqAllocator`（启动时从 `thread_next_seq` 播种），`AppState` 持有它，`cache_live_event` 只 reserve 一次号，同一号同时进内存 overlay 和写队列。测试：重复号被拒、编号跨重开继续（`the_numbering_survives_a_reopen`）、instance 跨重开不变、不同 store 不同 instance。
 
 **1.4 必须解决的事**：`seq` 现在由写线程分配，而内存 overlay 不持有 `seq`；读路径要合并「库里的行」与「还没落库的行」，两边的 `seq` 必须同源。因此 1.4 把 `seq` 分配提到发布缝（每条 thread 一个分配器，启动时从库播种），overlay 行与库行共用同一个号码，读路径按未落库水位线拼接。
 
 **进展（2026-09-21）**：1.1 已落地（`220301a`：`rusqlite` bundled + `Store::open` 迁移/拒绝语义，MSRV 1.88 已验证）；1.2 已落地（`0ab49ca`：`store::history` 类型化读写 + `AppState` 开库，文件库/内存库同一条代码路径）。1.2 的两处实现选择：`seq` 来自线程自己的 `next_seq` 计数列（不是 `MAX(seq)`，否则重建删行后号码会复用）；`AppState.store` 在任何服务器上都存在，没有"跳过持久化"的分支。
 
-**1.1 依赖与打开。** `rusqlite`（`bundled`，编译进二进制，不引入运行时依赖）进 workspace + `loom-server`；新增 `crates/server/src/store/`（`mod.rs` 打开库、`schema.rs` 迁移）。`<server-data-dir>/loom.db`，WAL、`synchronous=NORMAL`、`foreign_keys=ON`、`schema_version` 表。打不开/迁移失败 = 启动失败，绝不回退内存。测试：建库幂等、版本表、坏库显式报错。
+**1.1 依赖与打开。** 引擎为 **turso**（`=0.8.0-pre.11`，`default-features = false`）：进程内、SQLite 兼容、Rust 实现，替换原先的 `rusqlite`（`bundled` C 版）。turso 的驱动是 async，store 用 `futures-executor::block_on` 在调用线程上驱动它，对外 API 保持同步（HTTP 读、写线程、测试都是同步调用；turso 不需要 Tokio 运行时即可推进，已实测四种上下文）。**三个必须一起记住的事实**（2026-09-21 实测）：① turso 是 pre-release，不是 1.0；② `roaring` 在 `Cargo.lock` 中钉在 `0.11.2`（0.11.3+ 要求 rustc 1.90，本仓库 MSRV 1.88），`cargo update` 必须保留该钉；③ turso **不是无 C 构建**——`cc` 会编译 SIMD/AEAD 内核，`bindgen`/libclang 生成扩展 ABI，因此 §10 的 musl 发布要求从「只需 musl C 编译器」变成「musl C 编译器 + 构建机 libclang」。新增 `crates/server/src/store/`（`mod.rs` 打开库、`schema.rs` 迁移）。`<server-data-dir>/loom.db`，WAL、`synchronous=NORMAL`、`foreign_keys=ON`、`busy_timeout`，`PRAGMA user_version` 记 schema 版本。打不开/迁移失败 = 启动失败，绝不回退内存。测试：建库幂等、版本表、坏库显式报错。
 
 **⚠️ 这一步会改变发布工具链。** 这是本仓库第一个 C 依赖：`bundled` 需要用 C 编译器编 SQLite。`x86_64-unknown-linux-musl` 现在靠宿主 `cc` 链接（`.cargo/config.toml` 注释），`aarch64-unknown-linux-musl` 只有 `rust-lld`；两者都没有 musl 交叉 C 编译器。因此 `release.yml` 必须同时加：x86_64 装 `musl-tools`，aarch64 装 aarch64 的 musl C 交叉编译器并设 `CC_aarch64_unknown_linux_musl`（`.cargo/config.toml` 记一笔）。本地只能验证 gnu 目标；musl 两个目标必须由 CI 或装了交叉工具链的机器验证后，才可以说发布路径完好。
 
