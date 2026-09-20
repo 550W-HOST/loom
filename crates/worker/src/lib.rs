@@ -64,9 +64,10 @@ use std::time::Duration;
 use futures_util::{SinkExt, StreamExt};
 use loom_domain::{HostId, RunId};
 use loom_provider_protocol::{
-    EnvironmentProvision, EnvironmentProvisionOutcome, EnvironmentProvisionReport, HostFileRequest,
-    HostRpcReport, HostRpcRequest, InteractionRequest, InteractionResolutionFrame,
-    ProviderCatalogReport, ProviderLaunch, ProviderSpec, RunDispatch, RunSteer,
+    EnvironmentProvision, EnvironmentProvisionOutcome, EnvironmentProvisionReport, HistoryPart,
+    HistoryReport, HostFileRequest, HostRpcOperation, HostRpcReport, HostRpcRequest,
+    InteractionRequest, InteractionResolutionFrame, ProviderCatalogReport, ProviderLaunch,
+    ProviderSpec, RunDispatch, RunSteer,
 };
 use loom_relay::dedup::SeenSet;
 use loom_relay::{EventId, Scope};
@@ -106,6 +107,15 @@ pub const DEFAULT_PERMISSION_TIMEOUT: Duration = crate::acp::permission::DEFAULT
 /// cold start. It runs off the socket loop and its failure is only logged: an
 /// agent that cannot answer yet must not keep the worker from enrolling.
 pub const DEFAULT_CATALOG_PROBE_BUDGET: Duration = Duration::from_secs(30);
+
+/// How long one history load may take before it fails.
+///
+/// Like the catalogue probe, a load opens a throwaway session, so the budget
+/// has to cover an agent's cold start plus a full replay. Exceeding it is
+/// reported to the server as a failure rather than answered with whatever
+/// arrived, because a partial conversation is indistinguishable from a short
+/// one once it is cached.
+pub const DEFAULT_HISTORY_LOAD_BUDGET: Duration = Duration::from_secs(60);
 
 /// Where managed environments' workspaces are created by default.
 ///
@@ -482,6 +492,12 @@ pub struct Worker {
     /// Workspace and git answers waiting to be forwarded to the server.
     host_rpc_reports: mpsc::Receiver<HostRpcReport>,
     host_rpc_reports_tx: mpsc::Sender<HostRpcReport>,
+    /// Streamed history frames waiting to be forwarded to the server.
+    ///
+    /// One load produces several frames, so this is not folded into
+    /// `host_rpc_reports`: that channel's contract is one answer per request.
+    history_reports: mpsc::Receiver<loom_provider_protocol::HistoryReport>,
+    history_reports_tx: mpsc::Sender<loom_provider_protocol::HistoryReport>,
     /// Terminal answers waiting to be forwarded to the server.
     terminal_reports: mpsc::Receiver<loom_provider_protocol::TerminalReport>,
     terminal_reports_tx: mpsc::Sender<loom_provider_protocol::TerminalReport>,
@@ -522,6 +538,8 @@ impl Worker {
                     mpsc::channel(REPORT_CHANNEL_CAPACITY);
                 let (host_rpc_reports_tx, host_rpc_reports) =
                     mpsc::channel(REPORT_CHANNEL_CAPACITY);
+                let (history_reports_tx, history_reports) =
+                    mpsc::channel(REPORT_CHANNEL_CAPACITY);
                 let (terminal_reports_tx, terminal_reports) =
                     mpsc::channel(REPORT_CHANNEL_CAPACITY);
                 let (script_reports_tx, script_reports) = mpsc::channel(REPORT_CHANNEL_CAPACITY);
@@ -557,6 +575,8 @@ impl Worker {
                     host_file_reports_tx,
                     host_rpc_reports,
                     host_rpc_reports_tx,
+                    history_reports,
+                    history_reports_tx,
                     terminal_reports,
                     terminal_reports_tx,
                     script_reports,
@@ -838,6 +858,10 @@ impl Worker {
                     let Some(report) = report else { continue };
                     self.send(&ClientCommand::HostRpcReport { report }).await?;
                 }
+                report = self.history_reports.recv() => {
+                    let Some(report) = report else { continue };
+                    self.send(&ClientCommand::HistoryReport { report }).await?;
+                }
                 report = self.terminal_reports.recv() => {
                     let Some(report) = report else { continue };
                     self.send(&ClientCommand::TerminalReport { report }).await?;
@@ -1068,11 +1092,80 @@ impl Worker {
         if self.host_id.as_ref() != Some(&request.host_id) {
             return;
         }
+        // A history load is not a workspace operation: it opens a provider
+        // session rather than a path on this machine.
+        if matches!(request.operation, HostRpcOperation::LoadHistory { .. }) {
+            self.start_history_load(request);
+            return;
+        }
         let reports = self.host_rpc_reports_tx.clone();
         let default_root = self.config.environment_root.clone();
         tokio::spawn(async move {
             let report = workspace::answer_with_root(request, default_root).await;
             let _ = reports.send(report).await;
+        });
+    }
+
+    /// Streams one thread's restored conversation back to the server.
+    ///
+    /// The answer is frames, not one report: a batch per bounded slice, then a
+    /// terminator. A failed load sends `Failed` and **no** `Complete`, so a
+    /// broken read can never be mistaken for a short conversation.
+    fn start_history_load(&self, request: HostRpcRequest) {
+        let reports = self.history_reports_tx.clone();
+        let host_id = request.host_id.clone();
+        let request_id = request.request_id.clone();
+        let HostRpcOperation::LoadHistory {
+            thread_id,
+            provider,
+            provider_session_id,
+            cwd,
+            max_batch_bytes,
+            max_total_bytes,
+        } = request.operation
+        else {
+            return;
+        };
+
+        tokio::spawn(async move {
+            let transport = match provider.launch {
+                ProviderLaunch::AcpStdio => crate::acp::session::Transport::Stdio {
+                    command: provider.command.clone(),
+                    args: provider.args.clone(),
+                },
+                ProviderLaunch::AcpEmbeddedPi => crate::acp::session::Transport::EmbeddedPi {
+                    command: provider.command.clone(),
+                    args: provider.args.clone(),
+                },
+            };
+            let frames = match crate::acp::history::load_history(
+                transport,
+                cwd,
+                thread_id,
+                provider_session_id,
+                crate::acp::history::HistoryLimits {
+                    max_total_bytes,
+                    budget: DEFAULT_HISTORY_LOAD_BUDGET,
+                },
+            )
+            .await
+            {
+                Ok(entries) => crate::acp::history::into_frames(entries, max_batch_bytes),
+                Err(failure) => vec![HistoryPart::Failed {
+                    code: failure.code.to_owned(),
+                    message: failure.message,
+                }],
+            };
+            for part in frames {
+                let report = HistoryReport {
+                    host_id: host_id.clone(),
+                    request_id: request_id.clone(),
+                    part,
+                };
+                if reports.send(report).await.is_err() {
+                    return;
+                }
+            }
         });
     }
 

@@ -471,6 +471,13 @@ pub enum WorkerClientMessage {
     HostRpcReport {
         report: HostRpcReport,
     },
+    /// One frame of a streamed history load: a batch, or its terminator.
+    ///
+    /// A separate message from `HostRpcReport` because a conversation does not
+    /// fit one answer; see [`loom_provider_protocol::HistoryPart`].
+    HistoryReport {
+        report: loom_provider_protocol::HistoryReport,
+    },
     TerminalReport {
         report: loom_provider_protocol::TerminalReport,
     },

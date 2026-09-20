@@ -658,6 +658,25 @@ async fn handle_command(
             state.host_rpc.resolve(report);
             None
         }
+        ClientCommand::HistoryReport { report } => {
+            let Some(host_id) = enrolled_host.clone() else {
+                return Some(ServerMessage::Error {
+                    message: "history reports require an enrolled host".into(),
+                });
+            };
+            if host_id != report.host_id {
+                return Some(ServerMessage::Error {
+                    message: "report names a different host than this connection enrolled as"
+                        .into(),
+                });
+            }
+            // Streamed history frames are private to the caller that minted the
+            // correlation id. A frame arriving after a timeout has no waiter
+            // and is dropped; a mid-stream frame dropped here ends the load as
+            // incomplete rather than short.
+            state.history_rpc.resolve(report);
+            None
+        }
         ClientCommand::TerminalReport { report } => {
             let Some(host_id) = enrolled_host.clone() else {
                 return Some(ServerMessage::Error {

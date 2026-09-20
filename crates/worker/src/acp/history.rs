@@ -26,6 +26,7 @@ use agent_client_protocol::{
     on_receive_notification, on_receive_request, Agent, Client, ConnectTo, ConnectionTo, Error,
 };
 use loom_domain::{ProviderEvent, ThreadId};
+use loom_provider_protocol::HistoryPart;
 
 use super::session::{agent_argv, embedded_agent_factory, Transport};
 use super::{AcpTranslator, RunContext};
@@ -127,6 +128,45 @@ pub async fn load_history(
     }
 }
 
+/// Splits a restored conversation into the frames that carry it.
+///
+/// Every entry lands in exactly one chunk, indices are contiguous from zero,
+/// and the last frame is the terminator — so a receiver can tell a whole
+/// replay from an interrupted one by the frames alone. An entry larger than
+/// the batch bound is still sent as its own batch rather than dropped: the
+/// bound is a framing choice, and the total budget is what decides whether the
+/// conversation is too large to load at all.
+pub fn into_frames(entries: Vec<ProviderEvent>, max_batch_bytes: u64) -> Vec<HistoryPart> {
+    let batch_limit = max_batch_bytes.max(1);
+    let mut frames: Vec<HistoryPart> = Vec::new();
+    let mut batch: Vec<ProviderEvent> = Vec::new();
+    let mut bytes: u64 = 0;
+
+    for entry in entries {
+        let size = serde_json::to_vec(&entry)
+            .map(|encoded| encoded.len() as u64)
+            .unwrap_or(0);
+        if !batch.is_empty() && bytes.saturating_add(size) > batch_limit {
+            frames.push(HistoryPart::Chunk {
+                batch_index: frames.len() as u32,
+                entries: std::mem::take(&mut batch),
+            });
+            bytes = 0;
+        }
+        bytes = bytes.saturating_add(size);
+        batch.push(entry);
+    }
+    if !batch.is_empty() {
+        frames.push(HistoryPart::Chunk {
+            batch_index: frames.len() as u32,
+            entries: batch,
+        });
+    }
+    let batch_count = frames.len() as u32;
+    frames.push(HistoryPart::Complete { batch_count });
+    frames
+}
+
 /// Runs initialize-and-restore against a connected agent, both versions.
 ///
 /// Both are registered because a v1 agent is a working agent: a session
@@ -181,8 +221,7 @@ where
 }
 
 /// What a replay accumulates, shared between the callbacks and the driver.
-struct HistoryState {
-    inner: Mutex<Inner>,
+struct HistoryState {    inner: Mutex<Inner>,
 }
 
 struct Inner {

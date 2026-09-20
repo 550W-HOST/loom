@@ -21,6 +21,7 @@ use crate::artifacts::Artifacts;
 use crate::automations::{self, AutomationsRegistry};
 use crate::domain_state::DomainRegistry;
 use crate::file_previews::FilePreviewRegistry;
+use crate::history_rpc::HistoryBroker;
 use crate::host_files::HostFileBroker;
 use crate::host_rpc::HostRpcBroker;
 use crate::hub_actor::HubHandle;
@@ -202,6 +203,8 @@ pub struct AppState {
     pub host_files: Arc<HostFileBroker>,
     /// HTTP requests waiting on a host's answer to a workspace RPC.
     pub host_rpc: Arc<HostRpcBroker>,
+    /// Callers waiting on a host's streamed history load.
+    pub history_rpc: Arc<HistoryBroker>,
     /// HTTP requests waiting on a host's answer to a terminal operation.
     pub terminal: Arc<crate::terminals::TerminalBroker>,
     /// What each host's agent reported it can run.
@@ -335,6 +338,7 @@ impl AppState {
             join_codes: Arc::new(JoinCodeRegistry::new()),
             host_files: Arc::new(HostFileBroker::new()),
             host_rpc: Arc::new(HostRpcBroker::new()),
+            history_rpc: Arc::new(HistoryBroker::new()),
             terminal: Arc::new(crate::terminals::TerminalBroker::new()),
             catalogs: Arc::new(crate::catalogs::CatalogRegistry::new()),
             terminals: Arc::new(crate::terminals::TerminalSessions::new()),
