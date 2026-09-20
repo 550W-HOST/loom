@@ -17,7 +17,8 @@ use loom_domain::{
     catalog::{CatalogModel, ProviderCatalog},
     DomainError, DomainEvent, DomainScope, Environment, EnvironmentId, EnvironmentKind,
     EnvironmentStatus, Host, HostId, HostStatus, Interaction, InteractionId, InteractionOrigin,
-    MessageRole, NewQueuedMessage, Project, ProjectId, ProjectKind, ProjectSourceId, QueuedMessage,
+    MessageRole, NewQueuedMessage, Project, ProjectId, ProjectKind, ProjectSourceId, ProviderEvent,
+    QueuedMessage,
     QueuedMessageId, QueuedMessageInitiator, QueuedMessagePayload, QueuedMessageStatus,
     ReasoningLevel, Resolution, ServiceTier, Thread, ThreadId, ThreadStatus, ThreadTrigger,
     ThreadUpdate,
@@ -3651,24 +3652,6 @@ fn assistant_message_timeline(
     timeline
 }
 
-/// The thinking of a thread, folded from the deltas that streamed it.
-fn reasoning_timeline(
-    entries: &[(String, u64, u64, DomainEvent)],
-) -> crate::reasoning_timeline::ReasoningTimeline {
-    let mut timeline = crate::reasoning_timeline::ReasoningTimeline::new();
-    for (_event_id, sequence, created_at_ms, event) in entries {
-        if let DomainEvent::ThreadRunEvent { run } = event {
-            timeline.absorb(
-                &run.run_id.to_string(),
-                &run.event.body,
-                *sequence,
-                *created_at_ms,
-            );
-        }
-    }
-    timeline
-}
-
 /// One timeline row for a folded thinking item.
 fn reasoning_row(
     thread_id: &ThreadId,
@@ -3693,24 +3676,6 @@ fn reasoning_row(
         "detail": item.text,
         "status": "completed",
     })
-}
-
-/// The tool calls of a thread, folded from the frames that described them.
-fn tool_timeline(
-    entries: &[(String, u64, u64, DomainEvent)],
-) -> crate::tool_timeline::ToolTimeline {
-    let mut timeline = crate::tool_timeline::ToolTimeline::new();
-    for (_event_id, sequence, created_at_ms, event) in entries {
-        if let DomainEvent::ThreadRunEvent { run } = event {
-            timeline.absorb(
-                &run.run_id.to_string(),
-                &run.event.body,
-                *sequence,
-                Some(*created_at_ms),
-            );
-        }
-    }
-    timeline
 }
 
 /// The item id a tool frame names, when it is one.
@@ -3746,6 +3711,510 @@ fn tool_item_id(item: &loom_domain::ThreadEventItem) -> &str {
         | loom_domain::ThreadEventItem::WebFetch { id, .. } => id,
         _ => "",
     }
+}
+
+/// One input to a timeline projection, whatever produced it.
+///
+/// A timeline is built from two kinds of source: a live thread's domain events,
+/// and a conversation restored from an ACP session. They agree on what a
+/// projection needs — a stable sequence, a grouping key, and a provider body —
+/// which is what lets one set of row builders serve both. What differs (where
+/// the sequence comes from, whether a time is known) is the source's business.
+struct TimelineInput<'a> {
+    /// Stable position in the source.
+    seq: u64,
+    /// When the source recorded it. `None` for a restored conversation, whose
+    /// agent replay carries no timestamps.
+    at_ms: Option<u64>,
+    /// What frames fold by, and what the row's `turnId` becomes: a live run's
+    /// id, or a local key that can never parse as one.
+    group: String,
+    /// The provider body, when this input is a run event.
+    body: Option<&'a ProviderEvent>,
+    /// The row the source emits for this event on its own, used when no fold
+    /// claims it. A user's own message has no provider body and no fold.
+    direct_row: Option<Value>,
+    /// Whether a user-message frame in this input opens a row.
+    ///
+    /// A live thread already carries the user's own message as a domain event,
+    /// and an agent that echoes the accepted prompt back would otherwise open a
+    /// second row for it. A restored conversation has only the frame, so there
+    /// it is the row.
+    user_frame_opens_row: bool,
+}
+
+/// What a timeline projection produced.
+struct TimelineRows {
+    /// Every row, oldest first.
+    rows: Vec<Value>,
+    /// The newest model fallback a provider reported, if any.
+    model_fallback: Option<Value>,
+    /// The last input's sequence, which is the cursor a client resumes from.
+    max_seq: u64,
+}
+
+/// Builds a timeline's rows from a source's inputs.
+///
+/// This is the seam that lets a live thread and a restored conversation share
+/// one projection: the folds (an answer is many deltas sharing one item, a call
+/// is several frames) and the row shapes are decided here, once.
+fn build_timeline_rows(thread_id: &ThreadId, inputs: &[TimelineInput<'_>]) -> TimelineRows {
+    let mut assistant_messages = crate::assistant_timeline::AssistantMessageTimeline::new();
+    let mut reasoning_items = crate::reasoning_timeline::ReasoningTimeline::new();
+    let mut tool_items = crate::tool_timeline::ToolTimeline::new();
+    for input in inputs {
+        let Some(body) = input.body else {
+            continue;
+        };
+        assistant_messages.absorb(&input.group, body, input.seq);
+        tool_items.absorb(&input.group, body, input.seq, input.at_ms);
+        // A reasoning row's text is a duration ("Thought for 1.2s"), so it has
+        // nothing to say without a time. A source that does not know one — a
+        // restored conversation — therefore has no thinking rows, which is also
+        // all an ACP replay could give it.
+        if let Some(at_ms) = input.at_ms {
+            reasoning_items.absorb(&input.group, body, input.seq, at_ms);
+        }
+    }
+
+    let mut emitted: HashSet<(String, String)> = HashSet::new();
+    let mut emitted_reasoning: HashSet<(String, String)> = HashSet::new();
+    let mut emitted_tools: HashSet<(String, String)> = HashSet::new();
+    let mut assistant_rows: Vec<Value> = Vec::new();
+    let mut reasoning_rows: Vec<Value> = Vec::new();
+    let mut tool_rows: Vec<Value> = Vec::new();
+    let mut user_rows: Vec<Value> = Vec::new();
+    let mut model_fallback: Option<Value> = None;
+
+    let mut all_rows = inputs
+        .iter()
+        .filter_map(|input| {
+            if let Some(body) = input.body {
+                let group = input.group.as_str();
+                if input.user_frame_opens_row {
+                    if let ProviderEvent::ItemStarted {
+                        item: loom_domain::ThreadEventItem::UserMessage { id, content, .. },
+                        ..
+                    } = body
+                    {
+                        // The user's own message. A live thread carries it as a
+                        // `ThreadMessageAdded` domain event and a restored
+                        // conversation as the frame the agent replayed; it is the
+                        // same row either way, because what a client merges must
+                        // not depend on which source produced it.
+                        user_rows.push(user_message_row(
+                            thread_id,
+                            group,
+                            input.seq,
+                            id,
+                            &user_content_text(content),
+                            input.at_ms,
+                        ));
+                        return None;
+                    }
+                }
+                if let ProviderEvent::ItemReasoningTextDelta { item_id, .. } = body {
+                    // The frame belongs to the reasoning projection either way,
+                    // so it never falls through to a generic row; it only
+                    // contributes one when it is the first frame of an item the
+                    // fold found something to say about.
+                    if emitted_reasoning.insert((input.group.clone(), item_id.clone())) {
+                        if let Some(item) = reasoning_items.get(group, item_id) {
+                            reasoning_rows.push(reasoning_row(thread_id, group, item));
+                        }
+                    }
+                    return None;
+                }
+                if let Some(item_id) = tool_frame_item_id(body) {
+                    // A tool frame belongs to the tool projection either way, so
+                    // it never falls through to a generic row; it contributes
+                    // one only when it is the first frame of a call the fold
+                    // holds.
+                    if emitted_tools.insert((input.group.clone(), item_id.to_owned())) {
+                        if let Some(activity) = tool_items.get(group, item_id) {
+                            tool_rows.extend(activity.rows(&thread_id.to_string()));
+                        }
+                    }
+                    return None;
+                }
+                if let ProviderEvent::ProviderModelFallback {
+                    original_model,
+                    fallback_model: replaced_by,
+                    ..
+                } = body
+                {
+                    model_fallback = Some(json!({
+                        "originalModel": original_model,
+                        "fallbackModel": replaced_by,
+                        "detectedAt": input.at_ms,
+                    }));
+                }
+                let item_id = match body {
+                    ProviderEvent::ItemAgentMessageDelta { item_id, .. } => Some(item_id.as_str()),
+                    ProviderEvent::ItemCompleted {
+                        item: loom_domain::ThreadEventItem::AgentMessage { id, .. },
+                        ..
+                    } => Some(id.as_str()),
+                    _ => None,
+                };
+                if let Some(item_id) = item_id {
+                    // The frame belongs to the assistant projection either way,
+                    // so it never falls through to a generic row; it only
+                    // contributes one when it is the first frame of a message
+                    // the fold created.
+                    if emitted.insert((input.group.clone(), item_id.to_owned())) {
+                        if let Some(message) = assistant_messages.get(group, item_id) {
+                            assistant_rows.push(assistant_timeline_row(
+                                group,
+                                thread_id,
+                                input.at_ms,
+                                message,
+                            ));
+                        }
+                    }
+                    return None;
+                }
+            }
+            input.direct_row.clone()
+        })
+        .collect::<Vec<_>>();
+
+    // The folded rows are emitted *after* the per-event rows and then sorted by
+    // `sourceSeqStart`, so an assistant message sorts where it began streaming
+    // while every other row keeps its own sequence. A row is emitted by the
+    // first assistant frame that names a message the fold actually created —
+    // which is the frame carrying its first text, not an earlier empty delta,
+    // and which is exactly the set of messages the fold holds.
+    all_rows.extend(assistant_rows);
+    all_rows.extend(reasoning_rows);
+    all_rows.extend(tool_rows);
+    all_rows.extend(user_rows);
+    all_rows.sort_by_key(|row| {
+        row.get("sourceSeqStart")
+            .and_then(Value::as_u64)
+            .unwrap_or_default()
+    });
+
+    TimelineRows {
+        rows: all_rows,
+        model_fallback,
+        max_seq: inputs.last().map(|input| input.seq).unwrap_or(0),
+    }
+}
+
+/// The timeline inputs a restored conversation supplies.
+///
+/// A restored conversation has no loom run ids — it belongs to no run — so it
+/// is grouped by a **local** key: a new group starts at each user message,
+/// which is the only turn boundary an ACP replay states. The key carries no
+/// `run_` prefix, so it cannot parse as a run id and no run action can be
+/// offered from a row grouped by it.
+///
+/// No time is supplied either: an agent's replay carries none, and the moment
+/// the server loaded the conversation is not the moment anything in it
+/// happened.
+fn restored_timeline_inputs(view: &crate::history_cache::CacheView) -> Vec<TimelineInput<'_>> {
+    let mut group: u32 = 0;
+    view.rows
+        .iter()
+        .map(|row| {
+            if matches!(
+                &row.event,
+                ProviderEvent::ItemStarted {
+                    item: loom_domain::ThreadEventItem::UserMessage { .. },
+                    ..
+                }
+            ) {
+                group += 1;
+            }
+            TimelineInput {
+                seq: row.seq,
+                at_ms: None,
+                group: format!("restored-{}", group.max(1)),
+                body: Some(&row.event),
+                direct_row: None,
+                // A restored conversation has no domain event behind its user
+                // message: the replayed frame is the only place it exists.
+                user_frame_opens_row: true,
+            }
+        })
+        .collect()
+}
+
+/// The rows a cached conversation projects to.
+///
+/// The other source for [`build_timeline_rows`]: same folds, same row shapes,
+/// different answers to "where does the sequence come from" and "what folds
+/// together".
+fn restored_timeline_rows(
+    thread_id: &ThreadId,
+    view: &crate::history_cache::CacheView,
+) -> TimelineRows {
+    let inputs = restored_timeline_inputs(view);
+    build_timeline_rows(thread_id, &inputs)
+}
+
+#[cfg(test)]
+mod restored_timeline_tests {
+    use super::*;
+    use crate::history_cache::{CacheBinding, CacheView, CachedRow, HistoryStatus};
+    use loom_domain::{HostId, ItemStatus, ThreadEventItem, UserContent};
+
+    fn view(events: Vec<ProviderEvent>) -> CacheView {
+        CacheView {
+            generation: 1,
+            status: HistoryStatus::Ready,
+            complete: true,
+            reason: None,
+            rows: events
+                .into_iter()
+                .enumerate()
+                .map(|(index, event)| CachedRow {
+                    seq: index as u64 + 1,
+                    event,
+                })
+                .collect(),
+        }
+    }
+
+    fn user_message(id: &str, text: &str) -> ProviderEvent {
+        ProviderEvent::ItemStarted {
+            item: ThreadEventItem::UserMessage {
+                id: id.to_owned(),
+                content: vec![UserContent::Text {
+                    text: text.to_owned(),
+                }],
+                client_request_id: None,
+                parent_tool_call_id: None,
+            },
+            provider_thread_id: "acp-session-1".to_owned(),
+        }
+    }
+
+    fn assistant_delta(item_id: &str, text: &str) -> ProviderEvent {
+        ProviderEvent::ItemAgentMessageDelta {
+            item_id: item_id.to_owned(),
+            delta: text.to_owned(),
+            provider_thread_id: "acp-session-1".to_owned(),
+            parent_tool_call_id: None,
+        }
+    }
+
+    fn tool_call(id: &str) -> ProviderEvent {
+        ProviderEvent::ItemStarted {
+            item: ThreadEventItem::ToolCall {
+                id: id.to_owned(),
+                server: None,
+                tool: "execute".to_owned(),
+                arguments: None,
+                status: ItemStatus::Pending,
+                result: None,
+                error: None,
+                duration_ms: None,
+                presentation: None,
+                parent_tool_call_id: None,
+            },
+            provider_thread_id: "acp-session-1".to_owned(),
+        }
+    }
+
+    /// A restored conversation projects to the same row shapes a live one does,
+    /// in the order the replay carried it.
+    #[test]
+    fn a_restored_conversation_projects_to_rows_in_order() {
+        let thread_id = ThreadId::mint();
+        let rows = restored_timeline_rows(
+            &thread_id,
+            &view(vec![
+                user_message("user-1", "what changed?"),
+                tool_call("call-1"),
+                assistant_delta("assistant-1", "here is what changed"),
+            ]),
+        )
+        .rows;
+
+        assert_eq!(rows.len(), 3, "a user message, a tool call and an answer");
+        let sequences: Vec<u64> = rows
+            .iter()
+            .map(|row| row["sourceSeqStart"].as_u64().unwrap())
+            .collect();
+        let mut sorted = sequences.clone();
+        sorted.sort_unstable();
+        assert_eq!(sequences, sorted, "rows are ordered by their source");
+    }
+
+    /// The property that keeps a run action off a row that belongs to no run.
+    #[test]
+    fn every_restored_row_is_grouped_by_a_key_that_is_not_a_run_id() {
+        let thread_id = ThreadId::mint();
+        let rows = restored_timeline_rows(
+            &thread_id,
+            &view(vec![
+                user_message("user-1", "first"),
+                assistant_delta("assistant-1", "answer one"),
+                user_message("user-2", "second"),
+                assistant_delta("assistant-2", "answer two"),
+            ]),
+        )
+        .rows;
+
+        assert!(!rows.is_empty());
+        for row in &rows {
+            let turn = row["turnId"]
+                .as_str()
+                .unwrap_or_else(|| panic!("a restored row names a group: {row}"));
+            assert!(
+                turn.starts_with("restored-"),
+                "the group key must be visibly local: {turn}"
+            );
+            assert!(
+                turn.parse::<loom_domain::RunId>().is_err(),
+                "a local group key must never parse as a run id: {turn}"
+            );
+        }
+    }
+
+    /// A user message is the only turn boundary a replay states, so it is the
+    /// one a restored conversation is grouped by.
+    #[test]
+    fn a_user_message_starts_a_new_group() {
+        let thread_id = ThreadId::mint();
+        let rows = restored_timeline_rows(
+            &thread_id,
+            &view(vec![
+                user_message("user-1", "first"),
+                assistant_delta("assistant-1", "answer one"),
+                user_message("user-2", "second"),
+                assistant_delta("assistant-2", "answer two"),
+            ]),
+        )
+        .rows;
+
+        let mut turns: Vec<&str> = rows
+            .iter()
+            .filter_map(|row| row["turnId"].as_str())
+            .collect();
+        turns.dedup();
+        assert_eq!(
+            turns,
+            vec!["restored-1", "restored-2"],
+            "two user messages are two groups"
+        );
+    }
+
+    /// A replay carries no timestamps, so a restored row tells the client it
+    /// does not know rather than answering with the load time.
+    #[test]
+    fn a_restored_row_carries_no_fabricated_time() {
+        let thread_id = ThreadId::mint();
+        let rows = restored_timeline_rows(
+            &thread_id,
+            &view(vec![
+                user_message("user-1", "hello"),
+                tool_call("call-1"),
+            ]),
+        )
+        .rows;
+
+        for row in &rows {
+            if row.get("startedAt").is_some() {
+                assert!(row["startedAt"].is_null(), "no fabricated start: {row}");
+            }
+            if row.get("createdAt").is_some() {
+                assert!(row["createdAt"].is_null(), "no fabricated creation: {row}");
+            }
+        }
+    }
+
+    /// A live thread already carried the user's own message as a domain event.
+    /// An agent that echoes the accepted prompt back must not open a second row
+    /// for it, which is why the source, not the frame, decides.
+    #[test]
+    fn a_live_run_frame_does_not_open_a_second_user_row() {
+        let thread_id = ThreadId::mint();
+        let event = user_message("user-1", "hello");
+        let inputs = vec![TimelineInput {
+            seq: 1,
+            at_ms: Some(1_700_000_000_000),
+            group: "run_abc".to_owned(),
+            body: Some(&event),
+            direct_row: None,
+            user_frame_opens_row: false,
+        }];
+
+        let rows = build_timeline_rows(&thread_id, &inputs).rows;
+        assert!(
+            rows.iter().all(|row| row["role"] != "user"),
+            "the domain event is the user's row, not the echoed frame: {rows:?}"
+        );
+    }
+
+    /// The binding a cache entry is keyed by, for the tests above to name.
+    #[allow(dead_code)]
+    fn binding() -> CacheBinding {
+        CacheBinding {
+            host_id: HostId::mint(),
+            agent: "pi".to_owned(),
+            provider_session_id: "acp-session-1".to_owned(),
+            cwd: "/srv/project".to_owned(),
+        }
+    }
+}
+
+/// The text of a replayed user message.
+///
+/// ACP delivers a user message as content parts and loom's row carries one
+/// text. Text parts are joined; a non-text part contributes nothing rather than
+/// a placeholder, because the row has no attachments field to put it in and
+/// inventing `"[image]"` would state something the agent never did.
+fn user_content_text(content: &[loom_domain::UserContent]) -> String {
+    content
+        .iter()
+        .filter_map(|part| match part {
+            loom_domain::UserContent::Text { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// One timeline row for a user's own message.
+///
+/// Reached from either source: a live thread's `ThreadMessageAdded`, and the
+/// `user_message` frame an ACP session replays. The shape is the same because
+/// it is the same row.
+fn user_message_row(
+    thread_id: &ThreadId,
+    group: &str,
+    sequence: u64,
+    item_id: &str,
+    text: &str,
+    at_ms: Option<u64>,
+) -> Value {
+    let mut row = timeline_row_base(
+        format!("{thread_id}:{group}:{item_id}"),
+        thread_id,
+        Some(group.to_owned()),
+        sequence,
+        at_ms,
+    );
+    let object = row.as_object_mut().expect("a timeline row is an object");
+    object.extend([
+        ("kind".into(), json!("conversation")),
+        ("text".into(), json!(text)),
+        ("attachments".into(), Value::Null),
+        ("role".into(), json!("user")),
+        ("initiator".into(), json!("user")),
+        ("senderThreadId".into(), Value::Null),
+        ("systemMessageKind".into(), json!("unlabeled")),
+        ("systemMessageSubject".into(), Value::Null),
+        (
+            "turnRequest".into(),
+            json!({ "isGrouped": false, "kind": "message", "status": "accepted" }),
+        ),
+        ("mentions".into(), json!([])),
+    ]);
+    row
 }
 
 /// One timeline row for a folded assistant message.
@@ -3953,115 +4422,40 @@ async fn thread_timeline(
         Ok(entries) => entries,
         Err(response) => return response,
     };
-    // Assistant answers are folded per message *before* rows are built: the
-    // contract carries an answer as many deltas sharing one item, while a
-    // timeline row is one message. Folding at the row-building seam is what
-    // keeps a streamed answer from becoming one row per chunk.
-    //
-    // The folded rows are emitted *after* the per-event rows and then sorted by
-    // `sourceSeqStart`, so an assistant message sorts where it began streaming
-    // while every other row keeps its own sequence. A row is emitted by the
-    // first assistant frame that names a message the fold actually created —
-    // which is the frame carrying its first text, not an earlier empty delta,
-    // and which is exactly the set of messages the fold holds.
-    let assistant_messages = assistant_message_timeline(&entries);
-    // Thinking folds the same way and for the same reason: the contract carries
-    // it as deltas that share an item, while a row is one "Thought for 1.2s"
-    // line. Without this fold the reasoning never reaches a client at all — the
-    // rows are built here, not in the browser.
-    let reasoning_items = reasoning_timeline(&entries);
-    // A tool call is several frames too — a start, progress, a completion — and
-    // its row is the call, so it folds the same way before any row is built.
-    let tool_items = tool_timeline(&entries);
-    let mut emitted: HashSet<(String, String)> = HashSet::new();
-    let mut emitted_reasoning: HashSet<(String, String)> = HashSet::new();
-    let mut emitted_tools: HashSet<(String, String)> = HashSet::new();
-    let mut assistant_rows: Vec<Value> = Vec::new();
-    let mut reasoning_rows: Vec<Value> = Vec::new();
-    let mut tool_rows: Vec<Value> = Vec::new();
-    let mut model_fallback: Option<Value> = None;
-    let mut all_rows = entries
+    // The projection's inputs from this source. Folding and row shapes are
+    // decided by `build_timeline_rows`; what a source supplies is where the
+    // sequence comes from, what folds together, and whether a time is known.
+    let inputs: Vec<TimelineInput<'_>> = entries
         .iter()
-        .filter_map(|(_event_id, sequence, created_at_ms, event)| {
-            if let DomainEvent::ThreadRunEvent { run } = event {
-                let run_id = run.run_id.to_string();
-                if let loom_domain::ProviderEvent::ItemReasoningTextDelta { item_id, .. } =
-                    &run.event.body
-                {
-                    // The frame belongs to the reasoning projection either way,
-                    // so it never falls through to a generic row; it only
-                    // contributes one when it is the first frame of an item the
-                    // fold found something to say about.
-                    if emitted_reasoning.insert((run_id.clone(), item_id.clone())) {
-                        if let Some(item) = reasoning_items.get(&run_id, item_id) {
-                            reasoning_rows.push(reasoning_row(&thread_id, &run_id, item));
-                        }
-                    }
-                    return None;
-                }
-                if let Some(item_id) = tool_frame_item_id(&run.event.body) {
-                    // A tool frame belongs to the tool projection either way, so
-                    // it never falls through to a generic row; it contributes
-                    // one only when it is the first frame of a call the fold
-                    // holds.
-                    if emitted_tools.insert((run_id.clone(), item_id.to_owned())) {
-                        if let Some(activity) = tool_items.get(&run_id, item_id) {
-                            tool_rows.extend(activity.rows(&thread_id.to_string()));
-                        }
-                    }
-                    return None;
-                }
-                if let loom_domain::ProviderEvent::ProviderModelFallback {
-                    original_model,
-                    fallback_model: replaced_by,
-                    ..
-                } = &run.event.body
-                {
-                    model_fallback = Some(json!({
-                        "originalModel": original_model,
-                        "fallbackModel": replaced_by,
-                        "detectedAt": created_at_ms,
-                    }));
-                }
-                let item_id = match &run.event.body {
-                    loom_domain::ProviderEvent::ItemAgentMessageDelta { item_id, .. } => {
-                        Some(item_id.as_str())
-                    }
-                    loom_domain::ProviderEvent::ItemCompleted {
-                        item: loom_domain::ThreadEventItem::AgentMessage { id, .. },
-                        ..
-                    } => Some(id.as_str()),
-                    _ => None,
-                };
-                if let Some(item_id) = item_id {
-                    // The frame belongs to the assistant projection either way,
-                    // so it never falls through to a generic row; it only
-                    // contributes one when it is the first frame of a message
-                    // the fold created.
-                    if emitted.insert((run_id.clone(), item_id.to_owned())) {
-                        if let Some(message) = assistant_messages.get(&run_id, item_id) {
-                            assistant_rows.push(assistant_timeline_row(
-                                &run_id,
-                                &thread_id,
-                                Some(*created_at_ms),
-                                message,
-                            ));
-                        }
-                    }
-                    return None;
-                }
+        .map(|(_event_id, sequence, created_at_ms, event)| {
+            let direct_row = timeline_row_for_event(&thread_id, *sequence, event);
+            match event {
+                DomainEvent::ThreadRunEvent { run } => TimelineInput {
+                    seq: *sequence,
+                    at_ms: Some(*created_at_ms),
+                    group: run.run_id.to_string(),
+                    body: Some(&run.event.body),
+                    direct_row,
+                    // The user's own message arrived as a domain event, so an
+                    // agent echoing the prompt back must not open a second row.
+                    user_frame_opens_row: false,
+                },
+                _ => TimelineInput {
+                    seq: *sequence,
+                    at_ms: Some(*created_at_ms),
+                    group: String::new(),
+                    body: None,
+                    direct_row,
+                    user_frame_opens_row: false,
+                },
             }
-            timeline_row_for_event(&thread_id, *sequence, event)
         })
-        .collect::<Vec<_>>();
-    all_rows.extend(assistant_rows);
-    all_rows.extend(reasoning_rows);
-    all_rows.extend(tool_rows);
-    all_rows.sort_by_key(|row| {
-        row.get("sourceSeqStart")
-            .and_then(Value::as_u64)
-            .unwrap_or_default()
-    });
+        .collect();
+    let TimelineRows {
+        rows: all_rows,
+        model_fallback,
+        max_seq,
+    } = build_timeline_rows(&thread_id, &inputs);
     let before_id_sequence = query.before_anchor_id.as_ref().and_then(|anchor_id| {
         all_rows.iter().find_map(|row| {
             (row.get("id").and_then(Value::as_str) == Some(anchor_id.as_str()))
@@ -4095,10 +4489,6 @@ async fn thread_timeline(
             "anchorId": first["id"]
         })
     });
-    let max_seq = entries
-        .last()
-        .map(|(_, sequence, _, _)| *sequence)
-        .unwrap_or(0);
     let mut body = json!({
         "rows": candidates,
         "contextBoundarySeq": null,
