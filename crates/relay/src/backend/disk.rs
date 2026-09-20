@@ -442,6 +442,13 @@ struct WriterState {
 
 impl WriterState {
     fn append(&mut self, framed: &[u8], created_at_ms: u64) -> Result<()> {
+        // Write where `entries` says this record lives, not where the file's
+        // cursor happens to be. A shard that already holds records is opened
+        // with its cursor at zero, so trusting it made the first append after a
+        // restart overwrite the beginning of the log while `entries` went on
+        // describing the file that used to be there — and the next compaction,
+        // which reads every entry back by offset, failed with a short read.
+        self.file.seek(SeekFrom::Start(self.file_len))?;
         self.file.write_all(framed)?;
         self.entries.push(Entry {
             start: self.file_len,
@@ -555,6 +562,18 @@ fn writer_loop(
             return;
         }
     };
+
+    // ... and start the cursor where `file_len` says the next record goes.
+    #[allow(unused_mut)]
+    let mut file = file;
+    if let Err(seek_error) = file.seek(SeekFrom::End(0)) {
+        let mut guard = error.lock().unwrap_or_else(|poison| poison.into_inner());
+        if guard.is_none() {
+            *guard = Some(seek_error.to_string());
+        }
+        while rx.recv().is_ok() {}
+        return;
+    }
 
     let mut state = WriterState {
         path,
@@ -888,6 +907,46 @@ mod tests {
     /// writer cannot possibly have finished it by the next line — would be a
     /// half-written tail, and reopening the directory would read a shorter log
     /// (or a torn one).
+    /// A reopened shard appends *after* the records it already holds.
+    ///
+    /// The writer opens the file with its cursor at zero, and `append` records
+    /// the offset it believes it wrote at. Without seeking, the first append of
+    /// a reopened shard writes over the beginning; the in-memory view still
+    /// reads fine, but the next compaction reads each entry back by offset and
+    /// runs off the end — the failure surfaced as a latched
+    /// "failed to fill whole buffer" on a later append, which is the worst
+    /// shape for a durability bug: the write that broke it looked successful.
+    #[test]
+    fn a_reopened_shard_appends_after_its_records() {
+        let dir = TempDir::new().unwrap();
+        {
+            let backend = DiskBackend::open(dir.path(), 10).unwrap();
+            for ts in [10, 20, 30] {
+                backend.append(2, record(ts)).unwrap();
+            }
+            backend.flush_shards().unwrap();
+        }
+
+        let reopened = DiskBackend::open(dir.path(), 10).unwrap();
+        // Long enough to force the compaction that reads the file back.
+        for ts in 40..90 {
+            reopened.append(2, record(ts)).unwrap();
+        }
+
+        let read = reopened.read_after(2, None, 100).unwrap();
+        assert_eq!(read.len(), 10, "the cap still holds");
+        assert_eq!(
+            read.last().unwrap().created_at_ms,
+            89,
+            "the newest append survived: {read:?}"
+        );
+        assert!(
+            reopened.backend_error().is_none(),
+            "no writer failure: {:?}",
+            reopened.backend_error()
+        );
+    }
+
     #[test]
     fn a_flush_covers_the_writes_queued_before_it() {
         let dir = TempDir::new().unwrap();

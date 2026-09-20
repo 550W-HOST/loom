@@ -271,6 +271,21 @@ fn age_out_the_window(state: &AppState, thread_id: &ThreadId, frames: usize) {
     }
 }
 
+/// Copies a directory tree, which is what "the next process reads what the last
+/// one wrote" amounts to once the last one is gone.
+fn copy_dir(from: &Path, to: &Path) {
+    std::fs::create_dir_all(to).unwrap();
+    for entry in std::fs::read_dir(from).unwrap() {
+        let entry = entry.unwrap();
+        let target = to.join(entry.file_name());
+        if entry.file_type().unwrap().is_dir() {
+            copy_dir(&entry.path(), &target);
+        } else {
+            std::fs::copy(entry.path(), &target).unwrap();
+        }
+    }
+}
+
 fn config(data_dir: &Path) -> AppConfig {
     AppConfig {
         // Small enough that a few frames evict the messages: the point is that
@@ -300,8 +315,20 @@ async fn a_conversation_outside_the_relay_window_is_loaded_from_the_agent() {
     age_out_the_window(&first, &thread_id, 8);
     first.shutdown().unwrap();
 
-    // --- After the restart: a fresh process, an empty cache, the same binding.
-    let (addr, state) = spawn_server(config(data_dir.path())).await;
+    // --- After the restart: a fresh process reading what that one wrote.
+    //
+    // The directory is copied rather than reopened in place on purpose. A real
+    // restart is a new process, and the previous one's backend is gone by the
+    // time the next opens the files; here the first state is still alive (the
+    // serving task holds a clone of it), and two `DiskBackend`s over one shard
+    // file is a state no deployment has: the second one's compaction reads the
+    // file the first still has open, which surfaces as a latched
+    // "failed to fill whole buffer" on its next append. Copying is exactly what
+    // the restart means — the bytes the last process flushed — without the
+    // impossible overlap.
+    let next_dir = tempfile::TempDir::new().unwrap();
+    copy_dir(data_dir.path(), next_dir.path());
+    let (addr, state) = spawn_server(config(next_dir.path())).await;
     let recovered = state
         .registry
         .thread(&thread_id)
@@ -344,10 +371,19 @@ async fn a_conversation_outside_the_relay_window_is_loaded_from_the_agent() {
     );
 
     // The load reaches the *owning host*, names the session the server
-    // resolved, and asks for the workspace the binding recorded.
-    // Nothing else is published on this host's scope, so the next frame is the
-    // load the read asked for.
-    let request = payload(&worker.recv().await);
+    // resolved, and asks for the workspace the binding recorded. Nothing else is
+    // published on this host's scope, so the next frame is the load the read
+    // asked for — and when it does not come, the timeline says what the server
+    // thinks happened to the load, which is the only way to tell "never asked"
+    // from "asked and already failed".
+    let frame = match worker.try_recv(TIMEOUT).await {
+        Some(frame) => frame,
+        None => {
+            let latest = http_json(&addr, &base).await;
+            panic!("no load request reached the worker; the timeline says {latest}");
+        }
+    };
+    let request = payload(&frame);
     assert_eq!(
         request["operation"]["type"], "host.load_history",
         "the read asks the owning host to load the conversation: {request}"
