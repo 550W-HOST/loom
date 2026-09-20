@@ -360,11 +360,31 @@ function mergeLoadedTimelineOlderCursor(
   return latest.anchorSeq <= current.anchorSeq ? latest : current;
 }
 
+/**
+ * Whether this response belongs to a generation the client has already left.
+ *
+ * Generations only move forward, so an older one is a page the client asked for
+ * before a rebuild and is only now receiving. Applying it would roll the
+ * timeline back to a numbering that no longer describes the conversation, so a
+ * late response is dropped instead of merged.
+ */
+function isFromAnEarlierGeneration(
+  current: LoadedTimelineState,
+  latestTimeline: ThreadTimelineResponse,
+): boolean {
+  return (
+    current.generation !== null && latestTimeline.generation < current.generation
+  );
+}
+
 export function mergeLoadedTimelineWithLatest({
   current,
   latestTimeline,
   surfaceKey,
 }: MergeLoadedTimelineWithLatestArgs): LoadedTimelineState {
+  if (isFromAnEarlierGeneration(current, latestTimeline)) {
+    return current;
+  }
   if (
     current.surfaceKey !== surfaceKey ||
     current.generation !== latestTimeline.generation ||
@@ -425,6 +445,9 @@ export function recoverLoadedTimelineAfterStaleCursor({
   latestTimeline,
   surfaceKey,
 }: RecoverLoadedTimelineAfterStaleCursorArgs): LoadedTimelineState {
+  if (isFromAnEarlierGeneration(current, latestTimeline)) {
+    return current;
+  }
   if (
     current.surfaceKey !== surfaceKey ||
     current.generation !== latestTimeline.generation ||

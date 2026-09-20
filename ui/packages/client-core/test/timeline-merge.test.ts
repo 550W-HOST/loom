@@ -234,6 +234,26 @@ describe("timeline page merging", () => {
     expect(merged.rows[0]).toBe(prompt);
   });
 
+  // A response can arrive after the one that replaced it — a refetch racing the
+  // page it superseded. Applying it would roll the timeline back to a numbering
+  // the server has already left, so it is dropped.
+  it("drops a response from an earlier generation instead of rolling back", () => {
+    const current = {
+      ...loadedState([userRow("newer", 3)], null, 3),
+      generation: 2,
+    };
+    const late = timelineResponse([userRow("older", 1)], null, 1, 1);
+
+    const merged = mergeLoadedTimelineWithLatest({
+      current,
+      latestTimeline: late,
+      surfaceKey: "thread-1:default",
+    });
+
+    expect(merged).toBe(current);
+    expect(merged.rows.map((row) => row.id)).toEqual(["newer"]);
+  });
+
   // A rebuild renumbers every row from one, so the rows a new generation
   // carries cannot be merged with the ones it replaced: they share no
   // numbering, and the older cursor belongs to a window that no longer exists.
