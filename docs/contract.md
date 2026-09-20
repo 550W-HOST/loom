@@ -360,8 +360,9 @@ return.
 ### `threads.timelineTurnSummaryDetails` reuses the timeline's projection
 
 It is a **filtered view of `threads.timeline`**, not a second projection: rows
-are built by the same `timeline_row_for_event`, so a row returned here is
-byte-identical to the same row in the timeline it came from. What differs is the
+come from the same cached row set the timeline itself serves
+(`cached_thread_timeline_rows`), so a row returned here is byte-identical to the
+same row in the timeline it came from. What differs is the
 selection (a turn's `[sourceSeqStart, sourceSeqEnd]` range) and the paging
 direction — `beforeCursor` walks **backwards**, because a UI expands a collapsed
 turn from its newest summary row towards its oldest. The filter is on source

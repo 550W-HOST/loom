@@ -234,6 +234,62 @@ The design, its crash-safety argument and the choices that were *not* taken
 (pure snapshot, pure replay, an external database) are in
 [`domain-persistence.md`](domain-persistence.md).
 
+### The conversation is not in the log
+
+Three stores have three different jobs, and the split is the point:
+
+| What | Where it lives | What it is for |
+| --- | --- | --- |
+| The **conversation** | the ACP agent's own session | the authority. Messages, tool calls and their order |
+| The **entity view** | `domain.snapshot` under `--data-dir` | projects, threads, hosts, environments — and each thread's session **binding**: agent, cwd, session id, owning host |
+| The **relay log** | memory, or per-shard files under `--data-dir` | live delivery, cursor replay for a bounded window, and the delta the entity snapshot needs to catch up |
+
+The relay log is **not** a transcript. It retains a bounded window per shard
+(`--retention`, `backend_max_len`), it is trimmed oldest-first, and no part of
+the product reads it as the history of a thread. What makes a client's view of a
+running conversation feel complete is not the log's depth but the cache below.
+
+The server keeps a **timeline cache**: per thread, a baseline replayed from the
+owning host plus the live events since, numbered by a `generation` that is
+never reused. It is disposable by construction:
+
+- it is memory only; a restart empties it, and the next read loads again;
+- a load needs the worker online, the agent available, the session still on
+  disk, and the `cwd` still present. Any of those missing is an explicit
+  unavailable status with a reason, never an empty conversation;
+- reading a thread does not wait for a load: the response says `loading` and
+  the client asks again, while every other reader joins the same load;
+- it is bounded (thread count and bytes, least-recently-used), and evicting a
+  thread drops the whole conversation rather than rows from its middle.
+
+What that costs, stated plainly:
+
+- **A conversation larger than one load is unreadable after a restart.** ACP
+  replays a session in full or not at all, and the cache does not persist, so a
+  session past the load's byte budget has no second source. The API answers
+  `unavailable` with the size it refused; raising the budget is configuration,
+  not a query.
+- **Timestamps are the agent's, and it may not have any.** A replayed row
+  carries no time rather than the moment the conversation was loaded, and the
+  client renders no duration rather than a fabricated one. A local grouping key
+  stands in for a turn, and it is deliberately not parseable as a loom run id,
+  so a restored row offers no run action.
+- **Search is bounded by the log and does not see a restored history.**
+  `threads.search` matches `ThreadMessageAdded` events in the *retained log*,
+  so it finds what a thread did recently and nothing older — including the
+  messages this design can now show on screen by replaying a session. It is a
+  convenience over recent activity, not an index over conversations, and a real
+  index would be a durable store, which this design deliberately does not add.
+  Naming the gap is the point: a search box that silently answers "no matches"
+  for a conversation the user is looking at is worse than one whose reach is
+  written down.
+- **The entity view's own recovery still reads the bounded log.** Two recovery
+  reads (`state.rs::latest_active_run_id`, `state.rs::recover_run_flags`) ask
+  the *log*, not the cache, whether a thread is still active and how its last
+  run ended — those are loom's own facts, and a session replay cannot answer
+  them. They are correct only within the retained window, which is a recovery
+  question tracked separately from this design.
+
 ### Backpressure
 
 `Transport::send` returns `false` when a connection is closed or too far

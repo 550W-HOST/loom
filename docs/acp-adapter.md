@@ -279,6 +279,30 @@ features, never inferred and never worked around:
 | v2 `capabilities.session` | gates the baseline `session/new`, `session/resume` and `session/list` surface |
 | initialize identity and capabilities | captured as a stable agent identity, negotiated protocol version and opaque capability snapshot for the adapter's caller |
 
+The history-load path is gated by the same table and nothing else: v1 needs
+`loadSession`, v2 needs `capabilities.session`. An agent that has neither is
+reported as unable to load history rather than being read from its storage —
+loom still never parses an agent's session files.
+
+### What a replay does and does not carry
+
+This is the boundary of what a restored conversation can show, and it is a
+property of the protocol rather than a bug to be worked around:
+
+| Aspect | What a replay gives |
+| --- | --- |
+| Roles | user messages, assistant messages and tool results |
+| Assistant text | one whole text per message, not the deltas it streamed as |
+| Reasoning / thinking | **not replayed** by pi-acp; a restored conversation has no thinking rows |
+| Timestamps | none. A replayed row reports no time instead of inventing one |
+| Run identity | none. Rows are grouped by a local key that is deliberately not a loom run id |
+| Item ids | synthesized per replay, so rows are reconciled by position and content, not by id |
+
+Two consequences are worth stating for whoever reads a restored timeline: it is
+the *shape* of the conversation that is restored, not the recording of it, and a
+run action cannot be offered from a row that belongs to no run — which is why
+the local grouping key must never parse as one.
+
 ## Version handling
 
 The Rust adapter uses the SDK protocol connector with v2 first and v1 fallback.
@@ -303,21 +327,24 @@ do not leak ACP schema types into the domain or server. The thread-to-session
 relationship remains keyed by the provider binding and workspace.
 
 **The binding is the other half of the mapping.** A provider session id is the
-*agent's* identifier, unique only within that agent, and a session belongs to
-the directory it was opened in. loom therefore records
-`ProviderSessionBinding { agent, cwd }` alongside the id, from the same
-`thread/identity` event, taking both values from the run that opened the
-session rather than from the thread's current environment (which can be
-re-bound between runs).
+*agent's* identifier, unique only within that agent; a session belongs to the
+directory it was opened in; and it is a file on the disk of the machine that
+opened it. loom therefore records
+`ProviderSessionBinding { agent, cwd, host_id }` alongside the id, from the same
+`thread/identity` event, taking the agent, cwd and host from the run that opened
+the session rather than from the thread's current environment (which can be
+re-bound between runs). The host id is recorded when the worker reports its
+identity, and a binding without one resumes nothing.
 
-A dispatch only carries the id when `Thread::may_resume_session(agent, cwd)`
-holds, and the worker refuses before opening a session when it does not:
+A dispatch only carries the id when `Thread::may_resume_session(agent, cwd,
+host)` holds, and the worker refuses before opening a session when it does not:
 
 | Condition | Outcome |
 | --- | --- |
-| agent and workspace match | v2: `session/resume <id>`; v1: `session/load <id>` |
+| agent, workspace and host match | v2: `session/resume <id>`; v1: `session/load <id>` |
 | agent differs | fresh session — the id means nothing to this agent |
 | workspace differs | fresh session — the conversation is about another project |
+| host differs | fresh session — the session file is on the machine that opened it, and nothing here can read it |
 | no binding (an older snapshot) | fresh session; "cannot prove it is the same conversation" is not a reason to resume |
 | id present but the agent has no `loadSession` | **explicit failure**, never a silent fresh start |
 | workspace absent on this host | **explicit failure naming the path**, never a silent fresh start |
@@ -325,6 +352,39 @@ holds, and the worker refuses before opening a session when it does not:
 The last two rows are the difference between "loom did what you asked" and
 "loom quietly did something else". A fresh session is recoverable; a resume that
 was not what it claimed is not.
+
+A binding recorded before loom started storing the host id has no host to match,
+so it resumes nothing: the thread starts a fresh session on its next run. The
+storage is still on the machine that made it, but which machine that is was
+never written down, and guessing wrong would restore one thread's history under
+another's name.
+
+## Loading history
+
+Showing a thread's conversation is a different operation from continuing it, and
+`crate::acp::history` is where it lives:
+
+- it opens a connection of its own per load — never the run's connection, so a
+  read can never race a turn that is writing to the same session;
+- it `initialize`s, checks the negotiated version, then v2 `session/resume
+  { replayFrom: start }` or v1 `session/load`;
+- it **never sends a prompt**. The connection exists to receive a replay and is
+  closed when the replay ends;
+- it refuses a permission request rather than answering one: a load is not an
+  action, and no tool call in a replayed history is being approved;
+- it collects the frames as the same `provider-event` shapes a live run
+  produces, so the server projects them with the same folds as live rows;
+- it is bounded: a byte budget for the whole replay and a batch size for what
+  crosses the wire, both decided by the caller. Past the budget the load fails
+  with `too_large` rather than truncating, because a truncated history that
+  claims to be the conversation is worse than a refusal.
+
+The replay's completion is a protocol property, not a timeout: the SDK's
+dispatch loop delivers notifications before the `session/load`/`session/resume`
+response, so the response is the end of the replay. Nothing here waits for a
+quiet period to decide the history is finished — that would make a slow agent's
+history look short. The one non-protocol property is that a *failed* connection
+still discards what it collected; no partial replay is installed as a baseline.
 
 ## Session import is capability-gated
 

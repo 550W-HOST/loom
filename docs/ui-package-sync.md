@@ -53,6 +53,34 @@ During a sync, preserve these local constraints:
 - any behavioral difference needs an explicit test and should live in the
   adapter/input boundary rather than in the projection rules.
 
+## Recorded drifts
+
+A behavioural difference from the bb baseline is recorded here rather than left
+to be rediscovered during the next sync.
+
+### `client-core` timeline merge — `generation`
+
+`ui/packages/client-core/src/timeline/timeline-merge.ts` and its test carry a
+field bb does not have. loom's timeline response numbers rows per
+`generation` (a rebuild renumbers from one, and a generation is never reused),
+and `LoadedTimelineState` holds it: a page from another generation replaces the
+rows instead of being merged with them, because sequences from two numberings
+are not comparable. bb's client has no server-side rebuild, so it has no such
+field and merges purely by sequence.
+
+Two smaller related drifts, in the same change:
+
+- `@bb/server-contract`'s timeline response now declares `generation` and
+  `history { status, complete, reason }`, and a row's `startedAt`/`createdAt`
+  are nullable. bb's rows always carry both times; loom's replayed rows do not
+  know one.
+- `@bb/thread-view` renders a duration only when a start is known
+  (`timeline-row-title.ts`), and a work summary's time is unknown when any child
+  is. bb can assume every row has a time.
+
+A sync that takes a newer bb revision of either file must keep these: they
+encode a server contract, not a local preference.
+
 ## Verification
 
 There is no standalone smoke target for the projection — `ui/examples` and the

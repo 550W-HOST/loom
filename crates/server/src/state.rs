@@ -985,6 +985,14 @@ impl AppState {
     /// snapshot was taken before the terminal append. The status transition is
     /// the durable boundary that lets recovery distinguish that terminal from
     /// a previous turn's terminal event.
+    ///
+    /// This asks the **log**, not the timeline cache: "did this thread's turn
+    /// finish" is loom's own fact, and an agent's session replay cannot answer
+    /// it. It is therefore still bounded by whatever the backend retains — a
+    /// burst larger than `backend_max_len` can evict the boundary event and
+    /// make this decide wrongly. That is a recovery-correctness limitation
+    /// tracked separately from the conversation cache; see
+    /// `docs/architecture.md` § The conversation is not in the log.
     fn latest_active_run_id(&self, thread_id: &ThreadId) -> Option<RunId> {
         let scope = Scope::Thread(thread_id.to_string());
         // Recovery reads history, so it must not be bounded by the replay
@@ -1026,6 +1034,11 @@ impl AppState {
     /// Reconciles lifecycle progress for a run in an older or concurrently
     /// captured snapshot with the retained relay log. Returns the terminal
     /// outcome when that terminal has already been committed.
+    ///
+    /// Like [`AppState::latest_active_run_id`], this reads loom's own run
+    /// events rather than the conversation cache, and is bounded by what the
+    /// backend still retains: a terminal evicted past the shard cap is a run
+    /// this cannot settle from the log.
     fn recover_run_flags(&self, record: &mut RunRecord) -> Option<RunOutcome> {
         let scope = Scope::Thread(record.thread_id.to_string());
         let Ok(envelopes) = self.relay.retained_scope(&scope, usize::MAX) else {

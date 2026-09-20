@@ -277,19 +277,35 @@ Responsibilities:
 
 ### Resume
 
+There are two ways a session is restored, and they want opposite things from
+the agent:
+
 ```
-loom resume <thread-id>
+loom resumes a session to CONTINUE it (a run is dispatched)
   → look up (agent, session_id, cwd) in domain state
   → start the agent and negotiate a protocol version
-  → v2: session/resume { sessionId, cwd }        (no replay — loom has the log)
+  → v2: session/resume { sessionId, cwd }        (no replay — a run needs no past)
      v1: session/load   { sessionId, cwd }        (the only option; replays)
-  → the agent restores its own storage
+  → the agent restores its own storage, and run-time history is suppressed
+
+loom loads a session to SHOW it (a thread is opened)
+  → same lookup, on a connection of its own
+  → v2: session/resume { sessionId, cwd, replayFrom: start }
+     v1: session/load   { sessionId, cwd }        (always replays)
+  → the replay is collected as the conversation; no prompt is ever sent
 ```
 
-Under v2 loom asks for **no replay**: it already holds the conversation in its
-event log, so the agent's history would be redundant, and a log plus patchable
-full objects converges without it. Under v1 there is no such choice —
-`session/load` is the only restore method, and it replays.
+To continue a session, loom asks for **no replay**: it holds the turn it is
+about to take, and under v2 a restored session plus patchable full objects
+converges without the agent repeating its past. Under v1 there is no such
+choice — `session/load` is the only restore method, and it replays, so the
+run-time path suppresses the history frames.
+
+To *display* a conversation, replay is the point: the server holds no durable
+copy of it (see [`architecture.md`](architecture.md) § The conversation is not
+in the log), so opening an old thread loads the agent's own history over a
+dedicated connection and caches it for display. The two paths never share a
+connection: a load that is only reading must not race a turn that is writing.
 
 Either way, **loom never reads an agent's session files.** It asks the agent.
 That is the property that makes the design clean: no format parsing, no layout
@@ -297,7 +313,10 @@ assumptions, no per-agent storage code.
 
 A resumed session's `cwd` must still exist. The check is the adapter's, since
 only it knows the agent's rules, and the failure is explicit rather than a
-silently fresh session (see "No fallbacks").
+silently fresh session (see "No fallbacks"). A session is only resumed by the
+**host that owns it**: the stored binding carries a host id, and a dispatch or a
+load for a different host fails rather than starting a fresh conversation in a
+session that cannot be there.
 
 ### Importing existing sessions
 
@@ -336,10 +355,13 @@ Current state: loom depends on `pi-acp` and the ACP SDK. `ProviderLaunch` has
 only two ACP forms: `AcpEmbeddedPi` for Pi and `AcpStdio` for native agents.
 `crates/worker/src/provider.rs` contains only run metadata and terminal-event
 construction; the old `effective_argv` and direct Pi JSON-RPC mapper are gone.
-The server persists the opaque provider session id in the thread snapshot and
-carries it on the next `RunDispatch`. The ACP driver uses `session/resume` for a
-resumed v2 session without replay and `session/load` for v1, suppressing
-history notifications from the new run in both cases.
+The server persists the opaque provider session id — and the host that owns it
+— in the thread snapshot, and carries it on the next `RunDispatch`. The ACP
+driver uses `session/resume` for a resumed v2 session without replay and
+`session/load` for v1, suppressing history notifications from the new run in
+both cases. The separate history-load path is the opposite: it asks for the
+replay and refuses everything else (see [`acp-adapter.md`](acp-adapter.md)
+§ Loading history).
 
 The current implementation negotiates ACP v2 first and falls back to v1 through
 the SDK connector. The v2 schema is still unstable, so v1 remains a required
@@ -442,7 +464,9 @@ none — is answered but never cached, so a client cannot pin a stale icon.
 | How is Pi reached? | **`pi-acp` embedded as a library**, over `Channel::duplex()`. |
 | How are providers declared? | **Discovered at runtime.** A compiled-in known-agent table plus the machine's `PATH`, verified by an ACP handshake. No environment variable, no config key. |
 | ACP version | **v2 first, v1 fallback.** The SDK connector selects the highest configured protocol that the agent accepts; v1 remains for stable agents and the default Pi path. |
-| Resume entry point | **`loom resume <thread>`** — `session/resume` under v2, which replays nothing since loom has the log; `session/load` under v1, where it is the only restore method. |
+| Where a displayed conversation comes from | **The agent's session, loaded on demand.** The server keeps no durable transcript; it loads a replay over a dedicated connection and caches it for display. See [`architecture.md`](architecture.md) § The conversation is not in the log. |
+| Which host may resume a session | **The one that opened it.** The binding carries a host id, and a dispatch or load on another host starts fresh rather than restoring someone else's session. |
+| Resume entry point | **`loom resume <thread>`** — `session/resume` under v2, which replays nothing because continuing a session needs no past; `session/load` under v1, where it is the only restore method. |
 | Unsupported capability | **Reported, never worked around.** |
 | `CurrentModeUpdate` under v2 | **Skipped.** v2 replaced modes with config options, so v1's mode update has no v2 equivalent and the conversion layer errors on it. Omitting it follows v2's design rather than papering over a gap. |
 | Unmapped update type | **Stored and logged, not rendered.** Below the typed layer: on the v2 path `SessionUpdate::Other` carries it; on the v1 path there is no catch-all, so it is intercepted as a raw JSON-RPC frame (`UntypedMessage`) before typed dispatch. Either way the discriminator is logged, and a leading `_` (implementation-private) is distinguished from a future ACP variant. |

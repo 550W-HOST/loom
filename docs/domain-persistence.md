@@ -7,12 +7,18 @@ database and without an external service.
 ## The problem
 
 With `DiskBackend` (`--data-dir`), the relay log already survives a restart:
-a client can replay a thread's whole timeline. But `DomainRegistry` and
-`RunRegistry` were pure in-memory maps, so after a restart the server no longer
-recognised the thread those events were about. The list was empty, a message
-was rejected as "thread not known", and the data was present but unreachable.
-That is more confusing than data loss, because there is no way to tell from the
-outside that the entity view is what went missing.
+a reconnecting client can replay the retained window it missed. But
+`DomainRegistry` and `RunRegistry` were pure in-memory maps, so after a restart
+the server no longer recognised the thread those events were about. The list was
+empty, a message was rejected as "thread not known", and the data was present
+but unreachable. That is more confusing than data loss, because there is no way
+to tell from the outside that the entity view is what went missing.
+
+The conversation is a separate matter, and this file does not store it: messages
+live with the ACP agent that owns the session, and the server caches what it
+loads for display. A restart empties that cache and the next read loads again.
+See [`architecture.md`](architecture.md) § The conversation is not in the log
+for the split and its costs.
 
 ## The decision: snapshot baseline + log delta
 
@@ -205,6 +211,14 @@ simply does not claim a second one while it waits.
 - **Retention is untouched.** `replay_grace` / `trim_horizon` / `ttl` and the
   per-shard cap keep exactly the semantics they had. The snapshot only decides
   how far back replay *needs* to look.
+- **Two recovery reads still depend on the retained window.** Whether a thread
+  that was `working` is still active, and how its last run ended, are read from
+  the *log* (`state.rs::latest_active_run_id`, `state.rs::recover_run_flags`),
+  because they are loom's own facts — a provider session replay cannot answer
+  them. Past the shard cap those reads see a truncated thread and can decide
+  wrongly. That is a **recovery-correctness** limitation of this design, not a
+  display one, and it is tracked separately from the conversation cache. The
+  snapshot's own watermark is what keeps the entity view itself consistent.
 - **Host status** is restored as recorded. No worker can be attached to a
   process that just started, so the first reconciliation pass marks a host that
   is not heartbeating as disconnected and reaps its runs; a worker that

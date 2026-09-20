@@ -139,8 +139,10 @@ so sorting by id restores chronological order when the two streams interleave.
 A payload there is a serialized `loom-domain` `DomainEvent`: dispatch on its
 `type` tag. A thread view builds rows from `thread_message_added` and
 `thread_run_event`; `thread_status_changed` is state rather than content, so it
-updates the thread's status and adds no row (`timeline_row_for_event` in
-`crates/server/src/http.rs`); a list view also renders `thread_updated`, which
+updates the thread's status and adds no row. (Those two events also feed the
+server's timeline cache, which is what `threads.timeline` reads; see
+[`architecture.md`](architecture.md) § The conversation is not in the log.)
+A list view also renders `thread_updated`, which
 carries a thread's fields after a rename, a re-file, a
 visibility change or a tabs write (`crates/domain/src/event.rs`).
 `thread_run_event` carries a bb `ThreadEvent` in its `event` field — the
