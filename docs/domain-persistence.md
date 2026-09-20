@@ -20,12 +20,18 @@ loads for display. A restart empties that cache and the next read loads again.
 See [`architecture.md`](architecture.md) § The conversation is not in the log
 for the split and its costs.
 
-## The decision: snapshot baseline + log delta
+## The decision: a stored entity view + log delta
 
-We use a **hybrid**: a periodic (and shutdown-time) **snapshot** of the entity
-view carries a **watermark** — the newest relay `EventId` the snapshot
-incorporates — and recovery loads the snapshot, then replays the retained log
-events **after** that watermark. This was chosen over the two pure options:
+**Updated (2026-09-21): the view lives in the SQLite store now, not in a file.**
+The periodic writer still writes the whole view at once, under a **watermark** —
+the newest relay `EventId` the write incorporates — and recovery loads it, then
+replays the retained log events **after** that watermark. The file
+`domain.snapshot` is no longer written; it is only *read* when the store has
+never held a view, and that read goes away with the next version. What follows
+still describes the shape and the reasoning, with "snapshot" now meaning one
+transaction in the store rather than a fenced file.
+
+This was chosen over the two pure options:
 
 | Option | Why not |
 | --- | --- |
@@ -39,7 +45,8 @@ log: messages and run-event history are deliberately absent (see below).
 
 ## What is stored — and what is not
 
-`domain.snapshot` in the data directory holds a `DomainSnapshot`:
+The store's `entity` table holds the same `DomainSnapshot`, one row per entity
+(`entity_meta` carries the personal project id and the watermark):
 
 ```text
 DomainSnapshot
@@ -54,12 +61,15 @@ DomainSnapshot
   automations    AutomationState { version, automations, runs, thread_marks }
 ```
 
-One atomic write covers both the entity view and its watermark, which is the
-"atomic commit of both" the design note worried about.
+One transaction covers both the entity view and its watermark, which is the
+"atomic commit of both" the design note worried about. A run's record is also
+written on its own as it changes — a turn started, an error reported, a terminal
+published — so a restart settles it from what it ended with rather than from a
+replay of the log.
 
 `queued_messages` and `interactions` (batch B3) and `thread_sections` (batch B7)
-are `#[serde(default)]`, which is the whole compatibility story for this file: a
-snapshot written by a build that predates them still loads, with an empty queue,
+are `#[serde(default)]`, which is the whole compatibility story for this payload:
+an older `DomainSnapshot` still loads, with an empty queue,
 no pending interaction and no sections — precisely the view that build would
 have held. Bumping `SNAPSHOT_VERSION` for an additive field would force every
 deployment to discard a recoverable snapshot.
