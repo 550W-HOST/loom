@@ -275,6 +275,10 @@ loom 自有事实保留原来源：
 
 每步一个提交、先写测试、跑完 `cargo test --workspace --locked` + `clippy -D warnings` + `pnpm` 门禁再进下一步。
 
+**进展（2026-09-21，续）**：1.3 已落地（`crates/server/src/store/writer.rs` 单写线程 + 1024 条有界队列；`publish_domain_event` → `cache_live_event` 先更内存 overlay 再 `enqueue`，入队不碰磁盘；入队被拒或写失败 → 该 thread 粘性 `unsaved` 标记并带原因；`shutdown()` 顺序为 停止周期写 → 快照 → 关 relay → 停 pump → **drain store writer** → flush relay，drain 失败会让 shutdown 返回错误）。3 个集成测试：发布的消息最终落库且带 `RowSource`、shutdown 排空 25 条积压后新开库能读回、库打不开则启动失败。
+
+**1.4 必须解决的事**：`seq` 现在由写线程分配，而内存 overlay 不持有 `seq`；读路径要合并「库里的行」与「还没落库的行」，两边的 `seq` 必须同源。因此 1.4 把 `seq` 分配提到发布缝（每条 thread 一个分配器，启动时从库播种），overlay 行与库行共用同一个号码，读路径按未落库水位线拼接。
+
 **进展（2026-09-21）**：1.1 已落地（`220301a`：`rusqlite` bundled + `Store::open` 迁移/拒绝语义，MSRV 1.88 已验证）；1.2 已落地（`0ab49ca`：`store::history` 类型化读写 + `AppState` 开库，文件库/内存库同一条代码路径）。1.2 的两处实现选择：`seq` 来自线程自己的 `next_seq` 计数列（不是 `MAX(seq)`，否则重建删行后号码会复用）；`AppState.store` 在任何服务器上都存在，没有"跳过持久化"的分支。
 
 **1.1 依赖与打开。** `rusqlite`（`bundled`，编译进二进制，不引入运行时依赖）进 workspace + `loom-server`；新增 `crates/server/src/store/`（`mod.rs` 打开库、`schema.rs` 迁移）。`<server-data-dir>/loom.db`，WAL、`synchronous=NORMAL`、`foreign_keys=ON`、`schema_version` 表。打不开/迁移失败 = 启动失败，绝不回退内存。测试：建库幂等、版本表、坏库显式报错。

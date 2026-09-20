@@ -24,8 +24,10 @@
 
 mod history;
 mod schema;
+mod writer;
 
 pub use history::{StoredHistory, StoredRow};
+pub use writer::StoreWriter;
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;

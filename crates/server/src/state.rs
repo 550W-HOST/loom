@@ -41,6 +41,13 @@ const HISTORY_CACHE_THREADS: usize = 64;
 /// How many bytes of cached conversation rows the server may hold.
 const HISTORY_CACHE_BYTES: u64 = 64 * 1024 * 1024;
 
+/// How many conversation rows may wait for the store before a publisher is
+/// refused.
+///
+/// Bounded on purpose: growing without bound would trade a slow disk for the
+/// server's memory, and a refusal is reported on the thread rather than hidden.
+const STORE_WRITE_QUEUE: usize = 1_024;
+
 /// How many history loads may be in flight at once.
 ///
 /// Each one holds a worker connection and a growing replay, so this is the
@@ -248,6 +255,8 @@ pub struct AppState {
     /// server runs with persistence quietly switched off, only one where the
     /// store has nowhere to live.
     store: Arc<Mutex<crate::store::Store>>,
+    /// The thread that turns conversation rows into transactions.
+    store_writer: Arc<crate::store::StoreWriter>,
     pub history: Arc<crate::history_cache::HistoryCache>,
     /// Who is waiting on which in-flight history load.
     pub history_waits: Arc<crate::history::HistoryWaits>,
@@ -299,6 +308,10 @@ impl AppState {
     /// A short lock, held for one operation: the store is one SQLite connection
     /// and SQLite serializes writes itself, so the mutex is only there because a
     /// connection is not `Sync`.
+    pub fn store_writer(&self) -> &crate::store::StoreWriter {
+        &self.store_writer
+    }
+
     pub fn store(&self) -> std::sync::MutexGuard<'_, crate::store::Store> {
         self.store
             .lock()
@@ -337,6 +350,11 @@ impl AppState {
             Some(path) => crate::store::Store::open(path.join("loom.db"))?,
             None => crate::store::Store::open_in_memory()?,
         };
+        let store = Arc::new(Mutex::new(store));
+        let store_writer = Arc::new(crate::store::StoreWriter::spawn(
+            Arc::clone(&store),
+            STORE_WRITE_QUEUE,
+        ));
         let ui = Ui::from_config(config.ui_proxy.clone())
             .map_err(|message| BuildStateError { message })?;
         let artifacts = Arc::new(Artifacts::from_config(config.artifact_dir.clone()));
@@ -389,7 +407,8 @@ impl AppState {
                 HISTORY_CACHE_BYTES,
                 HISTORY_CACHE_CONCURRENT_LOADS,
             )),
-            store: Arc::new(Mutex::new(store)),
+            store,
+            store_writer,
             history_waits: Arc::new(crate::history::HistoryWaits::new()),
             terminal: Arc::new(crate::terminals::TerminalBroker::new()),
             catalogs: Arc::new(crate::catalogs::CatalogRegistry::new()),
@@ -811,8 +830,13 @@ impl AppState {
             }
             _ => None,
         };
+        // Display first: the overlay is what a reader sees, and it must not wait
+        // for a disk. The store gets the same row behind it, through a bounded
+        // queue — a refusal or a failed write marks the thread as unsaved rather
+        // than growing without bound or pretending it was stored.
         self.history
-            .append_live(&thread_id, binding.as_ref(), source, body);
+            .append_live(&thread_id, binding.as_ref(), source.clone(), body.clone());
+        self.store_writer.enqueue(&thread_id, source, body);
     }
 
     /// Publishes a durable public cache invalidation with no domain-event peer.
@@ -1192,7 +1216,9 @@ impl AppState {
     ///    deadline, a retry timer — is refused instead of appending behind the
     ///    flush and leaving a tail the next process has to read around;
     /// 4. **the readers stop** (they only read, and freeing them is tidy);
-    /// 5. **the log is drained and flushed**, and a failure is *returned*: a
+    /// 5. **the store's writer is drained**, since it may be holding rows the
+    ///    publish path accepted and no read can see otherwise;
+    /// 6. **the log is drained and flushed**, and a failure is *returned*: a
     ///    flush that did not happen means the last write may not be on disk, and
     ///    an operator-driven stop can still fail its exit code for that.
     ///
@@ -1208,6 +1234,9 @@ impl AppState {
         }
         self.relay.close();
         self.pump.stop();
+        self.store_writer
+            .flush()
+            .map_err(|message| ShutdownError { message })?;
         self.relay.flush().map_err(|error| ShutdownError {
             message: format!("flushing the relay log failed: {error}"),
         })
@@ -1924,6 +1953,102 @@ mod tests {
             crate::store::SCHEMA_VERSION
         );
         state.shutdown().unwrap();
+    }
+
+    /// A conversation row reaches the store from the publish seam, and the
+    /// publisher does not wait for the disk to get there.
+    #[tokio::test]
+    async fn a_published_message_reaches_the_store() {
+        let state = AppState::build(AppConfig::default()).unwrap();
+        let (thread, created) = state
+            .registry
+            .create_thread(
+                Some(state.registry.personal_project_id()),
+                Some("stored".into()),
+                None,
+                now_ms(),
+            )
+            .unwrap();
+        state.publish_domain_event(&created).unwrap();
+        for event in state
+            .registry
+            .post_message(
+                &thread.id,
+                loom_domain::MessageRole::User,
+                "hello".into(),
+                now_ms(),
+            )
+            .unwrap()
+        {
+            state.publish_domain_event(&event).unwrap();
+        }
+
+        assert!(
+            state
+                .store_writer()
+                .wait_for_writes(1, Duration::from_secs(2)),
+            "the row reaches the store"
+        );
+        let store = state.store();
+        assert_eq!(store.row_count(&thread.id).unwrap(), 1);
+        let rows = store.rows(&thread.id).unwrap();
+        assert!(
+            matches!(
+                rows[0].source,
+                crate::history_cache::RowSource::Message { .. }
+            ),
+            "a message keeps its source: {:?}",
+            rows[0].source
+        );
+        assert_eq!(state.store_writer().unsaved(&thread.id), None);
+        drop(store);
+        state.shutdown().unwrap();
+    }
+
+    /// A backlog the publish path accepted is written by the time shutdown
+    /// returns, and a later server reads it back.
+    #[tokio::test]
+    async fn a_shutdown_drains_the_store_backlog() {
+        let dir = TempDir::new().unwrap();
+        let state = AppState::build(durable_config(&dir)).unwrap();
+        let (thread, created) = state
+            .registry
+            .create_thread(
+                Some(state.registry.personal_project_id()),
+                Some("drained".into()),
+                None,
+                now_ms(),
+            )
+            .unwrap();
+        state.publish_domain_event(&created).unwrap();
+        let first = thread.id.clone();
+        let mut expected = 0;
+        for index in 0..25 {
+            let events = state
+                .registry
+                .post_message(
+                    &first,
+                    loom_domain::MessageRole::User,
+                    format!("message {index}"),
+                    now_ms(),
+                )
+                .unwrap();
+            for event in events {
+                if matches!(event, loom_domain::DomainEvent::ThreadMessageAdded { .. }) {
+                    expected += 1;
+                }
+                state.publish_domain_event(&event).unwrap();
+            }
+        }
+        // Deliberately no wait: the point is that the stop itself drains.
+        state.shutdown().unwrap();
+
+        let store = crate::store::Store::open(dir.path().join("loom.db")).unwrap();
+        assert_eq!(
+            store.row_count(&first).unwrap(),
+            expected,
+            "every accepted row is on disk after shutdown"
+        );
     }
 
     /// A store that cannot be opened fails startup rather than being skipped.
