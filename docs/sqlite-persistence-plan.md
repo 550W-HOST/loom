@@ -275,6 +275,8 @@ loom 自有事实保留原来源：
 
 每步一个提交、先写测试、跑完 `cargo test --workspace --locked` + `clippy -D warnings` + `pnpm` 门禁再进下一步。
 
+**进展（2026-09-21）**：1.1 已落地（`220301a`：`rusqlite` bundled + `Store::open` 迁移/拒绝语义，MSRV 1.88 已验证）；1.2 已落地（`0ab49ca`：`store::history` 类型化读写 + `AppState` 开库，文件库/内存库同一条代码路径）。1.2 的两处实现选择：`seq` 来自线程自己的 `next_seq` 计数列（不是 `MAX(seq)`，否则重建删行后号码会复用）；`AppState.store` 在任何服务器上都存在，没有"跳过持久化"的分支。
+
 **1.1 依赖与打开。** `rusqlite`（`bundled`，编译进二进制，不引入运行时依赖）进 workspace + `loom-server`；新增 `crates/server/src/store/`（`mod.rs` 打开库、`schema.rs` 迁移）。`<server-data-dir>/loom.db`，WAL、`synchronous=NORMAL`、`foreign_keys=ON`、`schema_version` 表。打不开/迁移失败 = 启动失败，绝不回退内存。测试：建库幂等、版本表、坏库显式报错。
 
 **⚠️ 这一步会改变发布工具链。** 这是本仓库第一个 C 依赖：`bundled` 需要用 C 编译器编 SQLite。`x86_64-unknown-linux-musl` 现在靠宿主 `cc` 链接（`.cargo/config.toml` 注释），`aarch64-unknown-linux-musl` 只有 `rust-lld`；两者都没有 musl 交叉 C 编译器。因此 `release.yml` 必须同时加：x86_64 装 `musl-tools`，aarch64 装 aarch64 的 musl C 交叉编译器并设 `CC_aarch64_unknown_linux_musl`（`.cargo/config.toml` 记一笔）。本地只能验证 gnu 目标；musl 两个目标必须由 CI 或装了交叉工具链的机器验证后，才可以说发布路径完好。
