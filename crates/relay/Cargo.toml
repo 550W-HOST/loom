@@ -6,10 +6,27 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
+[features]
+# Exposes the backend contract suite so a backend built elsewhere can run it.
+conformance = ["dep:tempfile", "dep:serde_json"]
+
 [dependencies]
 bytes.workspace = true
 serde.workspace = true
+# The contract suite writes cases into a scratch directory and round-trips a
+# wire frame through JSON; the module is behind the `conformance` feature, so a
+# normal build does not carry either.
+serde_json = { workspace = true, optional = true }
+tempfile = { version = "3", optional = true }
 
 [dev-dependencies]
 serde_json.workspace = true
 tempfile = "3"
+
+# The contract suite's scenarios are part of the library (so the server can run
+# them over its own backend), and this crate's own tests are one more backend
+# choice. Enabling the feature for the test build only keeps `tempfile` and
+# `serde_json` out of a normal build's dependency set.
+[dev-dependencies.loom-relay]
+path = "."
+features = ["conformance"]

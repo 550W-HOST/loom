@@ -1978,6 +1978,7 @@ name = "loom-relay"
 version = "0.1.0"
 dependencies = [
  "bytes",
+ "loom-relay",
  "serde",
  "serde_json",
  "tempfile",

@@ -19,6 +19,10 @@
 pub mod disk;
 pub mod memory;
 
+/// The backend contract, run by every backend (feature `conformance`).
+#[cfg(feature = "conformance")]
+pub mod conformance;
+
 use std::sync::Arc;
 
 use bytes::Bytes;
