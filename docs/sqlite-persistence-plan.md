@@ -144,6 +144,8 @@ loom 自有事实保留原来源：
 实现要求：`thread_domain_events` 拆成两条读路径（会话条目 / 领域条目），调用方显式选择，
 不允许再用一个 helper 冒充两种语义。
 
+**进展（2026-09-21，1.9 完成 · 阶段一收尾）**：① **SIGKILL 持久性**：新增 `crates/loom/tests/history_durability.rs`——真实子进程起 server、HTTP 建 thread + 发消息、`SIGKILL`（不走向任何收尾路径）、同一 data-dir 重启、在没有 worker（因此没有任何 load 路径）的前提下时间线仍能看到那条消息，prompt-history 也能。② **未提交尾部如实标为缺失**：硬杀之后没人能说清丢了什么，所以让**文件自己说它没被正常结束**——`store_meta.clean_stop` 在开库时先读再置 0，`shutdown()` 最后一步置 1；启动时若发现上次未正常结束，就把所有**曾经同步成功**的会话标上 `last_error`（「the server stopped without finishing; this conversation may be behind」），于是读出来是 `stale` 且 `complete=false`。这个警告不会被「干净地重启一次」抹掉，只有一次成功的加载（`replace_replayed` 清空 `last_error`）才能证明对话是完整的。测试 `a_conversation_that_outlived_an_unfinished_stop_is_not_complete`（进程内丢弃 state 模拟被杀 → 重启 → 仍未完成 → 加载成功后才完成）。
+
 **进展（2026-09-21，1.9 之二）**：① 删 thread 现在会同事务清掉库里的两表行，并顺手清掉未落盘 overlay、重试租约与编号分配（`Store::delete_thread` 早就有并有测试，这次是把 HTTP 删除路径接上）；删库失败会如实返回错误并说明「thread 已删但会话没删掉」，不静默。② 写盘失败/被拒的 thread 现在会被**读**如实报告：`stored_view` 把 writer 的 unsaved 标记并进状态与原因（有完整基线也降级为 `stale`、`complete=false`），未落盘的那些行仍然照常显示。测试 `a_row_the_store_refused_is_reported_by_the_read`：停掉 writer 后发布的一行会标记该 thread，读回时不是 complete、原因是「没有存上」，同时该行仍在视图里。**还差**：SIGKILL 持久性端到端（放到下一轮，`crates/loom/tests` 里有现成的真实进程 harness 可复用）。
 
 **进展（2026-09-21，1.7 完成）**：线上的游标身份收敛成一个**持久的** `historyRevision`。服务端 `threads.timeline` 响应去掉 `cacheInstance`+`generation`、改发 `historyRevision`（就是该 thread 持久保存的 revision，`null` 表示还没有任何编号可归属），请求参数同样只带 `historyRevision`，游标校验改成「请求里的 revision 是否等于正在服务的 revision」。契约扩展里替换这两项并重新导出（二次导出字节一致）。客户端：`server-contract` 的请求/响应 schema、`client-core` 的 `LoadedTimelineState`/`identityRelation`（小 = 重建前发出的迟到响应 → 丢弃；大 = 重建 → 重来；相等 → 合并）、`useThreadTimelineController` 的翻页参数与竞态校验全部改名。**为什么可以去掉 instance**：行号不再因重启而重排（库里的号跨重启继续），所以「服务器重启」不再是需要单独识别的信号——唯一会改变编号的是重建，而重建会动 revision。客户端因此少一个比较维度，旧的「跨重启把新编号读成回退」问题从根上没有了。测试：`timeline-merge` 的丢弃/重来/合并三例改到新语义，服务端 `historyRevision` 游标一致/不一致两例，重启端到端（`historyRevision >= 1`）。门禁全绿（Rust + pnpm）。
@@ -179,6 +181,21 @@ loom 自有事实保留原来源：
 6. 硬 kill（SIGKILL）后重启：不出现"看起来完整实际缺尾"的历史；未提交尾部如实标为缺失。
 7. 磁盘写失败/只读目录/磁盘满：显式报错，不静默降级为内存模式。
 8. thread 删除后其历史行同事务消失（无残留、无泄漏）。
+
+### 4.6 验收门禁：现状与证据（2026-09-21）
+
+| # | 门禁 | 证据 |
+| --- | --- | --- |
+| 1 | 同步成功 → 关 worker、重启 → 历史可看可翻页 | `crates/server/tests/history.rs`（重启 + 加载 + 翻页断言）；`a_rebuild_moves_the_durable_revision` |
+| 2 | relay 窗口被写满 → 历史/输入历史/搜索不消失 | `http::tests::a_quiet_thread_still_answers_what_was_said`（挤出窗口后 outline/prompt-history/search/output 四个口仍答），`thread_search_matches` 的 `sourceSeq` 改用库里编号 |
+| 3 | 清空内存缓存不删磁盘历史、不需重启 agent | 读路径 `stored_view` 以库为源、overlay 只留未落盘行（`history_cache` 测试 + `a_killed_server_leaves_the_conversation_it_committed`） |
+| 4 | 同步失败 → 旧副本仍可读；点刷新能恢复 | `a_failed_load_waits_before_the_next_read_retries_it`、`a_refresh_asks_for_the_conversation_again`、`POST /api/v1/threads/{id}/history/refresh` + 菜单入口 |
+| 5 | 对话中刷新不启动会破坏 session 的第二个操作 | `a_load_yields_to_a_run_in_flight`；`refresh_thread_history` 对 `RunInFlight` 直接服务现状 |
+| 6 | SIGKILL 后重启：不出现「看起来完整实际缺尾」；未提交尾部如实标缺失 | `crates/loom/tests/history_durability.rs`（已提交的行存活）；`a_conversation_that_outlived_an_unfinished_stop_is_not_complete`（未正常结束 → 标为可能落后，只有成功加载才清除） |
+| 7 | 磁盘写失败/只读目录/磁盘满：显式报错，不降级为内存 | 启动失败路径（`an_unusable_path_fails_loudly`、`a_file_that_is_not_a_store_is_refused`）+ `a_row_the_store_refused_is_reported_by_the_read`（写失败被读如实报告） |
+| 8 | thread 删除后历史行同事务消失 | `deleting_a_thread_removes_its_rows_and_its_header` + HTTP 删除路径清库/清 overlay/清编号（提交 `5544399`） |
+
+**阶段一完成。** 尚未做（刻意留到后续阶段）：跨机器/多 loom 共用一个会话的协调（用户已明确单独处理）；阶段二、阶段三。
 
 ## 5. 阶段二：实体状态进 SQLite，退场 `domain.snapshot`
 

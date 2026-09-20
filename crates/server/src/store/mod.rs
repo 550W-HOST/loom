@@ -143,6 +143,33 @@ pub struct Store {
     /// This store's identity, minted when the file is created and kept from then
     /// on. See [`Store::instance`].
     instance: String,
+    /// Whether the process that had this file last stopped without finishing.
+    unclean_stop: bool,
+}
+
+/// The `store_meta` key that says the last process stopped on purpose.
+const CLEAN_STOP: &str = "clean_stop";
+
+/// What the last stop left behind: `Some(true)` a finished stop, `Some(false)`
+/// one that did not finish, `None` a file no stop has touched yet.
+fn clean_stop_of(connection: &Connection) -> Result<Option<bool>, StoreError> {
+    let mut rows =
+        block_on(connection.query("SELECT value FROM store_meta WHERE key = ?1", (CLEAN_STOP,)))?;
+    Ok(match block_on(rows.next())? {
+        Some(row) => Some(column_text(&row, 0)? == "1"),
+        None => None,
+    })
+}
+
+/// Records that this process is running, so a stop that never finishes is
+/// distinguishable from one that did.
+fn mark_running(connection: &Connection) -> Result<(), StoreError> {
+    block_on(connection.execute(
+        "INSERT INTO store_meta (key, value) VALUES (?1, '0')
+         ON CONFLICT(key) DO UPDATE SET value = '0'",
+        (CLEAN_STOP,),
+    ))?;
+    Ok(())
 }
 
 impl Store {
@@ -173,11 +200,17 @@ impl Store {
         Self::configure(&connection, true)?;
         schema::migrate(&connection)?;
         let instance = instance_of(&connection)?;
+        // A file this process is the only writer of: reading the flag says how
+        // the *previous* process left it, and writing it says this one is
+        // running. A store that was never opened before is not behind anything.
+        let unclean_stop = clean_stop_of(&connection)? == Some(false);
+        mark_running(&connection)?;
         Ok(Self {
             _database: database,
             connection,
             path,
             instance,
+            unclean_stop,
         })
     }
 
@@ -191,11 +224,13 @@ impl Store {
         Self::configure(&connection, false)?;
         schema::migrate(&connection)?;
         let instance = instance_of(&connection)?;
+        mark_running(&connection)?;
         Ok(Self {
             _database: database,
             connection,
             path: PathBuf::from(":memory:"),
             instance,
+            unclean_stop: false,
         })
     }
 
@@ -221,6 +256,42 @@ impl Store {
     /// The schema version the file is at.
     pub fn schema_version(&self) -> Result<i64, StoreError> {
         schema::version(&self.connection)
+    }
+
+    /// Whether the process that had this file last stopped without finishing.
+    ///
+    /// A store that was killed can be missing the rows a published-but-unwritten
+    /// conversation held, and nothing in the file can say *what* is missing. So
+    /// the file says the one thing it does know: the last stop did not finish,
+    /// and what is stored may be behind what happened.
+    pub fn recovered_from_unclean_stop(&self) -> bool {
+        self.unclean_stop
+    }
+
+    /// Records that this process is stopping on purpose.
+    ///
+    /// Written last, after everything else is on disk: a stop that fails before
+    /// this leaves the file marked as unfinished, which is the conservative
+    /// reading and the honest one.
+    pub fn mark_clean_stop(&self) -> Result<(), StoreError> {
+        block_on(self.connection.execute(
+            "UPDATE store_meta SET value = '1' WHERE key = ?1",
+            (CLEAN_STOP,),
+        ))?;
+        Ok(())
+    }
+
+    /// Marks every stored conversation that had a baseline as possibly behind.
+    ///
+    /// Only threads that were once complete are marked: a thread that never
+    /// synced already reads as partial, and there is nothing to be behind.
+    /// Returns how many were marked.
+    pub fn mark_stored_history_behind(&self, reason: &str) -> Result<usize, StoreError> {
+        let marked = block_on(self.connection.execute(
+            "UPDATE thread_history SET last_error = ?1 WHERE synced_at_ms IS NOT NULL",
+            (reason,),
+        ))?;
+        Ok(marked as usize)
     }
 
     fn configure(connection: &Connection, wal: bool) -> Result<(), StoreError> {
@@ -272,6 +343,40 @@ fn instance_of(connection: &Connection) -> Result<String, StoreError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A store that was killed says so, and one that stopped on purpose does
+    /// not: the difference is the only thing that can tell a reader its
+    /// conversation may be missing a tail.
+    #[test]
+    fn a_store_knows_whether_the_last_stop_finished() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("loom.db");
+
+        let store = Store::open(&path).unwrap();
+        assert!(
+            !store.recovered_from_unclean_stop(),
+            "a file nothing has written yet is not behind anything"
+        );
+        drop(store);
+
+        // The first process went away without finishing.
+        let store = Store::open(&path).unwrap();
+        assert!(store.recovered_from_unclean_stop());
+        drop(store);
+
+        // A second unclean open is still unclean: only a stop that finishes
+        // clears the mark.
+        let store = Store::open(&path).unwrap();
+        assert!(store.recovered_from_unclean_stop());
+        store.mark_clean_stop().unwrap();
+        drop(store);
+
+        let store = Store::open(&path).unwrap();
+        assert!(
+            !store.recovered_from_unclean_stop(),
+            "a stop that finished is not a surprise"
+        );
+    }
 
     #[test]
     fn opening_creates_the_store_and_is_idempotent() {

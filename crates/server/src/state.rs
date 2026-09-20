@@ -41,6 +41,14 @@ const HISTORY_CACHE_THREADS: usize = 64;
 /// How many bytes of cached conversation rows the server may hold.
 const HISTORY_CACHE_BYTES: u64 = 64 * 1024 * 1024;
 
+/// Why a conversation that outlived a stop that did not finish is marked.
+///
+/// Nothing in the file can say *what* was lost — only that the process that had
+/// it did not finish — so this is what a reader is told, and a successful load
+/// is what replaces it.
+const UNFINISHED_STOP_REASON: &str =
+    "the server stopped without finishing; this conversation may be behind";
+
 /// How many conversation rows may wait for the store before a publisher is
 /// refused.
 ///
@@ -358,6 +366,32 @@ impl AppState {
             None => crate::store::Store::open_in_memory()?,
         };
         let store = Arc::new(Mutex::new(store));
+        // A store the last process was killed in the middle of may be missing
+        // the tail a published-and-unwritten conversation held. What is stored
+        // is kept and marked as possibly behind — not thrown away, and not
+        // called complete — and the ordinary read path reconciles it by asking
+        // the agent for the conversation again.
+        if store
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .recovered_from_unclean_stop()
+        {
+            let marked = store
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .mark_stored_history_behind(UNFINISHED_STOP_REASON);
+            match marked {
+                Ok(0) => {}
+                Ok(count) => eprintln!(
+                    "loom-server: the store was left by a stop that did not finish; \
+                     {count} stored conversation(s) are marked as possibly behind"
+                ),
+                Err(error) => eprintln!(
+                    "loom-server: marking stored conversations behind after an \
+                     unfinished stop failed: {error}"
+                ),
+            }
+        }
         let seqs = Arc::new(crate::store::SeqAllocator::seeded_from(
             &store
                 .lock()
@@ -1266,6 +1300,14 @@ impl AppState {
         self.store_writer
             .flush()
             .map_err(|message| ShutdownError { message })?;
+        // Last, and only once everything else is on disk: the store says this
+        // stop finished, so a start that finds it unfinished knows the store may
+        // be missing a tail rather than guessing.
+        self.store()
+            .mark_clean_stop()
+            .map_err(|error| ShutdownError {
+                message: format!("recording the store's clean stop failed: {error}"),
+            })?;
         self.relay.flush().map_err(|error| ShutdownError {
             message: format!("flushing the relay log failed: {error}"),
         })
@@ -1980,6 +2022,97 @@ mod tests {
         assert_eq!(
             state.store().schema_version().unwrap(),
             crate::store::SCHEMA_VERSION
+        );
+        state.shutdown().unwrap();
+    }
+
+    /// A stop that did not finish is visible in the next process's read.
+    ///
+    /// The kill cannot be simulated by a signal here, but it can be by what the
+    /// file is left saying: the previous state is dropped without its shutdown,
+    /// which is exactly the mark a killed process leaves, and the next server
+    /// must not call the conversation it finds complete.
+    #[tokio::test]
+    async fn a_conversation_that_outlived_an_unfinished_stop_is_not_complete() {
+        let dir = TempDir::new().unwrap();
+        let thread_id;
+        {
+            let state = AppState::build(durable_config(&dir)).unwrap();
+            let (thread, created) = state
+                .registry
+                .create_thread(
+                    Some(state.registry.personal_project_id()),
+                    Some("killed".into()),
+                    None,
+                    now_ms(),
+                )
+                .unwrap();
+            state.publish_domain_event(&created).unwrap();
+            thread_id = thread.id.clone();
+            let first = state.seqs().reserve(&thread_id, 1);
+            state
+                .store()
+                .replace_replayed(
+                    &thread_id,
+                    &crate::history_cache::CacheBinding {
+                        host_id: loom_domain::HostId::mint(),
+                        agent: "pi".to_owned(),
+                        provider_session_id: "acp-session-1".to_owned(),
+                        cwd: "/srv/project".to_owned(),
+                    },
+                    first,
+                    &[],
+                    now_ms(),
+                )
+                .unwrap();
+            // Deliberately no `shutdown()`: this process is "killed".
+            std::mem::forget(state);
+        }
+
+        let state = AppState::build(durable_config(&dir)).unwrap();
+        let view = state.stored_view(&thread_id).unwrap();
+        assert!(
+            !view.complete,
+            "a conversation from an unfinished stop is not complete: {view:?}"
+        );
+        assert_eq!(view.status, crate::history_cache::HistoryStatus::Stale);
+        assert!(
+            view.reason
+                .as_deref()
+                .is_some_and(|reason| reason.contains("stopped without finishing")),
+            "the reason says what happened: {view:?}"
+        );
+        state.shutdown().unwrap();
+
+        // A stop that finishes does not clear the warning: restarting is not the
+        // same as learning what was lost, and only a load that succeeds can say
+        // the conversation is whole again.
+        let state = AppState::build(durable_config(&dir)).unwrap();
+        let still_marked = state.stored_view(&thread_id).unwrap();
+        assert!(
+            !still_marked.complete
+                && still_marked
+                    .reason
+                    .as_deref()
+                    .is_some_and(|reason| reason.contains("stopped without finishing")),
+            "the warning outlives a clean restart: {still_marked:?}"
+        );
+
+        // What clears it is the conversation being loaded again.
+        let binding = crate::history_cache::CacheBinding {
+            host_id: loom_domain::HostId::mint(),
+            agent: "pi".to_owned(),
+            provider_session_id: "acp-session-1".to_owned(),
+            cwd: "/srv/project".to_owned(),
+        };
+        let first = state.seqs().reserve(&thread_id, 0);
+        state
+            .store()
+            .replace_replayed(&thread_id, &binding, first, &[], now_ms())
+            .unwrap();
+        assert!(
+            state.stored_view(&thread_id).unwrap().complete,
+            "a load that succeeds is what says the conversation is whole"
         );
         state.shutdown().unwrap();
     }
