@@ -154,7 +154,7 @@ struct Fixture {
 
 impl Drop for Fixture {
     fn drop(&mut self) {
-        self.state.shutdown();
+        self.state.shutdown().unwrap();
         self.host.abort();
     }
 }

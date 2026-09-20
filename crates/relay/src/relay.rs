@@ -46,6 +46,12 @@ pub struct Relay {
     backend: SharedBackend,
     retention: Retention,
     origin: String,
+    /// Set by [`Relay::close`].
+    ///
+    /// Shared by every clone, because a caller that closes one handle must stop
+    /// *this relay*: a server shutting down hands the same relay to its readers,
+    /// its reconciler and its request handlers, and each of them holds a clone.
+    closed: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Relay {
@@ -70,6 +76,7 @@ impl Relay {
             backend,
             retention,
             origin: origin.into(),
+            closed: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         })
     }
 
@@ -145,7 +152,36 @@ impl Relay {
         Ok(envelope)
     }
 
+    /// Refuses further appends.
+    ///
+    /// A process that is stopping needs the flush to be the *last* write, not
+    /// merely the latest one: a task that wakes up late — a run deadline, a
+    /// retry timer — would otherwise append behind the flush and leave a tail
+    /// the next process has to read around. Closing is what makes that
+    /// impossible instead of unlikely. Reads keep working, so a caller can
+    /// still drain and inspect the log it has.
+    pub fn close(&self) {
+        self.closed.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Whether [`Relay::close`] has been called on this relay.
+    pub fn is_closed(&self) -> bool {
+        self.closed.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Waits until everything accepted is written durably, and reports the
+    /// first writer failure.
+    ///
+    /// Order it after [`Relay::close`] to get "the log on disk is the whole
+    /// log"; see [`RelayBackend::flush`].
+    pub fn flush(&self) -> Result<()> {
+        self.backend.flush()
+    }
+
     fn store(&self, envelope: &Envelope) -> Result<()> {
+        if self.is_closed() {
+            return Err(RelayError::Closed);
+        }
         let shard = self.shard_of(&envelope.scope);
         self.backend.append(
             shard,

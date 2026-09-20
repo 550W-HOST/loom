@@ -436,7 +436,7 @@ async fn the_live_server_rejects_bodies_outside_the_contract() {
     assert_eq!(response.status, 400, "{}", response.body);
     assert_error(400, &response.body);
     assert_eq!(response.body["code"], "invalid_request");
-    fixture.state.shutdown();
+    fixture.state.shutdown().unwrap();
 }
 
 // --- read routes ------------------------------------------------------------
@@ -454,7 +454,7 @@ async fn projects_default_execution_options_report_the_configured_provider() {
     assert_response("projects.defaultExecutionOptions", 200, &response.body);
     assert!(response.body["providerId"].is_string(), "{}", response.body);
     assert!(response.body["model"].is_string(), "{}", response.body);
-    fixture.state.shutdown();
+    fixture.state.shutdown().unwrap();
 }
 
 #[tokio::test]
@@ -492,7 +492,7 @@ async fn child_summary_counts_threads_that_name_a_parent() {
         ))
         .await;
     assert_eq!(after.body["nonDeletedChildCount"], 1, "{}", after.body);
-    fixture.state.shutdown();
+    fixture.state.shutdown().unwrap();
 }
 
 #[tokio::test]
@@ -521,7 +521,7 @@ async fn conversation_outline_lists_user_and_assistant_turns() {
         "{}",
         response.body
     );
-    fixture.state.shutdown();
+    fixture.state.shutdown().unwrap();
 }
 
 #[tokio::test]
@@ -555,7 +555,7 @@ async fn prompt_history_returns_user_prompts_newest_first() {
     assert_eq!(limited.status, 200, "{}", limited.body);
     assert_response("threads.promptHistory", 200, &limited.body);
     assert_eq!(limited.body.as_array().unwrap().len(), 1);
-    fixture.state.shutdown();
+    fixture.state.shutdown().unwrap();
 }
 
 #[tokio::test]
@@ -587,7 +587,7 @@ async fn default_execution_options_are_null_until_a_client_records_them() {
     assert_eq!(set.body["model"], "pi");
     assert_eq!(set.body["reasoningLevel"], "high");
     assert_eq!(set.body["source"], "client/thread/start");
-    fixture.state.shutdown();
+    fixture.state.shutdown().unwrap();
 }
 
 #[tokio::test]
@@ -619,7 +619,7 @@ async fn running_lists_the_threads_with_a_run_in_flight() {
     assert_eq!(rows.len(), 1, "{}", running.body);
     assert_eq!(rows[0]["id"], fixture.thread_id);
     assert_eq!(rows[0]["hostId"], fixture.host_id);
-    fixture.state.shutdown();
+    fixture.state.shutdown().unwrap();
 }
 
 #[tokio::test]
@@ -700,7 +700,7 @@ async fn search_groups_matches_by_archive_state() {
         .unwrap()
         .is_empty());
 
-    fixture.state.shutdown();
+    fixture.state.shutdown().unwrap();
 }
 
 // --- control routes ---------------------------------------------------------
@@ -741,7 +741,7 @@ async fn thread_update_applies_fields_and_answers_the_thread() {
     assert_eq!(row["title"], "renamed");
     assert_eq!(row["visibility"], "hidden");
     assert_eq!(row["sectionId"], "sec-1");
-    fixture.state.shutdown();
+    fixture.state.shutdown().unwrap();
 }
 
 #[tokio::test]
@@ -793,7 +793,7 @@ async fn tabs_round_trip_under_a_revision() {
     // The refused write did not move the tabs.
     let unchanged = fixture.get(&path).await;
     assert_eq!(unchanged.body, written.body);
-    fixture.state.shutdown();
+    fixture.state.shutdown().unwrap();
 }
 
 #[tokio::test]
@@ -840,7 +840,7 @@ async fn open_delivers_to_the_threads_subscribers() {
     assert_eq!(payload["type"], "thread_open_requested");
     assert_eq!(payload["threadId"], fixture.thread_id);
     assert_eq!(payload["split"], "down");
-    fixture.state.shutdown();
+    fixture.state.shutdown().unwrap();
 }
 
 #[tokio::test]
@@ -871,7 +871,7 @@ async fn compact_and_edit_message_refuse_instead_of_pretending() {
     assert_eq!(edit.status, 501, "{}", edit.body);
     assert_error(501, &edit.body);
     assert_eq!(edit.body["code"], "not_configured");
-    fixture.state.shutdown();
+    fixture.state.shutdown().unwrap();
 }
 
 #[tokio::test]
@@ -970,7 +970,7 @@ async fn retry_redispatches_the_last_prompt_and_queues_while_busy() {
     assert_response("threads.retry", 200, &scheduled.body);
     assert_eq!(scheduled.body["delivery"], "queued");
     assert_eq!(scheduled.body["waitingOn"]["kind"], "time");
-    fixture.state.shutdown();
+    fixture.state.shutdown().unwrap();
 }
 
 #[tokio::test]
@@ -1022,7 +1022,7 @@ async fn stop_terminates_the_run_and_returns_the_thread_to_idle() {
     .await;
     assert_eq!(again.status, 200, "{}", again.body);
     assert_response("threads.stop", 200, &again.body);
-    fixture.state.shutdown();
+    fixture.state.shutdown().unwrap();
 }
 
 #[tokio::test]
@@ -1091,5 +1091,5 @@ async fn every_route_refuses_an_unknown_thread() {
     .await;
     assert_eq!(tabs.status, 404, "{}", tabs.body);
     assert_error(404, &tabs.body);
-    fixture.state.shutdown();
+    fixture.state.shutdown().unwrap();
 }

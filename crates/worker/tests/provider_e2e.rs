@@ -357,7 +357,7 @@ printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":
     assert!(state.runs.is_empty());
 
     worker.abort();
-    state.shutdown();
+    state.shutdown().unwrap();
 }
 
 #[tokio::test]
@@ -423,7 +423,7 @@ printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":
     let events = thread_events(&state, &thread_id);
     assert_eq!(output_texts(&events), vec!["fresh", "resumed"]);
     worker.abort();
-    state.shutdown();
+    state.shutdown().unwrap();
 }
 
 #[tokio::test]
@@ -471,7 +471,7 @@ async fn a_provider_runs_in_the_environment_workspace() {
     assert_ne!(recorded.trim(), dir.path().to_string_lossy());
 
     worker.abort();
-    state.shutdown();
+    state.shutdown().unwrap();
 }
 
 #[tokio::test]
@@ -526,7 +526,7 @@ async fn a_dispatch_to_a_missing_workspace_fails_with_a_clear_reason() {
     assert!(state.runs.is_empty());
 
     worker.abort();
-    state.shutdown();
+    state.shutdown().unwrap();
 }
 
 #[tokio::test]
@@ -578,7 +578,7 @@ exit 7
     assert!(state.runs.is_empty());
 
     worker.abort();
-    state.shutdown();
+    state.shutdown().unwrap();
 }
 
 #[tokio::test]
@@ -620,7 +620,7 @@ async fn a_hanging_provider_is_killed_and_reported_as_timed_out() {
     assert!(state.runs.is_empty());
 
     worker.abort();
-    state.shutdown();
+    state.shutdown().unwrap();
 }
 
 #[tokio::test]
@@ -682,7 +682,7 @@ async fn a_dispatch_missed_while_disconnected_is_replayed_on_reconnect() {
     assert!(state.runs.is_empty());
 
     worker.abort();
-    state.shutdown();
+    state.shutdown().unwrap();
 }
 
 #[tokio::test]
@@ -722,7 +722,7 @@ async fn a_run_on_a_silent_worker_is_reaped_by_the_stale_heartbeat_sweep() {
 
     // Keep the socket (and so the worker) alive until the assertions are done.
     let _ = worker.host_id();
-    state.shutdown();
+    state.shutdown().unwrap();
 }
 
 #[test]
@@ -784,7 +784,7 @@ async fn a_managed_environment_is_provisioned_by_the_worker() {
     assert!(Path::new(path).is_dir());
 
     handle.abort();
-    state.shutdown();
+    state.shutdown().unwrap();
 }
 
 #[tokio::test]
@@ -836,7 +836,7 @@ async fn a_failing_provision_records_the_worker_reason() {
     );
 
     handle.abort();
-    state.shutdown();
+    state.shutdown().unwrap();
 }
 
 /// The real provider, not a stub.
@@ -905,7 +905,7 @@ async fn the_real_pi_process_streams_through_the_bridge() {
     assert_contract_conformant(&events);
 
     worker.abort();
-    state.shutdown();
+    state.shutdown().unwrap();
 }
 
 /// A reconnect that missed more dispatches than one replay page must still
@@ -996,7 +996,7 @@ async fn a_reconnect_recovers_more_dispatches_than_one_replay_page() {
     }
 
     worker.abort();
-    state.shutdown();
+    state.shutdown().unwrap();
 }
 
 // --- permissions: the agent asks a user, and the answer gets back ------------
@@ -1165,7 +1165,7 @@ async fn a_permission_request_is_answered_through_the_interaction_routes() {
     assert_contract_conformant(&events);
 
     worker.abort();
-    state.shutdown();
+    state.shutdown().unwrap();
 }
 
 /// A denial reaches the agent as a refusal of the option it offered, never as
@@ -1236,7 +1236,7 @@ async fn a_denied_permission_selects_the_agents_rejecting_option() {
     );
 
     worker.abort();
-    state.shutdown();
+    state.shutdown().unwrap();
 }
 
 /// A client cancellation settles the durable row and reaches the blocked ACP
@@ -1315,7 +1315,7 @@ async fn a_client_cancelled_permission_unblocks_the_agent() {
     );
 
     worker.abort();
-    state.shutdown();
+    state.shutdown().unwrap();
 }
 
 /// A permission request nobody answers is cancelled when the run ends, and the
@@ -1396,7 +1396,7 @@ async fn an_unanswered_permission_is_cancelled_when_the_run_ends() {
     }
 
     worker.abort();
-    state.shutdown();
+    state.shutdown().unwrap();
 }
 
 /// Polls an async predicate, with the same wall-clock bound as `eventually`.
@@ -1587,7 +1587,7 @@ async fn a_scheduled_automation_run_becomes_a_real_turn() {
     assert_eq!(runs.len(), 1);
 
     worker.abort();
-    state.shutdown();
+    state.shutdown().unwrap();
 }
 
 #[tokio::test]
@@ -1672,7 +1672,7 @@ async fn a_manual_automation_run_dispatches_and_closes_with_its_thread() {
     assert_eq!(output_texts(&events), vec!["manual run complete"]);
 
     worker.abort();
-    state.shutdown();
+    state.shutdown().unwrap();
 }
 
 /* ------------------------------------------------------------------ */
@@ -1842,7 +1842,7 @@ async fn a_script_automation_runs_on_the_worker_and_records_its_output() {
     );
 
     worker.abort();
-    state.shutdown();
+    state.shutdown().unwrap();
 }
 
 #[tokio::test]
@@ -1891,7 +1891,7 @@ async fn a_non_zero_script_exit_fails_the_run_with_its_code() {
         .is_some_and(|o| o.contains("failing")));
 
     worker.abort();
-    state.shutdown();
+    state.shutdown().unwrap();
 }
 
 #[tokio::test]
@@ -1937,7 +1937,7 @@ async fn a_script_that_outlives_its_timeout_is_killed_and_reported() {
     assert!(run["finishedAt"].is_u64());
 
     worker.abort();
-    state.shutdown();
+    state.shutdown().unwrap();
 }
 
 #[tokio::test]
@@ -2009,7 +2009,7 @@ async fn pausing_an_automation_stops_its_running_script() {
     );
 
     worker.abort();
-    state.shutdown();
+    state.shutdown().unwrap();
 }
 
 #[tokio::test]
@@ -2061,5 +2061,5 @@ async fn a_script_path_outside_the_workspace_is_refused_by_the_host() {
     );
 
     worker.abort();
-    state.shutdown();
+    state.shutdown().unwrap();
 }

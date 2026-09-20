@@ -65,8 +65,10 @@ field bb does not have. loom's timeline response numbers rows per
 `generation` (a rebuild renumbers from one, and a generation is never reused),
 and `LoadedTimelineState` holds it: a page from another generation replaces the
 rows instead of being merged with them, because sequences from two numberings
-are not comparable. bb's client has no server-side rebuild, so it has no such
-field and merges purely by sequence.
+are not comparable. Generations only move forward, so a response that arrives
+*after* one from a newer generation is dropped rather than applied — a refetch
+racing the page it superseded must not roll the timeline back. bb's client has
+no server-side rebuild, so it has no such field and merges purely by sequence.
 
 Two smaller related drifts, in the same change:
 

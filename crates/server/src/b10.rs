@@ -676,7 +676,7 @@ mod tests {
         )
         .await;
         assert_eq!(missing.status(), StatusCode::NOT_FOUND);
-        state.shutdown();
+        state.shutdown().unwrap();
     }
 
     /// An agent loom discovered but has no glyph for is drawn as an ACP agent
@@ -709,7 +709,7 @@ mod tests {
             provider_branding("some-new-agent").is_none(),
             "an agent with no glyph has no sign-in hint to give either"
         );
-        state.shutdown();
+        state.shutdown().unwrap();
     }
 
     /// Every shipped mark is a usable document that follows the theme, and each
@@ -813,7 +813,7 @@ mod tests {
                 "changes": ["config-changed"]
             })
         );
-        state.shutdown();
+        state.shutdown().unwrap();
     }
 
     #[test]

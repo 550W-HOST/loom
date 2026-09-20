@@ -248,7 +248,7 @@ mod tests {
         assert_eq!(payload["type"], "environment_status_changed");
         assert_eq!(payload["to"], "provisioning");
 
-        state.shutdown();
+        state.shutdown().unwrap();
     }
 
     #[tokio::test]
@@ -272,7 +272,7 @@ mod tests {
         let stored = state.registry.environment(&environment.id).unwrap();
         assert_eq!(stored.status, EnvironmentStatus::Ready);
         assert_eq!(stored.path.as_deref(), Some("/srv/work"));
-        state.shutdown();
+        state.shutdown().unwrap();
     }
 
     #[tokio::test]
@@ -302,7 +302,7 @@ mod tests {
             state.registry.environment(&environment.id).unwrap().status,
             EnvironmentStatus::Provisioning
         );
-        state.shutdown();
+        state.shutdown().unwrap();
     }
 
     #[tokio::test]
@@ -326,7 +326,7 @@ mod tests {
             state.registry.environment(&environment.id).unwrap().status,
             EnvironmentStatus::Provisioning
         );
-        state.shutdown();
+        state.shutdown().unwrap();
     }
 
     #[tokio::test]
@@ -349,7 +349,7 @@ mod tests {
             state.registry.environment(&environment.id).unwrap().status,
             EnvironmentStatus::Creating
         );
-        state.shutdown();
+        state.shutdown().unwrap();
     }
 
     #[tokio::test]
@@ -376,7 +376,7 @@ mod tests {
             state.registry.environment(&environment.id).unwrap().status,
             EnvironmentStatus::Ready
         );
-        state.shutdown();
+        state.shutdown().unwrap();
     }
 
     #[tokio::test]
@@ -390,6 +390,6 @@ mod tests {
             state.provision_environment(&EnvironmentId::mint()),
             ProvisionOutcome::Unknown
         );
-        state.shutdown();
+        state.shutdown().unwrap();
     }
 }

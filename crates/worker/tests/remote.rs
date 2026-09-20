@@ -86,7 +86,7 @@ async fn a_server_with_no_worker_is_up_and_a_remote_worker_becomes_primary() {
         .await,
         "an announced departure should mark the host detached"
     );
-    state.shutdown();
+    state.shutdown().unwrap();
 }
 
 #[tokio::test]
@@ -113,7 +113,7 @@ async fn stopping_a_worker_leaves_the_server_serving() {
     state.publish(scope.clone(), "{\"n\":1}").unwrap();
     assert_eq!(state.relay.replay_scope(&scope, 10).unwrap().len(), 1);
     assert!(state.registry.primary_host(None).is_none());
-    state.shutdown();
+    state.shutdown().unwrap();
 }
 
 #[tokio::test]
@@ -147,7 +147,7 @@ async fn a_reconnecting_worker_keeps_its_identity() {
     );
 
     second.disconnect().await.unwrap();
-    state.shutdown();
+    state.shutdown().unwrap();
 }
 
 /// A real worker answers a real server's file request over the relay.
@@ -271,7 +271,7 @@ async fn a_worker_answers_thread_storage_reads_from_its_own_disk() {
     ));
 
     worker.abort();
-    state.shutdown();
+    state.shutdown().unwrap();
 }
 
 /// A real worker drives a real PTY for a real server.
@@ -441,5 +441,5 @@ async fn a_worker_runs_a_terminal_and_streams_its_output() {
     ));
 
     worker.abort();
-    state.shutdown();
+    state.shutdown().unwrap();
 }

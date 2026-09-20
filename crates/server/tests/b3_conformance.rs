@@ -392,7 +392,7 @@ async fn the_live_server_rejects_bodies_outside_the_contract() {
         assert_error_shape(&response.body);
         assert_eq!(response.body["code"], "invalid_request", "{route_id}");
     }
-    fixture.state.shutdown();
+    fixture.state.shutdown().unwrap();
 }
 
 // --- queued messages --------------------------------------------------------
@@ -460,7 +460,7 @@ async fn a_queued_message_is_created_listed_and_snapshotted() {
         Some("run the tests".to_owned())
     );
 
-    fixture.state.shutdown();
+    fixture.state.shutdown().unwrap();
 }
 
 #[tokio::test]
@@ -507,7 +507,7 @@ async fn a_queued_message_refuses_an_input_it_cannot_deliver() {
     assert_eq!(unknown.status, 404, "{}", unknown.body);
     assert_error(404, &unknown.body);
 
-    fixture.state.shutdown();
+    fixture.state.shutdown().unwrap();
 }
 
 #[tokio::test]
@@ -577,7 +577,7 @@ async fn sending_a_queued_message_while_busy_answers_the_queued_branch() {
         listed.body
     );
 
-    fixture.state.shutdown();
+    fixture.state.shutdown().unwrap();
 }
 
 #[tokio::test]
@@ -615,7 +615,7 @@ async fn the_queue_drains_when_the_thread_returns_to_idle() {
         .await;
     assert_eq!(thread.body["status"], "active", "{}", thread.body);
 
-    fixture.state.shutdown();
+    fixture.state.shutdown().unwrap();
 }
 
 #[tokio::test]
@@ -666,7 +666,7 @@ async fn the_drain_keeps_the_queue_in_order() {
         .collect::<Vec<_>>();
     assert_eq!(texts, vec!["start", "first"], "{}", timeline.body);
 
-    fixture.state.shutdown();
+    fixture.state.shutdown().unwrap();
 }
 
 #[tokio::test]
@@ -683,7 +683,7 @@ async fn a_send_of_an_unknown_queued_message_is_refused() {
         .await;
     assert_eq!(response.status, 404, "{}", response.body);
     assert_error(404, &response.body);
-    fixture.state.shutdown();
+    fixture.state.shutdown().unwrap();
 }
 
 #[tokio::test]
@@ -738,7 +738,7 @@ async fn threads_send_queues_while_busy_and_steers_join_the_turn() {
     assert_eq!(start.status, 501, "{}", start.body);
     assert_error(501, &start.body);
 
-    fixture.state.shutdown();
+    fixture.state.shutdown().unwrap();
 }
 
 #[tokio::test]
@@ -773,7 +773,7 @@ async fn a_scheduled_send_is_queued_with_a_time_reason() {
         .await;
     assert_eq!(listed.body.as_array().unwrap().len(), 1, "{}", listed.body);
 
-    fixture.state.shutdown();
+    fixture.state.shutdown().unwrap();
 }
 
 // --- interactions -----------------------------------------------------------
@@ -859,7 +859,7 @@ async fn interactions_are_listed_fetched_resolved_and_cancelled() {
         .unwrap();
     assert_eq!(row["hasPendingInteraction"], false, "{}", row);
 
-    fixture.state.shutdown();
+    fixture.state.shutdown().unwrap();
 }
 
 #[tokio::test]
@@ -949,7 +949,7 @@ async fn a_typed_resolution_must_match_the_interaction() {
         assert_eq!(fetched.body["status"], "pending", "{}", fetched.body);
     }
 
-    fixture.state.shutdown();
+    fixture.state.shutdown().unwrap();
 }
 
 #[tokio::test]
@@ -993,7 +993,7 @@ async fn a_settled_interaction_refuses_a_second_answer() {
     assert_eq!(cancel.status, 409, "{}", cancel.body);
     assert_error(409, &cancel.body);
 
-    fixture.state.shutdown();
+    fixture.state.shutdown().unwrap();
 }
 
 #[tokio::test]
@@ -1025,7 +1025,7 @@ async fn a_plugin_interaction_validates_as_its_own_union_branch() {
     assert_response("threads.resolveInteraction", 200, &submitted.body);
     assert_eq!(submitted.body["resolution"]["kind"], "plugin_submitted");
 
-    fixture.state.shutdown();
+    fixture.state.shutdown().unwrap();
 }
 
 #[tokio::test]
@@ -1058,7 +1058,7 @@ async fn a_finished_turn_settles_the_interactions_it_left_open() {
         rows.body
     );
 
-    fixture.state.shutdown();
+    fixture.state.shutdown().unwrap();
 }
 
 #[tokio::test]
@@ -1082,7 +1082,7 @@ async fn the_interaction_state_machine_is_durable() {
         "a pending interaction survives a restart with its identity"
     );
 
-    fixture.state.shutdown();
+    fixture.state.shutdown().unwrap();
 }
 
 #[tokio::test]
@@ -1120,7 +1120,7 @@ async fn an_interaction_belonging_to_another_thread_is_not_found() {
         .await;
     assert_eq!(unknown.status, 404, "{}", unknown.body);
 
-    fixture.state.shutdown();
+    fixture.state.shutdown().unwrap();
 }
 
 // --- plans, goals and the event wait ---------------------------------------
@@ -1157,7 +1157,7 @@ async fn cancel_plan_and_clear_context_refuse_instead_of_pretending() {
         assert_error(404, &response.body);
     }
 
-    fixture.state.shutdown();
+    fixture.state.shutdown().unwrap();
 }
 
 #[tokio::test]
@@ -1208,7 +1208,7 @@ async fn clear_goal_publishes_the_clearing_event_the_client_projects() {
     let timeline = fixture.get(&format!("{base}/timeline")).await;
     assert_eq!(timeline.body["goal"], Value::Null, "{}", timeline.body);
 
-    fixture.state.shutdown();
+    fixture.state.shutdown().unwrap();
 }
 
 #[tokio::test]
@@ -1317,7 +1317,7 @@ async fn event_wait_returns_null_on_timeout_and_a_row_on_a_match() {
     assert_response("threads.eventWait", 200, &drained.body);
     assert_eq!(drained.body, Value::Null);
 
-    fixture.state.shutdown();
+    fixture.state.shutdown().unwrap();
 }
 
 #[tokio::test]
@@ -1391,7 +1391,7 @@ async fn turn_summary_details_are_a_filtered_view_of_the_timeline() {
     assert_eq!(bad_cursor.status, 400, "{}", bad_cursor.body);
     assert_error(400, &bad_cursor.body);
 
-    fixture.state.shutdown();
+    fixture.state.shutdown().unwrap();
 }
 
 // --- retry's queued branch --------------------------------------------------
@@ -1446,7 +1446,7 @@ async fn a_scheduled_retry_is_queued_with_a_retry_payload() {
     assert_eq!(scheduled.body["delivery"], "queued");
     assert_eq!(scheduled.body["waitingOn"]["kind"], "time");
 
-    fixture.state.shutdown();
+    fixture.state.shutdown().unwrap();
 }
 
 #[tokio::test]
@@ -1461,7 +1461,7 @@ async fn a_retry_of_a_thread_with_no_turn_still_refuses() {
     assert_eq!(response.status, 409, "{}", response.body);
     assert_error(409, &response.body);
     assert_eq!(response.body["code"], "no_failed_turn");
-    fixture.state.shutdown();
+    fixture.state.shutdown().unwrap();
 }
 
 // --- the state machine, as the domains define it ---------------------------
@@ -1581,7 +1581,7 @@ async fn the_two_new_state_machines_refuse_illegal_transitions() {
         .cancel_interaction(&approval.id, None, 7)
         .is_err());
 
-    fixture.state.shutdown();
+    fixture.state.shutdown().unwrap();
 }
 
 // --- assistant deltas are one message, not one row per chunk -----------------
@@ -1792,7 +1792,7 @@ async fn a_timeline_row_outlives_the_replay_window() {
     );
     assert_eq!(rows[0]["text"], "still here");
 
-    fixture.state.shutdown();
+    fixture.state.shutdown().unwrap();
 }
 
 /// A streamed answer is one timeline row, not one row per chunk.
@@ -1846,7 +1846,7 @@ async fn streamed_deltas_are_folded_into_one_message_row() {
         output.body
     );
 
-    fixture.state.shutdown();
+    fixture.state.shutdown().unwrap();
 }
 
 /// The same item id in a later run is a *different* message.
@@ -1890,7 +1890,7 @@ async fn the_same_item_id_in_a_later_run_is_a_separate_row() {
         output.body
     );
 
-    fixture.state.shutdown();
+    fixture.state.shutdown().unwrap();
 }
 
 /// A tool call between two assistant messages keeps them separate.
@@ -1916,7 +1916,7 @@ async fn a_tool_call_between_messages_does_not_merge_them() {
         .collect::<Vec<_>>();
     assert_eq!(texts, vec!["before the tool", "after the tool"]);
 
-    fixture.state.shutdown();
+    fixture.state.shutdown().unwrap();
 }
 
 /// An empty completion with nothing streamed adds no empty bubble.
@@ -1929,7 +1929,7 @@ async fn an_empty_message_without_deltas_adds_no_row() {
         assistant_rows(&fixture).await.is_empty(),
         "an empty message must not render a bubble"
     );
-    fixture.state.shutdown();
+    fixture.state.shutdown().unwrap();
 }
 
 // --- a lifecycle transition is state, not content ----------------------------
@@ -1966,7 +1966,7 @@ async fn a_status_change_adds_no_timeline_row() {
         before,
         "a lifecycle transition is not content: {after:#?}"
     );
-    fixture.state.shutdown();
+    fixture.state.shutdown().unwrap();
 }
 
 /// Thinking that streamed into the log becomes a row the client can show.
@@ -2031,7 +2031,7 @@ async fn thinking_streams_into_one_row_the_client_can_expand() {
         serde_json::to_string_pretty(&rows).unwrap()
     );
 
-    fixture.state.shutdown();
+    fixture.state.shutdown().unwrap();
 }
 
 /// A tool call renders, and it renders as *one* row that names what it ran.
@@ -2094,7 +2094,7 @@ async fn a_tool_call_becomes_one_work_row_that_names_the_command() {
     assert_eq!(work[0]["status"], "completed");
     assert!(work[0]["completedAt"].is_number());
 
-    fixture.state.shutdown();
+    fixture.state.shutdown().unwrap();
 }
 
 /// A shell command gets the command row, which is the one that can show the
@@ -2149,7 +2149,7 @@ async fn a_shell_command_becomes_a_command_row() {
     assert_eq!(work[0]["output"], "test result: ok");
     assert_eq!(work[0]["exitCode"], 0);
 
-    fixture.state.shutdown();
+    fixture.state.shutdown().unwrap();
 }
 
 /// A file edit renders as a diff row, one per file, carrying the patch the
@@ -2223,7 +2223,7 @@ async fn a_file_edit_becomes_a_diff_row() {
     assert_eq!(changes[1]["change"]["diffStats"]["removed"], 0);
     assert_ne!(changes[0]["id"], changes[1]["id"]);
 
-    fixture.state.shutdown();
+    fixture.state.shutdown().unwrap();
 }
 
 /// A read is the contract's `file-read` row — the file it read is the row's
@@ -2276,5 +2276,5 @@ async fn a_file_read_becomes_a_row_that_names_the_file() {
     assert_eq!(reads[0]["callId"], "call-read");
     assert_eq!(reads[0]["status"], "completed");
 
-    fixture.state.shutdown();
+    fixture.state.shutdown().unwrap();
 }

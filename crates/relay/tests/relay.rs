@@ -521,3 +521,56 @@ fn an_empty_page_reports_no_more() {
         assert!(!after.has_more);
     }
 }
+
+/// Closing a relay stops it accepting appends, and flushing after that means
+/// the log on disk is the whole log.
+///
+/// This is the ordering a server shutdown needs: a task that wakes up late — a
+/// run deadline, a retry timer — must not be able to append behind the flush and
+/// leave a tail for the next process to read around. The property is asserted
+/// over every backend, and the durable case additionally reopens the directory
+/// **without** dropping the relay that wrote it, which is what makes it a test
+/// of the flush rather than of `Drop`.
+#[test]
+fn a_closed_relay_refuses_appends_and_flushes_what_it_accepted() {
+    for case in cases() {
+        let relay = case.relay(100);
+        let scope = Scope::Thread("thr_close".into());
+        for index in 0..8 {
+            relay
+                .publish(scope.clone(), format!("{{\"message\":{index}}}"))
+                .unwrap();
+        }
+
+        relay.close();
+        assert!(relay.is_closed());
+        let refused = relay.publish(scope.clone(), "{\"message\":\"late\"}");
+        assert!(
+            matches!(refused, Err(loom_relay::error::RelayError::Closed)),
+            "a closed relay must refuse the append, got {refused:?}"
+        );
+
+        relay.flush().unwrap();
+
+        if !case.is_durable() {
+            // An in-process log has nothing to reopen; the refusal above is the
+            // property that matters for it.
+            continue;
+        }
+        // The writer is still alive and this relay was never dropped.
+        let reopened = Relay::new(
+            Arc::new(DiskBackend::open(case.dir.path(), 100).unwrap()),
+            Retention::default(),
+            "node-b",
+        )
+        .unwrap();
+        let replayed = reopened
+            .replay_shard(relay.shard_of(&scope), 0, usize::MAX)
+            .unwrap();
+        assert_eq!(
+            replayed.len(),
+            8,
+            "every accepted frame must be readable after the flush"
+        );
+    }
+}

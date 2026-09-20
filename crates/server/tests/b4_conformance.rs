@@ -363,7 +363,7 @@ async fn the_live_server_rejects_b4_request_counterexamples() {
         assert_error_shape(&response.body);
         assert_eq!(response.body["code"], "invalid_request");
     }
-    fixture.state.shutdown();
+    fixture.state.shutdown().unwrap();
 }
 
 #[tokio::test]
@@ -429,7 +429,7 @@ async fn lifecycle_routes_have_contract_bodies_and_real_state_transitions() {
     assert_eq!(repeated.status, 200, "{}", repeated.body);
     assert_response("threads.archiveAll", 200, &repeated.body);
     assert_eq!(repeated.body["archivedThreadIds"], json!([]));
-    fixture.state.shutdown();
+    fixture.state.shutdown().unwrap();
 }
 
 #[tokio::test]
@@ -503,7 +503,7 @@ async fn deleting_a_thread_requires_confirmation_and_leaves_a_tombstone() {
     restored.restore(snapshot.clone());
     assert_eq!(restored.export(), snapshot);
     assert!(restored.public_thread(&fixture.thread_id()).is_none());
-    fixture.state.shutdown();
+    fixture.state.shutdown().unwrap();
 }
 
 #[tokio::test]
@@ -549,7 +549,7 @@ async fn fork_reports_session_and_acp_capability_boundaries_without_creating_a_r
     assert_error(409, &archived_fork.body);
     assert_eq!(archived_fork.body["code"], "thread_not_writable");
     assert_eq!(fixture.state.registry.threads().len(), 1);
-    fixture.state.shutdown();
+    fixture.state.shutdown().unwrap();
 }
 
 #[tokio::test]
@@ -630,7 +630,7 @@ async fn pin_unpin_and_unread_return_rows_and_survive_restore() {
         .is_some());
     assert!(restored.thread(&third.id).unwrap().pin_sort_key.is_some());
     assert_eq!(restored.thread(&second.id).unwrap().pinned_at_ms, None);
-    fixture.state.shutdown();
+    fixture.state.shutdown().unwrap();
 }
 
 #[tokio::test]
@@ -681,7 +681,7 @@ async fn queue_reorder_rebalances_when_the_fractional_key_is_occupied() {
         .map(|message| message.sort_key)
         .collect::<Vec<_>>();
     assert!(keys.windows(2).all(|pair| pair[0] < pair[1]));
-    fixture.state.shutdown();
+    fixture.state.shutdown().unwrap();
 }
 
 #[tokio::test]
@@ -828,5 +828,5 @@ async fn queued_messages_support_cas_update_reorder_grouping_delete_and_restore(
             .collect::<Vec<_>>(),
         vec![third_id, first_id, second_id]
     );
-    fixture.state.shutdown();
+    fixture.state.shutdown().unwrap();
 }

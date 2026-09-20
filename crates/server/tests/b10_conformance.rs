@@ -282,7 +282,7 @@ async fn b10_routes_validate_requests_and_responses() {
             json!({ "type": "changed", "entity": "system", "changes": ["ui-preferences-changed"] }),
         ]
     );
-    state.shutdown();
+    state.shutdown().unwrap();
 }
 
 #[tokio::test]
@@ -326,7 +326,7 @@ async fn b10_settings_survive_a_durable_server_restart() {
     )
     .await;
     assert_eq!(response.status(), StatusCode::OK);
-    state.shutdown();
+    state.shutdown().unwrap();
 
     let restored = AppState::build(config).unwrap();
     let app = router(restored.clone());
@@ -344,7 +344,7 @@ async fn b10_settings_survive_a_durable_server_restart() {
     let config = body_json(get(&app, "/api/v1/system/config").await).await;
     assert_eq!(config["generalSettings"]["providerOrder"], json!([]));
     assert!(config["generalSettings"]["defaultProviderId"].is_null());
-    restored.shutdown();
+    restored.shutdown().unwrap();
 }
 
 #[tokio::test]
@@ -362,5 +362,5 @@ async fn b10_voice_transcription_reports_missing_capability() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
     assert_error(StatusCode::NOT_IMPLEMENTED, &body_json(response).await);
-    state.shutdown();
+    state.shutdown().unwrap();
 }

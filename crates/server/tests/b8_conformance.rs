@@ -172,7 +172,7 @@ async fn b8_control_routes_return_contract_conformant_successes() {
     let body = body_json(&body);
     assert_eq!(body["code"], "invalid_path");
 
-    state.shutdown();
+    state.shutdown().unwrap();
 }
 
 #[tokio::test]
@@ -190,5 +190,5 @@ async fn preview_creation_without_a_host_is_bounded_and_explicit() {
     let body = body_json(&body);
     assert_eq!(body["code"], "host_unavailable");
     assert!(shared().validate_error_body(&body).is_empty());
-    state.shutdown();
+    state.shutdown().unwrap();
 }

@@ -1030,7 +1030,7 @@ mod tests {
             .expect("the thread is marked as automation-produced");
         assert_eq!(mark.automation_id, automation.id);
         assert_eq!(mark.run_id, queued.id);
-        state.shutdown();
+        state.shutdown().unwrap();
     }
 
     #[tokio::test]
@@ -1101,7 +1101,7 @@ mod tests {
         // script one, and it publishes the same project invalidation: a client
         // rendering the automation's history is told the same way either way.
         expect_project_invalidation(&mut events, &project.to_string()).await;
-        state.shutdown();
+        state.shutdown().unwrap();
     }
 
     #[tokio::test]
@@ -1145,7 +1145,7 @@ mod tests {
             .expect("stored");
         assert_eq!(automation.consecutive_failures, 1);
         assert!(automation.next_run_at.is_some_and(|next| next > now_ms()));
-        state.shutdown();
+        state.shutdown().unwrap();
     }
 
     #[tokio::test]
@@ -1217,7 +1217,7 @@ mod tests {
             ThreadStatus::Error,
             "the thread is in error, not stuck in working"
         );
-        state.shutdown();
+        state.shutdown().unwrap();
     }
 
     #[tokio::test]
@@ -1340,7 +1340,7 @@ mod tests {
             .error
             .as_deref()
             .is_some_and(|error| error.contains("cannot take a turn")));
-        state.shutdown();
+        state.shutdown().unwrap();
     }
 
     #[tokio::test]
@@ -1412,7 +1412,7 @@ mod tests {
             1,
             "one environment, not one per run"
         );
-        state.shutdown();
+        state.shutdown().unwrap();
     }
 
     #[tokio::test]
@@ -1457,7 +1457,7 @@ mod tests {
                 run.error
             );
         }
-        state.shutdown();
+        state.shutdown().unwrap();
     }
 
     /// A script automation in `project`.
@@ -1510,7 +1510,7 @@ mod tests {
             .error
             .as_deref()
             .is_some_and(|error| error.contains("no connected machine")));
-        state.shutdown();
+        state.shutdown().unwrap();
     }
 
     #[tokio::test]
@@ -1550,7 +1550,7 @@ mod tests {
             run.error
         );
         assert!(run.host_id.is_none());
-        state.shutdown();
+        state.shutdown().unwrap();
     }
 
     #[tokio::test]
@@ -1616,7 +1616,7 @@ mod tests {
             dispatch.timeout_ms,
             loom_domain::automation::AUTOMATION_SCRIPT_TIMEOUT_DEFAULT_MS
         );
-        state.shutdown();
+        state.shutdown().unwrap();
     }
 
     #[tokio::test]
@@ -1674,7 +1674,7 @@ mod tests {
             created_by_thread_id: Some(thread_id),
         };
         assert!(state.automations.create(project, nested, now_ms()).is_err());
-        state.shutdown();
+        state.shutdown().unwrap();
     }
 
     /// Dispatches one script run to an enrolled host.
@@ -1785,7 +1785,7 @@ mod tests {
         let settled = state.automations.run(&run.id).expect("stored");
         assert_eq!(settled.state, AutomationRunState::Failed);
         assert_eq!(settled.error.as_deref(), Some("Script timed out"));
-        state.shutdown();
+        state.shutdown().unwrap();
     }
 
     #[tokio::test]
@@ -1838,7 +1838,7 @@ mod tests {
         );
         let settled = state.automations.run(&run.id).expect("stored");
         assert_eq!(settled.state, AutomationRunState::Succeeded);
-        state.shutdown();
+        state.shutdown().unwrap();
     }
 
     #[tokio::test]
@@ -1853,7 +1853,7 @@ mod tests {
         );
         let project = state.registry.personal_project_id().to_string();
         expect_project_invalidation(&mut events, &project).await;
-        state.shutdown();
+        state.shutdown().unwrap();
     }
 
     #[tokio::test]
@@ -1871,7 +1871,7 @@ mod tests {
         let project = state.registry.personal_project_id().to_string();
         expect_project_invalidation(&mut events, &project).await;
         assert_eq!(run.host_id, Some(host));
-        state.shutdown();
+        state.shutdown().unwrap();
     }
 
     #[tokio::test]
@@ -1899,7 +1899,7 @@ mod tests {
             loom_domain::automation::AutomationRunMode::Script
         );
         expect_project_invalidation(&mut events, &project.to_string()).await;
-        state.shutdown();
+        state.shutdown().unwrap();
     }
 
     #[tokio::test]
@@ -1936,6 +1936,6 @@ mod tests {
         let stored = state.automations.run(&run.id).expect("stored");
         assert_eq!(stored.state, AutomationRunState::Running);
         assert_eq!(stored.host_id, Some(host));
-        state.shutdown();
+        state.shutdown().unwrap();
     }
 }

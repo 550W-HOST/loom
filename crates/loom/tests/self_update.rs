@@ -526,7 +526,7 @@ async fn a_protocol_mismatch_updates_the_worker_and_the_new_binary_runs_a_turn()
         log.contains("enrolled as"),
         "the reinstalled worker should have enrolled; stderr:\n{log}"
     );
-    server_state.shutdown();
+    server_state.shutdown().unwrap();
 }
 
 /// A second attempt against an unchanged server must be a conditional request

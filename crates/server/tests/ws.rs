@@ -179,7 +179,7 @@ async fn public_socket_is_typed_and_needs_no_origin_header() {
         .await;
     assert!(client.try_recv(Duration::from_millis(100)).await.is_none());
 
-    state.shutdown();
+    state.shutdown().unwrap();
 }
 
 #[tokio::test]
@@ -215,7 +215,7 @@ async fn public_system_subscription_receives_durable_settings_invalidations() {
             "changes": ["config-changed"]
         })
     );
-    state.shutdown();
+    state.shutdown().unwrap();
 }
 
 #[tokio::test]
@@ -260,7 +260,7 @@ async fn public_list_and_project_targets_cover_entities_created_after_subscribe(
         assert_eq!(message["changes"], json!(["status-changed"]));
     }
 
-    state.shutdown();
+    state.shutdown().unwrap();
 }
 
 #[tokio::test]
@@ -286,7 +286,7 @@ async fn old_worker_endpoint_receives_a_version_mismatch_frame_then_closes() {
         .expect("legacy socket did not close");
     assert!(matches!(closed, None | Some(Ok(Message::Close(_)))));
 
-    state.shutdown();
+    state.shutdown().unwrap();
 }
 
 #[tokio::test]
@@ -310,7 +310,7 @@ async fn two_clients_in_one_scope_both_receive() {
         assert_eq!(event["event_id"].as_str().unwrap().len(), 26);
     }
 
-    state.shutdown();
+    state.shutdown().unwrap();
 }
 
 #[tokio::test]
@@ -334,7 +334,7 @@ async fn a_client_only_receives_its_own_scopes() {
         "a client must not receive another scope's frames"
     );
 
-    state.shutdown();
+    state.shutdown().unwrap();
 }
 
 #[tokio::test]
@@ -370,7 +370,7 @@ async fn events_arrive_in_publication_order() {
         "event ids must be delivered in ascending order"
     );
 
-    state.shutdown();
+    state.shutdown().unwrap();
 }
 
 #[tokio::test]
@@ -391,7 +391,7 @@ async fn subscribing_twice_delivers_once() {
         "a duplicate subscription must not duplicate delivery"
     );
 
-    state.shutdown();
+    state.shutdown().unwrap();
 }
 
 #[tokio::test]
@@ -412,7 +412,7 @@ async fn unsubscribe_stops_delivery_without_closing_the_socket() {
     assert_eq!(event["payload"], "{\"kept\":true}");
     assert!(client.try_recv(Duration::from_millis(300)).await.is_none());
 
-    state.shutdown();
+    state.shutdown().unwrap();
 }
 
 #[tokio::test]
@@ -439,7 +439,7 @@ async fn replay_returns_the_retained_window_and_honours_a_cursor() {
     assert_eq!(frames.len(), 2, "the cursor is exclusive");
     assert_eq!(frames[0]["payload"], "{\"n\":2}");
 
-    state.shutdown();
+    state.shutdown().unwrap();
 }
 
 #[tokio::test]
@@ -475,7 +475,7 @@ async fn a_reconnecting_client_can_resume_from_a_cursor() {
     let live = client.recv().await;
     assert_eq!(live["payload"], "{\"n\":4}");
 
-    state.shutdown();
+    state.shutdown().unwrap();
 }
 
 #[tokio::test]
@@ -493,7 +493,7 @@ async fn a_malformed_command_is_reported_without_closing_the_socket() {
     state.publish(scope, "{\"n\":1}").unwrap();
     assert_eq!(client.recv().await["payload"], "{\"n\":1}");
 
-    state.shutdown();
+    state.shutdown().unwrap();
 }
 
 #[tokio::test]
@@ -582,7 +582,7 @@ async fn the_host_and_thread_commands_drive_a_real_conversation() {
     // The thread-scoped events must not leak into the project scope.
     assert!(client.try_recv(Duration::from_millis(300)).await.is_none());
 
-    state.shutdown();
+    state.shutdown().unwrap();
 }
 
 #[tokio::test]
@@ -641,7 +641,7 @@ async fn a_worker_enrolls_over_the_socket_and_a_lost_socket_detaches_it() {
         loom_domain::HostStatus::Disconnected
     );
 
-    state.shutdown();
+    state.shutdown().unwrap();
 }
 
 /// Minimal HTTP GET, so the test suite needs no HTTP client dependency.

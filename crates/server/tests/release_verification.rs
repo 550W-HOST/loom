@@ -177,7 +177,7 @@ async fn the_release_script_parses_the_shapes_the_server_answers() {
         "the project {project_id} that was just created is not in {projects:?}"
     );
 
-    state.shutdown();
+    state.shutdown().unwrap();
 }
 
 /// One request whose response is read as raw bytes and headers.
@@ -344,5 +344,5 @@ async fn the_release_script_parses_the_install_routes_the_server_answers() {
     );
     assert!(conditional.body.is_empty(), "a 304 carried a body");
 
-    state.shutdown();
+    state.shutdown().unwrap();
 }

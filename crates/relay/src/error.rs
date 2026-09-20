@@ -11,6 +11,9 @@ pub enum RelayError {
     Backend(String),
     /// A serialized event id could not be parsed.
     InvalidEventId(String),
+    /// The relay is closed: a process that has stopped its writers refuses an
+    /// append rather than letting it land after the log was flushed.
+    Closed,
 }
 
 impl fmt::Display for RelayError {
@@ -19,6 +22,7 @@ impl fmt::Display for RelayError {
             RelayError::Config(message) => write!(f, "invalid relay config: {message}"),
             RelayError::Backend(message) => write!(f, "relay backend error: {message}"),
             RelayError::InvalidEventId(message) => write!(f, "invalid event id: {message}"),
+            RelayError::Closed => f.write_str("the relay is closed"),
         }
     }
 }

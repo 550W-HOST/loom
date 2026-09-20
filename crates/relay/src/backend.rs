@@ -106,6 +106,18 @@ pub trait RelayBackend: Send + Sync {
     fn backend_error(&self) -> Option<String> {
         None
     }
+
+    /// Waits until everything this backend has accepted is written durably,
+    /// and reports the first failure.
+    ///
+    /// The default is a no-op, which is the honest answer for a backend whose
+    /// writes are already complete when `append` returns. A backend that hands
+    /// work to a writer thread must order this *after* the writer's queue, so
+    /// that waiting for it means draining as well as syncing: that is what lets
+    /// a caller treat "flush returned" as "the log on disk is the whole log".
+    fn flush(&self) -> Result<()> {
+        Ok(())
+    }
 }
 
 /// A shared, type-erased backend handle.

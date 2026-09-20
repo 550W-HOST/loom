@@ -7533,7 +7533,7 @@ mod tests {
             "thread has no environment bound; bind one before dispatching"
         );
         assert_eq!(error["status"], "error");
-        state.shutdown();
+        state.shutdown().unwrap();
     }
 
     fn context_window_report(
@@ -7700,24 +7700,21 @@ mod tests {
             quiet_body.get("contextWindowUsage").is_none(),
             "a thread that never reported occupancy omits the field: {quiet_body}"
         );
-        state.shutdown();
+        state.shutdown().unwrap();
     }
 
     /// A conversation longer than the shard's retention cap must still show
     /// its newest rows to a client polling from `afterSequence`.
     ///
-    /// `sourceSeq` is currently the row's index in the scope's *retained*
-    /// events. Once the shard is full, appending an event evicts the oldest
-    /// one, so that index stops growing: `maxSeq` saturates and a fetch with
-    /// `afterSequence=maxSeq` filters every new row out. The thread looks
-    /// frozen in the UI.
-    ///
-    /// Ignored because it pins the behaviour the timeline rework has to
-    /// deliver, not the behaviour the current code has: it fails today, by
-    /// design. Un-ignore it with the change that reads a thread's history from
-    /// the ACP-backed cache instead of the retained relay window — see
-    /// `docs/acp-history-plan.md` §7 (sequence) and §8 step 3.
-    #[ignore = "specifies the timeline rework's outcome (docs/acp-history-plan.md §7/§8.3)"]
+    /// This used to fail, and the test was left ignored to pin the outcome the
+    /// rework had to deliver (docs/acp-history-plan.md §7/§8.3). It passes now
+    /// because of *where* a sequence comes from: a row is numbered when it is
+    /// installed into a baseline or appended to the overlay, and that number is
+    /// never recomputed. The old numbering was the row's index in the scope's
+    /// *retained* events, so once the shard filled up every append evicted the
+    /// oldest one and the index stopped growing: `maxSeq` saturated, a fetch
+    /// with `afterSequence=maxSeq` filtered every new row out, and the thread
+    /// looked frozen in the UI.
     #[tokio::test]
     async fn a_thread_that_fills_its_shard_still_reports_its_newest_rows() {
         let state = AppState::build(AppConfig {
@@ -7783,7 +7780,7 @@ mod tests {
             rows.iter().any(|row| row["text"] == "the newest message"),
             "the newest row must be visible after the cursor: {delta}"
         );
-        state.shutdown();
+        state.shutdown().unwrap();
     }
 
     /// The diagnostic row a user reads when a turn dies.
@@ -7951,7 +7948,7 @@ mod tests {
             Some(2),
             "the catalogue is mirrored, and the client filters the duplicate"
         );
-        state.shutdown();
+        state.shutdown().unwrap();
     }
 
     /// A query that names a host the server has no catalogue for never borrows
@@ -7987,7 +7984,7 @@ mod tests {
 
         let unnamed = body_json(get(&app, "/api/v1/system/execution-options").await).await;
         assert_eq!(unnamed["models"][0]["model"], "mock/only");
-        state.shutdown();
+        state.shutdown().unwrap();
     }
 
     /// A host that has reported nothing yet still gets a usable picker.
@@ -8001,7 +7998,7 @@ mod tests {
             json["models"][0]["supportedReasoningEfforts"][0]["reasoningEffort"],
             "medium"
         );
-        state.shutdown();
+        state.shutdown().unwrap();
     }
 
     fn provider_spec(name: &str, launch: ProviderLaunch, command: &str) -> ProviderSpec {
@@ -8166,7 +8163,7 @@ mod tests {
             unknown["models"][0]["model"], "pi/one",
             "a stale provider id falls back to the default rather than failing the picker"
         );
-        state.shutdown();
+        state.shutdown().unwrap();
     }
 
     /// The composer sends what it picked with the thread it creates, and the
@@ -8215,7 +8212,7 @@ mod tests {
             created["providerId"], "pi",
             "the created thread's summary reports the agent it will run on"
         );
-        state.shutdown();
+        state.shutdown().unwrap();
     }
 
     /// A turn's options travel with the prompt and are recorded on the thread
@@ -8267,7 +8264,7 @@ mod tests {
                 .as_deref(),
             Some("minimal")
         );
-        state.shutdown();
+        state.shutdown().unwrap();
     }
 
     #[tokio::test]
@@ -8430,7 +8427,7 @@ mod tests {
         assert!(malformed_body["code"].is_string());
         assert!(malformed_body["message"].is_string());
 
-        state.shutdown();
+        state.shutdown().unwrap();
     }
 
     /// The request half of conformance, the gap W-554 found: B1's responses
@@ -8582,7 +8579,7 @@ mod tests {
         let renamed = body_json(response).await;
         assert_b1_response(&contract, "projects.update", "PATCH", &renamed);
 
-        state.shutdown();
+        state.shutdown().unwrap();
     }
 
     /// A contract-external loom route must not be caught by the request
@@ -8602,7 +8599,7 @@ mod tests {
         )
         .await;
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-        state.shutdown();
+        state.shutdown().unwrap();
     }
 
     #[tokio::test]
@@ -8707,7 +8704,7 @@ mod tests {
             .is_empty());
         assert_eq!(malformed_query_body["code"], "invalid_request");
 
-        state.shutdown();
+        state.shutdown().unwrap();
     }
 
     #[tokio::test]
@@ -8750,7 +8747,7 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert_eq!(events[0]["type"], "thread_created");
 
-        state.shutdown();
+        state.shutdown().unwrap();
     }
 
     #[tokio::test]
@@ -8853,7 +8850,7 @@ mod tests {
         .await;
         assert_eq!(again.status(), StatusCode::CONFLICT);
 
-        state.shutdown();
+        state.shutdown().unwrap();
     }
 
     #[tokio::test]
@@ -8919,7 +8916,7 @@ mod tests {
         .await;
         assert_eq!(again.status(), StatusCode::NOT_FOUND);
 
-        state.shutdown();
+        state.shutdown().unwrap();
     }
 
     #[tokio::test]
@@ -8993,7 +8990,7 @@ mod tests {
                 .project_id,
             project_id
         );
-        state.shutdown();
+        state.shutdown().unwrap();
     }
 
     #[tokio::test]
@@ -9081,7 +9078,7 @@ mod tests {
             "available"
         );
 
-        state.shutdown();
+        state.shutdown().unwrap();
     }
 
     #[tokio::test]
@@ -9128,7 +9125,7 @@ mod tests {
         assert_eq!(stored[1]["type"], "thread_status_changed");
         assert!(state.runs.for_thread(&thread_id.parse().unwrap()).is_some());
 
-        state.shutdown();
+        state.shutdown().unwrap();
     }
 
     #[tokio::test]
@@ -9189,7 +9186,7 @@ mod tests {
         assert_eq!(stored[0]["type"], "thread_message_added");
         assert_eq!(stored[1]["type"], "thread_status_changed");
 
-        state.shutdown();
+        state.shutdown().unwrap();
     }
 
     #[tokio::test]
@@ -9266,7 +9263,7 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert_eq!(events[0]["type"], "host_registered");
 
-        state.shutdown();
+        state.shutdown().unwrap();
     }
 
     #[tokio::test]
@@ -9290,7 +9287,7 @@ mod tests {
         let hosts = body_json(get(&app, "/api/v1/hosts").await).await;
         assert_eq!(hosts.as_array().unwrap().len(), 0);
 
-        state.shutdown();
+        state.shutdown().unwrap();
     }
 
     #[tokio::test]
@@ -9337,7 +9334,7 @@ mod tests {
         let hosts = body_json(get(&app, "/api/v1/hosts").await).await;
         assert_eq!(hosts.as_array().unwrap().len(), 1);
 
-        state.shutdown();
+        state.shutdown().unwrap();
     }
 
     #[tokio::test]
@@ -9377,7 +9374,7 @@ mod tests {
         let hosts = body_json(get(&app, "/api/v1/hosts").await).await;
         assert_eq!(hosts[0]["status"], "disconnected");
 
-        state.shutdown();
+        state.shutdown().unwrap();
     }
 
     #[tokio::test]
@@ -9446,7 +9443,7 @@ mod tests {
         assert!(ids.contains(&first["id"].as_str().unwrap()));
         assert!(ids.contains(&second["id"].as_str().unwrap()));
 
-        state.shutdown();
+        state.shutdown().unwrap();
     }
 
     #[tokio::test]
@@ -9484,7 +9481,7 @@ mod tests {
         let events = stored_events(&state, &project);
         assert_eq!(events.len(), 1);
         assert_eq!(events[0]["type"], "environment_created");
-        state.shutdown();
+        state.shutdown().unwrap();
     }
 
     #[tokio::test]
@@ -9526,7 +9523,7 @@ mod tests {
         let events = stored_events(&state, &Scope::Host(host.id.to_string()));
         assert_eq!(events.len(), 1);
         assert_eq!(events[0]["environment_id"], json["environment"]["id"]);
-        state.shutdown();
+        state.shutdown().unwrap();
     }
 
     #[tokio::test]
@@ -9560,7 +9557,7 @@ mod tests {
         )
         .await;
         assert_eq!(relative.status(), StatusCode::BAD_REQUEST);
-        state.shutdown();
+        state.shutdown().unwrap();
     }
 
     #[tokio::test]
@@ -9578,7 +9575,7 @@ mod tests {
         )
         .await;
         assert_eq!(response.status(), StatusCode::CONFLICT);
-        state.shutdown();
+        state.shutdown().unwrap();
     }
 
     #[tokio::test]
@@ -9621,7 +9618,7 @@ mod tests {
         )
         .await;
         assert_eq!(missing.status(), StatusCode::NOT_FOUND);
-        state.shutdown();
+        state.shutdown().unwrap();
     }
 
     #[tokio::test]
@@ -9660,7 +9657,7 @@ mod tests {
         )
         .await;
         assert_eq!(again.status(), StatusCode::CONFLICT);
-        state.shutdown();
+        state.shutdown().unwrap();
     }
 
     #[tokio::test]

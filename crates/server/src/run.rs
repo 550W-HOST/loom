@@ -116,7 +116,10 @@ pub async fn run(args: ServerArgs) -> Result<(), Box<dyn std::error::Error>> {
     if let Some(local_worker) = local_worker {
         local_worker.shutdown().await;
     }
-    state.shutdown();
+    // A flush that did not happen is reported as a failed exit: the process is
+    // stopping, and the operator's next question is whether the last write is
+    // on disk.
+    state.shutdown()?;
     Ok(())
 }
 

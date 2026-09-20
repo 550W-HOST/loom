@@ -327,6 +327,13 @@ ACP 缺失的历史时间允许为未知，不能把加载时刻冒充消息发�
 
 **「真 agent + 重启」的合并用例刻意不做。** 曾写过 `provider_e2e.rs` 版本（两轮真实对话 → 挤出窗口 → 重启 → 加载），但同进程内"重启"会让两个 `DiskBackend` 同时持有同一批 `shard-*.log`：旧 `AppState` 仍被 router/axum task 与 run 定时任务持有，其 writer 线程在 compaction 重写文件，新 backend 读到半写状态并以 `failed to fill whole buffer` latch 成 sticky error。真实重启是新进程，不存在这个竞态，所以这是测试工装的产物而非产品缺陷。结论：重启路径由 `crates/server/tests/history.rs` 的 stub 端到端覆盖（真 server、真 worker socket、真 `host.load_history`/`history_report` 帧），真 agent 的回放由上面的 `real_pi` 测试覆盖；两者合起来是同一条路径。
 
+### 补做的两处
+
+- **`a_thread_that_fills_its_shard_still_reports_its_newest_rows` 已解除 ignore。** §9 要求保留并适配它。它原本标注"ignored because it pins the behaviour the timeline rework has to deliver"，现在通过：序号在安装进基线或追加进覆盖层时分配、永不重算，所以 shard 满了也不会让 `maxSeq` 饱和。注释改为记录这条原因。
+- **客户端丢弃更早代次的迟到响应。** §7 要求"异步旧请求晚于新 generation 返回时，UI 丢弃旧结果，防止页面回退"。generation 只增不减，因此合并与恢复路径都先判 `latestTimeline.generation < current.generation` 并原样返回当前状态；新增测试 `drops a response from an earlier generation instead of rolling back`。
+
+一处与 §7 字面的偏差，记录备查：`generation` 目前只随**响应**返回，请求端没有携带所持 generation 的参数。因此"旧客户端带游标不带 generation"不会被服务端显式要求重取，而是客户端看到响应里的 generation 与本地不同（或更早）后重置/丢弃。§9 验收行"generation 校验阻止错页合并；UI 重置并重取"由此满足；若要按字面实现，需要在 `threads.timeline` 查询上加 generation 并在契约里体现。
+
 ### 刻意留下的两处
 
 - **`unavailable` 不自动重试。** 读取可用性时，`unavailable` 只返回原因，重试被定义为显式动作（§6 的触发集里有"用户显式刷新"），而显式刷新入口尚未实现。因此在 `unavailable` 之后，客户端只能靠再次触发缓存缺失（重启、binding 变化、淘汰后重载）恢复。若要闭环，需要给 `threads.timeline` 增加刷新语义并在契约里体现。当前的选择是为了避免"session 已删除"这类失败在每次轮询时都去开一次 ACP 连接。

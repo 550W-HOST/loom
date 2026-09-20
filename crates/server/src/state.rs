@@ -168,6 +168,24 @@ impl std::fmt::Display for BuildStateError {
 
 impl std::error::Error for BuildStateError {}
 
+/// What a shutdown could not finish.
+///
+/// Only the log flush is fatal enough to return: everything else a shutdown
+/// does is either already durable or derived. A process that was asked to stop
+/// can still fail its exit code when its last write did not reach the disk.
+#[derive(Debug)]
+pub struct ShutdownError {
+    message: String,
+}
+
+impl std::fmt::Display for ShutdownError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for ShutdownError {}
+
 impl From<loom_relay::RelayError> for BuildStateError {
     fn from(error: loom_relay::RelayError) -> Self {
         Self {
@@ -1126,19 +1144,41 @@ impl AppState {
         persistence::write_snapshot(root, &snapshot)
     }
 
-    /// Stops the readers and the reconciler, and writes a final snapshot.
+    /// Stops the writers, snapshots the entity view, and flushes the log.
     ///
-    /// `&self` because every task is shared. The snapshot is best-effort: a
-    /// failure is reported and does not prevent the process from exiting, and
-    /// the periodic writer means at most one interval of state is at risk.
-    pub fn shutdown(&self) {
+    /// `&self` because every task is shared. The order is the contract, and
+    /// each step is what makes the next one mean something:
+    ///
+    /// 1. **the periodic writers stop** (reconcile, schedule), so this server
+    ///    produces nothing new of its own accord;
+    /// 2. **the entity view is snapshotted** with the log's watermark. It runs
+    ///    here, before the log is closed, so that anything published after it is
+    ///    an event recovery will replay rather than a change missing from both
+    ///    stores — and it takes the run lifecycle lock, which is what keeps the
+    ///    watermark and the exported view consistent;
+    /// 3. **the relay is closed**, so a task that wakes up late — a run
+    ///    deadline, a retry timer — is refused instead of appending behind the
+    ///    flush and leaving a tail the next process has to read around;
+    /// 4. **the readers stop** (they only read, and freeing them is tidy);
+    /// 5. **the log is drained and flushed**, and a failure is *returned*: a
+    ///    flush that did not happen means the last write may not be on disk, and
+    ///    an operator-driven stop can still fail its exit code for that.
+    ///
+    /// The snapshot is best-effort, for the reason it always was: it is a
+    /// derived view with a periodic writer behind it, and the log is the source
+    /// of truth. Its failure is reported and does not stop the flush.
+    pub fn shutdown(&self) -> Result<(), ShutdownError> {
         self.reconcile_stop.store(true, Ordering::Relaxed);
         self.snapshot_stop.store(true, Ordering::Relaxed);
         self.schedule_stop.store(true, Ordering::Relaxed);
         if let Err(error) = self.snapshot() {
             eprintln!("loom-server: writing the domain snapshot on shutdown failed: {error}");
         }
+        self.relay.close();
         self.pump.stop();
+        self.relay.flush().map_err(|error| ShutdownError {
+            message: format!("flushing the relay log failed: {error}"),
+        })
     }
 }
 
@@ -1296,7 +1336,7 @@ mod tests {
         assert_eq!(frame["payload"], "{\"n\":1}");
         assert_eq!(frame["event_id"], envelope.event_id.to_string());
 
-        state.shutdown();
+        state.shutdown().unwrap();
     }
 
     /// A host's agents are offered while it reports them and dropped the moment
@@ -1336,7 +1376,7 @@ mod tests {
             "and the configured default is what remains"
         );
 
-        state.shutdown();
+        state.shutdown().unwrap();
     }
 
     #[tokio::test]
@@ -1349,7 +1389,7 @@ mod tests {
         assert_eq!(replayed.len(), 1);
         assert_eq!(replayed[0].event_id, envelope.event_id);
 
-        state.shutdown();
+        state.shutdown().unwrap();
     }
 
     #[tokio::test]
@@ -1374,7 +1414,7 @@ mod tests {
         assert_eq!(replayed.len(), 1);
         assert_eq!(replayed[0].event_id, envelope.event_id);
 
-        state.shutdown();
+        state.shutdown().unwrap();
     }
 
     #[tokio::test]
@@ -1495,7 +1535,7 @@ mod tests {
                 )
                 .unwrap();
             thread_id = thread.id.clone();
-            state.shutdown();
+            state.shutdown().unwrap();
         }
 
         let state = AppState::build(durable_config(&dir)).unwrap();
@@ -1509,7 +1549,7 @@ mod tests {
         assert_eq!(thread.title.as_deref(), Some("persisted"));
         assert_eq!(thread.status, ThreadStatus::Idle);
         assert_eq!(thread.environment_id.as_ref(), Some(&environment_id));
-        state.shutdown();
+        state.shutdown().unwrap();
     }
 
     #[tokio::test]
@@ -1557,7 +1597,7 @@ mod tests {
                 state.registry.thread(&thread_id).unwrap().status,
                 ThreadStatus::Working
             );
-            state.shutdown();
+            state.shutdown().unwrap();
         }
 
         let state = AppState::build(durable_config(&dir)).unwrap();
@@ -1607,7 +1647,7 @@ mod tests {
             run_events[2].terminal_error(),
             Some("server restarted while the run was in flight")
         );
-        state.shutdown();
+        state.shutdown().unwrap();
     }
 
     #[tokio::test]
@@ -1689,7 +1729,7 @@ mod tests {
                     )),
                 })
                 .unwrap();
-            state.shutdown();
+            state.shutdown().unwrap();
         }
 
         let state = AppState::build(durable_config(&dir)).unwrap();
@@ -1714,7 +1754,7 @@ mod tests {
             vec!["turn/started", "turn/completed"]
         );
         assert!(run_events.iter().all(|run| run.run_id == run_id));
-        state.shutdown();
+        state.shutdown().unwrap();
     }
 
     #[tokio::test]
@@ -1792,7 +1832,7 @@ mod tests {
                     )),
                 })
                 .unwrap();
-            state.shutdown();
+            state.shutdown().unwrap();
         }
 
         std::fs::remove_file(persistence::snapshot_path(dir.path())).unwrap();
@@ -1817,7 +1857,132 @@ mod tests {
             vec!["turn/started", "turn/completed"]
         );
         assert!(run_events.iter().all(|run| run.run_id == run_id));
-        state.shutdown();
+        state.shutdown().unwrap();
+    }
+
+    /// A clean shutdown leaves a log whose tail the next process can read.
+    ///
+    /// The property is deliberately about the *flush*, not about `Drop`: the
+    /// state that wrote the log is still alive when the next one opens the same
+    /// directory, so a backend that relied on being dropped would leave the
+    /// test reading a file with unfinished writes in it. A late publish through
+    /// the old state is refused rather than landing behind the flush.
+    #[tokio::test]
+    async fn a_shutdown_log_tail_is_readable_by_a_later_server() {
+        let dir = TempDir::new().unwrap();
+        let first = AppState::build(durable_config(&dir)).unwrap();
+
+        let (thread, created) = first
+            .registry
+            .create_thread(
+                Some(first.registry.personal_project_id()),
+                Some("a long conversation".into()),
+                None,
+                now_ms(),
+            )
+            .unwrap();
+        first.publish_domain_event(&created).unwrap();
+        let scope = Scope::Thread(thread.id.to_string());
+        for index in 0..64 {
+            first
+                .publish(scope.clone(), format!("{{\"fill\":{index}}}"))
+                .unwrap();
+        }
+        // A last frame large enough that the writer cannot have finished it by
+        // the time the server is told to stop: without a flush that drains, the
+        // log this test reopens is missing its tail.
+        first
+            .publish(scope.clone(), "x".repeat(16 * 1024 * 1024))
+            .unwrap();
+        let stored = first.relay.replay_scope(&scope, 1_000).unwrap().len();
+        assert_eq!(stored, 65);
+
+        first.shutdown().unwrap();
+
+        // The old relay refuses to write after the flush: a task that woke up
+        // late must not be able to leave a tail.
+        assert!(first.relay.is_closed());
+        assert!(
+            first.publish(scope.clone(), "{\"late\":true}").is_err(),
+            "a shutdown server must not accept another write"
+        );
+
+        // A later server over the same directory, while the first is still
+        // alive and undropped.
+        let second = AppState::build(durable_config(&dir)).unwrap();
+        let replayed = second.relay.replay_scope(&scope, 1_000).unwrap();
+        assert_eq!(
+            replayed.len(),
+            stored,
+            "every frame the first server accepted must be readable"
+        );
+        let restored = second
+            .registry
+            .thread(&thread.id)
+            .expect("the entity view came from the snapshot");
+        assert_eq!(restored.title.as_deref(), Some("a long conversation"));
+
+        second.shutdown().unwrap();
+        drop(first);
+    }
+
+    /// A flush that fails is *returned*, not printed.
+    ///
+    /// The process is exiting because it was told to, and the only useful thing
+    /// it can still do with a durability failure is fail its exit code — so a
+    /// shutdown that could not flush must say so.
+    #[tokio::test]
+    async fn a_flush_failure_fails_the_shutdown() {
+        /// A backend whose writes never reach the disk.
+        struct Unflushable(loom_relay::backend::memory::MemoryBackend);
+
+        impl loom_relay::RelayBackend for Unflushable {
+            fn shard_count(&self) -> u8 {
+                self.0.shard_count()
+            }
+            fn append(
+                &self,
+                shard: loom_relay::ShardId,
+                record: loom_relay::LogRecord,
+            ) -> loom_relay::Result<()> {
+                self.0.append(shard, record)
+            }
+            fn read_after(
+                &self,
+                shard: loom_relay::ShardId,
+                after: Option<loom_relay::EventId>,
+                limit: usize,
+            ) -> loom_relay::Result<Vec<loom_relay::LogRecord>> {
+                self.0.read_after(shard, after, limit)
+            }
+            fn trim(&self, shard: loom_relay::ShardId, before_ms: u64) -> loom_relay::Result<u64> {
+                self.0.trim(shard, before_ms)
+            }
+            fn len(&self, shard: loom_relay::ShardId) -> loom_relay::Result<usize> {
+                self.0.len(shard)
+            }
+            fn flush(&self) -> loom_relay::Result<()> {
+                Err(loom_relay::RelayError::backend("the disk went away"))
+            }
+        }
+
+        let state = AppState::build_for_test(
+            AppConfig {
+                reconcile_interval: Duration::ZERO,
+                schedule_interval: Duration::ZERO,
+                snapshot_interval: Duration::ZERO,
+                ..AppConfig::default()
+            },
+            Arc::new(Unflushable(
+                loom_relay::backend::memory::MemoryBackend::new(64),
+            )),
+        )
+        .unwrap();
+
+        let error = state
+            .shutdown()
+            .expect_err("a failed flush must fail the shutdown");
+        assert!(error.to_string().contains("the disk went away"), "{error}");
     }
 
     #[tokio::test]
@@ -1850,7 +2015,7 @@ mod tests {
                     at_ms: now_ms(),
                 })
                 .unwrap();
-            state.shutdown();
+            state.shutdown().unwrap();
         }
 
         // Drop the snapshot: the retained log is the only surviving source.
@@ -1864,7 +2029,7 @@ mod tests {
         assert_eq!(rebuilt.title.as_deref(), Some("t"));
         // The orphan event neither panicked nor minted a second thread.
         assert_eq!(state.registry.threads().len(), 1);
-        state.shutdown();
+        state.shutdown().unwrap();
     }
 
     #[tokio::test]
@@ -1884,7 +2049,7 @@ mod tests {
                 .unwrap();
             thread_id = thread.id.clone();
             state.publish_domain_event(&created).unwrap();
-            state.shutdown();
+            state.shutdown().unwrap();
         }
         // A torn or bit-rotted snapshot must not stop the server; the log
         // still holds the creation event.
@@ -1896,13 +2061,13 @@ mod tests {
 
         let state = AppState::build(durable_config(&dir)).unwrap();
         assert!(state.registry.thread(&thread_id).is_some());
-        state.shutdown();
+        state.shutdown().unwrap();
     }
 
     #[tokio::test]
     async fn a_snapshot_is_not_written_without_a_data_directory() {
         let state = AppState::build(AppConfig::default()).unwrap();
         assert!(state.snapshot().is_ok());
-        state.shutdown();
+        state.shutdown().unwrap();
     }
 }

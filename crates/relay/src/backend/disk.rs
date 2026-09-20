@@ -234,7 +234,10 @@ impl DiskBackend {
     }
 
     /// Durably flushes every shard and reports the first writer error.
-    pub fn flush(&self) -> Result<()> {
+    ///
+    /// Waits for each shard's writer to have processed everything queued before
+    /// this call, so it drains as well as syncs.
+    pub fn flush_shards(&self) -> Result<()> {
         for shard in &self.shards {
             let (command, done) = Command::flush();
             wait_command(shard.writer.sender()?, command, done)?;
@@ -369,6 +372,11 @@ impl RelayBackend for DiskBackend {
                 .unwrap_or_else(|poison| poison.into_inner())
                 .clone()
         })
+    }
+
+    /// Drains and syncs: see [`DiskBackend::flush_shards`].
+    fn flush(&self) -> Result<()> {
+        self.flush_shards()
     }
 }
 
@@ -871,6 +879,32 @@ mod tests {
         }
     }
 
+    /// A flush covers the writes queued before it, not merely the ones that
+    /// happened to have finished.
+    ///
+    /// This is what a server shutdown stands on: it appends, closes the relay so
+    /// nothing more can be accepted, and flushes. If the flush only synced what
+    /// the writer had already done, the record below — large enough that the
+    /// writer cannot possibly have finished it by the next line — would be a
+    /// half-written tail, and reopening the directory would read a shorter log
+    /// (or a torn one).
+    #[test]
+    fn a_flush_covers_the_writes_queued_before_it() {
+        let dir = TempDir::new().unwrap();
+        let backend = DiskBackend::open(dir.path(), 8).unwrap();
+        let mut large = record(10);
+        large.payload = Bytes::from(vec![b'x'; 16 * 1024 * 1024]);
+        backend.append(3, large).unwrap();
+
+        backend.flush_shards().unwrap();
+
+        let reopened = DiskBackend::open(dir.path(), 8).unwrap();
+        let read = reopened.read_after(3, None, 8).unwrap();
+        assert_eq!(read.len(), 1, "the queued record must be on disk");
+        assert_eq!(read[0].created_at_ms, 10);
+        assert_eq!(read[0].payload.len(), 16 * 1024 * 1024);
+    }
+
     #[test]
     fn append_and_read_in_order() {
         let dir = TempDir::new().unwrap();
@@ -881,7 +915,7 @@ mod tests {
         let read = backend.read_after(0, None, 100).unwrap();
         let stamps: Vec<u64> = read.iter().map(|record| record.created_at_ms).collect();
         assert_eq!(stamps, vec![10, 20, 30]);
-        backend.flush().unwrap();
+        backend.flush_shards().unwrap();
     }
 
     #[test]
@@ -907,7 +941,7 @@ mod tests {
         let limited = backend.read_after(1, None, 2).unwrap();
         assert_eq!(limited.len(), 2);
         assert_eq!(limited[0].created_at_ms, 10);
-        backend.flush().unwrap();
+        backend.flush_shards().unwrap();
     }
 
     /// A burst larger than the read limit, all in one millisecond, must still
@@ -931,7 +965,7 @@ mod tests {
             cursor = Some(batch.last().unwrap().event_id);
         }
         assert_eq!(delivered, 32);
-        backend.flush().unwrap();
+        backend.flush_shards().unwrap();
     }
 
     #[test]
@@ -950,7 +984,7 @@ mod tests {
             .map(|record| record.created_at_ms)
             .collect();
         assert_eq!(remaining, vec![30, 40]);
-        backend.flush().unwrap();
+        backend.flush_shards().unwrap();
     }
 
     #[test]
@@ -968,7 +1002,7 @@ mod tests {
             .map(|record| record.created_at_ms)
             .collect();
         assert_eq!(stamps, vec![30, 40, 50]);
-        backend.flush().unwrap();
+        backend.flush_shards().unwrap();
     }
 
     #[test]
@@ -984,7 +1018,7 @@ mod tests {
         backend.trim(0, u64::MAX).unwrap();
         assert_eq!(backend.len(0).unwrap(), 0);
         assert_eq!(backend.len(1).unwrap(), 1);
-        backend.flush().unwrap();
+        backend.flush_shards().unwrap();
     }
 
     #[test]
@@ -1113,7 +1147,7 @@ mod tests {
                 expected.push(record.clone());
                 backend.append(scope.shard(), record).unwrap();
             }
-            backend.flush().unwrap();
+            backend.flush_shards().unwrap();
         }
 
         let backend = DiskBackend::open(dir.path(), 100).unwrap();
@@ -1137,7 +1171,7 @@ mod tests {
             for ts in [10, 20, 30] {
                 backend.append(4, record(ts)).unwrap();
             }
-            backend.flush().unwrap();
+            backend.flush_shards().unwrap();
         }
 
         let path = dir.path().join("shard-4.log");
@@ -1173,7 +1207,7 @@ mod tests {
             for ts in [10, 20, 30] {
                 backend.append(5, record(ts)).unwrap();
             }
-            backend.flush().unwrap();
+            backend.flush_shards().unwrap();
         }
 
         let path = dir.path().join("shard-5.log");
@@ -1199,13 +1233,13 @@ mod tests {
         for ts in 0..64 {
             backend.append(6, record(ts)).unwrap();
         }
-        backend.flush().unwrap();
+        backend.flush_shards().unwrap();
         let before = backend.file_len(6).unwrap();
         assert!(before > 0);
 
         let removed = backend.trim(6, 64).unwrap();
         assert_eq!(removed, 64);
-        backend.flush().unwrap();
+        backend.flush_shards().unwrap();
 
         let after = backend.file_len(6).unwrap();
         assert_eq!(
@@ -1221,7 +1255,7 @@ mod tests {
         for ts in 0..400 {
             backend.append(7, record(ts)).unwrap();
         }
-        backend.flush().unwrap();
+        backend.flush_shards().unwrap();
         // 400 records at the cap of 8 must not leave 400 records' worth of
         // dead bytes behind.
         let full = encode(&record(0)).unwrap().len() as u64;
@@ -1236,7 +1270,7 @@ mod tests {
             for ts in 0..50 {
                 backend.append(0, record(ts)).unwrap();
             }
-            backend.flush().unwrap();
+            backend.flush_shards().unwrap();
         }
         let backend = DiskBackend::open(dir.path(), 5).unwrap();
         assert_eq!(backend.len(0).unwrap(), 5);
@@ -1247,7 +1281,7 @@ mod tests {
             .map(|record| record.created_at_ms)
             .collect();
         assert_eq!(stamps, vec![45, 46, 47, 48, 49]);
-        backend.flush().unwrap();
+        backend.flush_shards().unwrap();
     }
 
     #[test]

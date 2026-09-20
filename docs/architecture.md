@@ -290,6 +290,26 @@ What that costs, stated plainly:
   them. They are correct only within the retained window, which is a recovery
   question tracked separately from this design.
 
+### Stopping
+
+A clean stop has an order, and each step is what makes the next one mean
+something:
+
+1. the periodic writers stop (reconciler, scheduler), so the server produces
+   nothing new of its own accord;
+2. the entity snapshot is written with the log's watermark;
+3. the relay is **closed** — an append after this is refused, so a task that
+   wakes up late (a run deadline, a retry timer) cannot land behind the flush
+   and leave a tail for the next process to read around;
+4. the readers stop (they only read);
+5. the log is **drained and flushed**, and a failure is returned rather than
+   printed.
+
+The drain matters as much as the flush: a writer thread that has accepted a
+record and not yet written it is a record the next process will not see. The
+flush command is ordered behind everything the writer accepted, so its ack means
+"the log on disk is the whole log", not merely "what had finished is synced".
+
 ### Backpressure
 
 `Transport::send` returns `false` when a connection is closed or too far

@@ -182,7 +182,7 @@ struct Fixture {
 
 impl Drop for Fixture {
     fn drop(&mut self) {
-        self.state.shutdown();
+        self.state.shutdown().unwrap();
         self.host.abort();
     }
 }
@@ -507,7 +507,7 @@ async fn files_list_is_answered_from_the_host_not_the_server_disk() {
         }
         other => panic!("expected a directory listing, got {other:?}"),
     }
-    fixture.state.shutdown();
+    fixture.state.shutdown().unwrap();
 }
 
 #[tokio::test]
@@ -531,7 +531,7 @@ async fn files_list_with_a_query_becomes_a_recursive_search() {
         HostFileOperation::List { query, .. } => assert_eq!(query.as_deref(), Some("main")),
         other => panic!("a query must become a recursive list, got {other:?}"),
     }
-    fixture.state.shutdown();
+    fixture.state.shutdown().unwrap();
 }
 
 #[tokio::test]
@@ -562,7 +562,7 @@ async fn files_list_paths_projects_kind_and_scores() {
     assert_eq!(response.body["paths"][0]["kind"], "directory");
     assert_eq!(response.body["paths"][1]["kind"], "file");
     assert!(response.body["paths"][0]["positions"].is_array());
-    fixture.state.shutdown();
+    fixture.state.shutdown().unwrap();
 }
 
 #[tokio::test]
@@ -599,7 +599,7 @@ async fn files_read_returns_the_content_and_hash_without_touching_a_file() {
         }
         other => panic!("expected a metadata read, got {other:?}"),
     }
-    fixture.state.shutdown();
+    fixture.state.shutdown().unwrap();
 }
 
 #[tokio::test]
@@ -637,7 +637,7 @@ async fn files_write_conflict_is_a_200_with_the_current_hash() {
         }
         other => panic!("expected a write, got {other:?}"),
     }
-    fixture.state.shutdown();
+    fixture.state.shutdown().unwrap();
 }
 
 #[tokio::test]
@@ -682,7 +682,7 @@ async fn files_write_with_a_null_hash_is_create_only() {
         }
         other => panic!("expected a write, got {other:?}"),
     }
-    fixture.state.shutdown();
+    fixture.state.shutdown().unwrap();
 }
 
 #[tokio::test]
@@ -769,7 +769,7 @@ async fn files_mkdir_move_and_remove_reach_the_host_with_the_root() {
         }
         other => panic!("expected a remove, got {other:?}"),
     }
-    fixture.state.shutdown();
+    fixture.state.shutdown().unwrap();
 }
 
 #[tokio::test]
@@ -798,7 +798,7 @@ async fn a_traversing_file_path_is_refused_before_a_request_is_built() {
         fixture.requests.try_recv().is_err(),
         "a refused path must never become a host request"
     );
-    fixture.state.shutdown();
+    fixture.state.shutdown().unwrap();
 }
 
 #[tokio::test]
@@ -816,7 +816,7 @@ async fn a_root_requiring_route_refuses_a_missing_root() {
         fixture.requests.try_recv().is_err(),
         "a write with no root must not reach a host"
     );
-    fixture.state.shutdown();
+    fixture.state.shutdown().unwrap();
 }
 
 #[tokio::test]
@@ -829,7 +829,7 @@ async fn an_unknown_host_is_a_404_not_a_local_fallback() {
         )
         .await;
     assert_status_and_error(&response, 404, "host_not_found");
-    fixture.state.shutdown();
+    fixture.state.shutdown().unwrap();
 }
 
 #[tokio::test]
@@ -877,7 +877,7 @@ async fn a_host_file_failure_crosses_over_with_its_contract_code() {
         )
         .await;
     assert_status_and_error(&conflict, 409, "conflict");
-    fixture.state.shutdown();
+    fixture.state.shutdown().unwrap();
 }
 
 /* ------------------------------------------------------------------ */
@@ -939,7 +939,7 @@ async fn terminals_create_mints_an_id_and_asks_the_host() {
     let sessions = listed.body["sessions"].as_array().unwrap();
     assert_eq!(sessions.len(), 1);
     assert_eq!(sessions[0]["hostId"], host);
-    fixture.state.shutdown();
+    fixture.state.shutdown().unwrap();
 }
 
 #[tokio::test]
@@ -963,7 +963,7 @@ async fn terminals_create_refuses_an_out_of_range_size_before_a_round_trip() {
     assert_eq!(response.status, 422, "{:?}", response.body);
     assert_middleware_error(&response.body);
     assert!(fixture.requests.try_recv().is_err());
-    fixture.state.shutdown();
+    fixture.state.shutdown().unwrap();
 }
 
 #[tokio::test]
@@ -1033,7 +1033,7 @@ async fn an_unknown_terminal_is_404_on_every_route() {
         404,
         "terminal_not_found",
     );
-    fixture.state.shutdown();
+    fixture.state.shutdown().unwrap();
 }
 
 /// Creates one terminal through the HTTP surface and returns its id.
@@ -1101,7 +1101,7 @@ async fn terminals_input_and_resize_ask_the_host() {
         }
         other => panic!("expected a resize, got {other:?}"),
     }
-    fixture.state.shutdown();
+    fixture.state.shutdown().unwrap();
 }
 
 #[tokio::test]
@@ -1120,7 +1120,7 @@ async fn terminals_input_refuses_empty_data_without_a_round_trip() {
         fixture.requests.try_recv().is_err(),
         "empty input must not reach the host"
     );
-    fixture.state.shutdown();
+    fixture.state.shutdown().unwrap();
 }
 
 #[tokio::test]
@@ -1167,7 +1167,7 @@ async fn terminals_output_reads_a_window_and_preserves_the_cursor() {
         }
         other => panic!("expected an output read, got {other:?}"),
     }
-    fixture.state.shutdown();
+    fixture.state.shutdown().unwrap();
 }
 
 #[tokio::test]
@@ -1189,7 +1189,7 @@ async fn terminals_close_reports_a_not_running_failure_at_409() {
         TerminalOperation::Close { force, .. } => assert!(!force),
         other => panic!("expected a close, got {other:?}"),
     }
-    fixture.state.shutdown();
+    fixture.state.shutdown().unwrap();
 }
 
 #[tokio::test]
@@ -1205,7 +1205,7 @@ async fn terminals_close_refuses_an_unknown_mode_before_a_round_trip() {
         .await;
     assert_eq!(response.status, 422, "{:?}", response.body);
     assert!(fixture.requests.try_recv().is_err());
-    fixture.state.shutdown();
+    fixture.state.shutdown().unwrap();
 }
 
 #[tokio::test]
@@ -1224,7 +1224,7 @@ async fn terminals_restart_answers_201_with_the_fresh_session() {
         TerminalOperation::Restart { id: asked } => assert_eq!(asked, id),
         other => panic!("expected a restart, got {other:?}"),
     }
-    fixture.state.shutdown();
+    fixture.state.shutdown().unwrap();
 }
 
 #[tokio::test]
@@ -1245,7 +1245,7 @@ async fn terminals_update_renames_without_asking_the_host() {
 
     let read = fixture.get(&format!("/api/v1/terminals/{id}")).await;
     assert_eq!(read.body["title"], "build watch");
-    fixture.state.shutdown();
+    fixture.state.shutdown().unwrap();
 }
 
 #[tokio::test]
@@ -1268,7 +1268,7 @@ async fn terminals_list_filters_by_ownership() {
         .await;
     assert_eq!(by_thread.body["sessions"].as_array().unwrap().len(), 0);
     assert_eq!(by_host.body["sessions"][0]["id"], id);
-    fixture.state.shutdown();
+    fixture.state.shutdown().unwrap();
 }
 
 #[tokio::test]
@@ -1336,7 +1336,7 @@ async fn a_thread_targeted_terminal_uses_the_environments_host() {
         }
         other => panic!("expected a create, got {other:?}"),
     }
-    fixture.state.shutdown();
+    fixture.state.shutdown().unwrap();
 }
 
 #[tokio::test]
@@ -1365,7 +1365,7 @@ async fn a_thread_without_an_environment_is_refused() {
         .await;
     assert_status_and_error(&response, 409, "thread_environment_unavailable");
     assert!(fixture.requests.try_recv().is_err());
-    fixture.state.shutdown();
+    fixture.state.shutdown().unwrap();
 }
 
 #[tokio::test]
@@ -1429,7 +1429,7 @@ async fn deleting_a_thread_settles_its_terminals() {
         }
         other => panic!("expected a close, got {other:?}"),
     }
-    fixture.state.shutdown();
+    fixture.state.shutdown().unwrap();
 }
 
 #[tokio::test]
@@ -1449,7 +1449,7 @@ async fn a_disconnected_host_marks_its_terminals_undrivable() {
     assert_eq!(read.body["status"], "disconnected");
     // The process may still be alive on that machine; only the status changed.
     assert!(read.body["exitCode"].is_null());
-    fixture.state.shutdown();
+    fixture.state.shutdown().unwrap();
 }
 
 #[tokio::test]
@@ -1464,5 +1464,5 @@ async fn a_terminal_failure_is_reported_and_does_not_fabricate_output() {
     // An unknown worker code becomes the generic host failure at the same
     // status rather than inventing an error code no client can branch on.
     assert_status_and_error(&response, 502, "host_unavailable");
-    fixture.state.shutdown();
+    fixture.state.shutdown().unwrap();
 }

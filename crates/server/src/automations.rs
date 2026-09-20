@@ -2150,7 +2150,7 @@ mod tests {
         let response = get(State(state.clone()), Path((project.clone(), automation))).await;
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
         no_change(&mut events).await;
-        state.shutdown();
+        state.shutdown().unwrap();
     }
 
     #[tokio::test]
@@ -2177,7 +2177,7 @@ mod tests {
         .await;
         assert_eq!(response.status(), StatusCode::OK);
         expect_project_invalidation(&mut events, &project).await;
-        state.shutdown();
+        state.shutdown().unwrap();
     }
 
     #[tokio::test]
@@ -2213,7 +2213,7 @@ mod tests {
         .await;
         assert_eq!(response.status(), StatusCode::OK);
         no_change(&mut events).await;
-        state.shutdown();
+        state.shutdown().unwrap();
     }
 
     #[tokio::test]
@@ -2234,7 +2234,7 @@ mod tests {
             "{report:?}"
         );
         expect_project_invalidation(&mut events, &project).await;
-        state.shutdown();
+        state.shutdown().unwrap();
     }
 
     /// The stored project, as the routes take it.

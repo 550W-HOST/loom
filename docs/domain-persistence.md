@@ -202,9 +202,14 @@ simply does not claim a second one while it waits.
   in-process backend remains intentionally ephemeral, including its settings.
 - **Periodic write**: `AppConfig::snapshot_interval`, default 30 s.
   `Duration::ZERO` disables the background writer.
-- **Shutdown write**: `Ctrl-C` drains connections and then writes a final
-  snapshot. A hard kill skips it; the periodic writer and log replay are what
-  make that safe.
+- **Shutdown write**: `Ctrl-C` drains connections, writes a final snapshot, and
+  then flushes the log. The order is the contract: the periodic writers stop,
+  the snapshot is taken with the log's watermark (so anything published after it
+  is an event recovery replays rather than a change missing from both stores),
+  the relay is **closed** so a late task cannot append behind the flush, the
+  readers stop, and the log is drained and synced. A flush that fails is
+  returned, so an operator-driven stop can still fail its exit code. A hard kill
+  skips all of it; the periodic writer and log replay are what make that safe.
 - **In-process backend**: no local entity-view persistence at all. There is no
   log to recover from, so there is nothing to snapshot against; domain state
   there is ephemeral, which is unchanged from before this work.

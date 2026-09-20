@@ -266,7 +266,7 @@ struct Fixture {
 
 impl Drop for Fixture {
     fn drop(&mut self) {
-        self.state.shutdown();
+        self.state.shutdown().unwrap();
         self.host.abort();
     }
 }
@@ -1531,7 +1531,7 @@ async fn the_personal_scope_carries_its_reserved_id_and_is_not_a_listed_project(
         bootstrap.body
     );
 
-    fixture.state.shutdown();
+    fixture.state.shutdown().unwrap();
 }
 
 #[tokio::test]
@@ -1881,7 +1881,7 @@ async fn sections_projects_and_their_order_survive_a_restart() {
             .delete_project(&doomed.id, loom_relay::now_ms())
             .unwrap();
         state.snapshot().unwrap();
-        state.shutdown();
+        state.shutdown().unwrap();
     }
 
     let state = AppState::build(config).unwrap();
@@ -1910,7 +1910,7 @@ async fn sections_projects_and_their_order_survive_a_restart() {
         .filter(|project| project.is_deleted())
         .count();
     assert_eq!(listed, 1, "the deleted project must stay a tombstone");
-    state.shutdown();
+    state.shutdown().unwrap();
 }
 
 /* ------------------------------------------------------------------ */

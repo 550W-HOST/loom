@@ -404,7 +404,7 @@ async fn automations_crud_overview_and_history_are_contract_shaped() {
             .unwrap()
             .is_empty()
     );
-    state.shutdown();
+    state.shutdown().unwrap();
 }
 
 #[tokio::test]
@@ -491,7 +491,7 @@ async fn a_once_trigger_arms_its_instant_and_a_past_one_is_refused() {
         .as_str()
         .unwrap()
         .contains("trigger.timezone"));
-    state.shutdown();
+    state.shutdown().unwrap();
 }
 
 #[tokio::test]
@@ -593,7 +593,7 @@ async fn automation_requests_are_strict_and_unknown_targets_are_refused() {
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     let response = get(&app, &format!("{runs_path}?limit=201")).await;
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    state.shutdown();
+    state.shutdown().unwrap();
 }
 
 #[tokio::test]
@@ -649,7 +649,7 @@ async fn automations_are_scoped_to_their_project() {
     )
     .await;
     assert_eq!(response.status(), StatusCode::OK);
-    state.shutdown();
+    state.shutdown().unwrap();
 }
 
 #[tokio::test]
@@ -760,7 +760,7 @@ async fn the_write_routes_refuse_a_key_the_contract_does_not_name() {
     assert_eq!(response.status(), StatusCode::CREATED);
     let created = body_json(response).await;
     assert_schema(&contract::response(), &created, "create response");
-    state.shutdown();
+    state.shutdown().unwrap();
 }
 
 #[tokio::test]
@@ -797,7 +797,7 @@ async fn automations_survive_a_durable_server_restart() {
     )
     .await;
     let run_id = run["run"]["id"].as_str().unwrap().to_owned();
-    state.shutdown();
+    state.shutdown().unwrap();
 
     let restored = AppState::build(config).unwrap();
     let app = router(restored.clone());
@@ -863,7 +863,7 @@ async fn automations_survive_a_durable_server_restart() {
             .len(),
         1
     );
-    restored.shutdown();
+    restored.shutdown().unwrap();
 }
 
 #[tokio::test]
@@ -887,7 +887,7 @@ async fn an_older_snapshot_without_automations_still_loads() {
     .await;
     // Shut down first, so the final snapshot cannot overwrite the hand-edited
     // one this test restores from.
-    state.shutdown();
+    state.shutdown().unwrap();
 
     // A snapshot written before automations existed: the field is absent
     // entirely, which is exactly what `#[serde(default)]` is for.
@@ -924,7 +924,7 @@ async fn an_older_snapshot_without_automations_still_loads() {
         .as_array()
         .unwrap()
         .is_empty());
-    restored.shutdown();
+    restored.shutdown().unwrap();
 }
 
 /// Re-frames a snapshot payload the way `persistence.rs` does, so a test can
@@ -1064,7 +1064,7 @@ async fn a_damaged_stored_row_is_reported_and_explained_not_dropped() {
     let repaired = body_json(response).await;
     assert_schema(&contract::response(), &repaired, "repair response");
     assert_eq!(repaired["execution"]["prompt"], "a real prompt");
-    state.shutdown();
+    state.shutdown().unwrap();
 }
 
 #[tokio::test]
@@ -1117,7 +1117,7 @@ async fn a_run_page_is_cursored_newest_first() {
     assert_eq!(second["runs"].as_array().unwrap().len(), 1);
     assert_eq!(second["runs"][0]["startedAt"], 1_700_000_000_000u64);
     assert!(second["nextCursor"].is_null());
-    state.shutdown();
+    state.shutdown().unwrap();
 }
 
 /// A host environment with an `unmanaged` workspace must keep its `path` key.
@@ -1191,7 +1191,7 @@ async fn a_host_environment_response_keeps_the_contract_workspace_shape() {
             "{label}"
         );
     }
-    state.shutdown();
+    state.shutdown().unwrap();
 }
 
 /* ------------------------------------------------------------------ */
@@ -1314,7 +1314,7 @@ async fn a_schedule_is_armed_in_its_zone_and_a_due_window_becomes_a_queued_run()
     )
     .await;
     assert_eq!(runs["runs"].as_array().unwrap().len(), 1);
-    state.shutdown();
+    state.shutdown().unwrap();
 }
 
 #[tokio::test]
@@ -1401,7 +1401,7 @@ async fn a_script_run_without_a_machine_fails_and_pausing_still_holds() {
     // And nothing fires while it is paused, even with a window in the past.
     make_due(&state, &automation, 1_000);
     assert_eq!(state.sweep_automations(2_000).claimed, 0);
-    state.shutdown();
+    state.shutdown().unwrap();
 }
 
 #[tokio::test]
@@ -1443,7 +1443,7 @@ async fn a_claimed_window_is_not_replayed_and_its_interrupted_turn_fails_once() 
     )
     .await;
     assert_eq!(runs["runs"].as_array().unwrap().len(), 1);
-    state.shutdown();
+    state.shutdown().unwrap();
 
     let restored = AppState::build(config()).unwrap();
     let app = router(restored.clone());
@@ -1483,7 +1483,7 @@ async fn a_claimed_window_is_not_replayed_and_its_interrupted_turn_fails_once() 
     )
     .await;
     assert_eq!(runs["runs"].as_array().unwrap().len(), 1);
-    restored.shutdown();
+    restored.shutdown().unwrap();
 }
 
 #[tokio::test]
@@ -1512,7 +1512,7 @@ async fn a_payload_from_before_the_scheduler_reads_as_queued_work_after_a_restar
         .as_str()
         .unwrap()
         .to_owned();
-    state.shutdown();
+    state.shutdown().unwrap();
 
     // Rewrite the snapshot the way the release before the scheduler wrote it:
     // version 1, no next window, and a run stored as `running` because nothing
@@ -1568,5 +1568,5 @@ async fn a_payload_from_before_the_scheduler_reads_as_queued_work_after_a_restar
     assert!(fetched["nextRunAt"]
         .as_u64()
         .is_some_and(|next| next > 2_000));
-    restored.shutdown();
+    restored.shutdown().unwrap();
 }

@@ -471,7 +471,7 @@ mod tests {
             view.rows.iter().map(|row| row.seq).collect::<Vec<_>>(),
             vec![1, 2]
         );
-        state.shutdown();
+        state.shutdown().unwrap();
     }
 
     #[tokio::test]
@@ -495,7 +495,7 @@ mod tests {
 
         assert_eq!(view.rows.len(), 1);
         assert_eq!(loads.load(Ordering::SeqCst), 0, "no load was needed");
-        state.shutdown();
+        state.shutdown().unwrap();
     }
 
     /// A refresh is a load: the view is `Stale`, so it is rebuilt under a new
@@ -519,7 +519,7 @@ mod tests {
 
         assert!(view.generation > first, "a rebuild mints a new generation");
         assert_eq!(view.rows.len(), 3);
-        state.shutdown();
+        state.shutdown().unwrap();
     }
 
     /// A thread that talks while its replay is in flight has outgrown that
@@ -559,7 +559,7 @@ mod tests {
             "the live event survived the refused install"
         );
         assert_ne!(view.status, HistoryStatus::Ready);
-        state.shutdown();
+        state.shutdown().unwrap();
     }
 
     /// A read of an overlay with no run behind it asks for the conversation.
@@ -620,7 +620,7 @@ mod tests {
             "the read asked for the conversation: {view:?}"
         );
         assert_eq!(view.rows.len(), 1, "the overlay stayed visible meanwhile");
-        state.shutdown();
+        state.shutdown().unwrap();
     }
 
     #[tokio::test]
@@ -653,7 +653,7 @@ mod tests {
             view.rows.is_empty(),
             "a partial conversation must never be left claiming to be the conversation"
         );
-        state.shutdown();
+        state.shutdown().unwrap();
     }
 
     /// Ten clients opening the same conversation is one load and ten readers.
@@ -693,6 +693,6 @@ mod tests {
             assert_eq!(view.rows.len(), 1);
         }
         assert_eq!(loads.load(Ordering::SeqCst), 1, "one load, four readers");
-        state.shutdown();
+        state.shutdown().unwrap();
     }
 }

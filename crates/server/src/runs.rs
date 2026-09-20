@@ -1709,7 +1709,7 @@ mod tests {
             events[2]["event"]["error"]["message"],
             "thread has no environment bound; bind one before dispatching"
         );
-        state.shutdown();
+        state.shutdown().unwrap();
     }
 
     #[tokio::test]
@@ -1768,7 +1768,7 @@ mod tests {
                 .count(),
             3
         );
-        state.shutdown();
+        state.shutdown().unwrap();
     }
 
     #[tokio::test]
@@ -1844,7 +1844,7 @@ mod tests {
             vec!["turn/started", "turn/completed"]
         );
         assert_eq!(count_run_events(&state, &thread.id).1, 1);
-        state.shutdown();
+        state.shutdown().unwrap();
     }
 
     #[tokio::test]
@@ -1928,7 +1928,7 @@ mod tests {
                 .unwrap()
                 .contains("no workspace path")
         );
-        state.shutdown();
+        state.shutdown().unwrap();
     }
 
     #[tokio::test]
@@ -1957,7 +1957,7 @@ mod tests {
             events[1]["event"]["message"],
             format!("host {host_id} owns this thread's workspace but is not connected")
         );
-        state.shutdown();
+        state.shutdown().unwrap();
     }
 
     #[tokio::test]
@@ -2053,7 +2053,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["turn/started", "item/agentMessage/delta", "turn/completed"]
         );
-        state.shutdown();
+        state.shutdown().unwrap();
     }
 
     #[tokio::test]
@@ -2092,7 +2092,7 @@ mod tests {
             serde_json::from_str(frame["payload"].as_str().unwrap()).unwrap();
         assert_eq!(dispatch["provider"]["cwd"], workspace);
         assert_eq!(dispatch["provider_session_id"], "acp-session-1");
-        state.shutdown();
+        state.shutdown().unwrap();
     }
 
     /// The timeline cache's overlay is fed where an event is applied, not from
@@ -2153,7 +2153,7 @@ mod tests {
             .expect("the thread is cached");
         assert_eq!(view.rows.len(), 1, "the live event reached the overlay");
         assert_eq!(view.rows[0].seq, 1, "and was numbered by the cache");
-        state.shutdown();
+        state.shutdown().unwrap();
     }
 
     /// A brand-new thread has no session yet, and the message the user just
@@ -2181,7 +2181,7 @@ mod tests {
             !view.complete,
             "nothing has confirmed it is the whole conversation"
         );
-        state.shutdown();
+        state.shutdown().unwrap();
     }
 
     /// The provider spec of the single frame dispatched to `host_id`.
@@ -2252,7 +2252,7 @@ mod tests {
         assert_eq!(provider["name"], "codex");
         assert_eq!(provider["command"], "codex");
         assert_eq!(provider["cwd"], workspace);
-        state.shutdown();
+        state.shutdown().unwrap();
     }
 
     /// A thread that never chose a provider runs on the default, which is what
@@ -2268,7 +2268,7 @@ mod tests {
             DispatchOutcome::Dispatched(_)
         ));
         assert_eq!(dispatched_provider(&state, &host_id)["name"], "pi");
-        state.shutdown();
+        state.shutdown().unwrap();
     }
 
     /// A provider the server no longer configures falls back to the default
@@ -2286,7 +2286,7 @@ mod tests {
             DispatchOutcome::Dispatched(_)
         ));
         assert_eq!(dispatched_provider(&state, &host_id)["name"], "pi");
-        state.shutdown();
+        state.shutdown().unwrap();
     }
 
     /// The run record remembers the agent it went to, so the session id it
@@ -2308,7 +2308,7 @@ mod tests {
             None,
             "no session has been learned yet"
         );
-        state.shutdown();
+        state.shutdown().unwrap();
     }
 
     #[tokio::test]
@@ -2345,7 +2345,7 @@ mod tests {
             state.registry.thread(&thread.id).unwrap().status,
             ThreadStatus::Idle
         );
-        state.shutdown();
+        state.shutdown().unwrap();
     }
 
     #[tokio::test]
@@ -2385,7 +2385,7 @@ mod tests {
             state.registry.thread(&thread.id).unwrap().status,
             ThreadStatus::Working
         );
-        state.shutdown();
+        state.shutdown().unwrap();
     }
 
     #[tokio::test]
@@ -2415,7 +2415,7 @@ mod tests {
             ThreadStatus::Error
         );
         assert_eq!(state.runs.len(), 0);
-        state.shutdown();
+        state.shutdown().unwrap();
     }
 
     #[tokio::test]
@@ -2435,7 +2435,7 @@ mod tests {
             state.registry.host(&host_id).unwrap().status,
             HostStatus::Disconnected
         );
-        state.shutdown();
+        state.shutdown().unwrap();
     }
 
     /// The session a run reports is bound to the agent and workspace that
@@ -2566,7 +2566,7 @@ mod tests {
             "a session id is only meaningful to the agent that issued it"
         );
 
-        state.shutdown();
+        state.shutdown().unwrap();
     }
 
     /// An agent that names its session names the thread: the server stores the
@@ -2682,7 +2682,7 @@ mod tests {
             Some("mine")
         );
 
-        state.shutdown();
+        state.shutdown().unwrap();
     }
 
     #[tokio::test]
@@ -2712,6 +2712,6 @@ mod tests {
             ThreadStatus::Error
         );
         assert_eq!(state.runs.len(), 0);
-        state.shutdown();
+        state.shutdown().unwrap();
     }
 }

@@ -298,7 +298,7 @@ async fn a_conversation_outside_the_relay_window_is_loaded_from_the_agent() {
 
     let (thread_id, cwd) = bind_thread(&first, &host_id, workspace.path());
     age_out_the_window(&first, &thread_id, 8);
-    first.shutdown();
+    first.shutdown().unwrap();
 
     // --- After the restart: a fresh process, an empty cache, the same binding.
     let (addr, state) = spawn_server(config(data_dir.path())).await;
@@ -464,5 +464,5 @@ async fn a_conversation_outside_the_relay_window_is_loaded_from_the_agent() {
         "a load does not re-bind the session"
     );
 
-    state.shutdown();
+    state.shutdown().unwrap();
 }

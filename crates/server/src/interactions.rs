@@ -748,7 +748,7 @@ mod tests {
         assert_eq!(frame["answer"]["kind"], "decision");
         assert_eq!(frame["answer"]["decision"], "deny");
 
-        state.shutdown();
+        state.shutdown().unwrap();
     }
 
     #[tokio::test]
@@ -795,7 +795,7 @@ mod tests {
             .expect("the downgraded answer reached the host");
         assert_eq!(frame["answer"]["decision"], "allow_once");
 
-        state.shutdown();
+        state.shutdown().unwrap();
     }
 
     #[tokio::test]
@@ -845,7 +845,7 @@ mod tests {
             .expect("reconciliation must make the answer replayable");
         assert_eq!(frame["answer"]["decision"], "deny");
 
-        state.shutdown();
+        state.shutdown().unwrap();
     }
 
     #[tokio::test]
@@ -883,7 +883,7 @@ mod tests {
         assert_eq!(frame["answer"]["kind"], "cancelled");
         assert_eq!(frame["answer"]["reason"], "cancelled by a client");
 
-        state.shutdown();
+        state.shutdown().unwrap();
     }
 
     #[tokio::test]
@@ -923,7 +923,7 @@ mod tests {
         assert_eq!(frame["answer"]["kind"], "cancelled");
         assert!(frame["answer"].get("decision").is_none());
 
-        state.shutdown();
+        state.shutdown().unwrap();
     }
 
     #[tokio::test]
@@ -948,7 +948,7 @@ mod tests {
             ),
             RecordOutcome::Recorded(_)
         ));
-        state.shutdown();
+        state.shutdown().unwrap();
     }
 
     #[tokio::test]
@@ -966,7 +966,7 @@ mod tests {
             RecordOutcome::Unknown(_)
         ));
         assert!(state.registry.pending_interactions(&thread.id).is_empty());
-        state.shutdown();
+        state.shutdown().unwrap();
     }
 
     #[tokio::test]
@@ -1023,7 +1023,7 @@ mod tests {
             before,
             "an answer for an ended run must not reach the worker"
         );
-        state.shutdown();
+        state.shutdown().unwrap();
     }
 
     #[test]
