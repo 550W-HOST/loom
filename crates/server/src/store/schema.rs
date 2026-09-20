@@ -9,7 +9,7 @@ use turso::Connection;
 use super::{block_on, column_integer, StoreError};
 
 /// The schema this build writes and understands.
-pub const SCHEMA_VERSION: i64 = 2;
+pub const SCHEMA_VERSION: i64 = 3;
 
 /// The version the file currently holds.
 pub fn version(connection: &Connection) -> Result<i64, StoreError> {
@@ -47,10 +47,39 @@ pub fn migrate(connection: &Connection) -> Result<(), StoreError> {
     if current < 2 {
         block_on(transaction.execute_batch(V2))?;
     }
+    if current < 3 {
+        block_on(transaction.execute_batch(V3))?;
+    }
     block_on(transaction.pragma_update("user_version", SCHEMA_VERSION))?;
     block_on(transaction.commit())?;
     Ok(())
 }
+
+/// Version 3: the entity view, in tables.
+///
+/// The same entities the durable snapshot held — projects, threads, hosts,
+/// environments, queued messages, interactions, sidebar sections, runs, settings
+/// and automations — with the identity and the parent a lookup needs as columns
+/// and the entity itself as the stored form. One table with a `kind` rather than
+/// eleven near-identical ones: the columns would be the same in every one and so
+/// would every query, and what the plan asks for is that the keys and lookup
+/// fields be columns, which they are.
+const V3: &str = "
+CREATE TABLE IF NOT EXISTS entity (
+    kind      TEXT NOT NULL,
+    id        TEXT NOT NULL,
+    parent_id TEXT,
+    json      TEXT NOT NULL,
+    PRIMARY KEY (kind, id)
+);
+
+CREATE INDEX IF NOT EXISTS entity_parent ON entity (kind, parent_id);
+
+CREATE TABLE IF NOT EXISTS entity_meta (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+";
 
 /// Version 2: the store's own identity.
 ///

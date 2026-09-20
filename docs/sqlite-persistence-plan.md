@@ -218,6 +218,42 @@ loom 自有事实保留原来源：
 - 退场条件：`domain.snapshot` 不再是任何恢复路径的输入，且"崩溃后恢复"测试覆盖
   （快照删除、只留 DB）后才可删文件写入。保留一个版本周期的只读兼容读取即可。
 
+### 5.1 阶段二实施步骤（2026-09-21 规划）
+
+背景：今天 `domain.snapshot` 一个文件装了四样东西——`RegistrySnapshot`（项目/线程/host/环境/排队消息/交互/侧栏分组）、`RunRecord` 列表、`SettingsSnapshot`、`AutomationState`，外加一个 watermark（恢复只重放它之后的事件）。阶段二要把这些搬进库，并让恢复以库为源。
+
+分步：
+
+- **2.1 实体表 + 读写（本步）**：schema v3 增 `entity` 与 `entity_meta` 两张表；`Store::replace_entities(&DomainSnapshot)` 在**一个事务**里整体替换实体视图，`Store::entities() -> Option<DomainSnapshot>` 读出。测试：往返完全相等（`DomainSnapshot` 自身实现了 `PartialEq`，可与文件路径逐字段对比）、替换是原子的（少写的实体不残留）、空库返回 `None`（区分「没有视图」与「空视图」）。
+- **2.2 双层写**：在现有 `snapshot()` 的位置同时写库与文件，用同一份恢复测试对比两条路径的结果必须一致。
+- **2.3 恢复改读库**：库里有视图就用库（watermark 之后的日志照旧重放）；文件降级为「库里没有视图时的一次性兼容读取」。
+- **2.4 退场文件**：不再写 `domain.snapshot`，删掉写路径与文档里的职责描述；`latest_active_run_id` / `recover_run_flags` 改读库里的 run 记录。
+- **2.5 收尾**：确认 `domain.snapshot` 不再是任何恢复路径的输入，删除只读兼容。
+
+**2.1 的一个设计取舍（明确记录）**：计划正文列的是「一个实体一张表」，实际实现用**一张 `entity(kind, id, parent_id, json)` + 一张 `entity_meta(key, value)`**。理由：11 张表的列完全同构（主键 id + 一个父 id + JSON），查询方式也同构（按 kind+id、按 kind+parent），分开只会得到 11 份几乎一样的读写代码；计划要求的「主键与查询字段必须成列」由 `kind`/`id`/`parent_id` 满足。若将来某类实体需要真正的列级索引（例如按状态查 run），再为它单独建表并保留 JSON 作为补充。
+
+**进展（2026-09-21，2.1 完成）**：schema v3 落地 `entity(kind, id, parent_id, json)` + `entity_meta(key, value)`；`Store::replace_entities(&DomainSnapshot)` 在一个事务里整体替换（先清空再写入，崩溃只会看到旧视图或新视图），`Store::entities()` 读出并区分「库里没有视图」（`None`）与「视图是空的」。父 id（thread→project、environment→project、queued_message/interaction/run→thread）成列并有索引。测试 5 个：空库为 `None`、往返逐字段相等、替换后旧实体不残留、单行 JSON 坏掉会**报错**（不静默丢一个 project）、按 parent 列可查。仍未接线：写入与恢复还是走文件（2.2/2.3）。
+
+### 5.2 表形状（2.1）
+
+```sql
+CREATE TABLE IF NOT EXISTS entity (
+    kind      TEXT NOT NULL,   -- 'project' | 'thread' | 'host' | 'environment'
+                               -- | 'queued_message' | 'interaction' | 'thread_section'
+                               -- | 'run' | 'settings' | 'automations'
+    id        TEXT NOT NULL,
+    parent_id TEXT,            -- thread_id / project_id，能查的就成列
+    json      TEXT NOT NULL,
+    PRIMARY KEY (kind, id)
+);
+CREATE INDEX IF NOT EXISTS entity_parent ON entity (kind, parent_id);
+
+CREATE TABLE IF NOT EXISTS entity_meta (
+    key   TEXT PRIMARY KEY,    -- 'personal_project_id' | 'watermark'
+    value TEXT NOT NULL
+);
+```
+
 ## 6. 与阶段一并行、且与存储选择无关的修正（阶段 A）
 
 这些缺陷无论最终是内存缓存还是 SQLite 都存在，先修。

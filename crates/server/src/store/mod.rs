@@ -29,6 +29,7 @@
 //! server that silently forgets everything is worse than one that refuses to
 //! start.
 
+mod entities;
 mod history;
 mod schema;
 mod seq;
