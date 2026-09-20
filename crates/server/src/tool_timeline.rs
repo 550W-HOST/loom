@@ -307,8 +307,22 @@ fn aggregated_output_of(item: &ThreadEventItem) -> Option<String> {
         } => aggregated_output.clone(),
         ThreadEventItem::ToolCall { result, error, .. } => error
             .clone()
-            .or_else(|| result.as_ref().map(|value| value.to_string())),
+            .or_else(|| result.as_ref().map(render_tool_result)),
         _ => None,
+    }
+}
+
+/// A tool result as the row's output text.
+///
+/// The worker keeps a result it could read as text and leaves a structured value
+/// as it arrived, so a string is the tool's own output and is shown verbatim —
+/// `Value::to_string` would wrap it in JSON quotes and escape its newlines.
+/// Anything else is indented rather than one compact line, because the row's
+/// `<pre>` is the only place the value is read.
+fn render_tool_result(value: &Value) -> String {
+    match value {
+        Value::String(text) => text.clone(),
+        other => serde_json::to_string_pretty(other).unwrap_or_else(|_| other.to_string()),
     }
 }
 
@@ -607,6 +621,54 @@ mod tests {
         assert_eq!(row["status"], "completed");
         assert_eq!(row["toolArgs"]["progress"], "ls -la");
         assert_eq!(row["turnId"], "run-1");
+    }
+
+    /// A tool result reaches the row as its own text.
+    ///
+    /// The worker keeps a result it could read as text and leaves a structured
+    /// value as it arrived, so a string result must arrive without JSON quotes
+    /// and a structured one must be readable rather than one compact line.
+    #[test]
+    fn a_tool_result_reaches_the_row_as_text_or_indented_json() {
+        let mut timeline = ToolTimeline::new();
+
+        let mut text = tool_call("call-text", ItemStatus::Completed);
+        if let ThreadEventItem::ToolCall { result, .. } = &mut text {
+            *result = Some(serde_json::json!("repo: loom\nfiles: 1942\n"));
+        }
+        assert!(timeline.absorb(
+            "run-1",
+            &ProviderEvent::ItemCompleted {
+                item: text,
+                provider_thread_id: "provider-thread".to_owned(),
+            },
+            3,
+            1_100,
+        ));
+        let row = timeline
+            .get("run-1", "call-text")
+            .expect("the call exists")
+            .row("thread-1");
+        assert_eq!(row["output"], "repo: loom\nfiles: 1942\n");
+
+        let mut structured = tool_call("call-json", ItemStatus::Completed);
+        if let ThreadEventItem::ToolCall { result, .. } = &mut structured {
+            *result = Some(serde_json::json!({"count": 3}));
+        }
+        assert!(timeline.absorb(
+            "run-1",
+            &ProviderEvent::ItemCompleted {
+                item: structured,
+                provider_thread_id: "provider-thread".to_owned(),
+            },
+            5,
+            1_300,
+        ));
+        let row = timeline
+            .get("run-1", "call-json")
+            .expect("the call exists")
+            .row("thread-1");
+        assert_eq!(row["output"], "{\n  \"count\": 3\n}");
     }
 
     /// A shell command gets the command row: it is the one that can show the

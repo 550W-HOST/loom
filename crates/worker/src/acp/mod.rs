@@ -1276,7 +1276,7 @@ fn v2_item_from_tool_state(
     ThreadEventItem::ToolCall {
         id: id.to_owned(),
         server: None,
-        tool: v2_tool_kind_name(&state.kind),
+        tool: v2_tool_name(state),
         arguments: state.raw_input.as_ref().and_then(|input| {
             input.as_object().map(|object| {
                 object
@@ -1286,11 +1286,82 @@ fn v2_item_from_tool_state(
             })
         }),
         status,
-        result: state.raw_output.clone(),
+        result: v2_tool_result(state),
         error: None,
         duration_ms: None,
         presentation: None,
         parent_tool_call_id: None,
+    }
+}
+
+/// The name a generic `ToolCall` item carries.
+///
+/// ACP's `title` is the call's own name, and for a tool loom cannot interpret it
+/// is the only name the envelope has: pi-acp spells the pi tool name there
+/// (`"cymbal"`) and files every tool that is not read, write, edit or bash under
+/// `ToolKind::Other`. Mapping the kind alone therefore showed `"other"` for a
+/// call whose name the agent had sent. A kind that carries its own name
+/// (`Unknown`) wins over the title, because that name is the protocol's own word
+/// rather than the agent's prose.
+fn v2_tool_name(state: &V2ToolState) -> String {
+    if let v2::ToolKind::Unknown(name) = &state.kind {
+        return name.clone();
+    }
+    state
+        .title
+        .as_deref()
+        .map(str::trim)
+        .filter(|title| !title.is_empty())
+        .map(str::to_owned)
+        .unwrap_or_else(|| v2_tool_kind_name(&state.kind))
+}
+
+/// What a generic `ToolCall` item reports as its result.
+///
+/// ACP's `content` is the call's own output — pi-acp renders the tool result's
+/// text into it — while `raw_output` is the free-form value the agent sent.
+/// Carrying the raw value into the row showed `{"content":…,"details":…}` where
+/// the tool's text belongs, so the content wins and the raw value is the
+/// fallback for an agent that reports only that.
+fn v2_tool_result(state: &V2ToolState) -> Option<Value> {
+    if let Some(text) = v2_tool_content_text(state) {
+        return Some(Value::String(text));
+    }
+    state.raw_output.clone().map(unwrap_tool_content_envelope)
+}
+
+/// The text of a call's `content` blocks, when it carries any.
+fn v2_tool_content_text(state: &V2ToolState) -> Option<String> {
+    let text: String = state
+        .content
+        .iter()
+        .filter_map(|entry| match entry {
+            v2::ToolCallContent::Content(content) => Some(v2_content_text(&content.content)),
+            _ => None,
+        })
+        .collect();
+    (!text.trim().is_empty()).then_some(text)
+}
+
+/// A tool result that is an MCP-style content envelope, unwrapped to its text.
+///
+/// `{"content":[{"type":"text","text":"…"}]}` is the shape MCP tool results and
+/// pi extensions share; the envelope is transport and the text is the result.
+/// Anything else is returned untouched, so a value loom cannot read is still
+/// shown rather than silently dropped.
+fn unwrap_tool_content_envelope(raw: Value) -> Value {
+    let Some(Value::Array(blocks)) = raw.get("content") else {
+        return raw;
+    };
+    let text: String = blocks
+        .iter()
+        .filter(|block| block.get("type").and_then(Value::as_str) == Some("text"))
+        .filter_map(|block| block.get("text").and_then(Value::as_str))
+        .collect();
+    if text.trim().is_empty() {
+        raw
+    } else {
+        Value::String(text)
     }
 }
 

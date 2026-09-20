@@ -884,6 +884,118 @@ fn a_v2_title_on_another_kind_stays_a_tool() {
     ));
 }
 
+/// The generic tool call a v2 update opened: its name and its result.
+fn started_tool_call(events: &[ProviderEvent]) -> (String, Option<serde_json::Value>) {
+    let item = events.iter().find_map(|event| match event {
+        ProviderEvent::ItemStarted { item, .. } => Some(item),
+        _ => None,
+    });
+    let Some(ThreadEventItem::ToolCall { tool, result, .. }) = item else {
+        panic!("expected a tool call, got {events:?}");
+    };
+    (tool.clone(), result.clone())
+}
+
+/// A generic call is named by the call's own title, not by its kind.
+///
+/// pi files every tool that is not read, write, edit or bash under
+/// `ToolKind::Other` and spells the pi tool name in `title`, so a row that read
+/// the kind showed `"other"` for a call whose name the agent had sent.
+#[test]
+fn a_v2_generic_call_is_named_by_its_title() {
+    let mut t = translator();
+    let call = v2::ToolCallUpdate::new("tool-1")
+        .title("cymbal")
+        .kind(v2::ToolKind::Other)
+        .status(v2::ToolCallStatus::Completed);
+    let events = t.on_v2_session_update(&v2::SessionUpdate::ToolCallUpdate(call));
+    assert_eq!(started_tool_call(&events).0, "cymbal");
+}
+
+/// A kind that carries its own name is the protocol's word, not the agent's prose.
+#[test]
+fn a_v2_unknown_kind_name_wins_over_the_title() {
+    let mut t = translator();
+    let call = v2::ToolCallUpdate::new("tool-1")
+        .title("Reviewing the diff")
+        .kind(v2::ToolKind::Unknown("review".to_owned()))
+        .status(v2::ToolCallStatus::Completed);
+    let events = t.on_v2_session_update(&v2::SessionUpdate::ToolCallUpdate(call));
+    assert_eq!(started_tool_call(&events).0, "review");
+}
+
+/// A call with no name anywhere keeps the kind's own word.
+#[test]
+fn a_v2_generic_call_without_a_title_stays_other() {
+    let mut t = translator();
+    let call = v2::ToolCallUpdate::new("tool-1").status(v2::ToolCallStatus::Completed);
+    let events = t.on_v2_session_update(&v2::SessionUpdate::ToolCallUpdate(call));
+    assert_eq!(started_tool_call(&events).0, "other");
+}
+
+/// The text ACP carried as the call's content is the row's result.
+///
+/// pi renders the tool result's text into `content` and leaves the agent's own
+/// value in `raw_output`; taking the raw value showed the whole envelope where
+/// the tool's answer belongs.
+#[test]
+fn a_v2_generic_call_reports_its_content_as_the_result() {
+    let mut t = translator();
+    let call = v2::ToolCallUpdate::new("tool-1")
+        .title("cymbal")
+        .kind(v2::ToolKind::Other)
+        .status(v2::ToolCallStatus::Completed)
+        .content(vec![v2::ToolCallContent::Content(Box::new(
+            v2::Content::new(v2::ContentBlock::Text(v2::TextContent::new(
+                "repo: loom\nfiles: 1942\n",
+            ))),
+        ))])
+        .raw_output(serde_json::json!({
+            "content": [{"type": "text", "text": "repo: loom\nfiles: 1942\n"}],
+            "details": {"exitCode": 0},
+        }));
+    let events = t.on_v2_session_update(&v2::SessionUpdate::ToolCallUpdate(call));
+    assert_eq!(
+        started_tool_call(&events).1,
+        Some(serde_json::json!("repo: loom\nfiles: 1942\n"))
+    );
+}
+
+/// Without content blocks, an MCP-style envelope is unwrapped to its text.
+#[test]
+fn a_v2_generic_call_unwraps_a_content_envelope() {
+    let mut t = translator();
+    let call = v2::ToolCallUpdate::new("tool-1")
+        .title("cymbal")
+        .kind(v2::ToolKind::Other)
+        .status(v2::ToolCallStatus::Completed)
+        .raw_output(serde_json::json!({
+            "content": [{"type": "text", "text": "hello"}],
+            "details": {"exitCode": 0},
+        }));
+    let events = t.on_v2_session_update(&v2::SessionUpdate::ToolCallUpdate(call));
+    assert_eq!(
+        started_tool_call(&events).1,
+        Some(serde_json::json!("hello"))
+    );
+}
+
+/// A value loom cannot read is still shown rather than dropped.
+#[test]
+fn a_v2_generic_call_keeps_a_raw_output_it_cannot_read() {
+    let mut t = translator();
+    let call = v2::ToolCallUpdate::new("tool-1")
+        .title("cymbal")
+        .kind(v2::ToolKind::Other)
+        .status(v2::ToolCallStatus::Completed)
+        .raw_output(serde_json::json!({"count": 3}));
+    let events = t.on_v2_session_update(&v2::SessionUpdate::ToolCallUpdate(call));
+    assert_eq!(
+        started_tool_call(&events).1,
+        Some(serde_json::json!({"count": 3}))
+    );
+}
+
 fn terminal_meta(entries: &[(&str, serde_json::Value)]) -> v2::Meta {
     entries
         .iter()
