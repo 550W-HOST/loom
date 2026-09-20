@@ -245,12 +245,6 @@ impl AppState {
         )?;
         let dispatched = match published.outcome {
             Some(DispatchOutcome::Dispatched(record)) => record,
-            // An automation may not choose a host for a conversation loom
-            // cannot place: the run ends with the reason, and a person decides
-            // where the session lives.
-            Some(DispatchOutcome::SessionRebindRequired { run_id, reason, .. }) => {
-                return Err(format!("{reason} (run {run_id})"))
-            }
             Some(DispatchOutcome::NoEnvironment { run_id, reason }) => {
                 return Err(format!("no usable environment: {reason} (run {run_id})"))
             }
