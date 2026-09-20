@@ -379,6 +379,15 @@ Showing a thread's conversation is a different operation from continuing it, and
   with `too_large` rather than truncating, because a truncated history that
   claims to be the conversation is worse than a refusal.
 
+Two connections on one session happen in practice — a load while a turn streams —
+and with pi they are tolerated: measured 2026-09-20, both sides complete and the
+session file stays valid. The load returns a **snapshot without the in-flight
+turn**, which is the property that matters downstream: a replay is a baseline,
+not a live view, so the server refuses to install one whose overlay moved under
+it. The probe is `crates/worker/tests/session_race_probe.rs` (`#[ignore]`, needs
+credentials). A native agent's own session store may behave differently, and the
+probe is the thing to re-run before assuming it does not.
+
 The replay's completion is a protocol property, not a timeout: the SDK's
 dispatch loop delivers notifications before the `session/load`/`session/resume`
 response, so the response is the end of the replay. Nothing here waits for a

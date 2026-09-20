@@ -213,10 +213,27 @@ loom 自有事实保留原来源：
 - **A2 游标身份**：区分"server/cache 实例"与"同一实例内的 revision"。请求携带身份，server 在
   切片前校验；UI 用请求上下文拒绝迟到结果，**不能跨重启仅用整数大小判断新旧**（当前
   `f4b7639` 的客户端规则会让重启后的新响应被永久丢弃）。阶段一落地后用持久 revision 取代。
-- **A3 加载与运行的 session 互斥**：`start_history_load` 目前直接派生独立任务，server 侧
-  "有 run 在飞就不加载"只是检查，检查之后新 run 仍可能到达。加载任务要有独立 token，
-  绑定变更/删除/取消/晚到结果都要按 token 核验；worker 侧对同一 provider session 串行协调
-  prompt 与 load，不能只靠 server 检查。
+- **A3 加载与运行的 session 互斥：先测，结论是不用建这套机制。**
+  2026-09-20 用真 pi 跑了 `crates/worker/tests/session_race_probe.rs`（`#[ignore]`，两次运行）：
+
+  | 观测 | 结果 |
+  | --- | --- |
+  | load 与正在流式输出的 turn 并发（load 在 turn 进行 1.5s 时启动） | load 成功（1.3s / 2.1s），turn 正常 Completed，无报错 |
+  | turn 在 load 进行中启动（load 后 400ms） | 两边都成功，turn Completed |
+  | 会话完整性 | 三次 prompt 全在，最终回放 9 entries / 3 user turns |
+  | pi 自己的 session 文件 | 10 行、0 行无法解析（34944 bytes） |
+
+  唯一真实存在的交互是：**并发时 load 返回的是不含进行中 turn 的快照**（3 entries / 1 user
+  turn，而 turn 结束后同样一次 load 是 6 entries）。这不是损坏，而是"回放=基线、不是实时
+  视图"的语义——server 侧已有 `append_mark` + `install_baseline_if_unchanged` 在覆盖层变动
+  时拒绝安装，正是为这件事准备的。
+
+  因此**不做** worker 侧 load/prompt 串行、取消协议与 token fencing：没有需要防的损坏。
+  仍然值得做的只有一件便宜的 server 侧改动——把"查 run 在飞"与"占住加载 claim"合进同一个
+  临界区，避免注定作废的加载（纯优化，最坏情况只是白加载一次）。
+
+  该结论只覆盖 pi。原生 ACP agent（stdio）的会话存储是它自己的实现，可能加锁或在 load 时
+  重写；若将来接入这类 agent，再按同样的探针先测，需要时再加 worker 侧保护。
 
 ## 7. 阶段三：relay 补帧进 SQLite，退场 `shard-*.log`
 
