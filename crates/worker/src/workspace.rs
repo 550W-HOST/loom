@@ -78,6 +78,13 @@ pub async fn answer_with_root(
         HostRpcOperation::CloneDefaultPath { project_id } => Ok(serde_json::json!({
             "path": default_root.join(project_id.to_string()).to_string_lossy()
         })),
+        // Defensive: `lib.rs` routes a history load to its own handler, and
+        // this one must not try to open a workspace for it. Failing loudly is
+        // better than answering a load request with a workspace result.
+        HostRpcOperation::LoadHistory { .. } => Err(Failure::new(
+            "wrong_operation",
+            "a history load is not a workspace operation",
+        )),
         _ => {
             let workspace_path = workspace_path(&request.operation).to_owned();
             match prepare_workspace(&workspace_path).await {
@@ -106,6 +113,9 @@ fn workspace_path(operation: &HostRpcOperation) -> &str {
         | HostRpcOperation::ListBranchOptions { path, .. }
         | HostRpcOperation::ListCommands { cwd: path } => path,
         HostRpcOperation::PickFolder { .. } | HostRpcOperation::CloneDefaultPath { .. } => "",
+        // A history load is routed to its own handler before this function is
+        // reached; it is not a workspace operation and owns no workspace path.
+        HostRpcOperation::LoadHistory { .. } => "",
         HostRpcOperation::WorkspaceStatus {
             workspace_context, ..
         }
@@ -243,6 +253,11 @@ async fn execute(workspace: PathBuf, operation: HostRpcOperation) -> Result<Valu
             Ok(serde_json::json!({ "path": null }))
         }
         HostRpcOperation::ListCommands { cwd } => list_commands(&cwd).await,
+        // Defensive, as above: `lib.rs` never routes a load here.
+        HostRpcOperation::LoadHistory { .. } => Err(Failure::new(
+            "wrong_operation",
+            "a history load is not a workspace operation",
+        )),
     }
 }
 
@@ -250,6 +265,9 @@ fn validate_operation(operation: &HostRpcOperation) -> Result<(), Failure> {
     let invalid_target = || Failure::new("unknown", "invalid workspace diff target");
     match operation {
         HostRpcOperation::InspectGitSource { .. } => Ok(()),
+        // Not validated here: a load is answered by its own handler, which
+        // checks the session against the agent.
+        HostRpcOperation::LoadHistory { .. } => Ok(()),
         HostRpcOperation::ListBranchOptions {
             query,
             selected_branch,

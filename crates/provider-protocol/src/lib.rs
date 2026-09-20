@@ -35,7 +35,8 @@
 
 use loom_domain::{
     catalog::ProviderCatalog, AutomationId, AutomationRunId, EnvironmentId, HostId,
-    HostPermissionMode, ProjectId, ReasoningLevel, RunEvent, RunId, ScriptInterpreter, ThreadId,
+    HostPermissionMode, ProjectId, ProviderEvent, ReasoningLevel, RunEvent, RunId,
+    ScriptInterpreter, ThreadId,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -1030,6 +1031,40 @@ pub enum HostRpcOperation {
         #[serde(rename = "cwd")]
         cwd: String,
     },
+    /// Restore a thread's conversation from the ACP session that owns it.
+    ///
+    /// This is a read, not a dispatch: the worker opens the session, replays
+    /// it, and closes it again. No prompt is sent, no run is created, and no
+    /// entity state changes. The server resolves the binding and names the
+    /// session, so the worker never chooses which conversation to read.
+    ///
+    /// The answer is streamed as [`HistoryReport`] frames rather than returned
+    /// as one `HostRpcReport`: a long conversation does not fit in a single
+    /// answer that the host RPC timeout and the relay's frame budget can carry.
+    #[serde(rename = "host.load_history")]
+    LoadHistory {
+        #[serde(rename = "threadId")]
+        thread_id: ThreadId,
+        /// How to reach the agent that issued the id. The server resolves the
+        /// spec for the binding's host, exactly as a dispatch does, so the
+        /// worker never chooses an agent or a command of its own.
+        provider: ProviderSpec,
+        /// The session to restore. The server resolved it from the thread's
+        /// binding; the worker must not substitute another.
+        #[serde(rename = "providerSessionId")]
+        provider_session_id: String,
+        /// The workspace the session was opened in, which a restore requires
+        /// to match the agent's own record.
+        #[serde(rename = "cwd")]
+        cwd: String,
+        /// Upper bound on one chunk's serialized entries.
+        #[serde(rename = "maxBatchBytes")]
+        max_batch_bytes: u64,
+        /// Upper bound on the whole replay. Exceeding it fails the load; a
+        /// truncated history is never reported as complete.
+        #[serde(rename = "maxTotalBytes")]
+        max_total_bytes: u64,
+    },
 }
 
 /// A host-scoped workspace request.
@@ -1064,6 +1099,65 @@ pub struct HostRpcReport {
     pub request_id: String,
     /// The result or failure.
     pub outcome: HostRpcOutcome,
+}
+
+// ---------------------------------------------------------------------------
+// Streamed history
+// ---------------------------------------------------------------------------
+//
+// `HostRpcReport` answers one request with one result. A restored conversation
+// does not fit that shape: it is arbitrarily long, so it streams as ordered
+// batches whose terminal frame says whether the whole replay arrived.
+//
+// ```text
+//   server -- HostRpcRequest{LoadHistory} --> relay host:{id} --> worker
+//   server <---- HistoryReport{Chunk}* , {Complete|Failed} ---- worker socket
+// ```
+//
+// The entries are the same provider-neutral bodies a live run translates into,
+// *without* the `RunEvent` wrapper: nothing here carries a run id, because a
+// restored conversation belongs to no loom run and must not look like one.
+
+/// One frame of a streamed [`HostRpcOperation::LoadHistory`] answer.
+///
+/// Chunks are ordered by `batch_index`, starting at `0` and contiguous. The
+/// server detects a missing, duplicated or out-of-order batch instead of
+/// stitching a gap. `Complete` is the only successful terminator and `Failed`
+/// the only failing one, so a stream that ends without either is incomplete —
+/// which is what lets the caller refuse to cache a partial replay.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "part", rename_all = "snake_case")]
+pub enum HistoryPart {
+    /// One batch of translated history, in conversation order.
+    Chunk {
+        #[serde(rename = "batchIndex")]
+        batch_index: u32,
+        entries: Vec<ProviderEvent>,
+    },
+    /// The replay finished. `batch_count` is the number of chunks sent and
+    /// must equal the highest `batch_index` plus one.
+    Complete {
+        #[serde(rename = "batchCount")]
+        batch_count: u32,
+    },
+    /// The replay could not be completed. The caller discards every chunk it
+    /// already holds; a partial stream is never reported as history.
+    Failed {
+        code: String,
+        message: String,
+    },
+}
+
+/// A host's streamed answer to one [`HostRpcOperation::LoadHistory`].
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct HistoryReport {
+    /// The host answering.
+    pub host_id: HostId,
+    /// The request being answered, the same correlation token the request
+    /// carried.
+    pub request_id: String,
+    /// This frame's part of the answer.
+    pub part: HistoryPart,
 }
 
 // ---------------------------------------------------------------------------
@@ -1786,5 +1880,93 @@ mod tests {
         assert_eq!(value["event"]["event"]["type"], "turn/completed");
         assert_eq!(value["event"]["event"]["status"], "failed");
         assert_eq!(value["event"]["event"]["error"]["message"], "exit 1");
+    }
+
+    fn a_history_request() -> HostRpcOperation {
+        HostRpcOperation::LoadHistory {
+            thread_id: ThreadId::mint(),
+            provider: ProviderSpec::pi(),
+            provider_session_id: "acp-session-1".into(),
+            cwd: "/srv/project".into(),
+            max_batch_bytes: 64 * 1024,
+            max_total_bytes: 8 * 1024 * 1024,
+        }
+    }
+
+    /// The server names the session; the worker is never asked to choose one.
+    /// The bounds travel with the request so a load is bounded before it starts
+    /// rather than truncated after.
+    #[test]
+    fn a_load_history_request_round_trips_and_carries_its_own_bounds() {
+        let request = HostRpcRequest {
+            request_id: "hrpc_1".into(),
+            host_id: HostId::mint(),
+            operation: a_history_request(),
+            created_at_ms: 3,
+        };
+        let encoded = serde_json::to_string(&request).unwrap();
+        assert_eq!(
+            serde_json::from_str::<HostRpcRequest>(&encoded).unwrap(),
+            request
+        );
+
+        let value = serde_json::to_value(&request).unwrap();
+        assert_eq!(value["operation"]["type"], "host.load_history");
+        assert_eq!(value["operation"]["providerSessionId"], "acp-session-1");
+        assert_eq!(value["operation"]["maxBatchBytes"], 64 * 1024);
+        assert_eq!(value["operation"]["maxTotalBytes"], 8 * 1024 * 1024);
+        // The launch travels with the request, so the worker runs the agent
+        // the binding belongs to rather than one it picked itself.
+        assert_eq!(value["operation"]["provider"]["name"], "pi");
+        assert!(value["operation"]["provider"]["command"].is_string());
+    }
+
+    /// A chunk carries the translated bodies and no run wrapper: a restored
+    /// conversation belongs to no loom run, and nothing in the frame may look
+    /// like one.
+    #[test]
+    fn a_history_chunk_round_trips_without_a_run_identity() {
+        let report = HistoryReport {
+            host_id: HostId::mint(),
+            request_id: "hrpc_1".into(),
+            part: HistoryPart::Chunk {
+                batch_index: 0,
+                entries: vec![loom_domain::ProviderEvent::ThreadIdentity {
+                    provider_thread_id: "acp-session-1".into(),
+                }],
+            },
+        };
+        let encoded = serde_json::to_string(&report).unwrap();
+        assert_eq!(
+            serde_json::from_str::<HistoryReport>(&encoded).unwrap(),
+            report
+        );
+
+        let value = serde_json::to_value(&report).unwrap();
+        // `HistoryReport` nests the tagged part, so the discriminator sits
+        // under `part.part`.
+        assert_eq!(value["part"]["part"], "chunk");
+        assert_eq!(value["part"]["batchIndex"], 0);
+        // The entry is a plain provider body: no `runId`, no `run_id`.
+        let entry = &value["part"]["entries"][0];
+        assert_eq!(entry["type"], "thread/identity");
+        assert!(entry.get("runId").is_none() && entry.get("run_id").is_none());
+    }
+
+    /// The terminators are the only way a stream says it arrived whole, so a
+    /// caller can refuse to cache anything else.
+    #[test]
+    fn a_history_stream_ends_with_an_explicit_terminator() {
+        let complete = serde_json::to_value(HistoryPart::Complete { batch_count: 3 }).unwrap();
+        assert_eq!(complete["part"], "complete");
+        assert_eq!(complete["batchCount"], 3);
+
+        let failed = serde_json::to_value(HistoryPart::Failed {
+            code: "session_missing".into(),
+            message: "no such session".into(),
+        })
+        .unwrap();
+        assert_eq!(failed["part"], "failed");
+        assert_eq!(failed["code"], "session_missing");
     }
 }
