@@ -57,6 +57,7 @@ pub mod run;
 pub mod runs;
 pub mod settings;
 pub mod state;
+pub mod store;
 pub mod terminals;
 pub mod tool_timeline;
 pub mod transport;

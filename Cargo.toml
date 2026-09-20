@@ -55,6 +55,12 @@ croner = "4.0"
 bytes = "1.6"
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 serde = { version = "1.0", features = ["derive"] }
+# The server's one persistent store: an embedded SQLite, compiled into the
+# binary (`bundled`) so a `FROM scratch` image still needs no runtime library
+# and no second service. SQLite's own file is written with WAL; loom's logical
+# rules — an append-only per-thread sequence, a revision that only moves
+# forward — are the server's, not the database's.
+rusqlite = { version = "0.37", features = ["bundled"] }
 # A v1 ACP agent hands over a file's old and new text rather than a patch, and
 # the timeline draws a patch: `similar` is the diff, so loom does not carry a
 # second, hand-rolled implementation of one.
