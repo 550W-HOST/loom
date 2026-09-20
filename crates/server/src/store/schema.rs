@@ -51,8 +51,9 @@ pub fn migrate(connection: &Connection) -> Result<(), StoreError> {
 /// itself: the same provider events the in-memory projection consumes, in the
 /// order they were written, each with the sequence a client's cursor names.
 ///
-/// `seq` is assigned by the writer (`MAX(seq) + 1` in the same transaction) and
-/// never recomputed. `source_kind` says where a row came from, which is what
+/// `seq` is assigned from the thread's `next_seq` counter inside the writing
+/// transaction and never recomputed, and a deleted row's number is not handed
+/// out again. `source_kind` says where a row came from, which is what
 /// lets a rebuild replace the replayed conversation without discarding the
 /// diagnostics loom published itself.
 const V1: &str = "
@@ -63,6 +64,10 @@ CREATE TABLE IF NOT EXISTS thread_history (
     binding_cwd         TEXT,
     binding_host_id     TEXT,
     revision            INTEGER NOT NULL DEFAULT 0,
+    -- The sequence the next row this thread stores will get. It is a counter,
+    -- not `MAX(seq)`: a rebuild deletes the replayed rows, and the numbers they
+    -- held must not come back — a position in a conversation is never reused.
+    next_seq            INTEGER NOT NULL DEFAULT 1,
     synced_at_ms        INTEGER,
     last_error          TEXT
 );

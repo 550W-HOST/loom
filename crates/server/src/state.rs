@@ -194,6 +194,14 @@ impl From<loom_relay::RelayError> for BuildStateError {
     }
 }
 
+impl From<crate::store::StoreError> for BuildStateError {
+    fn from(error: crate::store::StoreError) -> Self {
+        Self {
+            message: format!("the store could not be opened: {error}"),
+        }
+    }
+}
+
 /// The agents each host reported, in enrollment order.
 type HostProviders = Arc<Mutex<Vec<(HostId, Vec<ProviderSpec>)>>>;
 
@@ -232,6 +240,14 @@ pub struct AppState {
     pub history_rpc: Arc<HistoryBroker>,
     /// The per-thread timeline cache: a rebuildable, bounded view of a
     /// conversation whose authority lives with the agent that owns it.
+    /// The server's persistent store, opened with the server.
+    ///
+    /// A server with a data directory gets a file in it; a temporary server
+    /// (tests, a throwaway process) gets an in-memory store with the same
+    /// schema. One code path serves both on purpose: there is no branch where a
+    /// server runs with persistence quietly switched off, only one where the
+    /// store has nowhere to live.
+    store: Arc<Mutex<crate::store::Store>>,
     pub history: Arc<crate::history_cache::HistoryCache>,
     /// Who is waiting on which in-flight history load.
     pub history_waits: Arc<crate::history::HistoryWaits>,
@@ -278,6 +294,17 @@ fn push_once(specs: &mut Vec<ProviderSpec>, spec: &ProviderSpec) {
 }
 
 impl AppState {
+    /// The server's store.
+    ///
+    /// A short lock, held for one operation: the store is one SQLite connection
+    /// and SQLite serializes writes itself, so the mutex is only there because a
+    /// connection is not `Sync`.
+    pub fn store(&self) -> std::sync::MutexGuard<'_, crate::store::Store> {
+        self.store
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     /// Wires the relay, hub actor and readers together.
     pub fn build(config: AppConfig) -> Result<Self, BuildStateError> {
         let backend: loom_relay::SharedBackend = match &config.backend_path {
@@ -306,6 +333,10 @@ impl AppState {
         config: AppConfig,
         backend: loom_relay::SharedBackend,
     ) -> Result<Self, BuildStateError> {
+        let store = match &config.backend_path {
+            Some(path) => crate::store::Store::open(path.join("loom.db"))?,
+            None => crate::store::Store::open_in_memory()?,
+        };
         let ui = Ui::from_config(config.ui_proxy.clone())
             .map_err(|message| BuildStateError { message })?;
         let artifacts = Arc::new(Artifacts::from_config(config.artifact_dir.clone()));
@@ -358,6 +389,7 @@ impl AppState {
                 HISTORY_CACHE_BYTES,
                 HISTORY_CACHE_CONCURRENT_LOADS,
             )),
+            store: Arc::new(Mutex::new(store)),
             history_waits: Arc::new(crate::history::HistoryWaits::new()),
             terminal: Arc::new(crate::terminals::TerminalBroker::new()),
             catalogs: Arc::new(crate::catalogs::CatalogRegistry::new()),
@@ -1867,6 +1899,45 @@ mod tests {
     /// directory, so a backend that relied on being dropped would leave the
     /// test reading a file with unfinished writes in it. A late publish through
     /// the old state is refused rather than landing behind the flush.
+    /// The store is opened with the server, in the same directory the rest of
+    /// its data lives in.
+    #[tokio::test]
+    async fn the_store_lives_in_the_data_directory() {
+        let dir = TempDir::new().unwrap();
+        let state = AppState::build(durable_config(&dir)).unwrap();
+        assert!(dir.path().join("loom.db").exists(), "the store is a file");
+        assert_eq!(
+            state.store().schema_version().unwrap(),
+            crate::store::SCHEMA_VERSION
+        );
+        state.shutdown().unwrap();
+    }
+
+    /// A temporary server still has a store — with the same schema, in memory.
+    /// "No data directory" is nowhere to keep history, not permission to run
+    /// without it.
+    #[tokio::test]
+    async fn a_temporary_server_still_has_a_store() {
+        let state = AppState::build(AppConfig::default()).unwrap();
+        assert_eq!(
+            state.store().schema_version().unwrap(),
+            crate::store::SCHEMA_VERSION
+        );
+        state.shutdown().unwrap();
+    }
+
+    /// A store that cannot be opened fails startup rather than being skipped.
+    #[tokio::test]
+    async fn a_store_that_cannot_be_opened_fails_startup() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join("loom.db"), b"not a database").unwrap();
+        let error = AppState::build(durable_config(&dir)).unwrap_err();
+        assert!(
+            error.to_string().contains("store"),
+            "the failure names the store: {error}"
+        );
+    }
+
     #[tokio::test]
     async fn a_shutdown_log_tail_is_readable_by_a_later_server() {
         let dir = TempDir::new().unwrap();

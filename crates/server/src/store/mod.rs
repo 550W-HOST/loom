@@ -22,7 +22,10 @@
 //! server that silently forgets everything is worse than one that refuses to
 //! start.
 
+mod history;
 mod schema;
+
+pub use history::{StoredHistory, StoredRow};
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -92,7 +95,7 @@ impl Store {
                 path.display()
             ))
         })?;
-        Self::configure(&connection)?;
+        Self::configure(&connection, true)?;
         schema::migrate(&connection)?;
         Ok(Self { connection, path })
     }
@@ -100,7 +103,10 @@ impl Store {
     /// An in-memory store, for tests that need the schema and not the file.
     pub fn open_in_memory() -> Result<Self, StoreError> {
         let connection = Connection::open_in_memory()?;
-        Self::configure(&connection)?;
+        // An in-memory store has no file to write ahead of, and SQLite says so
+        // by answering `memory`; asking for WAL there is a mistake, not a
+        // failure to report.
+        Self::configure(&connection, false)?;
         schema::migrate(&connection)?;
         Ok(Self {
             connection,
@@ -123,7 +129,7 @@ impl Store {
         schema::version(&self.connection)
     }
 
-    fn configure(connection: &Connection) -> Result<(), StoreError> {
+    fn configure(connection: &Connection, wal: bool) -> Result<(), StoreError> {
         // WAL keeps a reader from blocking the writer; `NORMAL` is the durability
         // level that pairs with it (a crash can lose the last commits, which is
         // exactly what the plan already promises for uncommitted history).
@@ -131,12 +137,14 @@ impl Store {
         // `journal_mode` answers with the mode it settled on, so it is read
         // rather than executed: `execute_batch` would discard the answer this
         // has to check.
-        let mode: String =
-            connection.query_row("PRAGMA journal_mode = WAL", [], |row| row.get(0))?;
-        if !mode.eq_ignore_ascii_case("wal") {
-            return Err(StoreError::new(format!(
-                "the store could not be put in WAL mode (it answered {mode:?})"
-            )));
+        if wal {
+            let mode: String =
+                connection.query_row("PRAGMA journal_mode = WAL", [], |row| row.get(0))?;
+            if !mode.eq_ignore_ascii_case("wal") {
+                return Err(StoreError::new(format!(
+                    "the store could not be put in WAL mode (it answered {mode:?})"
+                )));
+            }
         }
         connection.execute_batch(
             "PRAGMA synchronous = NORMAL;
