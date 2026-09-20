@@ -22,14 +22,14 @@ for the split and its costs.
 
 ## The decision: a stored entity view + log delta
 
-**Updated (2026-09-21): the view lives in the SQLite store now, not in a file.**
+**Updated (2026-09-21): the view lives in the SQLite store, not in a file.**
 The periodic writer still writes the whole view at once, under a **watermark** —
 the newest relay `EventId` the write incorporates — and recovery loads it, then
 replays the retained log events **after** that watermark. The file
-`domain.snapshot` is no longer written; it is only *read* when the store has
-never held a view, and that read goes away with the next version. What follows
-still describes the shape and the reasoning, with "snapshot" now meaning one
-transaction in the store rather than a fenced file.
+`domain.snapshot` is neither written nor read: the store is the view's home, and
+a view from before that move is not a case this server has. What follows still
+describes the shape and the reasoning, with "snapshot" now meaning one
+transaction in the store.
 
 This was chosen over the two pure options:
 
@@ -45,7 +45,7 @@ log: messages and run-event history are deliberately absent (see below).
 
 ## What is stored — and what is not
 
-The store's `entity` table holds the same `DomainSnapshot`, one row per entity
+The store's `entity` table holds the `DomainSnapshot`, one row per entity
 (`entity_meta` carries the personal project id and the watermark):
 
 ```text

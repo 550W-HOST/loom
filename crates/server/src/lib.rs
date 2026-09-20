@@ -81,7 +81,7 @@ pub use host_rpc::{HostRpcBroker, HostRpcTransportError, HOST_RPC_TIMEOUT};
 pub use hub_actor::{HubCommand, HubHandle};
 pub use interactions::DeliverOutcome;
 pub use local_worker::{server_url_for_bind, LocalWorker, LocalWorkerConfig};
-pub use persistence::{DomainSnapshot, SnapshotError, SNAPSHOT_FILE};
+pub use persistence::{DomainSnapshot, SnapshotError};
 pub use protocol::{
     ClientMessage, ServerMessage, SubscriptionTarget, WorkerClientMessage, WorkerServerMessage,
 };

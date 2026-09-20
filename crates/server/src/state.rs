@@ -339,12 +339,6 @@ pub struct AppState {
     entity_write_stop: Arc<AtomicBool>,
     schedule_stop: Arc<AtomicBool>,
     entity_write_lock: Arc<Mutex<()>>,
-    /// The data directory a **legacy** `domain.snapshot` may still be in.
-    ///
-    /// Nothing writes it any more. It is read only when the store has never held
-    /// an entity view, so a store from before that move still starts, and this
-    /// field goes away once that read does.
-    legacy_snapshot_root: Option<PathBuf>,
     started_at: Instant,
     started_at_ms: u64,
 }
@@ -491,9 +485,8 @@ impl AppState {
         let started_at_ms = now_ms();
 
         // The entity view is durable on a store that outlives the process; the
-        // data directory is also where a legacy `domain.snapshot` may be, which
-        // is read once and never written (see `docs/domain-persistence.md`).
-        let legacy_snapshot_root = config.backend_path.clone();
+        // data directory holds one database: the conversations, the entity
+        // view and the relay's frames (see `docs/domain-persistence.md`).
         // Normalised once, so every accessor can promise at least one provider.
         let provider_specs = if config.providers.is_empty() {
             vec![ProviderSpec::pi()]
@@ -542,7 +535,6 @@ impl AppState {
             entity_write_stop: Arc::new(AtomicBool::new(false)),
             schedule_stop: Arc::new(AtomicBool::new(false)),
             entity_write_lock: Arc::new(Mutex::new(())),
-            legacy_snapshot_root,
             started_at: Instant::now(),
             started_at_ms,
         };
@@ -557,7 +549,7 @@ impl AppState {
         if !config.reconcile_interval.is_zero() {
             state.spawn_reconciler(config.reconcile_interval);
         }
-        if !config.entity_write_interval.is_zero() && state.legacy_snapshot_root.is_some() {
+        if !config.entity_write_interval.is_zero() {
             state.spawn_entity_writer(config.entity_write_interval);
         }
         // The scheduler is what actually fires automations. Tests disable it and
@@ -662,7 +654,7 @@ impl AppState {
                     return;
                 }
                 if let Err(error) = state.write_entity_view() {
-                    eprintln!("loom-server: periodic domain snapshot failed: {error}");
+                    eprintln!("loom-server: the periodic entity-view write failed: {error}");
                 }
             }
         });
@@ -999,25 +991,12 @@ impl AppState {
     /// to start is a worse outcome than starting from a consistent older view.
     fn recover(&self) {
         let now = now_ms();
-        // The store is the entity view's home now. The file is read only when
-        // the store has never held a view, which is a store from before this
-        // step or a fresh one beside an old file; that fallback goes away once
-        // nothing can be in that position.
+        // The store is the entity view's home: it is the only place a view is
+        // read from, and the only place one is written to. A store that cannot
+        // be read is not a reason to refuse to start — the log is still there to
+        // rebuild from, which is what it is for.
         let snapshot = match self.store().entities() {
-            Ok(Some(snapshot)) => Some(snapshot),
-            Ok(None) => match &self.legacy_snapshot_root {
-                Some(root) => match persistence::read_snapshot(root) {
-                    Ok(snapshot) => snapshot,
-                    Err(error) => {
-                        eprintln!(
-                            "loom-server: the snapshot file is unusable ({error}); \
-                             rebuilding from the log"
-                        );
-                        None
-                    }
-                },
-                None => None,
-            },
+            Ok(snapshot) => snapshot,
             Err(error) => {
                 eprintln!(
                     "loom-server: the stored entity view could not be read ({error}); \
@@ -1311,7 +1290,7 @@ impl AppState {
         terminal.or(record.terminal_outcome)
     }
 
-    /// Writes a domain snapshot to the data directory, if one is configured.
+    /// Writes the entity view to the store, with the log's watermark.
     ///
     /// The watermark is read *before* the entity view is copied. That ordering
     /// is the whole consistency argument: a mutation precedes the publish that
@@ -1320,9 +1299,6 @@ impl AppState {
     /// only make the snapshot fresher than the watermark, and replaying its
     /// event is idempotent.
     pub fn write_entity_view(&self) -> Result<(), persistence::SnapshotError> {
-        let Some(root) = &self.legacy_snapshot_root else {
-            return Ok(());
-        };
         let _run_lifecycle_guard = self.runs.lifecycle_lock();
         let _snapshot_guard = self
             .entity_write_lock
@@ -1340,11 +1316,9 @@ impl AppState {
             settings: Some(self.settings.export()),
             automations: Some(self.automations.export()),
         };
-        // One write, in one transaction: the file this used to write is not
-        // written any more. It is still *read* when the store has never held a
-        // view — a store from before this move, or a fresh one beside an old
-        // file — and that read goes away with the next version.
-        let _ = root;
+        // One write, in one transaction. There is no file: the view's home is
+        // the store, and a store from before that move is not a case this
+        // server has.
         self.store()
             .replace_entities(&snapshot)
             .map_err(|error| persistence::SnapshotError::Io(error.to_string()))
@@ -1380,7 +1354,7 @@ impl AppState {
         self.entity_write_stop.store(true, Ordering::Relaxed);
         self.schedule_stop.store(true, Ordering::Relaxed);
         if let Err(error) = self.write_entity_view() {
-            eprintln!("loom-server: writing the domain snapshot on shutdown failed: {error}");
+            eprintln!("loom-server: writing the entity view on shutdown failed: {error}");
         }
         self.relay.close();
         self.pump.stop();
@@ -2167,9 +2141,8 @@ mod tests {
             }
             state.shutdown().unwrap();
         }
-        // Nothing writes the file any more; removing it is what the old
-        // recovery path would have needed, so it is removed if it is there.
-        let _ = std::fs::remove_file(dir.path().join(crate::persistence::SNAPSHOT_FILE));
+        // There is no file to remove: the store is where the view is, and the
+        // test above pushed the log's copy out of its window.
 
         let state = AppState::build(config).unwrap();
         let thread = state
@@ -2585,8 +2558,11 @@ mod tests {
         state.shutdown().unwrap();
     }
 
+    /// The store is the only place a view is read from, so a request for one
+    /// that was never written rebuilds from the log and says so — no file is
+    /// consulted and none is written.
     #[tokio::test]
-    async fn a_corrupt_snapshot_falls_back_to_the_log() {
+    async fn a_view_that_was_never_written_is_rebuilt_from_the_log() {
         let dir = TempDir::new().unwrap();
         let thread_id;
         {
@@ -2604,26 +2580,13 @@ mod tests {
             state.publish_domain_event(&created).unwrap();
             state.shutdown().unwrap();
         }
-        // A torn or bit-rotted *legacy* file must not stop the server; the log
-        // still holds the creation event. Nothing writes that file any more, so
-        // the test writes one — the shape a store from before the move would
-        // find beside it — and then rots it. The file is only read when the
-        // store has never held a view, which is the window it stays for.
         drop_entity_view(&dir);
-        let legacy = DomainSnapshot {
-            version: SNAPSHOT_VERSION,
-            watermark: None,
-            registry: crate::domain_state::DomainRegistry::new(1).export(),
-            runs: Vec::new(),
-            settings: None,
-            automations: None,
-        };
-        persistence::write_snapshot(dir.path(), &legacy).unwrap();
-        let path = persistence::snapshot_path(dir.path());
-        let mut bytes = std::fs::read(&path).unwrap();
-        let last = bytes.len() - 1;
-        bytes[last] ^= 0xff;
-        std::fs::write(&path, &bytes).unwrap();
+        // Nothing in the data directory is a file the server reads back: what
+        // survives is the database the store is.
+        assert!(
+            !dir.path().join("domain.snapshot").exists(),
+            "no snapshot file is written, and none is read"
+        );
 
         let state = AppState::build(durable_config(&dir)).unwrap();
         assert!(state.registry.thread(&thread_id).is_some());

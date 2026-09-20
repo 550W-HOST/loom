@@ -343,7 +343,7 @@ impl Relay {
 
     /// The newest event id currently retained across every shard.
     ///
-    /// The control plane records this alongside a domain snapshot: the
+    /// The control plane records this alongside its entity view: the
     /// snapshot's entity view incorporates every event at or below it, and
     /// recovery replays what follows. It is the maximum rather than a per-shard
     /// cursor because an entity's events all share one shard, so one global
