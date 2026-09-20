@@ -2147,7 +2147,10 @@ mod tests {
             })
             .unwrap();
 
-        let view = state.history.view(&thread.id).expect("the thread is cached");
+        let view = state
+            .history
+            .view(&thread.id)
+            .expect("the thread is cached");
         assert_eq!(view.rows.len(), 1, "the live event reached the overlay");
         assert_eq!(view.rows[0].seq, 1, "and was numbered by the cache");
         state.shutdown();

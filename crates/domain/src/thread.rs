@@ -870,9 +870,13 @@ impl Thread {
         if self.provider_session_id.is_none() {
             return false;
         }
-        self.provider_session_binding.as_ref().is_some_and(|binding| {
-            binding.agent == agent && binding.cwd == cwd && binding.host_id.as_ref() == Some(host)
-        })
+        self.provider_session_binding
+            .as_ref()
+            .is_some_and(|binding| {
+                binding.agent == agent
+                    && binding.cwd == cwd
+                    && binding.host_id.as_ref() == Some(host)
+            })
     }
 
     /// The session id to dispatch for a run in `cwd` on `host` by `agent`, if

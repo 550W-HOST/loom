@@ -212,16 +212,14 @@ where
         .await;
 
     result.map_err(|error| {
-        HistoryFailure::new(
-            "connection",
-            format!("the ACP connection ended: {error}"),
-        )
+        HistoryFailure::new("connection", format!("the ACP connection ended: {error}"))
     })?;
     state.take()
 }
 
 /// What a replay accumulates, shared between the callbacks and the driver.
-struct HistoryState {    inner: Mutex<Inner>,
+struct HistoryState {
+    inner: Mutex<Inner>,
 }
 
 struct Inner {
@@ -234,12 +232,7 @@ struct Inner {
 }
 
 impl HistoryState {
-    fn new(
-        thread_id: ThreadId,
-        cwd: String,
-        session_id: String,
-        max_total_bytes: u64,
-    ) -> Self {
+    fn new(thread_id: ThreadId, cwd: String, session_id: String, max_total_bytes: u64) -> Self {
         Self {
             inner: Mutex::new(Inner {
                 translator: AcpTranslator::new(RunContext {
@@ -366,14 +359,13 @@ impl ConnectTo<Agent> for V1HistoryClient {
                 on_receive_request!(),
             )
             .connect_with(agent, move |connection: ConnectionTo<Agent>| async move {
-                let initialized = connection
-                    .send_request(
-                        v1::InitializeRequest::new(ProtocolVersion::V1).client_info(
+                let initialized =
+                    connection
+                        .send_request(v1::InitializeRequest::new(ProtocolVersion::V1).client_info(
                             v1::Implementation::new("loom", env!("CARGO_PKG_VERSION")),
-                        ),
-                    )
-                    .block_task()
-                    .await?;
+                        ))
+                        .block_task()
+                        .await?;
                 if initialized.protocol_version != ProtocolVersion::V1 {
                     return Err(Error::internal_error().data(
                         "the ACP agent negotiated an unsupported protocol version for the \
@@ -422,9 +414,8 @@ impl ConnectTo<Agent> for V2HistoryClient {
             )
             .on_receive_request(
                 async move |_request: v2::RequestPermissionRequest, responder, _cx| {
-                    let refused = v1::RequestPermissionResponse::new(
-                        v1::RequestPermissionOutcome::Cancelled,
-                    );
+                    let refused =
+                        v1::RequestPermissionResponse::new(v1::RequestPermissionOutcome::Cancelled);
                     let response = v2::conversion::try_v1_to_v2(refused).map_err(|error| {
                         Error::internal_error()
                             .data(format!("could not convert the refusal to v2: {error}"))
@@ -449,9 +440,8 @@ impl ConnectTo<Agent> for V2HistoryClient {
                 }
                 connection
                     .send_request(
-                        v2::ResumeSessionRequest::new(session_id, cwd).replay_from(
-                            v2::ReplayFrom::Start(v2::ReplayFromStart::new()),
-                        ),
+                        v2::ResumeSessionRequest::new(session_id, cwd)
+                            .replay_from(v2::ReplayFrom::Start(v2::ReplayFromStart::new())),
                     )
                     .block_task()
                     .await?;

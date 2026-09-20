@@ -538,8 +538,7 @@ impl Worker {
                     mpsc::channel(REPORT_CHANNEL_CAPACITY);
                 let (host_rpc_reports_tx, host_rpc_reports) =
                     mpsc::channel(REPORT_CHANNEL_CAPACITY);
-                let (history_reports_tx, history_reports) =
-                    mpsc::channel(REPORT_CHANNEL_CAPACITY);
+                let (history_reports_tx, history_reports) = mpsc::channel(REPORT_CHANNEL_CAPACITY);
                 let (terminal_reports_tx, terminal_reports) =
                     mpsc::channel(REPORT_CHANNEL_CAPACITY);
                 let (script_reports_tx, script_reports) = mpsc::channel(REPORT_CHANNEL_CAPACITY);

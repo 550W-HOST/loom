@@ -53,7 +53,9 @@ impl std::fmt::Display for HistoryTransportError {
             Self::Timeout => f.write_str("the host did not finish the history load in time"),
             Self::Disconnected(message) => f.write_str(message),
             Self::UnknownHost(message) => f.write_str(message),
-            Self::Failed { code, message } => write!(f, "the host could not load history ({code}): {message}"),
+            Self::Failed { code, message } => {
+                write!(f, "the host could not load history ({code}): {message}")
+            }
             Self::Incomplete(message) => write!(f, "the history stream was incomplete: {message}"),
         }
     }
@@ -210,8 +212,7 @@ async fn collect(
                             .unwrap_or(0);
                         if bytes.saturating_add(size) > max_total_bytes {
                             return Err(HistoryTransportError::Incomplete(
-                                "the stream exceeded the byte budget the request named"
-                                    .to_owned(),
+                                "the stream exceeded the byte budget the request named".to_owned(),
                             ));
                         }
                         bytes = bytes.saturating_add(size);

@@ -1142,10 +1142,7 @@ pub enum HistoryPart {
     },
     /// The replay could not be completed. The caller discards every chunk it
     /// already holds; a partial stream is never reported as history.
-    Failed {
-        code: String,
-        message: String,
-    },
+    Failed { code: String, message: String },
 }
 
 /// A host's streamed answer to one [`HostRpcOperation::LoadHistory`].

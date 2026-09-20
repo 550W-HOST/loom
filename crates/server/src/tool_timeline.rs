@@ -606,24 +606,9 @@ mod tests {
     fn a_calls_frames_fold_into_one_row_that_names_the_command() {
         let mut timeline = ToolTimeline::new();
         assert!(timeline.absorb("run-1", &started("call-1"), 4, Some(1_000)));
-        assert!(timeline.absorb(
-            "run-1",
-            &progress("call-1", "ls -la"),
-            5,
-            Some(1_200)
-        ));
-        assert!(timeline.absorb(
-            "run-1",
-            &progress("call-1", "ls -la"),
-            6,
-            Some(1_400)
-        ));
-        assert!(timeline.absorb(
-            "run-1",
-            &completed("call-1"),
-            7,
-            Some(1_900)
-        ));
+        assert!(timeline.absorb("run-1", &progress("call-1", "ls -la"), 5, Some(1_200)));
+        assert!(timeline.absorb("run-1", &progress("call-1", "ls -la"), 6, Some(1_400)));
+        assert!(timeline.absorb("run-1", &completed("call-1"), 7, Some(1_900)));
 
         let activity = timeline.get("run-1", "call-1").expect("the call exists");
         assert_eq!(activity.status(), "completed");
@@ -1115,11 +1100,16 @@ mod tests {
         timeline.absorb("restored-1", &started("call-1"), 1, None);
         timeline.absorb("restored-1", &completed("call-1"), 2, None);
 
-        let activity = timeline.get("restored-1", "call-1").expect("the call exists");
+        let activity = timeline
+            .get("restored-1", "call-1")
+            .expect("the call exists");
         let row = activity.row("thread-1");
         assert!(row["startedAt"].is_null(), "no fabricated start: {row}");
         assert!(row["createdAt"].is_null(), "no fabricated creation: {row}");
-        assert!(row["completedAt"].is_null(), "no fabricated completion: {row}");
+        assert!(
+            row["completedAt"].is_null(),
+            "no fabricated completion: {row}"
+        );
 
         // The local grouping key is what a restored row carries as its turn.
         // It must be mistakable for a loom run id by nothing: the ambient
