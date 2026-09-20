@@ -202,34 +202,27 @@ has the job that runs it on every push.
 ## The app, and what it adapted
 
 `apps/app` is bb's application source carrying loom's transport, loom's routes
-and the unsupported surfaces removed, checked in as a ledger-controlled source
-port. It is a normal workspace project, `pnpm --filter @bb/app run build` builds
-it, and it is the only UI served.
+and the unsupported surfaces removed, checked in as a source port. It is a normal
+workspace project, `pnpm --filter @bb/app run build` builds it, and it is the
+only UI served.
 
-The pin, the closure and the boundary are machine-checked rather than
-remembered:
+The pin and the boundary are recorded rather than enforced by a manifest:
 
-* [`../ui/provenance.json`](../ui/provenance.json) records the upstream commit,
-  the app's complete file set with per-file bytes/SHA-256, the packages it
-  builds against and the contract manifest's hashes.
-  `node scripts/check-ui-provenance.mjs` recomputes all of it — against `BB_SRC`
-  for the upstream side — and fails on unregistered, duplicate, overlapping,
-  glob, hash, add/delete/rename or mode drift, including a symlink where a plain
-  directory was expected.
-* [`../ui/app-patch-ledger.json`](../ui/app-patch-ledger.json) is the per-file
-  adaptation record: each local change is one entry with an issue, an owner, a
-  reason and both hashes. Nothing is adapted off the books, and a package that is
-  already here may not be re-vendored from npm instead.
-* [`../ui/app-port-plan.json`](../ui/app-port-plan.json) is the route-level port
-  plan, checked by `node scripts/analyze-ui-port.mjs`.
+* the upstream commit lives in
+  [`../contracts/bb/manifest.json`](../contracts/bb/manifest.json), which the
+  contract job uses to re-export `contracts/bb` byte-for-byte.
+* the adapted packages and the product surface this fork keeps are listed in
+  [`ui-package-sync.md`](ui-package-sync.md) and
+  [`ui-baseline.md`](ui-baseline.md). Adapting `apps/app` or `ui/packages/*` is
+  an ordinary commit, reviewed on its diff.
 
 `ui/packages/*` holds the bb packages the app builds against: `@bb/domain`,
 `@bb/server-contract`, `@bb/thread-view` (the event-to-timeline projection),
 `@bb/client-core`, `@bb/core-ui`, `@bb/shared-ui`, `@bb/config`,
 `@bb/sdk`, `@bb/desktop-contract`, `@bb/host-daemon-contract`,
 `@bb/mobile-bridge`, `@bb/fuzzy-match`, `@bb/tsconfig` and
-`bb-plugin-automations`. They are pinned bb sources adapted in this repository
-under the same ledger rules — one copy of each, never a second vendor of bb's UI.
+`bb-plugin-automations`. They are bb sources adapted in this repository — one copy
+of each, never a second vendor of bb's UI, and never re-vendored from npm.
 
 Two boundaries are what make the app loom's rather than bb's:
 

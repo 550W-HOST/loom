@@ -1,38 +1,48 @@
 ## Ported UI packages
 
-The projection and UI primitive package sources were selected from the bb
+The projection and UI primitive package sources were taken once from the bb
 hard-fork baseline at commit
 `fa1f44ebe9e5676004b669e48c99b3c7606466b6` (bb repository commit
 `Cut startup JavaScript by 81 KiB and restore 5% bundle headroom (#3476)`).
-The local entries are loom's adapted source trees, whose digests are recorded
-separately from the upstream trees in `ui/provenance.json`. The package set is:
+Fourteen workspace packages live under `ui/packages/`, with the disposition the
+port recorded for each one:
 
-- `@bb/domain`
-- `@bb/server-contract`
-- `@bb/thread-view`
-- `@bb/client-core`
-- `@bb/core-ui`
-- `@bb/shared-ui`
-- `@bb/desktop-contract`
+- `@bb/domain` — adapted source
+- `@bb/server-contract` — adapted source
+- `@bb/thread-view` — adapted source
+- `@bb/client-core` — adapted source
+- `@bb/core-ui` — adapted source
+- `@bb/shared-ui` — adapted source
+- `@bb/desktop-contract` — adapted source
+- `@bb/config` — adapted source
+- `@bb/host-daemon-contract` — adapted source
+- `@bb/sdk` — adapted source
+- `bb-plugin-automations` — adapted source
+- `@bb/mobile-bridge` — exact copy of the bb source
+- `@bb/fuzzy-match` — exact copy of the bb source
+- `@bb/tsconfig` — exact copy of the bb build configuration
+
+These are ordinary first-party workspace packages now: nothing pins their bytes
+to bb, and a change to one of them is a normal commit reviewed on its own diff.
+The commit above stays the recorded answer to "where did this source come from".
 
 `thread-view` is used as a pure event-to-timeline projection. `client-core`
 contains state and transport helpers only; this issue does not import bb's
 application assembly or plugin runtime.
 
-## Source provenance
+## Sync policy
 
-The source-level pin, app/package/contract hashes, dependency closure, and
-product-surface migration matrix are maintained in
-[`docs/ui-baseline.md`](ui-baseline.md) and machine-checked by
-`scripts/check-ui-provenance.mjs` through [`ui/provenance.json`](../ui/provenance.json).
-This document describes the package-level policy; it does not replace the
-unified manifest.
+The pin lives in [`contracts/bb/manifest.json`](../contracts/bb/manifest.json),
+which the contract job uses to re-export `contracts/bb` byte-for-byte. The
+product-surface decisions are recorded in
+[`docs/ui-baseline.md`](ui-baseline.md); this document describes the
+package-level policy.
 
-loom is a hard fork and intentionally has no `upstream` remote. Future package
-updates must be deliberate source comparisons: record the new bb commit here,
-compare the corresponding package directories against that read-only checkout,
-and port only changes that fit loom's contracts. Do not cherry-pick bb commits
-or maintain a patch series.
+loom is a hard fork and intentionally has no `upstream` remote. Future updates
+must be deliberate source comparisons: check out the target bb commit read-only,
+compare the corresponding package directories, and port only changes that fit
+loom's contracts. Record the new commit here when one is taken. Do not
+cherry-pick bb commits or maintain a patch series.
 
 During a sync, preserve these local constraints:
 
@@ -43,6 +53,14 @@ During a sync, preserve these local constraints:
 - any behavioral difference needs an explicit test and should live in the
   adapter/input boundary rather than in the projection rules.
 
-The executable projection smoke example is
-`ui/examples/thread-timeline.ts`; run it with `pnpm example` after dependencies
-are installed.
+## Verification
+
+There is no standalone smoke target for the projection — `ui/examples` and the
+`pnpm example` script no longer exist — and no hash manifest to refresh. What
+keeps the package set honest is the suites and the type check:
+
+```bash
+pnpm --filter './ui/packages/*' run test   # each package's own suite
+pnpm --filter @bb/app run test             # the app against these packages
+pnpm --filter @bb/app run typecheck
+```

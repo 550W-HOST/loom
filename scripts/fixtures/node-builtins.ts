@@ -1,4 +1,0 @@
-import path from "path";
-import fs from "node:fs";
-
-export { path, fs };

@@ -178,16 +178,15 @@ jobs:
           git diff --exit-code -- contracts/bb
           test -z "$(git status --porcelain -- contracts/bb)"
 
-  # The client is a pnpm workspace of the product app and the pinned bb
-  # packages it builds against (`apps/app` + `ui/packages/*`), whose tests and
-  # type checks nothing else runs. The app is also **compiled into
+  # The client is a pnpm workspace of the product app and the bb packages it
+  # builds against (`apps/app` + `ui/packages/*`), whose tests and type checks
+  # nothing else runs. The app is also **compiled into
   # the one binary** (`crates/server/build.rs` walks `apps/app/dist`), so this
   # job produces a compile-time input for every Rust job below: it builds the
-  # bundle, checks it against the bundle budget, and uploads it. A client that
-  # drifts from its source, or grows past its budget, otherwise ships a server
-  # that is wrong only in a browser.
+  # bundle, checks it against the bundle budget, and uploads it. An over-budget
+  # client otherwise ships a server that is wrong only in a browser.
   ui:
-    name: UI typecheck, tests, bundle and provenance
+    name: UI typecheck, tests and bundle
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -246,32 +245,10 @@ jobs:
           path: apps/app/dist/
           if-no-files-found: error
 
-      # Fetch the exact source baseline as a separate checkout. The provenance
-      # checker reads this checkout's HEAD and hashes apps/app plus every
-      # imported package; it does not trust only the manifest's commit text.
-      - name: Fetch the bb revision recorded in UI provenance
-        run: |
-          set -euo pipefail
-          repository="$(jq -r .upstream.repository ui/provenance.json)"
-          commit="$(jq -r .upstream.commit ui/provenance.json)"
-          echo "checking UI source from $repository at $commit"
-          bb_src="$RUNNER_TEMP/bb-ui"
-          git init --quiet "$bb_src"
-          git -C "$bb_src" remote add origin "$repository"
-          git -C "$bb_src" fetch --quiet --depth 1 origin "$commit"
-          git -C "$bb_src" checkout --quiet FETCH_HEAD
-
-      # The source-level provenance check covers the app source tree, generated
-      # bundle, imported package closure and the contract manifest in one place.
-      - name: UI source provenance
-        run: pnpm run provenance:test && BB_SRC="$RUNNER_TEMP/bb-ui" pnpm run provenance:check
-
-      - name: Product app port plan
-        run: BB_SRC="$RUNNER_TEMP/bb-ui" pnpm run port-plan:test && BB_SRC="$RUNNER_TEMP/bb-ui" pnpm run port-plan:check
-
-      # Modifications, additions and removals all have to fail: provenance
-      # compares the app's complete file list and per-file digests against the
-      # manifest, so a checked-in tree that drifted from it is a failure here.
+      # The build writes only ignored paths (`apps/app/dist`, `bundle-stats.json`);
+      # a tracked file that changed here means the job mutated the checkout it
+      # was supposed to read, which is the same guard the contract job applies
+      # to `contracts/bb` after its export.
       - name: The committed UI and product app must match
         run: |
           set -euo pipefail

@@ -25,7 +25,7 @@ cannot be labelled with a version its own files do not report.
 
 | Job | Runs | What it proves |
 | --- | --- | --- |
-| `ui` | `pnpm install --frozen-lockfile`, `typecheck`, `test`, `pnpm --filter @bb/app run build`, `pnpm run check:bundle`, then the provenance and port-plan checks | the bundle every Rust job compiles into the binary is built from the tag's own source, holds its budget, and the app tree still matches its manifest |
+| `ui` | `pnpm install --frozen-lockfile`, `typecheck`, `test`, `pnpm --filter @bb/app run build`, `pnpm run check:bundle` | the bundle every Rust job compiles into the binary is built from the tag's own source and holds its budget |
 | `build` (matrix: x86_64, aarch64) | `cargo build --release --locked -p loom --target <triple>` | the binary compiles from the tag with the pinned lockfile |
 | `build` → verify | `scripts/verify-release-binaries.sh` | the x86_64 binary runs both roles, answers `/health`, serves the UI it carries with no UI variable set, hosts the artifact it is itself with a matching digest and a `304` for a conditional request, creates a project and enrols a worker; the aarch64 binary is a self-contained aarch64 artifact carrying the tag's commit |
 | `build` → package | `scripts/package-release.sh` | the release page's files exist: the bare `loom-<target>` binary and the per-target archive |

@@ -32,7 +32,7 @@ record of the runs that produced them, not of today's job set.
 | `api-coverage` | `API coverage document is current` | `node scripts/check-api-coverage.mjs` re-reads the contract and the source routes and refuses a stale row, or an implemented JSON-body route with no `validate_request*` assertion |
 | `msrv` | `MSRV` | the workspace still compiles on the `rust-version` floor in the manifests |
 | `contract` | `bb contract is reproducible` | re-exporting bb's contract yields the committed `contracts/bb` byte for byte |
-| `ui` | `UI typecheck, tests, bundle and provenance` | `pnpm install --frozen-lockfile`, `pnpm run typecheck`, `pnpm run test`, `pnpm --filter @bb/app run build` builds the bundle every Rust job below compiles into the server and uploads it as the `ui-dist` artifact, `pnpm run check:bundle` holds that build to the committed budget, `pnpm provenance:test` covers patch-ledger negative cases and `BB_SRC=... pnpm run provenance:check` verifies recomputed source/package/contract hashes and the import closure, and `BB_SRC=... pnpm run port-plan:test`/`port-plan:check` verifies the route-level port plan |
+| `ui` | `UI typecheck, tests and bundle` | `pnpm install --frozen-lockfile`, `pnpm run typecheck`, `pnpm run test`, `pnpm --filter @bb/app run build` builds the bundle every Rust job below compiles into the server and uploads it as the `ui-dist` artifact, and `pnpm run check:bundle` holds that build to the committed budget |
 | `e2e` | `Browser acceptance` | the Playwright suite in `e2e/` drives the real thing — the binary serving the app it was built with, a worker on the same machine running an ACP stub — in a desktop and a mobile viewport: bootstrap, an unreachable server, a thread that answers and survives a reload, a permission request that blocks the turn until it is answered (allow and deny), automations running and reporting, and a machine going offline and coming back |
 | `pi` | `real pi provider (allowed to fail)` | the `#[ignore]`d provider tests against the real `pi` CLI — `provider_e2e` drives the streamed turn, `real_pi` adds the first-turn-plus-cross-run-resume property — skipped unless the runner has a configured `pi` |
 | `self-update` | `worker self-update end to end` | the `#[ignore]`d self-update tests: a real worker process, refused by a server that speaks a newer protocol, installing that server's binary over itself, and the reinstalled binary running a real turn |
@@ -160,7 +160,7 @@ run [34666503929](https://github.com/550W-HOST/loom/actions/runs/34666503929):
 
 | Job | Push | PR |
 | --- | --- | --- |
-| `UI typecheck, tests, bundle and provenance` | 1 m 00 s | 59 s |
+| `UI typecheck, tests and bundle` | 1 m 00 s | 59 s |
 | `fmt + clippy + test` | 1 m 02 s | 1 m 03 s |
 | `MSRV` | 23 s | 26 s |
 | `bb contract is reproducible` | 27 s | 32 s |
@@ -326,21 +326,10 @@ the lockfile fixes. The pnpm store is cached, keyed on `pnpm-lock.yaml`.
 
 ### What else the job checks
 
-Two generated-metadata checks ride along, because they are the same kind of claim
-as the bundle — a machine-readable statement that nothing else verifies:
-
-```bash
-BB_SRC=… pnpm run provenance:test && BB_SRC=… pnpm run provenance:check
-BB_SRC=… pnpm run port-plan:test  && BB_SRC=… pnpm run port-plan:check
-```
-
-`provenance:check` recomputes the app tree, every package it builds against, the
-contract manifest and the pinned commit's own `HEAD`, and fails on unregistered,
-duplicate, overlapping, glob, hash, add/delete/rename, mode or symlink drift;
-`provenance:test` covers those negative cases first. `port-plan:check` verifies
-the route-level port plan. Both fetch the pinned checkout shallow from the
-manifest's own commit, so a failure here means drift in this repository and never
-progress in bb.
+Nothing extra: the client job is typecheck, tests, bundle and budget. The bb
+revision is not fetched here at all — the only job that needs the pinned
+checkout is `contract`, and it reads the pin from
+`contracts/bb/manifest.json`.
 
 The last step applies the `contract` job's check to the client tree:
 
@@ -504,7 +493,7 @@ Protect `main` and require these six checks:
 | `fmt + clippy + test` | format, lint and the full test suite |
 | `MSRV` | the declared floor keeps compiling |
 | `bb contract is reproducible` | the committed contract is what the exporter produces |
-| `UI typecheck, tests, bundle and provenance` | the client type-checks and passes its tests, the product app builds the bundle every Rust job embeds and holds it to its bundle budget, and the source/package/contract provenance and the port plan match their manifests |
+| `UI typecheck, tests and bundle` | the client type-checks and passes its tests, the product app builds the bundle every Rust job embeds and holds it to its bundle budget |
 | `worker self-update end to end` | a real worker follows a newer-protocol server: fetch, verify, install over itself, restart, run a turn |
 | `Browser acceptance` | a real browser drives the real stack — server, worker, an approval that blocks its turn — in a desktop and a phone viewport |
 
@@ -570,7 +559,7 @@ git diff --exit-code -- contracts/bb
 ```
 
 The `ui` job needs Node and pnpm (`corepack enable` picks up the pinned pnpm
-from `packageManager`), then runs the app's build and every metadata check:
+from `packageManager`), then runs the app's build, its tests and the budget:
 
 ```bash
 pnpm install --frozen-lockfile
@@ -578,8 +567,6 @@ pnpm run typecheck
 pnpm run test
 pnpm --filter @bb/app run build     # the bundle the Rust jobs compile in
 pnpm run check:bundle
-BB_SRC=/tmp/bb pnpm run provenance:test && BB_SRC=/tmp/bb pnpm run provenance:check
-BB_SRC=/tmp/bb pnpm run port-plan:test  && BB_SRC=/tmp/bb pnpm run port-plan:check
 git diff --exit-code -- ui/ apps/app/
 test -z "$(git status --porcelain -- ui/ apps/app/)"
 ```
@@ -588,9 +575,8 @@ Where CI uploads `apps/app/dist` as the `ui-dist` artifact, a local run just
 leaves it in place — the four jobs that need it download it into the same path
 before they call cargo.
 
-`/tmp/bb` is the pinned checkout the `contract` job's recipe above produces —
-provenance and the port plan read their commit from `ui/provenance.json`, which
-is the same bb revision.
+This job never checks out bb: the only job that needs the pinned checkout is
+`contract`, which reads the revision from `contracts/bb/manifest.json`.
 
 The `e2e` job needs the bundle and a Chromium of its own, then runs the suite
 against a stack it starts itself:

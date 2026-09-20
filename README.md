@@ -29,7 +29,7 @@ on it and it can be validated on its own.
 - [x] The event model aligned with bb's `ThreadEvent` contract (35 provider event types) — see [`docs/event-model.md`](docs/event-model.md)
 - [ ] Persist domain entities (the domain registry is in-process and lost on restart)
 - [x] The server role hosts the UI from its own origin: the product app in `apps/app` is compiled into the binary (`crates/server/build.rs`), so the one artifact carries its client and nothing about serving it is configured (`docs/ui.md`)
-- [x] The ported bb app (`apps/app`) is the only UI — same-origin typed `/api/v1` routes, the public `/ws` realtime contract, and machine-checked provenance against the pinned bb commit (`docs/ui-baseline.md`)
+- [x] The ported bb app (`apps/app`) is the only UI — same-origin typed `/api/v1` routes, the public `/ws` realtime contract, and a recorded bb source baseline (`docs/ui-baseline.md`)
 - [ ] Check in the Node execution plane (`apps/host-daemon`) against the worker contract
   (`loom worker` is the reference implementation of that contract and exercises
   all of it today)
@@ -57,11 +57,8 @@ contracts/bb/                   generated JSON Schema from bb's contract package
 tools/contract-export/          the exporter that produces contracts/bb
 apps/app/                       the product app: the only UI, compiled into
                                 the binary by crates/server/build.rs
-ui/packages/*                   the pinned bb packages the product app builds
-                                against (domain, contract, thread-view, …)
-        ui/provenance.json, ui/app-patch-ledger.json, ui/app-port-plan.json
-                                the app's pin, per-file adaptation record and
-                                route-level port plan, all machine-checked
+ui/packages/*                   the bb packages the product app builds against
+                                (domain, contract, thread-view, …)
 containers/     the container images and the compose example
 docs/
   acp-adapter.md
@@ -92,12 +89,9 @@ docs/
 loom's routes and the unsupported surfaces removed, in the pnpm workspace and
 built by the same `pnpm build` as everything else. It is the only UI this
 repository serves. The baseline, dependency closure and product-surface
-decisions are recorded in [`docs/ui-baseline.md`](docs/ui-baseline.md). The
-manifest-driven machine-checkable registry, hashes and import list live in
-[`ui/provenance.json`](ui/provenance.json), the per-file adaptation record in
-[`ui/app-patch-ledger.json`](ui/app-patch-ledger.json), and the route-level port
-plan in [`ui/app-port-plan.json`](ui/app-port-plan.json). The projection package
-sync policy remains in [`docs/ui-package-sync.md`](docs/ui-package-sync.md).
+decisions are recorded in [`docs/ui-baseline.md`](docs/ui-baseline.md), and the
+package sync policy in [`docs/ui-package-sync.md`](docs/ui-package-sync.md).
+Adaptations are ordinary commits, reviewed on their diff.
 
 ## Build and test
 
@@ -108,8 +102,6 @@ every cargo command:
 pnpm install
 pnpm build            # ui/packages/*, then the product app → apps/app/dist
 pnpm test
-pnpm provenance:check
-pnpm port-plan:check
 pnpm check:bundle     # the app's boot and lazy-route budget, after the build
 
 cargo build --release -p loom   # the one binary both roles run from
