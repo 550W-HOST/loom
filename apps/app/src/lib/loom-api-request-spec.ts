@@ -244,6 +244,7 @@ export const LOOM_API_REQUEST_SPECS = {
     source: "json",
     json: {} as SetQueuedMessageGroupBoundaryRequest,
   },
+  "threads.stop": { source: "none" },
   "threads.storageContent": {
     source: "query",
     query: {} as ThreadStorageContentQuery,
@@ -354,6 +355,7 @@ export interface LoomApiResponseSpecs {
   "threads.send": SendMessageResponse;
   "threads.sendQueuedMessage": SendQueuedMessageResponse;
   "threads.setQueuedMessageGroupBoundary": ThreadQueuedMessageListResponse;
+  "threads.stop": { ok: true };
   "threads.storageContent": unknown;
   "threads.storageFile": unknown;
   "threads.storageFiles": ThreadStorageFileListResponse;

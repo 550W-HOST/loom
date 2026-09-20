@@ -84,6 +84,7 @@ export const LOOM_API_ROUTES = [
   { id: "threads.send", method: "POST", path: "/threads/:id/send" },
   { id: "threads.sendQueuedMessage", method: "POST", path: "/threads/:id/queued-messages/:queuedMessageId/send" },
   { id: "threads.setQueuedMessageGroupBoundary", method: "PATCH", path: "/threads/:id/queued-messages/group-boundary" },
+  { id: "threads.stop", method: "POST", path: "/threads/:id/stop" },
   { id: "threads.storageContent", method: "GET", path: "/threads/:id/thread-storage/content" },
   { id: "threads.storageFile", method: "GET", path: "/threads/:id/thread-storage/files/:filePath{.+}" },
   { id: "threads.storageFiles", method: "GET", path: "/threads/:id/thread-storage/files" },

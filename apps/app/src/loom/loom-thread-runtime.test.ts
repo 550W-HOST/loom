@@ -5,7 +5,6 @@ import type {
   SidebarBootstrapResponse,
   ThreadResponse,
 } from "@bb/server-contract";
-import { BrowserSdkUnavailableError } from "@bb/sdk/browser";
 import { sdk } from "@/lib/sdk";
 import {
   LoomThreadRuntimeError,
@@ -16,6 +15,7 @@ import {
   loomMarkThreadUnread,
   loomPinThread,
   loomReorderPinnedThread,
+  loomStopThread,
   loomUnpinThread,
   loomGetThreadTabs,
   loomSpawnThread,
@@ -435,10 +435,8 @@ describe("loom New Thread runtime", () => {
     expect(sdk.threads.reorderPinned).toBe(loomReorderPinnedThread);
     expect(sdk.threads.tabs.get).toBe(loomGetThreadTabs);
     expect(sdk.threads.tabs.update).toBe(loomUpdateThreadTabs);
+    expect(sdk.threads.stop).toBe(loomStopThread);
     expect(sdk.environments.listProviders).toBe(loomListEnvironmentProviders);
-    await expect(sdk.threads.stop({ threadId: "thr_missing" })).rejects.toBeInstanceOf(
-      BrowserSdkUnavailableError,
-    );
   });
 });
 
@@ -678,5 +676,73 @@ describe("loom thread deletion", () => {
     const [url, init] = fetchMock.mock.calls[0] as unknown as [URL, RequestInit];
     expect(url.pathname).toBe("/api/v1/threads/thr_1");
     expect(init.method).toBe("DELETE");
+  });
+});
+
+describe("loom thread stop", () => {
+  it("stops through the contract route with no body", async () => {
+    const fetchMock = vi.fn(async () => jsonResponse({ ok: true }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(loomStopThread({ threadId: "thr_1" })).resolves.toEqual({
+      ok: true,
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [URL, RequestInit];
+    expect(init.method).toBe("POST");
+    expect(init.body).toBeUndefined();
+    expect(url.pathname).toBe("/api/v1/threads/thr_1/stop");
+    expect(url.search).toBe("");
+  });
+
+  it("treats an already-idle thread as stopped rather than an error", async () => {
+    // `threads.stop` is idempotent: the server answers `{ ok: true }` whether it
+    // terminated a run or found none, and the caller must not turn that into a
+    // failure.
+    vi.stubGlobal("fetch", vi.fn(async () => jsonResponse({ ok: true })));
+
+    await expect(loomStopThread({ threadId: "thr_idle" })).resolves.toEqual({
+      ok: true,
+    });
+  });
+
+  it("encodes the thread id as a single path segment", async () => {
+    const fetchMock = vi.fn(async () => jsonResponse({ ok: true }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await loomStopThread({ threadId: "a/b" });
+
+    const [url] = fetchMock.mock.calls[0] as unknown as [URL];
+    expect(url.pathname).toBe("/api/v1/threads/a%2Fb/stop");
+  });
+
+  it("surfaces a route failure as a loom HTTP error", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        jsonResponse({ code: "thread_not_found", message: "gone" }, 404),
+      ),
+    );
+
+    await expect(
+      loomStopThread({ threadId: "thr_missing" }),
+    ).rejects.toMatchObject({
+      status: 404,
+      code: "thread_not_found",
+    });
+  });
+
+  it("is reachable through the browser SDK surface", async () => {
+    const fetchMock = vi.fn(async () => jsonResponse({ ok: true }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(sdk.threads.stop({ threadId: "thr_1" })).resolves.toEqual({
+      ok: true,
+    });
+
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [URL, RequestInit];
+    expect(url.pathname).toBe("/api/v1/threads/thr_1/stop");
+    expect(init.method).toBe("POST");
   });
 });

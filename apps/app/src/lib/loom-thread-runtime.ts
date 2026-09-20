@@ -482,6 +482,22 @@ export function loomDeleteThread(
   });
 }
 
+/**
+ * Stop the thread's in-flight run through the contract route.
+ *
+ * `threads.stop` was still the fail-closed browser SDK stub, so the app's stop
+ * control threw `BrowserSdkUnavailableError` instead of reaching the server and
+ * the run kept going. The contract route is a bodyless `POST` on the thread's
+ * `stop` path; the server answers `{ ok: true }` and is idempotent — a thread
+ * with no run in flight is already in the state the caller asked for — so the
+ * parsed body is returned rather than an invented one.
+ */
+export function loomStopThread(request: {
+  threadId: string;
+}): Promise<{ ok: true }> {
+  return loomApiJson("threads.stop", { param: { id: request.threadId } });
+}
+
 export async function loomMarkThreadRead(request: {
   threadId: string;
 }): Promise<ThreadResponse> {
