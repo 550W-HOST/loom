@@ -270,3 +270,27 @@ loom 自有事实保留原来源：
 每阶段一个独立 PR；每阶段结束时更新
 [`history-convergence-review.md`](history-convergence-review.md) 的状态表（该文件由用户维护时
 先询问）与 [`architecture.md`](architecture.md) 的职责描述，不新增互相矛盾的补充节。
+
+## 10. 阶段一实施步骤（逐步交付）
+
+每步一个提交、先写测试、跑完 `cargo test --workspace --locked` + `clippy -D warnings` + `pnpm` 门禁再进下一步。
+
+**1.1 依赖与打开。** `rusqlite`（`bundled`，编译进二进制，不引入运行时依赖）进 workspace + `loom-server`；新增 `crates/server/src/store/`（`mod.rs` 打开库、`schema.rs` 迁移）。`<server-data-dir>/loom.db`，WAL、`synchronous=NORMAL`、`foreign_keys=ON`、`schema_version` 表。打不开/迁移失败 = 启动失败，绝不回退内存。测试：建库幂等、版本表、坏库显式报错。
+
+**⚠️ 这一步会改变发布工具链。** 这是本仓库第一个 C 依赖：`bundled` 需要用 C 编译器编 SQLite。`x86_64-unknown-linux-musl` 现在靠宿主 `cc` 链接（`.cargo/config.toml` 注释），`aarch64-unknown-linux-musl` 只有 `rust-lld`；两者都没有 musl 交叉 C 编译器。因此 `release.yml` 必须同时加：x86_64 装 `musl-tools`，aarch64 装 aarch64 的 musl C 交叉编译器并设 `CC_aarch64_unknown_linux_musl`（`.cargo/config.toml` 记一笔）。本地只能验证 gnu 目标；musl 两个目标必须由 CI 或装了交叉工具链的机器验证后，才可以说发布路径完好。
+
+**1.2 表与迁移（v1）。** `thread_history`（binding、`provider_session_id`、`revision`、`synced_at_ms`、`last_error`）与 `thread_history_row`（`thread_id, seq, source_kind, source_run_id, source_at_ms, event_json`，`seq` 写入时分配、永不重算）。测试：往返、并发分配不重号、同 `(thread_id, seq)` 唯一、删除 thread 同事务清行。
+
+**1.3 写入缝（先展示、异步落盘）。** 单写线程 + 有界队列，落点是现有唯一写入缝 `publish_domain_event`。入队不阻塞运行时；提交成功才更新该 thread 的已提交 revision 与 `synced_at_ms`；队列满或写失败 → 标记未保存并带上原因，不无限重试、不谎称已保存。测试：发布后最终落库、队列满不涨内存、写失败保留旧基线并报告、运行时不被阻塞。
+
+**1.4 读取改走库。** 主 timeline 与所有会话内容读库；内存缓存降级为投影加速层，`revision` 取代 `cacheInstance`+`generation`；ACP 加载只在"尚未同步"与显式刷新时触发。测试：同步成功后**worker 离线**重启，历史仍可读可翻页（§9 验收第 1 条）。
+
+**1.5 同步落库（原子替换）。** 一次加载 = 一个事务：删该 binding 的 `replayed` 行、插新回放、`revision += 1`；loom 自有的 `run`/`message` 行保留并按标识去重；失败保留旧基线，只更新 `last_error`。测试：原子替换、失败保旧、诊断行在替换后仍在。
+
+**1.6 读取统一。** `thread_output`、`thread_conversation_outline`、`thread_prompt_history`、`thread_search_matches`、retry 取用户输入、`b7.rs` project prompt history 改走库；`thread_event_rows`（传输）与 goal/active-plan（loom 自有事实）保持 relay。`thread_domain_events` 拆成"会话条目 / 领域条目"两个显式读路径。测试：超出 relay 窗口的历史对每条路由可见；既有 conformance 保持绿。
+
+**1.7 客户端 revision。** 契约把 `generation` 改为持久 `historyRevision`，删掉 `cacheInstance`；请求携带 revision；客户端规则收敛为"revision 不同 → 重置；更小 → 迟到丢弃"。测试：客户端合并测试 + 服务端旧 revision 触发 reset。
+
+**1.8 显式刷新入口。** `POST /api/v1/threads/{id}/history/refresh`：强制一次同步；失败保留旧基线，成功推进 revision；运行中沿用现有串行规则。UI 最小入口（stale 时出现"重试加载"）。测试：失败后旧内容仍可读、点刷新后恢复。
+
+**1.9 收尾。** thread 删除清行、磁盘写失败显式报错、SIGKILL 后重启不出现"看似完整实则缺尾"、更新 `architecture.md` / `domain-persistence.md` / 本文件状态。
