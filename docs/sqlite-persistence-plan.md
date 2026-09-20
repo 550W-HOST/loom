@@ -315,6 +315,10 @@ CREATE TABLE IF NOT EXISTS entity_meta (
 - 退场条件：relay 契约套件在 SQLite 后端全绿，且 worker 断线重连补帧测试通过，才删
   `shard-*.log` 写入路径。
 
+**进展（2026-09-21，3.1 完成）**：schema v4 增 `relay_event(event_id TEXT PK, shard, scope_kind, scope_id, payload BLOB, created_at_ms, origin)`，索引 `(shard, event_id)` 与 `(shard, created_at_ms)`。`Store` 提供 `append_relay_event(shard, record, max_len)`（**插入与按上限裁剪同一个事务**，超限删最旧；子查询在未超限时返回空，所以不会误删）、`read_relay_events(shard, after, limit)`（`event_id > cursor ORDER BY event_id`，与内存/磁盘后端**同一套语义**：游标在读取里而不是由调用方过滤，所以「同一毫秒的超大突发」不会卡住读者）、`trim_relay_events`、`relay_event_count`/`relay_event_total`。测试 5 个：往返逐字段相等（含 BLOB 载荷与 origin）、突发大于一页仍逐页推进不重不漏、满 shard 删最旧且顺序不变、按时间裁剪只删更旧的、六种 scope 全部往返。
+
+**3.2/3.3 的做法（下一步）**：把 `crates/relay/tests/relay.rs` 那套后端契约提成可复用套件（relay 侧一个非默认 feature 暴露的 `conformance` 模块），这样 `crates/server` 能用同一个 `RelayBackend` 实现跑**同一套**场景，而不是抄一份；store 后端实现落在 `crates/server/src/store/relay_backend.rs`（relay 不能依赖 store，所以实现只能在 server 侧）。先做同步实现跑通契约（每次 append 一次 `block_on`），量化每次 publish 的代价，再决定是否加「单写线程 + 读取时合并未落盘尾巴」（与阶段一 overlay 同构）。之后才是双层写、恢复改读库、删 `shard-*.log`。
+
 ## 8. 通用测试清单（每阶段都要有）
 
 - 完整性：提交后读取与内存投影逐行一致（同一 `event_json` 投影出的行相同）。

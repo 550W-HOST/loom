@@ -9,7 +9,7 @@ use turso::Connection;
 use super::{block_on, column_integer, StoreError};
 
 /// The schema this build writes and understands.
-pub const SCHEMA_VERSION: i64 = 3;
+pub const SCHEMA_VERSION: i64 = 4;
 
 /// The version the file currently holds.
 pub fn version(connection: &Connection) -> Result<i64, StoreError> {
@@ -50,10 +50,42 @@ pub fn migrate(connection: &Connection) -> Result<(), StoreError> {
     if current < 3 {
         block_on(transaction.execute_batch(V3))?;
     }
+    if current < 4 {
+        block_on(transaction.execute_batch(V4))?;
+    }
     block_on(transaction.pragma_update("user_version", SCHEMA_VERSION))?;
     block_on(transaction.commit())?;
     Ok(())
 }
+
+/// Version 4: the relay's frames, in a table.
+///
+/// The frames were an append-only file per shard: the thing a client resumes
+/// from, the thing a worker's missed frames are caught up with, and the delta
+/// recovery replays after the entity view's watermark. They are rows now, in the
+/// store that already holds the conversations and the entity view, so one
+/// database is the whole durable state and a transaction can span a frame and
+/// the state it implies.
+///
+/// `event_id` is the identity *and* the order: a fixed-width Crockford base32 of
+/// a `u128`, so its text order is the id order the in-memory backends filter by.
+const V4: &str = "
+CREATE TABLE IF NOT EXISTS relay_event (
+    event_id      TEXT    PRIMARY KEY,
+    shard         INTEGER NOT NULL,
+    scope_kind    TEXT    NOT NULL,
+    scope_id      TEXT,
+    payload       BLOB    NOT NULL,
+    created_at_ms INTEGER NOT NULL,
+    origin        TEXT    NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS relay_event_shard
+    ON relay_event (shard, event_id);
+
+CREATE INDEX IF NOT EXISTS relay_event_age
+    ON relay_event (shard, created_at_ms);
+";
 
 /// Version 3: the entity view, in tables.
 ///

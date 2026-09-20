@@ -31,6 +31,7 @@
 
 mod entities;
 mod history;
+mod relay_log;
 mod schema;
 mod seq;
 mod writer;
@@ -108,6 +109,16 @@ pub(crate) fn column_optional_text(row: &Row, index: usize) -> Result<Option<Str
         Value::Null => Ok(None),
         other => Err(StoreError::new(format!(
             "column {index} was {other:?}, not text or null"
+        ))),
+    }
+}
+
+/// The bytes in a column.
+pub(crate) fn column_blob(row: &Row, index: usize) -> Result<Vec<u8>, StoreError> {
+    match row.get_value(index)? {
+        Value::Blob(bytes) => Ok(bytes),
+        other => Err(StoreError::new(format!(
+            "column {index} was {other:?}, not bytes"
         ))),
     }
 }
