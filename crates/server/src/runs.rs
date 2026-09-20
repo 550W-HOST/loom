@@ -2095,6 +2095,64 @@ mod tests {
         state.shutdown();
     }
 
+    /// The timeline cache's overlay is fed where an event is applied, not from
+    /// the relay readers: a reader runs behind the log and can be overtaken by
+    /// a trim, and an overlay that misses events is a conversation with holes
+    /// in the middle of it.
+    #[tokio::test]
+    async fn a_live_run_event_reaches_the_timeline_cache_overlay() {
+        let state = state();
+        let (host_id, thread, workspace) = thread_with_workspace(&state, "/srv/project-a");
+        state.registry.set_provider_session_id(
+            &thread.id,
+            "acp-session-1",
+            Some(
+                loom_domain::ProviderSessionBinding::new("pi", &workspace)
+                    .on_host(host_id.clone())
+                    .at(2),
+            ),
+            2,
+        );
+        let session_id = state
+            .registry
+            .thread(&thread.id)
+            .and_then(|thread| thread.provider_session_id)
+            .expect("the binding was just recorded");
+
+        // An overlay needs a baseline to overlay: without one the event is
+        // refused, and the next load brings it again in the replay.
+        state.history.install_baseline(
+            &thread.id,
+            crate::history_cache::CacheBinding {
+                host_id: host_id.clone(),
+                agent: state.provider_spec().name.clone(),
+                provider_session_id: session_id,
+                cwd: workspace.clone(),
+            },
+            Vec::new(),
+        );
+
+        let event = RunEvent::new(
+            thread.id.clone(),
+            thread.project_id.clone(),
+            loom_domain::RunId::mint(),
+            3,
+            loom_domain::ProviderEvent::ThreadIdentity {
+                provider_thread_id: "acp-session-1".into(),
+            },
+        );
+        state
+            .publish_domain_event(&loom_domain::DomainEvent::ThreadRunEvent {
+                run: Box::new(event),
+            })
+            .unwrap();
+
+        let view = state.history.view(&thread.id).expect("the thread is cached");
+        assert_eq!(view.rows.len(), 1, "the live event reached the overlay");
+        assert_eq!(view.rows[0].seq, 1, "and was numbered by the cache");
+        state.shutdown();
+    }
+
     /// The provider spec of the single frame dispatched to `host_id`.
     fn dispatched_provider(state: &AppState, host_id: &HostId) -> serde_json::Value {
         let frames = state

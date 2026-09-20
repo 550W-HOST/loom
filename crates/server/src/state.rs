@@ -32,6 +32,21 @@ use crate::runs::{RunRecord, RunRegistry};
 use crate::settings::SettingsRegistry;
 use crate::ui::Ui;
 
+/// How many threads' conversations the timeline cache may hold at once.
+///
+/// The cache is a cache: evicting a thread costs one reload from the host that
+/// owns its session, so the bound is about memory rather than correctness.
+const HISTORY_CACHE_THREADS: usize = 64;
+
+/// How many bytes of cached conversation rows the server may hold.
+const HISTORY_CACHE_BYTES: u64 = 64 * 1024 * 1024;
+
+/// How many history loads may be in flight at once.
+///
+/// Each one holds a worker connection and a growing replay, so this is the
+/// bound that keeps a burst of cache misses from multiplying memory.
+const HISTORY_CACHE_CONCURRENT_LOADS: usize = 4;
+
 /// How the server is wired.
 #[derive(Clone, Debug)]
 pub struct AppConfig {
@@ -205,6 +220,9 @@ pub struct AppState {
     pub host_rpc: Arc<HostRpcBroker>,
     /// Callers waiting on a host's streamed history load.
     pub history_rpc: Arc<HistoryBroker>,
+    /// The per-thread timeline cache: a rebuildable, bounded view of a
+    /// conversation whose authority lives with the agent that owns it.
+    pub history: Arc<crate::history_cache::HistoryCache>,
     /// HTTP requests waiting on a host's answer to a terminal operation.
     pub terminal: Arc<crate::terminals::TerminalBroker>,
     /// What each host's agent reported it can run.
@@ -339,6 +357,11 @@ impl AppState {
             host_files: Arc::new(HostFileBroker::new()),
             host_rpc: Arc::new(HostRpcBroker::new()),
             history_rpc: Arc::new(HistoryBroker::new()),
+            history: Arc::new(crate::history_cache::HistoryCache::new(
+                HISTORY_CACHE_THREADS,
+                HISTORY_CACHE_BYTES,
+                HISTORY_CACHE_CONCURRENT_LOADS,
+            )),
             terminal: Arc::new(crate::terminals::TerminalBroker::new()),
             catalogs: Arc::new(crate::catalogs::CatalogRegistry::new()),
             terminals: Arc::new(crate::terminals::TerminalSessions::new()),
@@ -660,8 +683,45 @@ impl AppState {
         &self,
         event: &loom_domain::DomainEvent,
     ) -> RelayResult<loom_relay::Envelope> {
+        // The live overlay is fed here, at the seam where an event is applied,
+        // rather than from the relay readers: a reader advances behind the log
+        // and can be overtaken by a trim, and an overlay that misses events is
+        // a conversation with holes in the middle of it.
+        self.cache_live_event(event);
         let payload = serde_json::to_vec(event).expect("a DomainEvent always serializes to JSON");
         self.publish(relay_scope(&event.scope()), payload)
+    }
+
+    /// Adds one live thread event to the timeline cache's overlay.
+    ///
+    /// Only a thread's own run events belong here: they are the conversation.
+    /// An event the cache cannot attribute — a thread with no session binding,
+    /// or a binding with no host — is skipped, because without a binding there
+    /// is no baseline it could be an overlay of.
+    fn cache_live_event(&self, event: &loom_domain::DomainEvent) {
+        let loom_domain::DomainEvent::ThreadRunEvent { run } = event else {
+            return;
+        };
+        let Some(thread) = self.registry.thread(&run.thread_id) else {
+            return;
+        };
+        let Some(provider_session_id) = thread.provider_session_id.clone() else {
+            return;
+        };
+        let Some(binding) = thread.provider_session_binding.as_ref() else {
+            return;
+        };
+        let Some(host_id) = binding.host_id.clone() else {
+            return;
+        };
+        let binding = crate::history_cache::CacheBinding {
+            host_id,
+            agent: binding.agent.clone(),
+            provider_session_id,
+            cwd: binding.cwd.clone(),
+        };
+        self.history
+            .append_live(&run.thread_id, &binding, run.event.body.clone());
     }
 
     /// Publishes a durable public cache invalidation with no domain-event peer.
