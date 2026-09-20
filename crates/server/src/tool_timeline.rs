@@ -51,7 +51,7 @@ pub struct ToolActivity {
     /// The sequence of the last frame that contributed to it.
     pub end_sequence: u64,
     /// When the call started.
-    pub started_at_ms: u64,
+    pub started_at_ms: Option<u64>,
     /// When it finished, if it has.
     pub completed_at_ms: Option<u64>,
 }
@@ -92,7 +92,10 @@ impl ToolActivity {
             "sourceSeqStart": self.start_sequence,
             "sourceSeqEnd": self.end_sequence,
             "startedAt": self.started_at_ms,
-            "createdAt": self.completed_at_ms.unwrap_or(self.started_at_ms),
+            // A restored conversation has neither time: the agent's replay
+            // carries no timestamp, and a load time is not the event's time.
+            // Null is the honest answer, and the contract accepts it.
+            "createdAt": self.completed_at_ms.or(self.started_at_ms),
             "kind": "work",
             "status": self.status(),
             "callId": self.id.item_id,
@@ -347,7 +350,7 @@ impl ToolTimeline {
         run_id: &str,
         event: &ProviderEvent,
         sequence: u64,
-        at_ms: u64,
+        at_ms: Option<u64>,
     ) -> bool {
         match event {
             ProviderEvent::ItemStarted { item, .. } if ToolActivity::is_tool(item) => {
@@ -373,7 +376,7 @@ impl ToolTimeline {
                 let activity = self.entry(run_id, item_id_of(item), sequence, at_ms);
                 activity.item = item.clone();
                 activity.end_sequence = sequence;
-                activity.completed_at_ms = Some(at_ms);
+                activity.completed_at_ms = at_ms;
                 true
             }
             _ => false,
@@ -385,7 +388,7 @@ impl ToolTimeline {
         run_id: &str,
         item_id: &str,
         sequence: u64,
-        at_ms: u64,
+        at_ms: Option<u64>,
     ) -> &mut ToolActivity {
         let id = ToolActivityId {
             run_id: run_id.to_owned(),
@@ -602,10 +605,25 @@ mod tests {
     #[test]
     fn a_calls_frames_fold_into_one_row_that_names_the_command() {
         let mut timeline = ToolTimeline::new();
-        assert!(timeline.absorb("run-1", &started("call-1"), 4, 1_000));
-        assert!(timeline.absorb("run-1", &progress("call-1", "ls -la"), 5, 1_200));
-        assert!(timeline.absorb("run-1", &progress("call-1", "ls -la"), 6, 1_400));
-        assert!(timeline.absorb("run-1", &completed("call-1"), 7, 1_900));
+        assert!(timeline.absorb("run-1", &started("call-1"), 4, Some(1_000)));
+        assert!(timeline.absorb(
+            "run-1",
+            &progress("call-1", "ls -la"),
+            5,
+            Some(1_200)
+        ));
+        assert!(timeline.absorb(
+            "run-1",
+            &progress("call-1", "ls -la"),
+            6,
+            Some(1_400)
+        ));
+        assert!(timeline.absorb(
+            "run-1",
+            &completed("call-1"),
+            7,
+            Some(1_900)
+        ));
 
         let activity = timeline.get("run-1", "call-1").expect("the call exists");
         assert_eq!(activity.status(), "completed");
@@ -643,7 +661,7 @@ mod tests {
                 provider_thread_id: "provider-thread".to_owned(),
             },
             3,
-            1_100,
+            Some(1_100),
         ));
         let row = timeline
             .get("run-1", "call-text")
@@ -662,7 +680,7 @@ mod tests {
                 provider_thread_id: "provider-thread".to_owned(),
             },
             5,
-            1_300,
+            Some(1_300),
         ));
         let row = timeline
             .get("run-1", "call-json")
@@ -695,7 +713,7 @@ mod tests {
                 provider_thread_id: "provider-thread".to_owned(),
             },
             2,
-            1_000,
+            Some(1_000),
         );
         timeline.absorb(
             "run-1",
@@ -704,7 +722,7 @@ mod tests {
                 provider_thread_id: "provider-thread".to_owned(),
             },
             3,
-            2_200,
+            Some(2_200),
         );
 
         let row = timeline
@@ -763,7 +781,7 @@ mod tests {
                     provider_thread_id: "provider-thread".to_owned(),
                 },
                 10 + index as u64,
-                1_000,
+                Some(1_000),
             );
         }
 
@@ -874,7 +892,7 @@ mod tests {
     #[test]
     fn a_failed_call_reports_the_contracts_status() {
         let mut timeline = ToolTimeline::new();
-        timeline.absorb("run-1", &started("call-3"), 2, 1_000);
+        timeline.absorb("run-1", &started("call-3"), 2, Some(1_000));
         timeline.absorb(
             "run-1",
             &ProviderEvent::ItemCompleted {
@@ -882,7 +900,7 @@ mod tests {
                 provider_thread_id: "provider-thread".to_owned(),
             },
             3,
-            1_500,
+            Some(1_500),
         );
 
         let activity = timeline.get("run-1", "call-3").expect("the call exists");
@@ -937,7 +955,7 @@ mod tests {
                 provider_thread_id: "provider-thread".to_owned(),
             },
             3,
-            1_000,
+            Some(1_000),
         );
         timeline.absorb(
             "run-1",
@@ -953,7 +971,7 @@ mod tests {
                 provider_thread_id: "provider-thread".to_owned(),
             },
             4,
-            1_500,
+            Some(1_500),
         );
 
         let activity = timeline.get("run-1", "call-edit").expect("the call exists");
@@ -1017,7 +1035,7 @@ mod tests {
                 provider_thread_id: "provider-thread".to_owned(),
             },
             6,
-            1_000,
+            Some(1_000),
         );
 
         let activity = timeline.get("run-1", "call-edit").expect("the call exists");
@@ -1053,7 +1071,7 @@ mod tests {
                 provider_thread_id: "provider-thread".to_owned(),
             },
             5,
-            1_000,
+            Some(1_000),
         );
 
         let activity = timeline.get("run-1", "call-edit").expect("the call exists");
@@ -1082,8 +1100,34 @@ mod tests {
                 parent_tool_call_id: None,
             },
             2,
-            1_000,
+            Some(1_000),
         ));
         assert!(timeline.get("run-1", "assistant-1").is_none());
+    }
+
+    /// A restored conversation has no timestamps: the agent's replay carries
+    /// none, and the moment the server loaded it is not the moment the call
+    /// happened. Null is the honest answer, and it is a different thing from
+    /// "this happened at the epoch".
+    #[test]
+    fn a_call_with_no_time_reports_null_times() {
+        let mut timeline = ToolTimeline::new();
+        timeline.absorb("restored-1", &started("call-1"), 1, None);
+        timeline.absorb("restored-1", &completed("call-1"), 2, None);
+
+        let activity = timeline.get("restored-1", "call-1").expect("the call exists");
+        let row = activity.row("thread-1");
+        assert!(row["startedAt"].is_null(), "no fabricated start: {row}");
+        assert!(row["createdAt"].is_null(), "no fabricated creation: {row}");
+        assert!(row["completedAt"].is_null(), "no fabricated completion: {row}");
+
+        // The local grouping key is what a restored row carries as its turn.
+        // It must be mistakable for a loom run id by nothing: the ambient
+        // prefix rule is what keeps a run action from appearing on it.
+        assert_eq!(row["turnId"], "restored-1");
+        assert!(
+            "restored-1".parse::<loom_domain::RunId>().is_err(),
+            "a restored conversation's grouping key must not parse as a run id"
+        );
     }
 }

@@ -3706,7 +3706,7 @@ fn tool_timeline(
                 &run.run_id.to_string(),
                 &run.event.body,
                 *sequence,
-                *created_at_ms,
+                Some(*created_at_ms),
             );
         }
     }
@@ -3756,7 +3756,7 @@ fn tool_item_id(item: &loom_domain::ThreadEventItem) -> &str {
 fn assistant_timeline_row(
     run_id: &str,
     thread_id: &ThreadId,
-    created_at_ms: u64,
+    created_at_ms: Option<u64>,
     message: &crate::assistant_timeline::AssistantMessage,
 ) -> Value {
     let mut row = timeline_row_base(
@@ -3782,7 +3782,7 @@ fn timeline_row_base(
     thread_id: &ThreadId,
     turn_id: Option<String>,
     sequence: u64,
-    created_at_ms: u64,
+    created_at_ms: Option<u64>,
 ) -> Value {
     json!({
         "id": id,
@@ -3826,14 +3826,14 @@ fn timeline_row_for_event(
             thread_id,
             None,
             sequence,
-            message.created_at_ms,
+            Some(message.created_at_ms),
         ),
         DomainEvent::ThreadRunEvent { run } => timeline_row_base(
             format!("{}-{sequence}", run.run_id),
             thread_id,
             Some(run.run_id.to_string()),
             sequence,
-            run.at_ms,
+            Some(run.at_ms),
         ),
         _ => return None,
     };
@@ -4043,7 +4043,7 @@ async fn thread_timeline(
                             assistant_rows.push(assistant_timeline_row(
                                 &run_id,
                                 &thread_id,
-                                *created_at_ms,
+                                Some(*created_at_ms),
                                 message,
                             ));
                         }
