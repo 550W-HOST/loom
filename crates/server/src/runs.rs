@@ -598,16 +598,18 @@ impl AppState {
             .unwrap_or_else(|| self.provider_spec());
         provider.cwd = Some(workspace.clone());
         record.provider_id = Some(provider.name.clone());
-        // Resume only when the recorded session belongs to this agent *and*
-        // this workspace. A provider session id is the agent's own, unique only
-        // within it, and a session is bound to the directory it was opened in —
-        // so resuming across either boundary would either hand an agent an id it
-        // never issued or reopen a conversation about the wrong project. The
-        // binding is what makes that check possible; a thread with none (an
-        // older snapshot, or a session established by another agent) starts
-        // fresh, which is recoverable where a wrong resume is not.
+        // Resume only when the recorded session belongs to this agent, this
+        // workspace *and* this machine. A provider session id is the agent's
+        // own, unique only within it; it is bound to the directory it was
+        // opened in; and it names a file on one host's disk. Resuming across
+        // any of those boundaries would hand an agent an id it never issued,
+        // reopen a conversation about the wrong project, or ask a machine for
+        // a session that lives elsewhere. The binding is what makes that check
+        // possible; a thread with none (an older snapshot, or a session
+        // established by another agent) starts fresh, which is recoverable
+        // where a wrong resume is not.
         let provider_session_id = thread
-            .resumable_session_id(&provider.name, &workspace)
+            .resumable_session_id(&provider.name, &workspace, &host.id)
             .map(str::to_owned);
         // This is only the identity the provider may resume. If no session is
         // available, the run gets a synthetic identity only if it later needs
@@ -912,6 +914,10 @@ impl AppState {
                     .unwrap_or_else(|| self.provider_spec().name.clone()),
                 record.cwd.clone(),
             )
+            // The host the run executed on: the session id names a file on
+            // that machine's disk, so restoring it anywhere else would ask an
+            // agent for an id it never issued.
+            .on_host(record.host_id.clone())
             .at(now)
         });
         if let Some(learned) =
@@ -2057,7 +2063,11 @@ mod tests {
         state.registry.set_provider_session_id(
             &thread.id,
             "acp-session-1",
-            Some(loom_domain::ProviderSessionBinding::new("pi", &workspace).at(2)),
+            Some(
+                loom_domain::ProviderSessionBinding::new("pi", &workspace)
+                    .on_host(host_id.clone())
+                    .at(2),
+            ),
             2,
         );
         state
@@ -2205,7 +2215,7 @@ mod tests {
         let record = state.runs.get(&run.run_id).expect("the run is in flight");
         assert_eq!(record.provider_id.as_deref(), Some("codex"));
         assert_eq!(
-            thread.resumable_session_id("codex", "/srv/project-a"),
+            thread.resumable_session_id("codex", "/srv/project-a", &record.host_id),
             None,
             "no session has been learned yet"
         );
@@ -2387,6 +2397,10 @@ mod tests {
             .expect("the identity event records the binding");
         assert_eq!(binding.agent, state.provider_spec().name);
         assert_eq!(binding.cwd, workspace);
+        // The host too: the id names a file on that machine's disk, so a
+        // resume must be routed back to it rather than to any host that
+        // happens to share the path.
+        assert_eq!(binding.host_id.as_ref(), Some(&host_id));
         assert_eq!(stored.provider_session_id.as_deref(), Some("acp-session-1"));
 
         // A completed run, then a second turn: the id travels with it.
@@ -2431,12 +2445,16 @@ mod tests {
         state.registry.set_provider_session_id(
             &thread.id,
             "acp-session-1",
-            Some(loom_domain::ProviderSessionBinding::new("pi", "/srv/project-b").at(6)),
+            Some(
+                loom_domain::ProviderSessionBinding::new("pi", "/srv/project-b")
+                    .on_host(host_id.clone())
+                    .at(6),
+            ),
             6,
         );
         let thread = state.registry.thread(&thread.id).unwrap();
         assert_eq!(
-            thread.resumable_session_id(&state.provider_spec().name, "/srv/project-a"),
+            thread.resumable_session_id(&state.provider_spec().name, "/srv/project-a", &host_id),
             None,
             "a session opened in one workspace must not be resumed in another"
         );
@@ -2445,12 +2463,16 @@ mod tests {
         state.registry.set_provider_session_id(
             &thread.id,
             "acp-session-1",
-            Some(loom_domain::ProviderSessionBinding::new("other-agent", workspace).at(7)),
+            Some(
+                loom_domain::ProviderSessionBinding::new("other-agent", workspace)
+                    .on_host(host_id.clone())
+                    .at(7),
+            ),
             7,
         );
         let thread = state.registry.thread(&thread.id).unwrap();
         assert_eq!(
-            thread.resumable_session_id(&state.provider_spec().name, "/srv/project-a"),
+            thread.resumable_session_id(&state.provider_spec().name, "/srv/project-a", &host_id),
             None,
             "a session id is only meaningful to the agent that issued it"
         );

@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::DomainError;
 use crate::event::DomainEvent;
-use crate::id::{EnvironmentId, MessageId, ProjectId, RunId, ThreadId};
+use crate::id::{EnvironmentId, HostId, MessageId, ProjectId, RunId, ThreadId};
 
 /// Where a thread is in its life.
 ///
@@ -361,6 +361,11 @@ pub struct NewThread {
 /// never issued, and resuming in a different directory would reopen a
 /// conversation about the wrong workspace.
 ///
+/// It is also the *machine's* identifier: the id names a file on one host's
+/// disk. A host that never issued it cannot restore it, and two machines can
+/// hold sessions that happen to share an id for paths that happen to match, so
+/// the owning host is part of the claim rather than a lookup hint.
+///
 /// Recorded from the same `thread/identity` event that established the id.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProviderSessionBinding {
@@ -368,6 +373,14 @@ pub struct ProviderSessionBinding {
     pub agent: String,
     /// The workspace the session was opened in.
     pub cwd: String,
+    /// The host whose agent issued the id, when known.
+    ///
+    /// `None` only for a binding recorded before this field existed. It means
+    /// "unknown", not "any": a caller that needs the session restored must
+    /// treat it as unprovable and ask for a re-bind rather than guess a
+    /// machine that happens to share the path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_id: Option<HostId>,
     /// When the binding was recorded, for a log or a support report. Not used
     /// for any decision.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -375,13 +388,20 @@ pub struct ProviderSessionBinding {
 }
 
 impl ProviderSessionBinding {
-    /// A binding for `agent` in `cwd`.
+    /// A binding for `agent` in `cwd`, with no host attributed yet.
     pub fn new(agent: impl Into<String>, cwd: impl Into<String>) -> Self {
         Self {
             agent: agent.into(),
             cwd: cwd.into(),
+            host_id: None,
             bound_at_ms: None,
         }
+    }
+
+    /// The same binding, attributed to the host that issued the id.
+    pub fn on_host(mut self, host_id: HostId) -> Self {
+        self.host_id = Some(host_id);
+        self
     }
 
     /// The same binding, stamped with when it was recorded.
@@ -828,35 +848,41 @@ impl Thread {
         })
     }
 
-    /// Whether a run in `cwd` by `agent` may resume this thread's session.
+    /// Whether a run in `cwd` on `host` by `agent` may resume this thread's
+    /// session.
     ///
     /// The whole point of recording the binding: a session opened by a
-    /// different agent, or in a different workspace, must be started fresh.
-    /// Resuming one across either boundary would either hand an agent an id it
-    /// never issued or reopen a conversation about a directory that is not the
-    /// one being edited — and neither failure is visible until well after it
-    /// has done damage.
+    /// different agent, in a different workspace, or on a different machine
+    /// must be started fresh. Resuming across any of those boundaries would
+    /// hand an agent an id it never issued, reopen a conversation about a
+    /// directory that is not the one being edited, or ask a machine for a
+    /// session that lives on another machine's disk — and none of those
+    /// failures is visible until well after it has done damage. Two machines
+    /// can hold sessions that share an id for paths that happen to match, so
+    /// the host is part of the claim rather than a lookup hint.
     ///
     /// A thread whose binding is unknown (`None`, a snapshot written before
-    /// W-566) is **not** resumable: the safe reading of a missing binding is
-    /// "cannot prove this is the same conversation", and a fresh session is
-    /// recoverable while the wrong resume is not.
-    pub fn may_resume_session(&self, agent: &str, cwd: &str) -> bool {
+    /// W-566) or whose host was never recorded is **not** resumable: the safe
+    /// reading of a missing binding is "cannot prove this is the same
+    /// conversation", and a fresh session is recoverable while the wrong
+    /// resume is not.
+    pub fn may_resume_session(&self, agent: &str, cwd: &str, host: &HostId) -> bool {
         if self.provider_session_id.is_none() {
             return false;
         }
-        self.provider_session_binding
-            .as_ref()
-            .is_some_and(|binding| binding.agent == agent && binding.cwd == cwd)
+        self.provider_session_binding.as_ref().is_some_and(|binding| {
+            binding.agent == agent && binding.cwd == cwd && binding.host_id.as_ref() == Some(host)
+        })
     }
 
-    /// The session id to dispatch for a run in `cwd` by `agent`, if any.
+    /// The session id to dispatch for a run in `cwd` on `host` by `agent`, if
+    /// any.
     ///
     /// `None` means "start a new session", which is what a mismatched binding
     /// and an absent one both mean. The caller never has to re-derive the
     /// condition. See [`Thread::may_resume_session`].
-    pub fn resumable_session_id(&self, agent: &str, cwd: &str) -> Option<&str> {
-        self.may_resume_session(agent, cwd)
+    pub fn resumable_session_id(&self, agent: &str, cwd: &str, host: &HostId) -> Option<&str> {
+        self.may_resume_session(agent, cwd, host)
             .then_some(self.provider_session_id.as_deref())
             .flatten()
     }
@@ -1302,28 +1328,37 @@ mod tests {
     // --- provider session binding -----------------------------------------
 
     #[test]
-    fn a_session_is_resumable_only_by_its_own_agent_in_its_own_workspace() {
+    fn a_session_is_resumable_only_by_its_own_agent_workspace_and_host() {
         let mut thread = thread();
+        let host = HostId::mint();
         // No session at all: nothing to resume.
-        assert!(!thread.may_resume_session("pi", "/srv/a"));
-        assert_eq!(thread.resumable_session_id("pi", "/srv/a"), None);
+        assert!(!thread.may_resume_session("pi", "/srv/a", &host));
+        assert_eq!(thread.resumable_session_id("pi", "/srv/a", &host), None);
 
         thread
             .set_provider_session_id(
                 "acp-1",
-                Some(ProviderSessionBinding::new("pi", "/srv/a")),
+                Some(ProviderSessionBinding::new("pi", "/srv/a").on_host(host.clone())),
                 1,
             )
             .expect("the first id changes the thread");
 
-        assert!(thread.may_resume_session("pi", "/srv/a"));
-        assert_eq!(thread.resumable_session_id("pi", "/srv/a"), Some("acp-1"));
+        assert!(thread.may_resume_session("pi", "/srv/a", &host));
+        assert_eq!(
+            thread.resumable_session_id("pi", "/srv/a", &host),
+            Some("acp-1")
+        );
         // A different agent must not be handed this id: it never issued it.
-        assert!(!thread.may_resume_session("omp", "/srv/a"));
-        assert_eq!(thread.resumable_session_id("omp", "/srv/a"), None);
+        assert!(!thread.may_resume_session("omp", "/srv/a", &host));
+        assert_eq!(thread.resumable_session_id("omp", "/srv/a", &host), None);
         // Neither must a different workspace: the conversation is about /srv/a.
-        assert!(!thread.may_resume_session("pi", "/srv/b"));
-        assert_eq!(thread.resumable_session_id("pi", "/srv/b"), None);
+        assert!(!thread.may_resume_session("pi", "/srv/b", &host));
+        assert_eq!(thread.resumable_session_id("pi", "/srv/b", &host), None);
+        // Nor another machine: the id names a file on *that* host's disk, and
+        // two machines can hold sessions that share an id for matching paths.
+        let other = HostId::mint();
+        assert!(!thread.may_resume_session("pi", "/srv/a", &other));
+        assert_eq!(thread.resumable_session_id("pi", "/srv/a", &other), None);
     }
 
     #[test]
@@ -1333,12 +1368,15 @@ mod tests {
         // is recoverable and a wrong resume is not.
         let mut thread = thread();
         thread.provider_session_id = Some("acp-1".into());
-        assert!(!thread.may_resume_session("pi", "/srv/a"));
-        assert_eq!(thread.resumable_session_id("pi", "/srv/a"), None);
+        let host = HostId::mint();
+        assert!(!thread.may_resume_session("pi", "/srv/a", &host));
+        assert_eq!(thread.resumable_session_id("pi", "/srv/a", &host), None);
     }
 
     #[test]
-    fn re_binding_a_session_updates_where_it_may_be_resumed() {
+    fn a_binding_without_a_host_is_not_resumed() {
+        // A binding written before the host was recorded proves the agent and
+        // the workspace but not the machine. An unproven host is unproven.
         let mut thread = thread();
         thread
             .set_provider_session_id(
@@ -1347,18 +1385,75 @@ mod tests {
                 1,
             )
             .unwrap();
+        assert!(!thread.may_resume_session("pi", "/srv/a", &HostId::mint()));
+    }
+
+    #[test]
+    fn a_binding_from_before_hosts_were_recorded_still_deserializes() {
+        // The snapshot-compat guarantee: an additive field must not make an
+        // older snapshot unreadable. `hostId` is absent, so the host is
+        // unproven rather than absent-and-therefore-any.
+        let binding: ProviderSessionBinding =
+            serde_json::from_str(r#"{"agent":"pi","cwd":"/srv/a","bound_at_ms":7}"#).unwrap();
+        assert_eq!(binding.agent, "pi");
+        assert_eq!(binding.cwd, "/srv/a");
+        assert_eq!(binding.host_id, None);
+        assert_eq!(binding.bound_at_ms, Some(7));
+    }
+
+    #[test]
+    fn re_binding_a_session_updates_where_it_may_be_resumed() {
+        let mut thread = thread();
+        let first = HostId::mint();
+        let second = HostId::mint();
+        thread
+            .set_provider_session_id(
+                "acp-1",
+                Some(ProviderSessionBinding::new("pi", "/srv/a").on_host(first.clone())),
+                1,
+            )
+            .unwrap();
         // The same id reported from a different workspace: the old binding is a
         // stale claim about where the conversation lives, so it must not win.
         let event = thread
             .set_provider_session_id(
                 "acp-1",
-                Some(ProviderSessionBinding::new("pi", "/srv/b")),
+                Some(ProviderSessionBinding::new("pi", "/srv/b").on_host(second.clone())),
                 2,
             )
             .expect("a changed binding is a change");
         assert!(matches!(event, DomainEvent::ThreadUpdated { .. }));
-        assert!(!thread.may_resume_session("pi", "/srv/a"));
-        assert_eq!(thread.resumable_session_id("pi", "/srv/b"), Some("acp-1"));
+        assert!(!thread.may_resume_session("pi", "/srv/a", &first));
+        assert_eq!(
+            thread.resumable_session_id("pi", "/srv/b", &second),
+            Some("acp-1")
+        );
+    }
+
+    #[test]
+    fn learning_the_host_of_an_existing_binding_is_a_change() {
+        // A legacy binding proves the agent and the workspace. Re-reporting the
+        // same session from the machine that owns it must upgrade the claim
+        // rather than be dropped as a repeat: until it does, the thread is not
+        // resumable.
+        let mut thread = thread();
+        thread
+            .set_provider_session_id(
+                "acp-1",
+                Some(ProviderSessionBinding::new("pi", "/srv/a")),
+                1,
+            )
+            .unwrap();
+        let host = HostId::mint();
+        let event = thread
+            .set_provider_session_id(
+                "acp-1",
+                Some(ProviderSessionBinding::new("pi", "/srv/a").on_host(host.clone())),
+                2,
+            )
+            .expect("a binding that gains its host is a change");
+        assert!(matches!(event, DomainEvent::ThreadUpdated { .. }));
+        assert!(thread.may_resume_session("pi", "/srv/a", &host));
     }
 
     #[test]

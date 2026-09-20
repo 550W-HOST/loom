@@ -3113,7 +3113,10 @@ mod tests {
             .create_thread(Some(personal(&registry)), Some("acp".into()), None, 2)
             .unwrap();
 
-        let binding = ProviderSessionBinding::new("pi", "/srv/project-a").at(3);
+        let host = HostId::mint();
+        let binding = ProviderSessionBinding::new("pi", "/srv/project-a")
+            .on_host(host.clone())
+            .at(3);
         let event = registry
             .set_provider_session_id(&thread.id, "acp-session-1", Some(binding.clone()), 3)
             .expect("the first ACP identity changes the thread");
@@ -3145,9 +3148,10 @@ mod tests {
             restored_thread.provider_session_binding.as_ref(),
             Some(&binding)
         );
-        assert!(restored_thread.may_resume_session("pi", "/srv/project-a"));
-        assert!(!restored_thread.may_resume_session("other-agent", "/srv/project-a"));
-        assert!(!restored_thread.may_resume_session("pi", "/srv/elsewhere"));
+        assert!(restored_thread.may_resume_session("pi", "/srv/project-a", &host));
+        assert!(!restored_thread.may_resume_session("other-agent", "/srv/project-a", &host));
+        assert!(!restored_thread.may_resume_session("pi", "/srv/elsewhere", &host));
+        assert!(!restored_thread.may_resume_session("pi", "/srv/project-a", &HostId::mint()));
     }
 
     #[test]
