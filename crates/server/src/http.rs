@@ -4099,7 +4099,7 @@ async fn thread_timeline(
         .last()
         .map(|(_, sequence, _, _)| *sequence)
         .unwrap_or(0);
-    Json(json!({
+    let mut body = json!({
         "rows": candidates,
         "contextBoundarySeq": null,
         "activePromptMode": null,
@@ -4117,8 +4117,18 @@ async fn thread_timeline(
             "olderCursor": older_cursor
         },
         "maxSeq": max_seq
-    }))
-    .into_response()
+    });
+    // The composer's occupancy indicator is a read of the thread's own log, so
+    // it is projected here rather than stored. The ported contract makes the
+    // field *optional* rather than nullable, so a thread whose provider never
+    // reported occupancy omits the key instead of carrying a null the client
+    // would render as an empty indicator.
+    if let Some(usage) = context_window_usage_value(&entries) {
+        body.as_object_mut()
+            .expect("the timeline response is an object")
+            .insert("contextWindowUsage".to_owned(), usage);
+    }
+    Json(body).into_response()
 }
 
 // --- B3: interactions, plans and the queue --------------------------------
@@ -5620,6 +5630,58 @@ async fn cancel_thread_plan(
     )
 }
 
+/// The thread's current context-window occupancy, projected from its run log.
+///
+/// A provider reports occupancy on `thread/contextWindowUsage/updated`
+/// (`session/update.usage_update` in ACP), and the composer's indicator is what
+/// renders it. The reference UI reads the newest report the same way
+/// (`ui/packages/thread-view/src/thread-context-window-usage.ts`), with two
+/// details worth keeping:
+///
+/// - the model's window is a property of the *model*, not of the call, so the
+///   newest report that carries one is kept even when a later report omits it;
+///   a count and a window may arrive from different frames;
+/// - a report whose `usedTokens` is `null` says the provider no longer knows
+///   the count, so it clears the projection rather than reviving an older
+///   number that no longer describes the context.
+///
+/// `None` means there is nothing truthful to show; the caller omits the field.
+fn context_window_usage_value(entries: &[(String, u64, u64, DomainEvent)]) -> Option<Value> {
+    let mut newest_used_tokens: Option<Option<u64>> = None;
+    let mut newest_estimated = false;
+    let mut model_context_window: Option<u64> = None;
+    for (_event_id, _sequence, _created_at_ms, event) in entries {
+        let DomainEvent::ThreadRunEvent { run } = event else {
+            continue;
+        };
+        let loom_domain::ProviderEvent::ThreadContextWindowUsageUpdated {
+            context_window_usage,
+            ..
+        } = &run.event.body
+        else {
+            continue;
+        };
+        newest_used_tokens = Some(context_window_usage.used_tokens);
+        newest_estimated = context_window_usage.estimated;
+        // A zero-sized window is not a window: the contract asks for a
+        // positive number, and a client would divide the count by it.
+        if let Some(window) = context_window_usage
+            .model_context_window
+            .filter(|window| *window > 0)
+        {
+            model_context_window = Some(window);
+        }
+    }
+    match (newest_used_tokens, model_context_window) {
+        (Some(Some(used_tokens)), Some(model_context_window)) => Some(json!({
+            "usedTokens": used_tokens,
+            "modelContextWindow": model_context_window,
+            "estimated": newest_estimated,
+        })),
+        _ => None,
+    }
+}
+
 /// The thread's current goal, projected from its own run log.
 ///
 /// loom has no goal *entity*: a goal is what the contract's
@@ -6938,6 +7000,173 @@ mod tests {
             "thread has no environment bound; bind one before dispatching"
         );
         assert_eq!(error["status"], "error");
+        state.shutdown();
+    }
+
+    fn context_window_report(
+        used_tokens: Option<u64>,
+        model_context_window: Option<u64>,
+        estimated: bool,
+    ) -> loom_domain::ProviderEvent {
+        loom_domain::ProviderEvent::ThreadContextWindowUsageUpdated {
+            provider_thread_id: "ptid".into(),
+            context_window_usage: loom_domain::ContextWindowUsage {
+                used_tokens,
+                model_context_window,
+                estimated,
+            },
+        }
+    }
+
+    /// One run event in the shape the timeline handler reads back off the log.
+    fn context_window_entry(
+        used_tokens: Option<u64>,
+        model_context_window: Option<u64>,
+        estimated: bool,
+    ) -> (String, u64, u64, DomainEvent) {
+        let run = loom_domain::RunEvent::new(
+            ThreadId::mint(),
+            ProjectId::mint(),
+            loom_domain::RunId::mint(),
+            1_700_000_000_000,
+            context_window_report(used_tokens, model_context_window, estimated),
+        );
+        (
+            "evt".into(),
+            1,
+            1_700_000_000_000,
+            DomainEvent::ThreadRunEvent { run: Box::new(run) },
+        )
+    }
+
+    fn publish_context_window_usage(
+        state: &AppState,
+        thread_id: &ThreadId,
+        used_tokens: Option<u64>,
+        model_context_window: Option<u64>,
+        estimated: bool,
+    ) {
+        let run = loom_domain::RunEvent::new(
+            thread_id.clone(),
+            state.registry.personal_project_id(),
+            loom_domain::RunId::mint(),
+            loom_relay::now_ms(),
+            context_window_report(used_tokens, model_context_window, estimated),
+        );
+        state
+            .publish_domain_event(&DomainEvent::ThreadRunEvent { run: Box::new(run) })
+            .unwrap();
+    }
+
+    /// The newest report wins, and a later report that omits the window still
+    /// inherits the model's: a count and a window may arrive from two frames.
+    #[test]
+    fn the_newest_context_window_report_wins_and_keeps_the_model_window() {
+        let entries = vec![
+            context_window_entry(Some(9_326), Some(1_000_000), false),
+            context_window_entry(Some(10_117), None, true),
+        ];
+        assert_eq!(
+            context_window_usage_value(&entries),
+            Some(json!({
+                "usedTokens": 10_117,
+                "modelContextWindow": 1_000_000,
+                "estimated": true,
+            }))
+        );
+    }
+
+    /// A report that says the count is unknown must not revive an older count:
+    /// the provider is saying it no longer knows the occupancy.
+    #[test]
+    fn a_report_without_a_count_clears_the_context_window_usage() {
+        let entries = vec![
+            context_window_entry(Some(9_326), Some(1_000_000), false),
+            context_window_entry(None, Some(1_000_000), false),
+        ];
+        assert_eq!(context_window_usage_value(&entries), None);
+    }
+
+    /// A thread that never reported a count has nothing truthful to show, and a
+    /// zero-sized window is not a window.
+    #[test]
+    fn a_thread_without_a_count_has_no_context_window_usage() {
+        assert_eq!(context_window_usage_value(&[]), None);
+        assert_eq!(
+            context_window_usage_value(&[context_window_entry(None, Some(1_000_000), false)]),
+            None
+        );
+        assert_eq!(
+            context_window_usage_value(&[context_window_entry(Some(5), Some(0), false)]),
+            None
+        );
+    }
+
+    /// The occupancy a provider reported reaches `threads.timeline`, which is
+    /// where the composer's indicator reads it. Without this the field was
+    /// absent from the response, so a thread could stream for an hour and no
+    /// indicator ever appeared.
+    #[tokio::test]
+    async fn the_timeline_carries_the_reported_context_window_usage() {
+        let state = test_state();
+        let app = router(state.clone());
+        let (thread, created) = state
+            .registry
+            .create_thread(
+                Some(state.registry.personal_project_id()),
+                Some("occupancy".into()),
+                None,
+                loom_relay::now_ms(),
+            )
+            .unwrap();
+        state.publish_domain_event(&created).unwrap();
+        for event in state
+            .registry
+            .post_message(
+                &thread.id,
+                MessageRole::User,
+                "hi".into(),
+                loom_relay::now_ms(),
+            )
+            .unwrap()
+        {
+            state.publish_domain_event(&event).unwrap();
+        }
+        publish_context_window_usage(&state, &thread.id, Some(9_326), Some(1_000_000), false);
+        publish_context_window_usage(&state, &thread.id, Some(10_117), None, false);
+
+        let body =
+            body_json(get(&app, &format!("/api/v1/threads/{}/timeline", thread.id)).await).await;
+        let contract = loom_contract::Contract::load();
+        assert_b1_response(&contract, "threads.timeline", "GET", &body);
+        assert_eq!(
+            body["contextWindowUsage"],
+            json!({
+                "usedTokens": 10_117,
+                "modelContextWindow": 1_000_000,
+                "estimated": false,
+            })
+        );
+
+        // A thread that never reported occupancy omits the field rather than
+        // carrying a null the client would render as an empty indicator.
+        let (quiet, quiet_created) = state
+            .registry
+            .create_thread(
+                Some(state.registry.personal_project_id()),
+                Some("quiet".into()),
+                None,
+                loom_relay::now_ms(),
+            )
+            .unwrap();
+        state.publish_domain_event(&quiet_created).unwrap();
+        let quiet_body =
+            body_json(get(&app, &format!("/api/v1/threads/{}/timeline", quiet.id)).await).await;
+        assert_b1_response(&contract, "threads.timeline", "GET", &quiet_body);
+        assert!(
+            quiet_body.get("contextWindowUsage").is_none(),
+            "a thread that never reported occupancy omits the field: {quiet_body}"
+        );
         state.shutdown();
     }
 
