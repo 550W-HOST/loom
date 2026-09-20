@@ -295,6 +295,22 @@ impl AppState {
             (HistoryStatus::Loading, false, None)
         };
 
+        // A row the writer refused or could not store is a hole in the stored
+        // conversation, and the reader is told about it. A status that says
+        // "complete" over a known hole is the one lie this must not tell, so the
+        // mark makes the view stale and its reason replaces the softer ones.
+        let (status, complete, reason) = match self.store_writer().unsaved(thread_id) {
+            Some(unsaved) => (
+                match status {
+                    HistoryStatus::Ready | HistoryStatus::Stale => HistoryStatus::Stale,
+                    other => other,
+                },
+                false,
+                Some(unsaved),
+            ),
+            None => (status, complete, reason),
+        };
+
         Ok(CacheView {
             instance,
             generation: revision,
@@ -733,6 +749,65 @@ mod tests {
             "the numbering is the same store's, only its revision moved"
         );
         state.shutdown().unwrap();
+    }
+
+    /// A row the store could not write is reported to a reader, not hidden
+    /// behind a base that still calls itself complete.
+    #[tokio::test]
+    async fn a_row_the_store_refused_is_reported_by_the_read() {
+        let state = test_state();
+        let (thread, created) = state
+            .registry
+            .create_thread(
+                Some(state.registry.personal_project_id()),
+                Some("unsaved".into()),
+                None,
+                loom_relay::now_ms(),
+            )
+            .unwrap();
+        state.publish_domain_event(&created).unwrap();
+        seed_baseline(&state, &thread.id, &cache_binding(), &[identity()]);
+        assert!(state.stored_view(&thread.id).unwrap().complete);
+
+        // A writer that has stopped accepting rows: what a disk in trouble
+        // looks like from the publish path, with reads still working.
+        state.store_writer().flush().unwrap();
+        for event in state
+            .registry
+            .post_message(
+                &thread.id,
+                loom_domain::MessageRole::User,
+                "this row has nowhere to go".into(),
+                loom_relay::now_ms(),
+            )
+            .unwrap()
+        {
+            state.publish_domain_event(&event).unwrap();
+        }
+        assert!(
+            state.store_writer().unsaved(&thread.id).is_some(),
+            "the refused row marks the thread"
+        );
+
+        let view = state.stored_view(&thread.id).unwrap();
+        assert!(
+            !view.complete,
+            "a conversation with a known hole is not complete: {view:?}"
+        );
+        assert_eq!(view.status, HistoryStatus::Stale);
+        assert!(
+            view.reason
+                .as_deref()
+                .is_some_and(|reason| reason.contains("not stored")),
+            "the reason says the row was not stored: {view:?}"
+        );
+        // The row itself is still on screen while it is only in memory.
+        assert!(
+            view.rows
+                .iter()
+                .any(|row| matches!(row.source, crate::history_cache::RowSource::Message { .. })),
+            "the unpublished row is still served: {view:?}"
+        );
     }
 
     /// A refresh is the explicit ask: it starts a load even when the stored

@@ -2242,6 +2242,23 @@ async fn delete_thread(
         .delete_thread(&thread_id, loom_relay::now_ms())
     {
         Ok((_thread, event)) => {
+            // The conversation goes with the thread, in one transaction, and so
+            // do the places that would otherwise still answer for it: the
+            // unwritten rows' overlay, the retry lease, and the numbering. A
+            // failure here is reported rather than swallowed: the thread is
+            // gone from the entity view, but leaving its conversation behind is
+            // not something to be quiet about.
+            if let Err(error) = state.store().delete_thread(&thread_id) {
+                return error_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!(
+                        "thread {thread_id} was deleted, but its stored conversation \
+                         could not be removed: {error}"
+                    ),
+                );
+            }
+            state.history.remove(&thread_id);
+            state.seqs().forget(&thread_id);
             crate::b9::close_thread_terminals(
                 &state,
                 &thread_id,
