@@ -16,15 +16,15 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 
 /**
- * The stack the suite runs against: one server role, one daemon role, one ACP
- * stub.
+ * The stack the suite runs against: one `loom server` process, one `loom
+ * worker` process, one ACP stub.
  *
  * `loom` carries the UI, so "serve the product app" is not a configuration
  * step: the binary built from this checkout serves the app built from this
- * checkout. The daemon is the same file started in its other role, with its
- * provider pointed at a stub so a turn is deterministic and needs no
- * credentials; `LOOM_E2E_PROVIDER_CMD` swaps in a real agent when a human wants
- * one.
+ * checkout. The worker is the same file started under its `worker` subcommand
+ * and configured entirely through flags, with its provider pointed at a stub so
+ * a turn is deterministic and needs no credentials; the harness's own
+ * `LOOM_E2E_PROVIDER_CMD` swaps in a real agent when a human wants one.
  *
  * The state file is how the Playwright worker processes learn the URL: setup
  * runs in its own process, and a test file cannot import a value that only
@@ -215,7 +215,7 @@ export async function startStack(): Promise<StackState> {
 
   const root = mkdtempSync(join(tmpdir(), "loom-e2e-"));
   const serverDataDir = join(root, "server");
-  const daemonDataDir = join(root, "daemon");
+  const daemonDataDir = join(root, "worker");
   mkdirSync(join(root, "workspace"), { recursive: true });
 
   const stub = join(root, "acp-stub.sh");
@@ -229,8 +229,8 @@ export async function startStack(): Promise<StackState> {
   const server = start(
     "server",
     loom,
-    ["server"],
-    { LOOM_BIND: `127.0.0.1:${port}`, LOOM_DATA_DIR: serverDataDir },
+    ["server", "--bind", `127.0.0.1:${port}`, "--data-dir", serverDataDir],
+    {},
     join(root, "server.log"),
   );
   const serverPidPath = join(root, "server.pid");
@@ -260,11 +260,11 @@ export async function startStack(): Promise<StackState> {
 }
 
 /**
- * Starts (or restarts) the daemon role.
+ * Starts (or restarts) the worker process.
  *
- * A test that removes the daemon to watch the product notice the machine is
+ * A test that removes the worker to watch the product notice the machine is
  * gone has to be able to put it back; the pid file is how the teardown then
- * reaps whichever daemon is alive at the end, not the one setup happened to
+ * reaps whichever worker is alive at the end, not the one setup happened to
  * spawn.
  */
 export function startDaemon(
@@ -272,33 +272,38 @@ export function startDaemon(
   binary = join(repoRoot, "target", "debug", "loom"),
 ): ChildProcess {
   const child = start(
-    "daemon",
+    "worker",
     binary,
     [
-      "daemon",
+      "worker",
       "--server-url",
       state.baseURL,
       "--name",
       "e2e",
+      // The same choice every deployment makes: without a state file the worker
+      // enrolls as a new machine on every restart, and the machine list is
+      // where that accumulates.
+      "--state",
+      join(state.dataDir, "daemon-host-id"),
       // A question nobody answers must not hold the machine hostage for the
       // rest of the run: the broker blocks the agent's dispatch loop until the
       // permission timeout passes.
       "--permission-timeout-ms",
       "20000",
-    ],
-    {
-      LOOM_DATA_DIR: state.daemonDataDir,
-      // The same choice every deployment makes: without a state file the daemon
-      // enrolls as a new machine on every restart, and the machine list is
-      // where that accumulates.
-      LOOM_DAEMON_STATE: join(state.dataDir, "daemon-host-id"),
+      "--data-dir",
+      state.daemonDataDir,
       // A managed environment's workspace is otherwise created under the
       // developer's home directory, and a test run has no business leaving
       // directories there.
-      LOOM_WORKSPACE_ROOT: join(state.dataDir, "workspace"),
-      LOOM_PROVIDER_CMD: state.provider,
-      LOOM_PROVIDER_ARGS: "",
-    },
+      "--workspace-root",
+      join(state.dataDir, "workspace"),
+      // Only point at a provider when the harness configured one; otherwise the
+      // worker runs whatever the control plane dispatched.
+      ...(state.provider
+        ? ["--provider-cmd", state.provider, "--provider-args", ""]
+        : []),
+    ],
+    {},
     state.logs.daemon,
   );
   if (child.pid !== undefined) {

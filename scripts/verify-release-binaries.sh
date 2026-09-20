@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Verify a release binary, before anyone downloads it.
 #
-# A release makes five claims that only running the artifact can settle, and the
+# A release makes four claims that only running the artifact can settle, and the
 # ones that need a live server are why this is a file rather than a build step:
 #
 #   1. the binary runs on the machine it targets at all — a static musl build is
@@ -14,9 +14,6 @@
 #      document, the entry script that document names is present, a client route
 #      falls back to it, and an unknown `/api` path is a JSON 404 rather than the
 #      shell
-#   5. a `LOOM_UI_DIR` left over from the commit range that served a bundle
-#      from disk is inert: the binary carries the client, so the variable has
-#      nothing to point at and the server still serves its embedded app
 #
 # The pipeline runs this on the x86_64 artifact, and a maintainer can run it
 # against a downloaded release. The aarch64 artifact cannot be executed on an
@@ -37,11 +34,11 @@
 #   --elf-only               do not execute the binary (foreign architecture)
 #   -h, --help               this text
 #
-# Needs curl, jq, file, readelf, and coreutils (`install`, `ln`, `sha256sum`,
+# Needs curl, jq, file, readelf, and coreutils (`install`, `sha256sum`,
 # `mktemp`, `shuf`, `seq`, `timeout`). Nothing here reads the source tree: the
 # binary is asked, never the checkout. The UI is compiled into the server, so it
 # is asked for what a deployment gives it — nothing: the server is started with
-# no UI environment variable at all.
+# no UI flag at all.
 
 set -euo pipefail
 
@@ -207,10 +204,11 @@ release_target="$TARGET"
 release_protocol="$PROTOCOL"
 
 # One file, two roles, and the roles are started as such: the units and the
-# containers both pass a role word, and the symlinks take it from their own name,
-# so each role has to answer with the same stamp as the file it was started from.
-# A role that reported a different version, target, protocol or commit would once
-# have been a bad pair of artifacts; it is the same defect read off one file.
+# containers both pass a role word, and `--version` names the role from that
+# word, so each role has to answer with the same stamp as the file it was started
+# from. A role that reported a different version, target, protocol or commit
+# would once have been a bad pair of artifacts; it is the same defect read off
+# one file.
 for role in server worker; do
   read_version "loom-$role" "$binary" "$role"
   [[ "$VERSION" == "$release_version" ]] ||
@@ -231,18 +229,16 @@ tmp="$(mktemp -d)"
 server_pid=""
 worker_pid=""
 
-# The artifact as `deploy/install.sh` leaves an install: the file, plus the two
-# relative names it answers to as symlinks beside it. The layout matters here
-# rather than being cosmetic — the server hosts `/install/loom-worker` out of
-# the directory holding its own executable, so the symlink next to `loom` is what
-# the self-update check below serves, exactly as a deployment does. A copy, not a
-# symlink, because the kernel resolves `/proc/self/exe` through every link and the
-# server would then be hosting the build directory instead.
+# The one artifact in an install-shaped directory: a copy of the binary named
+# `loom`, and nothing else. The layout matters rather than being cosmetic — the
+# server hosts `/install/loom-worker` out of the directory holding its own
+# executable, and with no `loom-worker` name there it serves that running binary
+# itself, which is exactly the one-file install a deployment has. A copy, not a
+# symlink to the build output, because the kernel resolves `/proc/self/exe` and
+# the server would then be hosting the build directory instead.
 install_dir="$tmp/install"
 install -d -m 0755 "$install_dir"
 install -m 0755 "$binary" "$install_dir/loom"
-ln -s loom "$install_dir/loom-server"
-ln -s loom "$install_dir/loom-worker"
 artifact="$install_dir/loom"
 
 # Both logs are printed on failure: a release check that fails without saying
@@ -272,13 +268,12 @@ for _ in 1 2 3; do
   # Cleared first: a failed attempt must not be read as the next one's answer.
   rm -f "$tmp/health.json"
   # The durable backend, not the in-process one: a release is deployed as a
-  # service with a data directory, so that is the shape to start. No UI variable
-  # is passed, and any the caller's environment happens to carry is removed:
-  # the app is in the binary, and a server configured with one is a server that
-  # refuses to start (`env -u` below).
-  env -u LOOM_UI_DIR -u LOOM_UI_PROXY \
-    LOOM_BIND="127.0.0.1:$port" LOOM_DATA_DIR="$tmp/server" LOOM_NODE_ID="release-verification" \
-    "$artifact" server >"$tmp/server.log" 2>&1 &
+  # service with a data directory, so that is the shape to start. No UI flag is
+  # passed, and LOOM_REDIS_URL is removed so a caller's environment cannot switch
+  # the backend out from under this run, which means to use --data-dir.
+  env -u LOOM_REDIS_URL "$artifact" server \
+    --bind "127.0.0.1:$port" --data-dir "$tmp/server" --node-id "release-verification" \
+    >"$tmp/server.log" 2>&1 &
   server_pid=$!
   for _ in $(seq 1 100); do
     curl -fsS --max-time 1 "$base/health" >"$tmp/health.json" 2>/dev/null && break
@@ -355,29 +350,6 @@ IFS=$'\t' read -r miss_code miss_type <<<"$api_miss"
   die "an unknown API path answered content-type $miss_type, expected application/json"
 note "GET /api/v1/definitely-not-a-route -> 404 application/json"
 
-# A `LOOM_UI_DIR` left over from the commit range that served a bundle from disk
-# is inert rather than fatal: the server starts, keeps serving the embedded app,
-# and says once that it is ignoring the variable. Started on another port so it
-# cannot disturb the run above.
-env -u LOOM_UI_PROXY LOOM_BIND="127.0.0.1:$((port + 1))" \
-  LOOM_DATA_DIR="$tmp/server-ui-dir-set" LOOM_NODE_ID="release-verification" \
-  LOOM_UI_DIR="$tmp/ui" "$artifact" server >"$tmp/loom-ui-dir-set.log" 2>&1 &
-ui_dir_pid=$!
-trap 'kill "$ui_dir_pid" 2>/dev/null || true' EXIT
-for _ in $(seq 1 100); do
-  if curl -fsS "http://127.0.0.1:$((port + 1))/" >"$tmp/loom-ui-dir-set-index.html" 2>/dev/null; then
-    break
-  fi
-  sleep 0.1
-done
-grep -q '<script' "$tmp/loom-ui-dir-set-index.html" ||
-  die "a server started with LOOM_UI_DIR set did not serve its embedded app"
-grep -q 'ignoring LOOM_UI_DIR' "$tmp/loom-ui-dir-set.log" ||
-  die "a server started with LOOM_UI_DIR set did not say it was ignoring it: $(head -c 400 "$tmp/loom-ui-dir-set.log")"
-note "LOOM_UI_DIR set -> served the embedded app, ignoring the variable"
-kill "$ui_dir_pid" 2>/dev/null || true
-trap - EXIT
-
 # A JSON response is captured in a file before it is parsed, and the body is
 # printed when the request fails. `curl -f` alone throws the body away, and on
 # a contract route the body is the whole diagnosis: a 422 names the field the
@@ -409,9 +381,9 @@ body() { head -c 400 "$1" | tr -d '\n'; }
 # worker uses to follow a server whose protocol changed, so a release has to
 # prove them on its own artifact: the bytes served, and the digest served with
 # them, must both be the `loom` this directory was built from. The server was
-# started from the install-shaped directory above, so the `loom-worker` symlink
-# beside its own executable is the artifact directory by default — which is the
-# arrangement `deploy/install.sh` produces and the one this is here to hold true.
+# started from the install-shaped directory above, where no `loom-worker` name
+# sits beside it, so it serves its own running binary as the worker artifact —
+# the one-file install this is here to hold true.
 api GET /install/version "$tmp/install-version.json"
 served_protocol="$(jq -r '.protocolVersion' "$tmp/install-version.json")"
 [[ "$served_protocol" == "$release_protocol" ]] ||
@@ -432,8 +404,8 @@ served_digest="$(tr -d '\r' <"$tmp/artifact.headers" |
 # The digest over the bytes the server actually sent, and the digest of the
 # artifact this directory was built from: both must equal the served header. The
 # second is the one that matters — it proves the server hosted *this release's*
-# file through the `loom-worker` name, and not some other binary that happened to
-# be in the directory.
+# file as its own worker artifact, and not some other binary that happened to be
+# in the directory.
 downloaded_digest="$(sha256sum "$tmp/loom-worker.served" | cut -d ' ' -f 1)"
 [[ "$downloaded_digest" == "$served_digest" ]] ||
   die "the served artifact does not hash to its own header: header $served_digest, body $downloaded_digest"

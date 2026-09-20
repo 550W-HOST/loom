@@ -408,8 +408,10 @@ so there is no second delivery path to keep alive.
 - **What the process gets.** `cwd` is the script directory, stdin is null,
   stdout and stderr are captured, and the environment is *cleared* and rebuilt
   from `PATH`, whatever the automation declared in `env`, and the run's own
-  identity (`LOOM_SERVER_URL`, `LOOM_PROJECT_ID`, `LOOM_AUTOMATION_ID`,
-  `LOOM_AUTOMATION_RUN_ID`). Nothing else from the worker's environment reaches
+  identity (`LOOM_PROJECT_ID`, `LOOM_AUTOMATION_ID`, `LOOM_AUTOMATION_RUN_ID`,
+  and `LOOM_SERVER_URL` — an injected child-script variable holding the URL the
+  worker dialled with `--server-url`; none of these is operator configuration).
+  Nothing else from the worker's environment reaches
   it — a script is a run of the automation, not of the worker.
 - **Time.** `timeoutMs` (default 120 000, at most 900 000) is enforced on the
   machine. A script that outlives it is killed and the run fails with "Script

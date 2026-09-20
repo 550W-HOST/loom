@@ -18,7 +18,7 @@
 # Docker architecture, named `loom-<amd64|arm64>`, plus the `.keep` placeholder
 # the Dockerfiles copy into their volumes. `--platform` selects which binary the
 # build needs, so a one-platform build stages one platform. The Dockerfiles are
-# handed to docker with `--file`, so they stay in `deploy/`.
+# handed to docker with `--file` from `containers/`.
 #
 # Usage:
 #   scripts/build-container-images.sh [options]
@@ -107,7 +107,7 @@ target_for_platform() { # <platform> -> "<rust target triple> <docker architectu
 context="$dist_dir/context"
 rm -rf "$context"
 mkdir -p "$context"
-install -m 0644 "$repo_root/deploy/containers/keep" "$context/.keep"
+install -m 0644 "$repo_root/containers/keep" "$context/.keep"
 
 IFS=',' read -r -a platform_list <<<"$platforms"
 for platform in "${platform_list[@]}"; do
@@ -138,7 +138,7 @@ for image in loom-server loom-worker; do
   done
   note "building $image for $platforms"
   docker buildx build \
-    --file "$repo_root/deploy/containers/$image.Dockerfile" \
+    --file "$repo_root/containers/$image.Dockerfile" \
     --platform "$platforms" \
     "${refs[@]}" \
     "${output[@]}" \

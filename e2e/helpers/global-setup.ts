@@ -9,6 +9,6 @@ import { startStack } from "./stack.js";
  */
 export default async function globalSetup(): Promise<void> {
   const state = await startStack();
-  console.log(`loom e2e: server and daemon up at ${state.baseURL}`);
+  console.log(`loom e2e: server and worker up at ${state.baseURL}`);
   console.log(`loom e2e: stack logs in ${state.logs.server} and ${state.logs.daemon}`);
 }

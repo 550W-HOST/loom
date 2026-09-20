@@ -146,11 +146,10 @@ jobs:
 
       # The x86_64 artifact is started in both roles, `/health` answered, the app
       # it serves out of the binary checked (entry document, its asset, a client
-      # route fallen back to it, an unknown API path answered as a JSON 404), a
-      # `LOOM_UI_DIR` left in the environment ignored, the artifact the server
-      # hosts checked against the bytes that were built, a project created and a
-      # worker enrolled against it. `GITHUB_SHA` is the commit the build stamped,
-      # so a mismatch fails here.
+      # route fallen back to it, an unknown API path answered as a JSON 404), the
+      # artifact the server hosts checked against the bytes that were built, a
+      # project created and a worker enrolled against it. `GITHUB_SHA` is the
+      # commit the build stamped, so a mismatch fails here.
       - name: Verify the x86_64 binary end to end
         if: matrix.target == 'x86_64-unknown-linux-musl'
         run: |
@@ -281,8 +280,8 @@ jobs:
 
           | Asset | What it is |
           | --- | --- |
-          | `loom-__VERSION__-x86_64-unknown-linux-musl.tar.gz` | `loom` for x86_64, with `deploy/` |
-          | `loom-__VERSION__-aarch64-unknown-linux-musl.tar.gz` | `loom` for aarch64, with `deploy/` |
+          | `loom-__VERSION__-x86_64-unknown-linux-musl.tar.gz` | `loom` for x86_64, with `SHA256SUMS` and `README.md` |
+          | `loom-__VERSION__-aarch64-unknown-linux-musl.tar.gz` | `loom` for aarch64, with `SHA256SUMS` and `README.md` |
           | `loom-<target>` | the binary alone: `loom server` or `loom worker` |
           | `SHA256SUMS` | checksums for every file above |
 
@@ -305,17 +304,16 @@ jobs:
           ```
           tar xzf loom-__VERSION__-<target>.tar.gz
           cd loom-__VERSION__-<target>
-          sudo LOOM_BIN_SOURCE=. ./deploy/install.sh server
-          sudo LOOM_BIN_SOURCE=. ./deploy/install.sh worker <server-key> <server-url>
+          ./loom-<target> server --bind 127.0.0.1:38886 --data-dir /var/lib/loom
+          ./loom-<target> worker --server-url http://127.0.0.1:38886 --join-code <code>
           ```
 
-          `LOOM_BIN_SOURCE=.` is the extracted directory itself: the archive
-          holds the binary under this release's own `loom-<target>` name, which
-          is what `deploy/install.sh` installs. It places `loom` in
-          `/usr/local/bin` and `loom-server` / `loom-worker` as symlinks to it, so
-          one file is both processes. There is nothing else to install — the
-          server carries the product app compiled into it, so it serves its own
-          client. `deploy/README.md` has the rest.
+          The archive holds the one `loom` binary under this release's own
+          `loom-<target>` name, plus `SHA256SUMS` over it and `README.md`.
+          `loom server` is the control plane and `loom worker` the execution
+          host, so one file is both processes; copy it to `/usr/local/bin/loom`
+          to run it as a service. The server carries the product app compiled
+          into it, so it serves its own client.
 
           ## Verify before you install
 
@@ -333,10 +331,9 @@ jobs:
             configuration at all: the app it serves out of the binary answered on
             `/` with its entry document, that document's script was served, a
             client route fell back to the document, an unknown `/api` path was a
-            JSON 404, a `LOOM_UI_DIR` left in the environment was ignored, the
-            artifact the server hosts for self-update hashed to the built file, a
-            project was created and read back, and the same file in its worker
-            role enrolled against it (`scripts/verify-release-binaries.sh`)
+            JSON 404, the artifact the server hosts for self-update hashed to the
+            built file, a project was created and read back, and the same file in
+            its worker role enrolled against it (`scripts/verify-release-binaries.sh`)
           * the product app was built from source here and compiled into the
             binary (`crates/server/build.rs`), so the client an installing
             operator gets is the one this run typechecked, tested and built —

@@ -1,24 +1,20 @@
 //! The **worker role**, as a library entry point.
 //!
-//! Reached through `loom worker` (or the `loom-worker` name the same binary
-//! answers to): the worker-only startup path.
+//! Reached through `loom worker`: the worker-only startup path.
 //!
 //! It reaches out to a server URL and does nothing else. It can run on a
 //! different machine from the server, under a different supervisor, and be
 //! stopped without touching the control plane:
 //!
 //! ```bash
-//! loom-worker --server-url http://127.0.0.1:38886 --name laptop
-//! loom-worker --server-url https://loom.example.com --name builder-1 \
+//! loom worker --server-url http://127.0.0.1:38886 --name laptop
+//! loom worker --server-url https://loom.example.com --name builder-1 \
 //!             --state ./builder-1.host-id
 //! ```
 //!
-//! Everything is also settable through the environment (`LOOM_SERVER_URL`,
-//! `LOOM_HOST_NAME`, `LOOM_HOST_ID`, `LOOM_HEARTBEAT_MS`, `LOOM_WORKER_STATE`,
-//! `LOOM_PROVIDER_CMD`, `LOOM_PROVIDER_ARGS`, `LOOM_JOIN_CODE`,
-//! `LOOM_ACP_TRACE`,
-//! `LOOM_RUN_TIMEOUT_MS`, `LOOM_DATA_DIR`, `LOOM_WORKSPACE_ROOT`,
-//! `LOOM_AUTO_UPDATE`) so a systemd unit needs no command line.
+//! The command line is the whole configuration surface ([`crate::cli`]), except
+//! for `--join-code`, which also falls back to `LOOM_JOIN_CODE` because it is a
+//! one-time credential.
 //!
 //! # Lifecycle
 //!
@@ -34,6 +30,7 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use crate::cli::WorkerArgs;
 use crate::session::{run_session, SessionOutcome, WorkerState};
 use crate::update::{UpdateConfig, Updater};
 use crate::WorkerConfig;
@@ -41,24 +38,8 @@ use loom_domain::HostId;
 use loom_provider_protocol::ProviderSpec;
 use loom_relay::EventId;
 
-pub async fn run(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
-    // Ahead of `Options::parse`, which refuses a command line with no
-    // `--server-url`: `--version` must answer on a machine that has not been
-    // pointed at a server yet. That is also the check a release verification
-    // runs against a downloaded worker, before it tries to connect it to
-    // anything.
-    if args.iter().any(|arg| arg == "--version") {
-        println!("{}", loom_server::version_line("loom-worker"));
-        return Ok(());
-    }
-
-    let options = match Options::parse(args.iter().cloned())? {
-        Some(options) => options,
-        None => {
-            print_help();
-            return Ok(());
-        }
-    };
+pub async fn run(args: WorkerArgs) -> Result<(), Box<dyn std::error::Error>> {
+    let options = Options::from_args(args)?;
 
     let mut config = WorkerConfig::new(&options.server_url, &options.name);
     config.heartbeat_interval = options.heartbeat_interval;
@@ -113,7 +94,7 @@ pub async fn run(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// The worker's machine-local state, in the files `deploy/install.sh` lays out.
+/// The worker's machine-local state, under the `--state` path.
 ///
 /// One struct knows the on-disk layout: `<state>` holds the host id and a
 /// sibling `.cursor` holds the replay position, both written atomically so a
@@ -237,82 +218,38 @@ struct Options {
 }
 
 impl Options {
-    /// Returns `None` for `--help`.
-    fn parse(args: impl Iterator<Item = String>) -> Result<Option<Self>, String> {
-        let mut server_url = std::env::var("LOOM_SERVER_URL").ok();
-        let mut name = std::env::var("LOOM_HOST_NAME").ok();
-        let mut host_id = std::env::var("LOOM_HOST_ID").ok();
-        let mut heartbeat_ms = std::env::var("LOOM_HEARTBEAT_MS").ok();
-        let mut run_timeout_ms = std::env::var("LOOM_RUN_TIMEOUT_MS").ok();
-        let mut permission_timeout_ms = std::env::var("LOOM_PERMISSION_TIMEOUT_MS").ok();
-        let mut state = std::env::var("LOOM_WORKER_STATE").ok();
-        let mut provider_cmd = std::env::var("LOOM_PROVIDER_CMD").ok();
-        let mut provider_args = std::env::var("LOOM_PROVIDER_ARGS").ok();
-        let mut join_code = std::env::var("LOOM_JOIN_CODE").ok();
-        let mut workspace_root = std::env::var("LOOM_WORKSPACE_ROOT").ok();
-        let mut data_dir = std::env::var("LOOM_DATA_DIR").ok();
-        // `--auto-update` is the affirmative of bb's flag: loom's default is on,
-        // because a worker that cannot follow a server upgrade is the
-        // operational trap this exists to remove. `LOOM_AUTO_UPDATE=0` (or any
-        // of `false`/`no`/`off`) disables it, and so does the flag below.
-        let mut auto_update = parse_bool_env("LOOM_AUTO_UPDATE")?.unwrap_or(true);
+    /// Build the run configuration from the parsed command line.
+    fn from_args(args: WorkerArgs) -> Result<Self, String> {
+        let WorkerArgs {
+            server_url,
+            name,
+            host_id,
+            heartbeat_ms,
+            run_timeout_ms,
+            permission_timeout_ms,
+            state,
+            provider_cmd,
+            provider_args,
+            join_code,
+            data_dir,
+            workspace_root,
+            auto_update: _,
+            no_auto_update,
+        } = args;
 
-        let mut args = args.peekable();
-        while let Some(arg) = args.next() {
-            match arg.as_str() {
-                "-h" | "--help" => return Ok(None),
-                "--server-url" => server_url = args.next(),
-                "--name" => name = args.next(),
-                "--host-id" => {
-                    host_id = args.next();
-                }
-                "--heartbeat-ms" => heartbeat_ms = args.next(),
-                "--run-timeout-ms" => run_timeout_ms = args.next(),
-                "--permission-timeout-ms" => permission_timeout_ms = args.next(),
-                "--state" => state = args.next(),
-                "--provider-cmd" => provider_cmd = args.next(),
-                "--provider-args" => provider_args = args.next(),
-                "--join-code" => join_code = args.next(),
-                "--workspace-root" => workspace_root = args.next(),
-                "--data-dir" => data_dir = args.next(),
-                // bb spells the switch `--auto-update`; loom keeps the spelling
-                // and defaults it on. Both flags are accepted so a unit written
-                // for either spelling works, and the disabled reason is logged.
-                "--auto-update" => auto_update = true,
-                "--no-auto-update" | "--disable-auto-update" => auto_update = false,
-                other => return Err(format!("unrecognised argument: {other}")),
-            }
+        let server_url = server_url.trim().to_owned();
+        if server_url.is_empty() {
+            return Err("--server-url must not be empty".into());
         }
-
-        let server_url = server_url
-            .filter(|value| !value.trim().is_empty())
-            .ok_or("--server-url (or LOOM_SERVER_URL) is required")?;
-        let name = name.unwrap_or_else(|| "loom-worker".into());
-        let host_id = match host_id.filter(|value| !value.trim().is_empty()) {
-            None => None,
-            Some(raw) => Some(raw.parse::<HostId>().map_err(|error| error.to_string())?),
-        };
-        let heartbeat_interval = match heartbeat_ms {
-            None => crate::DEFAULT_HEARTBEAT_INTERVAL,
-            Some(raw) => Duration::from_millis(
-                raw.parse::<u64>()
-                    .map_err(|error| format!("--heartbeat-ms: {error}"))?,
-            ),
-        };
-        let run_timeout = match run_timeout_ms {
-            None => crate::DEFAULT_RUN_TIMEOUT,
-            Some(raw) => Duration::from_millis(
-                raw.parse::<u64>()
-                    .map_err(|error| format!("--run-timeout-ms: {error}"))?,
-            ),
-        };
-        let permission_timeout = match permission_timeout_ms {
-            None => crate::DEFAULT_PERMISSION_TIMEOUT,
-            Some(raw) => Duration::from_millis(
-                raw.parse::<u64>()
-                    .map_err(|error| format!("--permission-timeout-ms: {error}"))?,
-            ),
-        };
+        let heartbeat_interval = heartbeat_ms
+            .map(Duration::from_millis)
+            .unwrap_or(crate::DEFAULT_HEARTBEAT_INTERVAL);
+        let run_timeout = run_timeout_ms
+            .map(Duration::from_millis)
+            .unwrap_or(crate::DEFAULT_RUN_TIMEOUT);
+        let permission_timeout = permission_timeout_ms
+            .map(Duration::from_millis)
+            .unwrap_or(crate::DEFAULT_PERMISSION_TIMEOUT);
         // Only build an override when the operator actually chose one; an
         // unset command means "run whatever the control plane dispatched".
         let provider = provider_cmd
@@ -327,24 +264,24 @@ impl Options {
                 ProviderSpec::acp(command, args)
             });
 
-        Ok(Some(Self {
+        Ok(Self {
             server_url,
-            name,
+            name: name.unwrap_or_else(|| crate::cli::DEFAULT_NAME.into()),
             host_id,
             heartbeat_interval,
             run_timeout,
             permission_timeout,
             provider,
             join_code: join_code.filter(|value| !value.trim().is_empty()),
-            workspace_root: workspace_root
-                .filter(|value| !value.trim().is_empty())
-                .map(PathBuf::from),
-            data_dir: data_dir
-                .filter(|value| !value.trim().is_empty())
-                .map(PathBuf::from),
-            state: state.map(PathBuf::from),
-            auto_update,
-        }))
+            workspace_root: non_empty(workspace_root),
+            data_dir: non_empty(data_dir),
+            state: non_empty(state),
+            // `--no-auto-update` is the only way to turn it off. The default is
+            // on because a worker that cannot follow a server upgrade is the
+            // operational trap this exists to remove; `--auto-update` is kept
+            // so a unit can spell the default out.
+            auto_update: !no_auto_update,
+        })
     }
 
     /// Builds the updater's configuration from the parsed options.
@@ -358,96 +295,22 @@ impl Options {
     }
 }
 
-/// Reads a boolean environment variable, accepting the spellings a systemd
-/// environment file or a compose file realistically uses.
-fn parse_bool_env(name: &str) -> Result<Option<bool>, String> {
-    let Ok(raw) = std::env::var(name) else {
-        return Ok(None);
-    };
-    match raw.trim().to_ascii_lowercase().as_str() {
-        "" => Ok(None),
-        "1" | "true" | "yes" | "on" => Ok(Some(true)),
-        "0" | "false" | "no" | "off" => Ok(Some(false)),
-        other => Err(format!("{name}: expected a boolean, got {other:?}")),
-    }
-}
-
-#[allow(clippy::needless_pass_by_value)]
-fn print_help() {
-    println!(
-        "loom-worker — connect this machine to a loom server as an execution host
-
-USAGE:
-    loom-worker --server-url <URL> [--name <NAME>] [--host-id <HOST_ID>]
-                [--heartbeat-ms <MS>] [--run-timeout-ms <MS>]
-                [--permission-timeout-ms <MS>]
-                [--provider-cmd <CMD>] [--provider-args <ARGS>]
-                [--join-code <CODE>]
-                [--state <PATH>]
-                [--auto-update | --no-auto-update]
-
-FLAGS:
-    --server-url <URL>       Server to dial out to. Required.
-                             Env: LOOM_SERVER_URL
-    --name <NAME>            Display name for this machine. Default: loom-worker.
-                             Env: LOOM_HOST_NAME
-    --host-id <HOST_ID>      Reuse an enrolled identity across restarts. Written
-                             to --state on first connect. Env: LOOM_HOST_ID
-    --heartbeat-ms <MS>      Liveness interval. Default: 15000.
-                             Env: LOOM_HEARTBEAT_MS
-    --run-timeout-ms <MS>    Kill a provider that has not settled by then.
-                             Default: 1800000. Env: LOOM_RUN_TIMEOUT_MS
-    --permission-timeout-ms <MS>
-                             Cancel an agent's permission request that no client
-                             answered by then. A cancellation is never an
-                             approval. Default: 300000.
-                             Env: LOOM_PERMISSION_TIMEOUT_MS
-    --provider-cmd <CMD>     Override the ACP agent executable. Default: the
-                             provider named in the dispatch (Pi uses embedded
-                             pi-acp).
-                             Env: LOOM_PROVIDER_CMD
-    --provider-args <ARGS>   Space-separated arguments for the ACP agent
-                             override. Env: LOOM_PROVIDER_ARGS
-    --join-code <CODE>       One-time code from /api/v1/hosts/join-codes for
-                             first enrollment. Env: LOOM_JOIN_CODE
-    --data-dir <PATH>        This machine's data directory. Thread storage lives
-                             here as <dir>/thread-storage/<thread_id>, and the
-                             server names it from what this worker reports at
-                             enrollment. Default: $HOME/.loom.
-                             Env: LOOM_DATA_DIR
-    --workspace-root <PATH>  Root under which managed environments' workspaces
-                             are created as <root>/<env_id>. Default:
-                             $HOME/.loom/workspaces. Env: LOOM_WORKSPACE_ROOT
-    --state <PATH>           File to persist the enrolled host id in. A sibling
-                             `.cursor` file persists the replay cursor, and the
-                             directory also holds the self-update attempt
-                             counter. Env: LOOM_WORKER_STATE
-    --auto-update            Follow a server that speaks a newer protocol by
-                             installing that server's own worker and exiting for
-                             the supervisor to restart. Default.
-    --no-auto-update         Refuse to self-update; the refusal and the reason
-                             are logged, and the connection is retried. Env:
-                             LOOM_AUTO_UPDATE=0
-    --version                Print the version, target triple, protocol
-                             version and commit, then exit.
-    -h, --help               Print this help.
-
-The worker only makes outbound connections; it needs no local server and is
-stopped independently of one. After a successful self-update it exits and
-`Restart=always` (or a container restart policy) starts the new binary."
-    );
+/// `--data-dir ""` is a missing directory, not the current directory.
+fn non_empty(path: Option<PathBuf>) -> Option<PathBuf> {
+    path.filter(|value| !value.as_os_str().is_empty())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// Parse a worker command line the way the dispatcher does.
     fn options(args: &[&str]) -> Options {
-        // Environment fallbacks are already resolved by the caller in
-        // production; tests pass everything explicitly.
-        Options::parse(args.iter().map(|arg| (*arg).to_owned()))
-            .unwrap()
-            .unwrap()
+        use clap::Parser;
+        let mut argv = vec!["loom".to_owned()];
+        argv.extend(args.iter().map(|arg| (*arg).to_owned()));
+        let parsed = WorkerArgs::try_parse_from(argv).expect("the worker command line parses");
+        Options::from_args(parsed).expect("the options are consistent")
     }
 
     #[test]
@@ -469,17 +332,13 @@ mod tests {
     }
 
     #[test]
-    fn a_boolean_environment_value_rejects_nonsense() {
-        // The variable name is deliberately one no other test sets.
-        std::env::remove_var("LOOM_TEST_BOOL_UNSET");
-        assert_eq!(parse_bool_env("LOOM_TEST_BOOL_UNSET").unwrap(), None);
-        std::env::set_var("LOOM_TEST_BOOL_UNSET", "off");
-        assert_eq!(parse_bool_env("LOOM_TEST_BOOL_UNSET").unwrap(), Some(false));
-        std::env::set_var("LOOM_TEST_BOOL_UNSET", "TRUE");
-        assert_eq!(parse_bool_env("LOOM_TEST_BOOL_UNSET").unwrap(), Some(true));
-        std::env::set_var("LOOM_TEST_BOOL_UNSET", "maybe");
-        assert!(parse_bool_env("LOOM_TEST_BOOL_UNSET").is_err());
-        std::env::remove_var("LOOM_TEST_BOOL_UNSET");
+    fn a_missing_server_url_is_refused_before_anything_else() {
+        use clap::Parser;
+        let error = WorkerArgs::try_parse_from(["loom"]).expect_err("--server-url is required");
+        assert_eq!(
+            error.kind(),
+            clap::error::ErrorKind::MissingRequiredArgument
+        );
     }
 
     #[test]

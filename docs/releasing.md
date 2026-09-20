@@ -28,7 +28,7 @@ cannot be labelled with a version its own files do not report.
 | `ui` | `pnpm install --frozen-lockfile`, `typecheck`, `test`, `pnpm --filter @bb/app run build`, `pnpm run check:bundle`, then the provenance and port-plan checks | the bundle every Rust job compiles into the binary is built from the tag's own source, holds its budget, and the app tree still matches its manifest |
 | `build` (matrix: x86_64, aarch64) | `cargo build --release --locked -p loom --target <triple>` | the binary compiles from the tag with the pinned lockfile |
 | `build` → verify | `scripts/verify-release-binaries.sh` | the x86_64 binary runs both roles, answers `/health`, serves the UI it carries with no UI variable set, hosts the artifact it is itself with a matching digest and a `304` for a conditional request, creates a project and enrols a worker; the aarch64 binary is a self-contained aarch64 artifact carrying the tag's commit |
-| `build` → package | `scripts/package-release.sh` | the release page's files exist, with the layout `deploy/install.sh` expects |
+| `build` → package | `scripts/package-release.sh` | the release page's files exist: the bare `loom-<target>` binary and the per-target archive |
 | `assemble` | `sha256sum`, version and tag check, `RELEASE_NOTES.md` | one checksum file covering both targets, notes that name the protocol version, and no mislabelled tag |
 | `images` | `docker buildx create --driver docker-container`, `scripts/build-container-images.sh` | both container images build from the checksummed file, are pushed as one manifest list each, and the `linux/amd64` halves run and report the version above |
 | `release` | `sha256sum -c`, `gh release create`/`edit`/`upload` | the checksummed bytes reached the release page (tag runs only) |
@@ -108,34 +108,38 @@ dynamic section.
 
 | Asset | Contents |
 | --- | --- |
-| `loom-<version>-<target>.tar.gz` | the binary, `deploy/` and `README.md` |
+| `loom-<version>-<target>.tar.gz` | the binary, named for its target, and `README.md` |
 | `loom-<target>` | the one binary, both roles |
 | `SHA256SUMS` | checksums for both files above, with relative names |
 
 The archive's top directory holds the binary *named for its target* —
-`loom-0.1.0-x86_64-unknown-linux-musl/loom-x86_64-unknown-linux-musl` — which is
-a name `deploy/install.sh` accepts under its `LOOM_BIN_SOURCE` (a local build's
-`loom` is the other). An extracted archive is therefore installable with the
-directory itself as the source:
+`loom-0.1.0-x86_64-unknown-linux-musl/loom-x86_64-unknown-linux-musl` — beside
+`README.md`. An extracted archive can be run in place, or the file installed
+under any stable name:
 
 ```bash
 tar xzf loom-0.1.0-x86_64-unknown-linux-musl.tar.gz
 cd loom-0.1.0-x86_64-unknown-linux-musl
-sudo LOOM_BIN_SOURCE=. ./deploy/install.sh server
+./loom-x86_64-unknown-linux-musl server --version
 ```
+
+There is no installer in the archive, no `loom-server` / `loom-worker` symlink
+to create and no configuration to fill in: one binary serves both roles, and
+the role is the subcommand.
 
 There is no UI beside the binary, and nothing for an install to place: the
 product app is inside it ([`ui.md`](ui.md)). The archive is therefore
-just the binary, `deploy/` and `README.md`, so `SHA256SUMS` naming
+just the binary and `README.md`, so `SHA256SUMS` naming
 `loom-<target>` and `*.tar.gz` covers the whole download, and
 verifying the tarball verifies the client too.
 
-`deploy/install.sh server` installs the binary and its role symlinks, the units
-and the environment template; there is no bundle to copy and no UI variable to
+The release is just the binary: place it where you want it and run it as
+`loom server` or `loom worker`; there is no bundle to copy and no UI variable to
 fill in, because the
 client arrives in the binary. That reverses the old rule — an install that
-placed no bundle used to be a failure — and an environment file from an earlier
-release may still carry a `LOOM_UI_DIR` line: it is inert, the server serves the
+placed no bundle used to be a failure — and a configuration from an earlier
+release may still carry a `LOOM_UI_DIR` entry: it is no longer read, the server
+serves the
 client in its binary and says once that it is ignoring the variable
 ([`upgrades.md`](upgrades.md)).
 
@@ -199,7 +203,7 @@ release needs, and asserts that `/` answers `200` with an HTML shell naming its
 client route answers the same document (so history routing works), that an
 unknown `/api/v1` route is a JSON `404` rather than the shell, and that starting
 the same binary with `LOOM_UI_DIR` set still serves the embedded app and says
-once that it is ignoring the variable. The historical `/app.js` and
+once that the variable is no longer read and it is ignoring it. The historical `/app.js` and
 `/style.css` are what a bundle-on-disk release served; the served paths today are
 the app's own hashed assets.
 
@@ -214,19 +218,18 @@ change replaces them with runner values:
   GET /install/loom-worker (If-None-Match) -> 304
 ```
 
-These are the self-update source of truth (`docs/upgrades.md`). The script lays
-the binary out the way `deploy/install.sh` does — `loom` plus the relative
-`loom-server` and `loom-worker` symlinks — and starts it from there, so the
-artifact it hosts is resolved through the `loom-worker` symlink beside the
-server's executable. What is served is compared **against the built binary**:
-the served digest must equal both the digest of the body that came over the
-socket and the digest of the `loom` the script started from. A release that
-hosted the wrong binary, or served a digest that did not match its bytes, fails
-here rather than on a customer's
-machine. The conditional request is checked in the same breath, because a `304`
-is what keeps a fleet's reconnects from re-downloading the binary. The middle
-line was recorded before the two roles became one file, when the hosted
-`loom-worker` was a separate build; the digest it names is that build's.
+These are the self-update source of truth (`docs/upgrades.md`). The script
+starts the one binary from a directory that holds only that `loom` file, so
+`GET /install/loom-worker` takes its fallback and serves the running
+executable. What is served is compared **against the built binary**: the served
+digest must equal both the digest of the body that came over the socket and the
+digest of the `loom` the script started from. A release that hosted the wrong
+binary, or served a digest that did not match its bytes, fails here rather than
+on a customer's machine. The conditional request is checked in the same breath,
+because a `304` is what keeps a fleet's reconnects from re-downloading the
+binary. The middle line was recorded before the two roles became one file and
+before the self-serving fallback existed, when the hosted `loom-worker` was a
+separate build; the digest it names is that build's.
 
 The two routes also have a shape guard in
 `crates/server/tests/release_verification.rs`, which is the W-554 lesson applied
@@ -378,7 +381,7 @@ Deliberately, and with the issues that own them:
 - **worker self-update from the release page**: a running worker fetches the
   matching binary from the **server** it is joined to (`/install/loom-worker`),
   not from this release page — see [`upgrades.md`](upgrades.md). The release's
-  `SHA256SUMS` is what a human or `deploy/install.sh` verifies a download with;
+  `SHA256SUMS` is what a human verifies a download with;
   the worker verifies the server's own digest. Both are integrity checks against
   transit, not provenance.
 - **signing**: `SHA256SUMS` gives integrity against a corrupted download, not

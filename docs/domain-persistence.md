@@ -6,7 +6,7 @@ database and without an external service.
 
 ## The problem
 
-With `DiskBackend` (`LOOM_DATA_DIR`), the relay log already survives a restart:
+With `DiskBackend` (`--data-dir`), the relay log already survives a restart:
 a client can replay a thread's whole timeline. But `DomainRegistry` and
 `RunRegistry` were pure in-memory maps, so after a restart the server no longer
 recognised the thread those events were about. The list was empty, a message
@@ -188,11 +188,11 @@ simply does not claim a second one while it waits.
 
 ## Configuration and operation
 
-- **Enabled** when `LOOM_DATA_DIR` (`AppConfig::backend_path`) names a data
+- **Enabled** when `--data-dir` (`AppConfig::backend_path`) names a data
   directory; the snapshot lives beside the shard files.
 - **Settings scope**: appearance, experiments, general/keyboard settings and
   UI preferences are server-local and shared by clients of that server. They
-  survive restart when `LOOM_DATA_DIR` is configured. The zero-configuration
+  survive restart when `--data-dir` is configured. The zero-configuration
   in-process backend remains intentionally ephemeral, including its settings.
 - **Periodic write**: `AppConfig::snapshot_interval`, default 30 s.
   `Duration::ZERO` disables the background writer.

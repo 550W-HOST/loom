@@ -2,12 +2,13 @@
 # Package one target's release binary for a GitHub Release.
 #
 # Two things per target: the bare executable the release page offers as
-# `loom-<target>`, and a tarball an operator extracts and hands to
-# `deploy/install.sh`. The tarball's top directory holds that same
+# `loom-<target>`, and a tarball. The tarball's top directory holds that same
 # `loom-<target>` name — one name for the asset and for the file inside it —
-# plus `deploy/` and `README.md`. No client ships beside it: the product app is
-# compiled into the server, so the binary that serves it is the binary in the
-# archive, and the two roles (`loom server`, `loom worker`) are that one file.
+# plus `SHA256SUMS` over that file and `README.md`. There is no separate
+# deployment directory any more: deployment is the one binary and its
+# subcommands. No client ships beside it either: the product app is compiled
+# into the server, so the binary that serves it is the binary in the archive,
+# and the two roles (`loom server`, `loom worker`) are that one file.
 #
 # Every input is a build output or an argument — the binary from
 # `target/<target>/release`, the version from `cargo metadata` — so the same
@@ -18,7 +19,7 @@
 #   scripts/package-release.sh <target> [--bin-dir DIR] [--out-dir DIR]
 #
 # --bin-dir defaults to target/<target>/release, --out-dir to dist. Requires
-# cargo and jq.
+# cargo, jq and sha256sum.
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -71,7 +72,7 @@ done
 }
 [[ -n "$bin_dir" ]] || bin_dir="$repo_root/target/$target/release"
 
-for tool in cargo jq tar; do
+for tool in cargo jq sha256sum tar; do
   command -v "$tool" >/dev/null || die "$tool is required"
 done
 
@@ -96,13 +97,20 @@ install -d -m 0755 "$staging"
 # Named for the release page: the asset says which platform it is for.
 install -m 0755 "$bin_dir/loom" "$out_dir/loom-$target"
 
-# And inside the archive under the same name, which is one of the two
-# `deploy/install.sh` looks for under its `LOOM_BIN_SOURCE` (the other is the
-# `loom` a build output holds) — so an extracted archive installs from the
-# directory itself.
+# And inside the archive under the same name, so an extracted directory holds
+# the executable an operator runs as `./loom-<target> server` or `... worker`:
+# one name for the asset and for the file inside it.
 install -m 0755 "$bin_dir/loom" "$staging/loom-$target"
-cp -R "$repo_root/deploy" "$staging/deploy"
 install -m 0644 "$repo_root/README.md" "$staging/README.md"
+
+# A checksum of the one file in here, written inside the staging directory so it
+# names `loom-<target>` relative to the archive root and `sha256sum -c
+# SHA256SUMS` works after extraction. (The release page's own SHA256SUMS is
+# assembled later over every target's assets; this one is per archive.)
+(
+  cd "$staging"
+  sha256sum -- "loom-$target" >SHA256SUMS
+)
 
 # `--owner`/`--group`/`--numeric-owner` keep the build machine's uid out of an
 # archive that is extracted by someone else, and `--sort=name` makes the member

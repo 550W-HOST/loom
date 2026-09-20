@@ -6,19 +6,20 @@ separately exported bb public schema and WebSocket subprotocol:
 
 | Role | What it is | Where it runs |
 | --- | --- | --- |
-| **server** | the `loom` binary started as `loom server` — the installed `loom-server` name is a symlink onto the same file — with the product app from `apps/app` compiled into it | one machine |
-| **worker** | that same file started as `loom worker` (installed as the `loom-worker` symlink) | every execution machine |
+| **server** | the `loom` binary started as `loom server` — the role is the subcommand, there is no separate installed name — with the product app from `apps/app` compiled into it | one machine |
+| **worker** | that same file started as `loom worker` | every execution machine |
 
 An upgrade moves one artifact, not two: replacing `/usr/local/bin/loom`
-replaces both roles, and the symlinks beside it keep pointing at the file.
+replaces both roles.
 
 The client is part of the binary, not a directory beside it
 ([`ui.md`](ui.md)): installing or upgrading the binary installs or upgrades its
 UI, there is no bundle to place, and no server can serve a client other than the
-one it was built with. An environment file written while main served a
+one it was built with. A configuration written while main served a
 bundle from disk may still name `LOOM_UI_DIR` — no release carried that shape —
-and the line is inert: the server serves the client in its binary and says once
-at startup that it is ignoring the variable. Nothing has to be edited. `LOOM_UI_PROXY` — development only, a frontend
+and the variable is **no longer read**: the server serves the client in its
+binary and says once at startup that it is ignoring it. Nothing has to be
+edited. `--ui-proxy` — development only, a frontend
 dev server to reverse-proxy to — is the single override that survives, and no
 deployment uses it.
 
@@ -176,22 +177,22 @@ failure:
 | `GET /install/version` | `{"version":"0.1.0","protocolVersion":3}` |
 | `GET /install/loom-worker?target=<triple>` | the binary, with `X-Loom-Artifact-Sha256` and `ETag` |
 
-The server looks in `LOOM_ARTIFACT_DIR`, and **by default in the directory
-holding the running binary**. That default is what makes an ordinary deployment
-work with no configuration: `deploy/install.sh` installs `/usr/local/bin/loom`
-and links `/usr/local/bin/loom-server` and `/usr/local/bin/loom-worker` to it,
-so the `loom-worker` name it looks up resolves to the very file that is running
-— the one binary, which is exactly the artifact this server's protocol version
-matches. A release archive extracted and installed the same way behaves
-identically. Two file names are accepted:
+The server looks in `--artifact-dir` when it is given, and otherwise in the
+directory holding the running binary. If neither a `loom-worker-<triple>` nor a
+`loom-worker` file is present, it serves the **running `loom` executable
+itself** — one installed `loom` hosting its own worker self-update, with no
+configuration at all. That fallback is what makes an ordinary deployment work,
+and the file it serves is exactly the artifact this server's protocol version
+matches. Two file names are recognised ahead of it:
 
 - `loom-worker-<triple>` — the name that says which architecture a file is for,
   which is how a server is given a binary for a machine that is not its own (a
-  release's `loom-<triple>` asset copied under this name);
-- `loom-worker` — the installed name, and only an answer for the server's **own**
-  triple, because a file built for the wrong machine would install and then
-  fail to execute. In an install that name is the symlink to the running
-  `loom`.
+  release's `loom-<target>` asset copied under this name). Setting
+  `--artifact-dir` is only needed to serve another architecture;
+- `loom-worker` — only an answer for the server's **own** triple, because a
+  file built for the wrong machine would install and then fail to execute. No
+  installer places this name any more; the fallback to the running `loom` is
+  what a normal deployment uses.
 
 The `target` query parameter is validated before it touches the filesystem
 (ASCII alphanumerics, `-` and `_` only), so a crafted value cannot walk out of
@@ -204,13 +205,13 @@ API did not already have, since the API already dispatches arbitrary command
 execution to every enrolled machine, and the bytes are public software. Whoever
 can reach the port can already enroll a host.
 
-A containerised server has no sibling `loom-worker` — the image is `scratch` and
-carries the control plane only. Point `LOOM_ARTIFACT_DIR` at a directory
-containing `loom-worker-<triple>` (a copy of the release's `loom-<triple>`) if a
-containerised server should host
-artifacts, or run workers from images (`docs/containers.md`) and update them by
-pulling a new image, which is the same "replace the file, restart the process"
-with the container runtime as the supervisor.
+A containerised server carries the same one binary, so it serves its own `loom`
+executable by the same fallback and hosts worker self-update with no
+configuration. Set `--artifact-dir` to a directory containing
+`loom-worker-<triple>` (a copy of the release's `loom-<target>`) only to serve
+another architecture, or run workers from images (`docs/containers.md`) and
+update them by pulling a new image, which is the same "replace the file, restart
+the process" with the container runtime as the supervisor.
 
 ### Verification: digest, and what it does not cover
 
@@ -237,10 +238,9 @@ already mapped. An interrupted download, a failed digest, a full disk and a cras
 between the two steps all leave the old binary in place and working.
 
 The target is `std::env::current_exe()` — the file the worker was started from,
-with symlinks resolved. Started as `loom-worker`, that is
-`/usr/local/bin/loom`, so the update replaces the one binary and both role names
-go on pointing at it; a worker started as `loom worker` and one started through
-the symlink take exactly the same path.
+with symlinks resolved. A worker started as `loom worker --server-url …`
+therefore replaces that one binary, so the next start is the new build in the
+same role.
 
 ### In-flight runs
 
@@ -294,16 +294,10 @@ case is a bounded retry every five minutes and a log line each time.
 
 ### Disabling self-update
 
-An operator who wants to control upgrades centrally turns it off:
+An operator who wants to control upgrades centrally passes the flag:
 
 ```bash
-# the flag, or the environment
 loom worker --server-url https://loom.example.com --no-auto-update
-```
-
-```
-# /etc/loom/worker/<server-key>.env
-LOOM_AUTO_UPDATE=0
 ```
 
 The reason is logged at startup, so the journal says *why* a mismatched worker is
@@ -327,59 +321,56 @@ The worker exits after a successful install and something must start the new
 file:
 
 ```ini
-# deploy/systemd/loom-worker@.service
+# your worker unit's [Service] section
 Restart=always
 RestartSec=5s
 ```
 
-`Restart=always` is what `deploy/install.sh` already installs, and the container
-images use `restart: unless-stopped`. A worker run bare from a shell has no
-supervisor, and after an update it simply exits — run it under systemd, a
-container, or any process manager that restarts. The exit status is **0**, so a
-planned update is not recorded as a failure.
+loom ships no unit and no installer, so `Restart=always` is whatever the
+operator's own supervisor is configured for; the compose file at
+`containers/docker-compose.yml` uses `restart: unless-stopped`. A worker run
+bare from a shell has no supervisor, and after an update it simply exits — run
+it under systemd, a container, or any process manager that restarts. The exit
+status is **0**, so a planned update is not recorded as a failure.
 
 ## Updating by hand
 
-`install.sh` plus a restart remains the supported path for the server, and for a
-worker with self-update disabled:
+Replacing the binary and restarting the unit is the supported path for the
+server, and for a worker with self-update disabled:
 
 ```bash
-# A. from a checkout: build, then install from the build output
+# A. from a checkout: build, then place the binary
 cargo build --release -p loom
-sudo deploy/install.sh server
+sudo install -m 0755 target/release/loom /usr/local/bin/loom
 
-# B. from a release: no toolchain needed, the installer downloads and verifies
-sudo deploy/install.sh --release v0.2.0 server
+# B. from a release: no toolchain needed, verify the download then place it
+sha256sum -c SHA256SUMS
+sudo install -m 0755 loom-x86_64-unknown-linux-musl /usr/local/bin/loom
 
 # ...then, either way, on the server machine
 sudo systemctl restart loom-server
 
 # ...on each execution machine with self-update disabled:
-sudo deploy/install.sh --release v0.2.0 worker builder-1 https://loom.example.com
 sudo systemctl restart loom-worker@builder-1
 ```
 
 With self-update enabled the worker steps are unnecessary: restarting the server
-is the whole upgrade. `--release <version>` downloads the binary for this
-machine's target from the GitHub Release, checks it against the
-release's `SHA256SUMS`, and only then installs it as `/usr/local/bin/loom` with
-its `loom-server` / `loom-worker` symlinks beside it;
-[`../deploy/README.md`](../deploy/README.md) § Install from a release has the
-details, including `GITHUB_TOKEN` for a private repository. A download that fails,
-or one whose digest does not match, aborts **before** anything is installed and
-exits non-zero, so a fleet upgrade is never half-done by a bad connection.
-
-`install.sh` never overwrites an existing environment file, so re-running is safe
-and safe from a configuration-management tool that replaces files.
+is the whole upgrade. The release archive and its `SHA256SUMS` are on the GitHub
+Release page; checking the downloaded file against the checksum before installing
+it is the only integrity check outside the server. A download that fails, or one
+whose digest does not match, is caught **before** anything is installed, so a
+fleet upgrade is never half-done by a bad connection. There is no installer to
+re-run and no configuration it could overwrite.
 
 ### What a restart does not lose
 
-- **The worker's identity.** The host id is persisted in `LOOM_WORKER_STATE` on
+- **The worker's identity.** The host id is persisted by `--state` on
   first enroll and re-presented on start, so a restart — including the restart
   after a self-update — updates the existing host instead of enrolling a second
   one. A host is "a machine, not a connection".
-- **The replay window.** With `LOOM_DATA_DIR` the log is on disk and survives a
-  server restart; with `LOOM_REDIS_URL` it is shared and also lets a second node
+- **The replay window.** With `--data-dir` the log is on disk and survives a
+  server restart; with `--redis-url` (or its `LOOM_REDIS_URL` fallback) it is
+  shared and also lets a second node
   attach to the same window. Only the default in-process backend loses it.
 - **Missed frames.** A worker persists its host-scope cursor next to its host id
   and, on start, subscribes *then* replays from that cursor. A dispatch published
@@ -394,7 +385,7 @@ and safe from a configuration-management tool that replaces files.
 
 Rolling back is running the previous binary and restarting; data formats are
 stable within a `protocol_version`. One file per machine is what gets replaced,
-so the role symlinks point at the rolled-back file too.
+and the role is the subcommand, so that same replaced file serves both.
 
 ```bash
 # keep the previous binary where the upgrade can find it again
@@ -406,10 +397,12 @@ sudo install -m 0755 /var/lib/loom/bin/loom.prev /usr/local/bin/loom
 sudo systemctl restart loom-worker@builder-1
 ```
 
-If the previous binary was not kept, the previous release is the copy:
+If the previous binary was not kept, the previous release is the copy: download
+it from the GitHub Release for that version, verify it against that release's
+`SHA256SUMS`, and install the file:
 
 ```bash
-sudo deploy/install.sh --release v0.1.0 server
+sudo install -m 0755 loom-x86_64-unknown-linux-musl /usr/local/bin/loom
 sudo systemctl restart loom-server
 ```
 
@@ -420,14 +413,14 @@ Rules:
   workers will not silently follow a newer server once it is rolled back, because
   a downgrade is refused — install the old binary by hand.
 - **Self-update cannot undo an upgrade by itself.** A worker never installs a
-  binary for a protocol older than its own. Rolling a worker back is
-  `install.sh` (or copying the previous file) plus a restart.
-- The environment file and the data directory are unchanged across an ordinary
-  upgrade, so rollback does not touch them. One commit range changed how
+  binary for a protocol older than its own. Rolling a worker back is copying the
+  previous file into place plus a restart.
+- The data directory is unchanged across an ordinary upgrade, so rollback does
+  not touch it. One commit range changed how
   the UI is served rather than how the protocol works: the server that served a
-  bundle from disk needed `LOOM_UI_DIR` plus that directory, and the server that
-  carries its client in the binary ignores the variable — rolling across that
-  boundary needs nothing edited, and the bundle directory can be deleted
+  bundle from disk used `LOOM_UI_DIR`, and the server that
+  carries its client in the binary no longer reads the variable — rolling across
+  that boundary needs nothing edited, and the bundle directory can be deleted
   whenever it is convenient. (The disk-bundle shape existed only between two
   commits on main; no release shipped it.) The two update state files
   (`worker-update-attempt.json`, `host-artifact.sha256`) are safe to delete:
@@ -445,6 +438,5 @@ its own executable with one the server hosts, and exit for a restart. Those are
 the shapes the fork explicitly does not require
 (`architecture.md` § Deployment shapes): bare systemd must be enough. Nix,
 Ansible, a container image or a package repository can all be layered on top —
-they all reduce to "put the binary here, write the environment file, restart the
-unit", which is exactly what `install.sh` does, and the worker's own path is the
-same three steps with the server as the source.
+they all reduce to "put the binary here, restart the unit", and the worker's own
+path is the same steps with the server as the source.

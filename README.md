@@ -24,7 +24,7 @@ on it and it can be validated on its own.
 - [x] `loom` — one binary carrying both roles; `loom-server` (control plane: HTTP + WebSocket surface, publish reaches subscribers through the log) and `loom-worker` (execution plane) are roles of it, still two processes
 - [x] `loom-domain` — projects, threads, hosts and environments as pure types and invariants
 - [x] Managed projects: create / list / rename / archive / sources over HTTP, with threads and environments naming their project (`docs/projects.md`)
-- [x] Server-only startup and an independently stoppable local worker: `loom server` and `loom worker`, or the installed symlinks that name the same file
+- [x] Server-only startup and an independently stoppable local worker: `loom server` and `loom worker`, the two subcommands of the one binary
 - [x] `loom-provider-protocol` — the server↔worker ACP execution contract, replayable run events, and a terminal-state guarantee
 - [x] The event model aligned with bb's `ThreadEvent` contract (35 provider event types) — see [`docs/event-model.md`](docs/event-model.md)
 - [ ] Persist domain entities (the domain registry is in-process and lost on restart)
@@ -34,7 +34,7 @@ on it and it can be validated on its own.
   (`loom worker` is the reference implementation of that contract and exercises
   all of it today)
 - [x] Automations: domain, durable storage, typed HTTP surface, a cron/timezone scheduler and agent execution through the existing thread/run/ACP path (`docs/automations.md`)
-- [x] Redis Streams relay backend for restart-transparent upgrades (`LOOM_REDIS_URL`)
+- [x] Redis Streams relay backend for restart-transparent upgrades (`--redis-url`, or its `LOOM_REDIS_URL` fallback)
 - [x] bb's HTTP/WebSocket/worker contract exported to JSON Schema, with a Rust conformance harness (`docs/contract.md`)
 - [x] CI on every push and PR: format, lint, the full test suite, the declared MSRV and contract reproducibility (`docs/ci.md`)
 
@@ -42,9 +42,8 @@ on it and it can be validated on its own.
 
 ```
 crates/
-  loom/         loom            the one binary, dispatching by invocation name
-                                (`loom server` / `loom worker`) or by the
-                                installed `loom-server` / `loom-worker` symlinks
+  loom/         loom            the one binary, selecting its role from the
+                                `server` / `worker` subcommand
   domain/       loom-domain     projects, threads, hosts, environments, scopes, events, runs
   relay/        loom-relay      scopes, event ids, retention, dedup, backends
   relay-hub/    loom-relay-hub  connections, rooms, delivery
@@ -63,8 +62,7 @@ ui/packages/*                   the pinned bb packages the product app builds
         ui/provenance.json, ui/app-patch-ledger.json, ui/app-port-plan.json
                                 the app's pin, per-file adaptation record and
                                 route-level port plan, all machine-checked
-deploy/         systemd units, environment templates, install/uninstall scripts,
-                the container images and a compose example
+containers/     the container images and the compose example
 docs/
   acp-adapter.md
   api-coverage.md
@@ -121,9 +119,8 @@ cargo fmt --all
 ```
 
 `cargo build --release -p loom` puts the artifact at `target/release/loom`;
-`loom server` starts the control plane and `loom worker` an execution machine,
-and `deploy/install.sh` adds the `loom-server` / `loom-worker` symlinks so
-anything that spawns a binary by name keeps working. `loom server
+`loom server` starts the control plane and `loom worker` an execution machine —
+the role is the subcommand, and there are no role symlinks. `loom server
 --local-worker` runs both on one box, with the server supervising the worker
 child. For a quick start, `cargo run -p loom -- server`.
 
@@ -144,11 +141,11 @@ CI runs the check forms of these on every push and PR, plus the declared MSRV
 and the contract-reproducibility check; [`docs/ci.md`](docs/ci.md) lists the
 jobs, the required checks and the measured duration.
 
-No external services are required: the default backend is in-process. A
-`LOOM_DATA_DIR` keeps the replay window on local disk **and** persists the
-domain entity view (projects, threads, hosts, environments) across restarts;
-`LOOM_REDIS_URL` moves the log to Redis Streams so it is shared and survives a
-server upgrade. See [`docs/domain-persistence.md`](docs/domain-persistence.md)
+No external services are required: the default backend is in-process. `--data-dir`
+keeps the replay window on local disk **and** persists the domain entity view
+(projects, threads, hosts, environments) across restarts; `--redis-url` (or its
+`LOOM_REDIS_URL` fallback) moves the log to Redis Streams so it is shared and
+survives a server upgrade. See [`docs/domain-persistence.md`](docs/domain-persistence.md)
 for how domain state recovers, and
 [`docs/redis-backend.md`](docs/redis-backend.md) for the Redis deployment
 contract.
@@ -179,9 +176,8 @@ cargo run -p loom -- worker --server-url http://127.0.0.1:38886 --name laptop
 # → loom-worker "laptop" enrolled as host_01M… with http://127.0.0.1:38886
 ```
 
-The same binary runs both roles: `loom server` and `loom worker` are the
-explicit form, and the installed `loom-server` / `loom-worker` symlinks are the
-same file answering to the old names.
+The same binary runs both roles: `loom server` and `loom worker` are the only
+invocation, and the role is the subcommand — nothing inspects the process name.
 
 With no worker at all, `GET /api/v1/hosts/primary` answers `200` with
 `{"host":null,"source":"no_host"}` rather than an error — a server-only
@@ -226,9 +222,9 @@ published frame arrives.
 The UI is served from the same origin: open `http://127.0.0.1:38886/`. It is the
 product app, built with `pnpm --filter @bb/app run build` and compiled into the
 binary — there is no UI directory to point at and no UI variable to
-set. `LOOM_UI_PROXY` is the one override, development only, and reverse-proxies
-to a dev server; `LOOM_UI_DIR` is not read any more, so a line left over from the
-shape that served a bundle from disk is inert. The client derives its server from
+set. `--ui-proxy` is the one override, development only, and reverse-proxies
+to a dev server; `LOOM_UI_DIR`, the variable that served a bundle from disk, is
+no longer read. The client derives its server from
 its own origin, talks
 typed `/api/v1` routes and the public `/ws` protocol, and recovers from a
 reconnect by invalidating and reloading — the contract is in
@@ -238,11 +234,12 @@ The provider contract — ACP dispatch through the relay, the report path and th
 guarantee that a run always ends — is specified in
 [`docs/provider-protocol.md`](docs/provider-protocol.md).
 
-Deploying the multi-machine shape (server plus execution machines) is
-[`deploy/`](deploy/README.md): the one binary plus its role symlinks, two
-systemd units, environment templates, and an idempotent install/uninstall
-script. The same two processes are published as container images — `docker run`,
-or a `docker compose` all-in-one —
+Deploying the multi-machine shape (server plus execution machines) is the flags
+on an `ExecStart` line: there is no installer and no environment file, and the
+walkthrough is [`docs/process-model.md`](docs/process-model.md) § Deploying it,
+with one systemd unit per role or a single `loom server --local-worker` unit.
+The same two processes are published as container images — `docker run`, or a
+`docker compose` all-in-one —
 [`docs/containers.md`](docs/containers.md), which is also where the limits of a
 containerised execution worker are written down. Remote access is
 [`docs/remote-access.md`](docs/remote-access.md) (Tailscale Serve in front of a

@@ -17,6 +17,7 @@ loom-provider-protocol.workspace = true
 loom-relay.workspace = true
 loom-server.workspace = true
 base64.workspace = true
+clap.workspace = true
 futures-util.workspace = true
 serde.workspace = true
 similar.workspace = true

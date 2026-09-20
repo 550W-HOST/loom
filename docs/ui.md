@@ -5,7 +5,7 @@ served by `loom-server` from the same origin as the API, so the only thing a
 client needs is the URL:
 
 ```
-UI (browser / PWA / desktop webview) ── HTTP + WS ──▶ loom-server ── relay ──▶ frames
+UI (browser / PWA / desktop webview) ── HTTP + WS ──▶ loom server ── relay ──▶ frames
                                                           ▲
                                                        worker (separate process)
 ```
@@ -36,13 +36,13 @@ The release pipeline and CI run it before the Rust jobs for the same reason
 | Source | Selected by | Use |
 | --- | --- | --- |
 | Embedded product app | nothing — always | Production |
-| Dev-server proxy | `LOOM_UI_PROXY=http://127.0.0.1:5173` | Frontend development with hot reload against the real server |
+| Dev-server proxy | `--ui-proxy http://127.0.0.1:5173` | Frontend development with hot reload against the real server |
 
 The proxy is an override rather than the other half of a choice: nothing else
 replaces the embedded bundle, and the override is development only. `LOOM_UI_DIR`
-is **gone** as an input: the server does not read it, says once at startup that
-it is ignoring it, and serves the client it was built with — a leftover line in
-an environment file is not worth refusing to boot over (`crates/server/src/main.rs`).
+is **no longer read**: it is inert, and the server always serves the client it
+was built with — a leftover line in an environment file is not worth refusing to
+boot over.
 
 Rules that apply to both:
 
@@ -255,8 +255,8 @@ for still stands, and is what a shell must satisfy if one is added back:
 
 * window/tray lifecycle and global shortcuts;
 * native file dialogs and "open in editor" for a workspace on *this* machine;
-* supervisoring a local `loom-server` and an independently stoppable
-  `loom-worker`;
+* supervisoring a local `loom server` and an independently stoppable
+  `loom worker`;
 * auto-update and code signing.
 
 Those are a few hundred lines around a webview that points at a URL. The rest —

@@ -24,13 +24,13 @@ enrolled machine". Treat it exactly that way.
 
 > **Never bind the server to a public interface.**
 >
-> `LOOM_BIND=0.0.0.0:38886` (the loom spelling of bb's
+> `--bind 0.0.0.0:38886` (the loom equivalent of bb's
 > `--server-bind-host 0.0.0.0`) publishes an unauthenticated,
-> command-executing API on every interface. Do not set it on a host that has a
-> routable address. `LOOM_BIND` has no TLS, no auth, no rate limit and no
+> command-executing API on every interface. Do not pass it on a host that has a
+> routable address. `--bind` has no TLS, no auth, no rate limit and no
 > origin check behind it.
 
-Keep `LOOM_BIND=127.0.0.1:38886`, which is the default, and put a network that
+Keep `--bind 127.0.0.1:38886`, which is the default, and put a network that
 authenticates *in front of it*.
 
 ## Preferred: Tailscale Serve
@@ -44,7 +44,7 @@ On the server machine:
 
 ```bash
 sudo tailscale up                       # join the tailnet once
-# Publish the loopback server on the tailnet. Leave LOOM_BIND on 127.0.0.1.
+# Publish the loopback server on the tailnet. Leave --bind on 127.0.0.1.
 tailscale serve --bg 38886
 tailscale serve status                  # → https://<machine>.<tailnet>.ts.net/
 ```
@@ -79,7 +79,7 @@ trusted, or scoped by ACL.
 For a worker on another machine, point it at the tailnet HTTPS URL:
 
 ```
-LOOM_SERVER_URL=https://<machine>.<tailnet>.ts.net
+loom worker --server-url https://<machine>.<tailnet>.ts.net
 ```
 
 The worker only makes outbound connections, so it needs no inbound rule at all.

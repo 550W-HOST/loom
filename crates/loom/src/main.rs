@@ -1,101 +1,70 @@
 //! The one binary both roles are built from.
 //!
-//! `loom-server` and `loom-worker` are *roles*, not artifacts: they are two
-//! processes with one protocol between them (`docs/process-model.md`), and the
-//! thing you install is a single file that can be either. Which role it takes is
-//! decided by how it was invoked, so every existing path keeps working:
+//! `loom server` and `loom worker` are two *processes* with one protocol
+//! between them (`docs/process-model.md`), and the thing you install is a
+//! single file that can be either role. The role is a subcommand, never the
+//! invocation name:
 //!
 //! ```text
-//! loom server            loom worker --server-url http://127.0.0.1:38886
-//! loom-server            loom-worker --server-url http://127.0.0.1:38886
+//! loom server --bind 127.0.0.1:38886
+//! loom worker --server-url http://127.0.0.1:38886 --state /var/lib/loom/host-id
 //! ```
 //!
-//! The second form is what the installed symlinks give you, and it is why
-//! systemd units, the worker's self-update and anything that spawns a binary by
-//! name need no changes. What this does **not** do is merge the two processes:
-//! one file can be started twice, as two supervisors expecting different
-//! lifetimes, and neither start depends on the other. `install.sh` links the
-//! names; nothing links the lifetimes.
+//! The two roles are parsed with `clap`; this dispatcher only decides which
+//! parser gets the arguments, and answers `--version` before either runs
+//! because its exact shape is a release contract
+//! ([`loom_server::version_line`]).
 
-use std::path::Path;
 use std::process::ExitCode;
 
-/// Which of the two processes this invocation is.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+use clap::{Parser, Subcommand};
+use loom_server::cli::ServerArgs;
+use loom_worker::cli::WorkerArgs;
+
+/// The top-level `loom` command: a role, then that role's own flags.
+#[derive(Debug, Parser)]
+#[command(
+    name = "loom",
+    about = "loom: the control plane and the execution plane, one binary, two roles.",
+    disable_version_flag = true,
+    arg_required_else_help = true
+)]
+struct Cli {
+    #[command(subcommand)]
+    role: Role,
+}
+
+#[derive(Debug, Subcommand)]
 enum Role {
-    Server,
-    Worker,
+    /// The control plane: HTTP API, WebSocket surfaces and the in-process relay.
+    Server(ServerArgs),
+    /// The execution plane on one machine: connects outbound and runs agents.
+    Worker(WorkerArgs),
 }
 
 fn main() -> ExitCode {
-    let mut args = std::env::args();
-    let argv0 = args.next().unwrap_or_default();
-    let rest: Vec<String> = args.collect();
+    let rest: Vec<String> = std::env::args().skip(1).collect();
 
-    let named_by_argv0 = role_from_argv0(&argv0);
-    let role = match named_by_argv0 {
-        Some(role) => Ok(Some(role)),
-        None => role_from_args(&rest),
-    };
-    let role = match role {
-        Ok(Some(role)) => role,
-        Ok(None) => {
-            print_usage(&argv0);
-            return ExitCode::SUCCESS;
-        }
-        Err(argument) => {
-            eprintln!("loom: unknown role: {argument}");
-            print_usage(&argv0);
-            return ExitCode::from(2);
-        }
-    };
-
-    // The role word belongs to this dispatcher, not to a role's own parser, so
-    // it is consumed here — whether it named the role (`loom worker …`) or
-    // repeats what the invocation name already said (`loom-worker worker …`,
-    // which a supervisor copying a binary into place can produce).
-    let role_word = match role {
-        Role::Server => "server",
-        Role::Worker => "worker",
-    };
-    let mut role_args: Vec<String> = if named_by_argv0.is_some() {
-        rest.clone()
-    } else {
-        rest.iter().skip(1).cloned().collect()
-    };
-    if role_args.first().map(String::as_str) == Some(role_word) {
-        role_args.remove(0);
-    }
-
-    let runtime = match tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-    {
-        Ok(runtime) => runtime,
-        Err(error) => {
-            eprintln!("loom: could not start the runtime: {error}");
-            return ExitCode::FAILURE;
-        }
-    };
-
-    // `loom server --help` must not start a server: the role has no flags of
-    // its own to document, so it shows the shared usage — the same text a bare
-    // `loom` prints. The worker documents its own flags, so it keeps them.
-    if role == Role::Server
-        && role_args
-            .iter()
-            .any(|arg| arg == "-h" || arg == "--help" || arg == "help")
-    {
-        print_usage(&argv0);
+    // `--version` is answered here, before clap, because the release scripts
+    // parse the exact line `version_line` produces; clap's own version flag is
+    // disabled on every parser below.
+    if rest.iter().any(|arg| arg == "--version" || arg == "-V") {
+        println!("{}", loom_server::version_line(version_name(&rest)));
         return ExitCode::SUCCESS;
     }
 
-    let outcome = match role {
-        Role::Server => runtime.block_on(loom_server::run::run(&role_args)),
-        Role::Worker => runtime.block_on(loom_worker::run::run(&role_args)),
-    };
+    match Cli::parse().role {
+        Role::Server(args) => run_server(args),
+        Role::Worker(args) => run_worker(args),
+    }
+}
 
-    match outcome {
+fn run_server(args: ServerArgs) -> ExitCode {
+    let runtime = match runtime() {
+        Ok(runtime) => runtime,
+        Err(code) => return code,
+    };
+    match runtime.block_on(loom_server::run::run(args)) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("loom: {error}");
@@ -104,109 +73,76 @@ fn main() -> ExitCode {
     }
 }
 
-/// The role the binary was invoked under, from its own name.
-///
-/// A symlink is how one file answers to two names: `loom-server` starts the
-/// control plane and `loom-worker` the execution plane. This is checked before
-/// the arguments, so `loom-worker --server-url …` and `loom worker
-/// --server-url …` are the same command.
-fn role_from_argv0(argv0: &str) -> Option<Role> {
-    let name = Path::new(argv0)
-        .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    // `loom-server` also contains "loom", so the role suffix is what decides.
-    let name = name.strip_suffix(".exe").unwrap_or(&name);
-    if name.ends_with("loom-server") {
-        return Some(Role::Server);
-    }
-    if name.ends_with("loom-worker") {
-        return Some(Role::Worker);
-    }
-    None
-}
-
-/// The role named as the first argument, for the `loom <role>` form.
-///
-/// `None` means "print the usage": no arguments at all is a request for help,
-/// not a guess at a role. `Err` carries the argument that was not understood.
-fn role_from_args(args: &[String]) -> Result<Option<Role>, String> {
-    let Some(first) = args.first() else {
-        return Ok(None);
+fn run_worker(args: WorkerArgs) -> ExitCode {
+    let runtime = match runtime() {
+        Ok(runtime) => runtime,
+        Err(code) => return code,
     };
-    match first.as_str() {
-        "server" => Ok(Some(Role::Server)),
-        "worker" => Ok(Some(Role::Worker)),
-        "-h" | "--help" | "help" | "-v" | "--version" | "version" => Ok(None),
-        other => Err(other.to_owned()),
+    match runtime.block_on(loom_worker::run::run(args)) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("loom: {error}");
+            ExitCode::FAILURE
+        }
     }
 }
 
-fn print_usage(argv0: &str) {
-    let name = Path::new(argv0)
-        .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "loom".to_owned());
-    println!("{}", loom_server::version_line("loom"));
-    println!();
-    println!("USAGE");
-    println!("loom <role> [flags]      ({name} <role> [flags])");
-    println!();
-    println!("ROLES");
-    println!("server: the control plane. Reads LOOM_BIND, LOOM_DATA_DIR, LOOM_NODE_ID,");
-    println!("        LOOM_REDIS_URL, LOOM_LOCAL_HOST_ID, LOOM_UI_PROXY,");
-    println!("        LOOM_ARTIFACT_DIR and LOOM_GIT_COMMIT from the environment.");
-    println!("        --local-worker also starts and supervises one worker on this machine.");
-    println!("worker: the execution plane on one machine. Run `loom worker --help` for its");
-    println!("        flags (--server-url, --name, --state, --provider-cmd, …).");
-    println!();
-    println!("The two are separate processes with one protocol between them. The server starts");
-    println!("no worker unless --local-worker asks for one, and a worker never starts a server;");
-    println!("that flag is the single-box convenience. See docs/process-model.md.");
+fn runtime() -> Result<tokio::runtime::Runtime, ExitCode> {
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| {
+            eprintln!("loom: could not start the runtime: {error}");
+            ExitCode::FAILURE
+        })
+}
+
+/// The name `--version` prints: the role subcommand when there is one, else
+/// `loom`. The subcommand is always the first argument, so the first token is
+/// enough.
+fn version_name(rest: &[String]) -> &'static str {
+    match rest.first().map(String::as_str) {
+        Some("server") => "loom-server",
+        Some("worker") => "loom-worker",
+        _ => "loom",
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn args(list: &[&str]) -> Vec<String> {
-        list.iter().map(|arg| (*arg).to_owned()).collect()
+    #[test]
+    fn the_version_line_names_the_role_that_was_asked_for() {
+        assert_eq!(version_name(&[]), "loom");
+        assert_eq!(version_name(&["--version".into()]), "loom");
+        assert_eq!(version_name(&["server".into()]), "loom-server");
+        assert_eq!(version_name(&["worker".into()]), "loom-worker");
     }
 
     #[test]
-    fn the_invocation_name_decides_the_role() {
-        assert_eq!(
-            role_from_argv0("/usr/local/bin/loom-server"),
-            Some(Role::Server)
-        );
-        assert_eq!(role_from_argv0("./loom-worker"), Some(Role::Worker));
-        // The layout `install.sh` creates: one file, two names.
-        assert_eq!(role_from_argv0("loom-server"), Some(Role::Server));
-        assert_eq!(role_from_argv0("loom-worker.exe"), Some(Role::Worker));
-        // The plain name carries no role: the subcommand does.
-        assert_eq!(role_from_argv0("/usr/local/bin/loom"), None);
-        assert_eq!(role_from_argv0("something-else"), None);
-    }
+    fn the_role_parsers_accept_the_flags_a_unit_writes() {
+        use clap::Parser;
+        let server = ServerArgs::parse_from([
+            "loom",
+            "--bind",
+            "127.0.0.1:9000",
+            "--data-dir",
+            "/var/lib/loom",
+            "--local-worker",
+        ]);
+        assert_eq!(server.bind.port(), 9000);
+        assert!(server.local_worker);
 
-    #[test]
-    fn the_first_argument_decides_the_role_when_the_name_does_not() {
-        assert_eq!(role_from_args(&args(&["server"])), Ok(Some(Role::Server)));
-        assert_eq!(
-            role_from_args(&args(&["worker", "--name", "x"])),
-            Ok(Some(Role::Worker))
-        );
-        // No argument asks for the usage rather than guessing a role.
-        assert_eq!(role_from_args(&args(&[])), Ok(None));
-        assert_eq!(role_from_args(&args(&["--help"])), Ok(None));
-        assert_eq!(role_from_args(&args(&["--version"])), Ok(None));
-        assert_eq!(role_from_args(&args(&["servre"])), Err("servre".to_owned()));
-    }
-
-    #[test]
-    fn a_name_that_ends_in_a_role_wins_over_an_argument() {
-        // A symlink is explicit about the role; the arguments behind it are the
-        // role's own, so `loom-worker server` must not turn into a server.
-        assert_eq!(role_from_argv0("loom-worker"), Some(Role::Worker));
-        assert_eq!(role_from_args(&args(&["server"])), Ok(Some(Role::Server)));
+        let worker = WorkerArgs::parse_from([
+            "loom",
+            "--server-url",
+            "http://127.0.0.1:38886",
+            "--state",
+            "/var/lib/loom/host-id",
+            "--no-auto-update",
+        ]);
+        assert_eq!(worker.server_url, "http://127.0.0.1:38886");
+        assert!(worker.no_auto_update);
     }
 }

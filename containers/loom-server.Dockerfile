@@ -41,33 +41,32 @@ COPY --chown=1000:1000 .keep /var/lib/loom/server/.keep
 # entry to resolve a user; the process simply is that uid.
 USER 1000:1000
 
-# The defaults are the environment file's values, adjusted for a container:
+# The default CMD flags are the deployment's values, adjusted for a container:
 #
-#   LOOM_BIND=0.0.0.0:38886  the container's own interfaces — the port is
-#                            useless to anything outside the namespace
-#                            otherwise. Whether anyone can reach it is decided
-#                            by port publishing, not by this value, so the rule
-#                            in docs/remote-access.md is unchanged: never
-#                            publish this port on a public interface.
-#   LOOM_DATA_DIR            matches the VOLUME below, so the durable relay log
-#                            is the default rather than an opt-in.
-#   LOOM_NODE_ID             stamps every envelope this node produces; two
-#                            server containers must not share it.
+#   --bind 0.0.0.0:38886  the container's own interfaces — the port is useless
+#                         to anything outside the namespace otherwise. Whether
+#                         anyone can reach it is decided by port publishing, not
+#                         by this value, so the rule in docs/remote-access.md is
+#                         unchanged: never publish this port on a public
+#                         interface.
+#   --data-dir            matches the VOLUME below, so the durable relay log is
+#                         the default rather than an opt-in.
+#   --node-id             stamps every envelope this node produces; two server
+#                         containers must not share it.
 #
-# The product app needs no variable: the image carries the server built with the
+# The product app needs no flag: the image carries the server built with the
 # client compiled into it, so `/` serves the app with nothing configured here.
 #
-# LOOM_REDIS_URL is deliberately unset: the in-process/disk backend needs no
-# second service (docs/redis-backend.md).
-ENV LOOM_BIND=0.0.0.0:38886 \
-    LOOM_DATA_DIR=/var/lib/loom/server \
-    LOOM_NODE_ID=loom-server
+# --redis-url is deliberately not passed: the in-process/disk backend needs no
+# second service (docs/redis-backend.md). LOOM_REDIS_URL remains its only
+# environment fallback, for a URL that cannot go on a command line.
+CMD ["--bind", "0.0.0.0:38886", "--data-dir", "/var/lib/loom/server", "--node-id", "loom-server"]
 
-# Where the relative paths in an environment file would land, as in the systemd
-# unit. The two paths that matter are absolute by default either way.
+# Where the relative paths a unit would write land. The two paths that matter
+# are absolute by default either way.
 WORKDIR /var/lib/loom
 
-# Informational: the default LOOM_BIND listens here. Port publishing is what
+# Informational: the default `--bind` listens here. Port publishing is what
 # decides reachability, and `-p 127.0.0.1:38886:38886` keeps the host's own
 # loopback-only rule.
 EXPOSE 38886
@@ -79,5 +78,6 @@ VOLUME /var/lib/loom/server
 
 # The one binary, in its server role. `loom server` rather than a `loom-server`
 # symlink: the image carries a single file, and the ENTRYPOINT is where a
-# container's role is written down.
+# container's role is written down. The CMD above is the default flag set a
+# `docker run` starts with.
 ENTRYPOINT ["/usr/local/bin/loom", "server"]

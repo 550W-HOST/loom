@@ -265,9 +265,9 @@ impl ProxyClient {
         let base: Uri = base
             .trim()
             .parse()
-            .map_err(|error| format!("invalid LOOM_UI_PROXY url: {error}"))?;
+            .map_err(|error| format!("invalid --ui-proxy url: {error}"))?;
         if base.scheme().is_none() || base.authority().is_none() {
-            return Err("LOOM_UI_PROXY must be an absolute URL, e.g. http://127.0.0.1:5173".into());
+            return Err("--ui-proxy must be an absolute URL, e.g. http://127.0.0.1:5173".into());
         }
         let client =
             hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new())

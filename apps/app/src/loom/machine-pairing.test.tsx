@@ -13,10 +13,11 @@ import { useHosts } from "@/hooks/queries/host-queries";
  * The pairing and host-list workflows this issue changed.
  *
  * loom serves no `/install.sh` (only `/install/version` and
- * `/install/loom-daemon`) and `deploy/install.sh` requires root and a
- * `<server-key>`, so this phase cannot produce a working install command. The
- * tests therefore assert the *absence* of one: an unusable command must not be
- * representable, not merely discouraged.
+ * `/install/loom-worker`), and enrolling a machine is `loom worker
+ * --server-url … --join-code …` rather than a one-line install command, so this
+ * phase cannot produce a working install command. The tests therefore assert
+ * the *absence* of one: an unusable command must not be representable, not
+ * merely discouraged.
  */
 
 function jsonResponse(body: unknown, status = 200): Response {

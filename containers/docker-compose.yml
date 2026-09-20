@@ -1,10 +1,10 @@
 # loom on one machine, as containers: the control plane and one execution
-# worker. The systemd equivalent is `deploy/install.sh all` (deploy/README.md);
-# this file is for a host that has docker and no reason to install either
-# binary into the host's filesystem.
+# worker, each image running the one `loom` binary in its own role. This file is
+# for a host that has docker and no reason to install the binary into the host's
+# filesystem.
 #
 #   mkdir -p workspace && sudo chown 1000:1000 workspace
-#   docker compose -f deploy/containers/docker-compose.yml up -d
+#   docker compose -f containers/docker-compose.yml up -d
 #   curl -s http://127.0.0.1:38886/health
 #
 # The images come from the release; to use ones built from a checkout instead,
@@ -31,20 +31,26 @@ services:
       # The relay log and the domain snapshot: what makes a rebuilt container
       # replay the retained window instead of starting an empty one.
       - server-data:/var/lib/loom/server
-    environment:
+    command:
       # Inside the container this is the container's own interface — the port
       # would be unreachable from outside the namespace otherwise. The image
       # already defaults to it; it is spelled out here because it is the value
       # an operator changes (to 127.0.0.1:38886 when running with
       # `network_mode: host`, where 0.0.0.0 would mean the host's interfaces).
-      LOOM_BIND: 0.0.0.0:38886
+      - "--bind"
+      - "0.0.0.0:38886"
+      # The durable relay log, matching the volume below. Mutually exclusive
+      # with `--redis-url`.
+      - "--data-dir"
+      - "/var/lib/loom/server"
       # Two server containers must not share this: it is stamped on every
-      # envelope the node produces. The image defaults to the same value.
-      # LOOM_NODE_ID: loom-server
-      # A shared log in place of the volume above, for a restart-transparent
-      # window across more than one node (docs/redis-backend.md). Mutually
-      # exclusive with LOOM_DATA_DIR, which the image sets.
-      # LOOM_REDIS_URL: redis://redis:6379
+      # envelope the node produces.
+      - "--node-id"
+      - "loom-server"
+      # A shared log in place of --data-dir above, for a restart-transparent
+      # window across more than one node (docs/redis-backend.md):
+      # - "--redis-url"
+      # - "redis://redis:6379"
 
   worker:
     image: ghcr.io/550w-host/loom-worker:${LOOM_IMAGE_TAG:-latest}
@@ -57,28 +63,39 @@ services:
     restart: unless-stopped
     depends_on:
       - server
-    environment:
+    command:
       # The server's service name on this network, not a URL a browser would
       # open. Plain http:// because the binary carries no TLS client: a
       # containerised worker reaches the server over a network that is itself
       # trusted (this compose network, a tailnet, a VPN), and TLS is terminated
       # for the browsers by something in front (docs/remote-access.md).
-      LOOM_SERVER_URL: http://server:38886
+      - "--server-url"
+      - "http://server:38886"
       # What the UI shows in the host list. Keep it stable and human-readable.
-      LOOM_HOST_NAME: ${LOOM_HOST_NAME:-loom-worker}
+      - "--name"
+      - "${LOOM_HOST_NAME:-loom-worker}"
+      # The image's own defaults, repeated because `command:` replaces its CMD:
+      # the enrolled host id that makes a rebuilt container the same machine,
+      # and the mount point that is the whole of what this container can edit.
+      - "--state"
+      - "/var/lib/loom/host-id"
+      - "--workspace-root"
+      - "/workspace"
       # How to run a dispatched provider, when the default is not it. A `pi`
       # inside this image needs a derived image (docs/containers.md § Providers).
-      # LOOM_PROVIDER_CMD: /usr/local/bin/pi
+      # - "--provider-cmd"
+      # - "/usr/local/bin/pi"
       #
       # Self-update is on by default, and this image could do it: it is the
       # `scratch`-free side of the pair, so a replaced file has somewhere to
       # land. What it needs is a server that hosts one — the server image runs
-      # the same `loom` file as the server role, and hosts an artifact only from
-      # a directory holding a `loom-worker` name (the layout `deploy/install.sh`
-      # leaves, or a LOOM_ARTIFACT_DIR set to one). Set that, or leave this off
-      # and rebuild the image, which is the same "replace the file, restart the
-      # process" with the container runtime as the supervisor (docs/upgrades.md).
-      # LOOM_AUTO_UPDATE: "0"
+      # the same `loom` file, and serves that running binary as the worker
+      # artifact itself, so no `loom-worker` name is required beside it. A
+      # `--artifact-dir` holding `loom-worker-<triple>` files is only needed to
+      # serve another architecture. Without one, leave this off and rebuild the
+      # image, which is the same "replace the file, restart the process" with
+      # the container runtime as the supervisor (docs/upgrades.md).
+      # - "--no-auto-update"
     volumes:
       # The host identity, the replay cursor and the provider's own
       # configuration ($HOME/.pi and friends). All three have to survive a

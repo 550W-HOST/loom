@@ -14,13 +14,11 @@
 //! | --- | --- |
 //! | `GET /install/version` | `{"version":"0.1.0","protocolVersion":3}` |
 //! | `GET /install/loom-worker?target=<triple>` | the binary, its SHA-256 in `ETag` and `X-Loom-Artifact-Sha256` |//!
-//! The artifact directory defaults to the directory the running
-//! `loom-server` was started from — `deploy/install.sh` puts
-//! `/usr/local/bin/loom-server` and `/usr/local/bin/loom-worker` side by side,
-//! so the default deployment hosts the worker with no configuration at all.
-//! `LOOM_ARTIFACT_DIR` overrides it. Either `loom-worker-<triple>` (the release
-//! page's name) or `loom-worker` (the installed name, for the server's own
-//! triple) is accepted.
+//! The artifact directory defaults to the directory the running `loom` was
+//! started from, so an install that leaves a `loom-worker` name beside it hosts
+//! the worker with no configuration at all. `--artifact-dir` overrides it.
+//! Either `loom-worker-<triple>` (the release page's name) or `loom-worker`
+//! (a plain name, for the server's own triple) is accepted.
 //!
 //! # Authentication
 //!
@@ -205,8 +203,8 @@ impl std::fmt::Display for ArtifactError {
                 )
             }
             ArtifactError::NotConfigured => f.write_str(
-                "this server hosts no artifacts: LOOM_ARTIFACT_DIR (or a loom-worker next to \
-                 loom-server) is required for worker self-update",
+                "this server hosts no artifacts: --artifact-dir (or a loom-worker next to the \
+                 running loom) is required for worker self-update",
             ),
             ArtifactError::Missing { target, dir } => write!(
                 f,
@@ -223,6 +221,10 @@ impl std::fmt::Display for ArtifactError {
 #[derive(Debug)]
 pub struct Artifacts {
     dir: Option<PathBuf>,
+    /// The running binary, used as the artifact for this server's own target
+    /// when no `loom-worker` name sits beside it. One installed file is both
+    /// roles, so it is also the worker binary.
+    self_exe: Option<PathBuf>,
     server_target: &'static str,
     cache: Mutex<HashMap<PathBuf, Cached>>,
 }
@@ -235,20 +237,23 @@ struct Cached {
 }
 
 impl Artifacts {
-    /// Resolves the directory: `dir` when configured, otherwise the directory
-    /// holding the running server.
+    /// Resolves the directory: `--artifact-dir` when configured, otherwise the
+    /// directory holding the running `loom`.
     ///
-    /// The fallback is the whole reason a default deployment self-updates:
-    /// `install.sh` installs both binaries into one prefix, so the sibling
-    /// `loom-worker` is the artifact that matches this server.
+    /// That directory is where a deployment would put `loom-worker-<triple>`
+    /// files for other architectures. For this server's own target it usually
+    /// holds nothing extra, because [`Artifacts::resolve`] falls back to the
+    /// running binary — one installed file is both roles.
     pub fn from_config(dir: Option<PathBuf>) -> Self {
+        let self_exe = std::env::current_exe().ok();
         let dir = dir.or_else(|| {
-            std::env::current_exe()
-                .ok()
+            self_exe
+                .as_ref()
                 .and_then(|exe| exe.parent().map(Path::to_path_buf))
         });
         Self {
             dir,
+            self_exe,
             server_target: crate::TARGET,
             cache: Mutex::new(HashMap::new()),
         }
@@ -281,11 +286,27 @@ impl Artifacts {
             return Err(ArtifactError::UnknownTarget(target.to_owned()));
         }
         let dir = self.dir.as_ref().ok_or(ArtifactError::NotConfigured)?;
-        let path =
-            locate(dir, target, self.server_target).ok_or_else(|| ArtifactError::Missing {
-                target: target.to_owned(),
-                dir: dir.clone(),
-            })?;
+        // A named `loom-worker-<target>` or `loom-worker` beside the server
+        // wins; for this server's own target, the running binary is the same
+        // file in its worker role, so it is the fallback that lets a single
+        // installed `loom` host its own self-update with no second name.
+        let path = match locate(dir, target, self.server_target) {
+            Some(path) => path,
+            None if target == self.server_target => self
+                .self_exe
+                .clone()
+                .filter(|path| path.is_file())
+                .ok_or_else(|| ArtifactError::Missing {
+                    target: target.to_owned(),
+                    dir: dir.clone(),
+                })?,
+            None => {
+                return Err(ArtifactError::Missing {
+                    target: target.to_owned(),
+                    dir: dir.clone(),
+                })
+            }
+        };
 
         let metadata = std::fs::metadata(&path)
             .map_err(|error| ArtifactError::Io(format!("{path:?}: {error}")))?;
@@ -698,6 +719,28 @@ mod tests {
         let second = assets.resolve(target).unwrap();
         assert_eq!(second.sha256, sha256_hex(b"a longer body"));
         assert_ne!(second.sha256, first.sha256);
+    }
+
+    #[test]
+    fn the_running_binary_is_served_when_no_worker_name_is_present() {
+        let dir = tempfile::tempdir().unwrap();
+        let artifacts = Artifacts::from_config(Some(dir.path().to_path_buf()));
+        let target = artifacts.server_target();
+
+        // Nothing named `loom-worker*` is in the directory, so this server's own
+        // target is served from the running binary: one installed `loom` is both
+        // roles, and a single file hosts its own worker self-update.
+        let resolved = artifacts.resolve(target).unwrap();
+        assert_eq!(resolved.path, std::env::current_exe().unwrap());
+        assert!(resolved.len > 0);
+
+        // Another architecture is a different file and still has to be present.
+        let other = if target == "aarch64-unknown-linux-musl" {
+            "x86_64-unknown-linux-musl"
+        } else {
+            "aarch64-unknown-linux-musl"
+        };
+        assert!(artifacts.resolve(other).is_err());
     }
 
     #[test]

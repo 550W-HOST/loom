@@ -7,8 +7,7 @@ is Node.** How do the two relate?
 
 The two are **roles of one binary** (`loom`, built by `cargo build --release -p
 loom`) and *two processes*. Which role a start takes is decided by the
-invocation name — `loom server` / `loom worker`, or the installed `loom-server`
-/ `loom-worker` symlinks onto the same file — and nothing else about the
+**subcommand** — `loom server` or `loom worker` — and nothing else about the
 boundary below changed with that: no lifetime, no resource domain and no
 supervision relationship was merged.
 
@@ -18,16 +17,16 @@ They are two processes with one protocol between them, and neither owns the
 other. The single-box opt-in below adds a supervisor relationship between the two
 *processes*; it does not merge them.
 
-- **`loom-server` (Rust)** is the control plane role: state, HTTP, WebSocket, the
-  relay. It requires no worker and starts none by default. The one opt-in is
-  `loom server --local-worker` (`LOOM_LOCAL_WORKER=1`), which starts **one**
-  `loom worker` child on the same machine and supervises it; the child is still a
-  separate process with its own address space and its own reconnect loop, and a
-  server started without the flag is exactly the server-only role described here.
-- **`loom-worker`** is the execution plane role: it runs on a machine, dials the
-  server *outbound*, enrolls as a host, and executes work. It never starts,
-  supervises, or requires the server to be co-located or in the same process
-  tree.
+- **The server role** (`loom server`) is the control plane: state, HTTP,
+  WebSocket, the relay. It requires no worker and starts none by default. The one
+  opt-in is `loom server --local-worker`, which starts **one** `loom worker` child
+  on the same machine and supervises it; the child is still a separate process
+  with its own address space and its own reconnect loop, and a server started
+  without the flag is exactly the server-only role described here.
+- **The worker role** (`loom worker`) is the execution plane: it runs on a
+  machine, dials the server *outbound*, enrolls as a host, and executes work. It
+  never starts, supervises, or requires the server to be co-located or in the same
+  process tree.
 - **The bb Node execution plane** (`apps/host-daemon`, checked in beside the
   Rust workspace in a later step) implements the *same* worker contract as
   `loom-worker`. `loom-worker` is the reference implementation of that
@@ -63,8 +62,8 @@ Four, and the first two are the primitives; the last two are conveniences.
 
 | Path | Command | What it starts | What it assumes |
 | --- | --- | --- | --- |
-| **server-only** | `loom server` (installed as `loom-server`) | the control plane | nothing. No worker, no data dir |
-| **worker-only** | `loom worker --server-url <URL>` (installed as `loom-worker`) | one execution machine | a reachable server URL |
+| **server-only** | `loom server` | the control plane | nothing. No worker, no data dir |
+| **worker-only** | `loom worker --server-url <URL>` | one execution machine | a reachable server URL |
 | **single box** | `loom server --local-worker` | both, from one command | a writable data dir |
 | **full stack** | a supervisor starting both as *separate children* | both | a local server URL |
 
@@ -76,7 +75,7 @@ supervising: one `loom worker` child, started from the same binary, restarted
 when it exits (including the `exit 0` a self-update leaves behind) and killed
 with the server. The full-stack path stays the shape that can stop either side
 alone: it is an outside supervisor over two independent children, which is what
-`deploy/install.sh all` plus two units and the compose file already are.
+two systemd units or the two compose services already are.
 
 ## The worker contract
 
@@ -132,7 +131,7 @@ machine that is intentionally absent — the `host_unavailable` failure.
 
 loom replaces the fallback with a policy, in `loom_domain::select_primary_host`:
 
-1. the operator-declared local host (`LOOM_LOCAL_HOST_ID`), **only while a
+1. the operator-declared local host (`--local-host-id`), **only while a
    worker is attached to it**;
 2. otherwise the most recently seen connected host of any kind — the primary
    falls to a remote machine;
@@ -150,8 +149,8 @@ The desktop shell is a UI plus, optionally, two process switches:
 
 | Switch | Starts | Stopping it |
 | --- | --- | --- |
-| **local server** | a control-plane child (`loom server`, or the installed `loom-server` name) | the UI disconnects from that URL |
-| **local execution worker** | an execution-plane child (`loom worker`, or `loom-worker`) pointed at the current server URL | the host is marked disconnected; the window is untouched |
+| **local server** | a control-plane child (`loom server`) | the UI disconnects from that URL |
+| **local execution worker** | an execution-plane child (`loom worker`) pointed at the current server URL | the host is marked disconnected; the window is untouched |
 
 The two switches are independent. Turning the worker off must not reload the
 window, because a worker is a property of the *machine* and the UI is a client
@@ -161,11 +160,10 @@ machine A.
 ## What is in this repository today
 
 - **`loom`** — the one artifact: a single binary (`cargo build --release -p
-  loom`) that carries both roles, plus the `loom-server` / `loom-worker`
-  symlinks an install adds beside it. Which role a start takes comes from the
-  invocation name, so `loom server` and `loom-server` are the same start, and so
-  are `loom worker` and `loom-worker`. Nothing starts the other role except the
-  named opt-in: `loom server --local-worker`.
+  loom`) that carries both roles. Which role a start takes comes from the
+  subcommand, `loom server` or `loom worker`; there are no role symlinks.
+  Nothing starts the other role except the named opt-in:
+  `loom server --local-worker`.
 - **The server role** — control plane, with host enrollment, heartbeats,
   disconnects and primary-host resolution. Server-only unless `--local-worker`
   starts and supervises one worker child on the same machine.
@@ -183,55 +181,85 @@ machine A.
 
 ## Deploying it
 
-The ready-to-use units, environment templates and install script live in
-[`../deploy/`](../deploy/README.md). The shape is:
+There is no installer and no environment file. A deployment is one or two
+`ExecStart` lines under whatever supervisor the operator already runs, and every
+setting is a flag on that line. (`--redis-url` and `--join-code` additionally
+read `LOOM_REDIS_URL` and `LOOM_JOIN_CODE`, because a secret is a poor thing to
+put in argv; nothing else is read from the environment.)
 
-Server-only, as its own unit:
+The two supported shapes are **single box** (`loom server --local-worker`) and
+**two machines** (`loom server` plus `loom worker --server-url …`). The container
+form is [`../containers/docker-compose.yml`](../containers/docker-compose.yml),
+described in [`containers.md`](containers.md).
 
-```bash
+Two machines — the control plane as its own unit:
+
+```ini
 # /etc/systemd/system/loom-server.service
+[Unit]
+Description=loom control plane
+After=network-online.target
+Wants=network-online.target
+
 [Service]
-ExecStart=/usr/local/bin/loom server
-Environment=LOOM_BIND=127.0.0.1:38886
-Environment=LOOM_DATA_DIR=/var/lib/loom/server
+ExecStart=/usr/local/bin/loom server --bind 127.0.0.1:38886 --data-dir /var/lib/loom/server
+Restart=on-failure
+User=loom
+StateDirectory=loom
+
+[Install]
+WantedBy=multi-user.target
 ```
 
-Worker-only, on a different machine, as its own unit (one instance per server):
+and the execution machine as its own unit:
 
-```bash
-# /etc/systemd/system/loom-worker@builder-1.service
+```ini
+# /etc/systemd/system/loom-worker.service
+[Unit]
+Description=loom execution worker
+After=network-online.target
+Wants=network-online.target
+
 [Service]
-ExecStart=/usr/local/bin/loom worker
-Environment=LOOM_SERVER_URL=https://loom.example.com
-Environment=LOOM_HOST_NAME=builder-1
-Environment=LOOM_WORKER_STATE=/var/lib/loom/machines/builder-1/host-id
+ExecStart=/usr/local/bin/loom worker --server-url http://loom.example.com:38886 --name builder-1 --state /var/lib/loom/host-id
+Restart=always
+User=loom
+StateDirectory=loom
+
+[Install]
+WantedBy=multi-user.target
 ```
 
-Both units start the same installed file in a different role — the
-`/usr/local/bin/loom-server` and `/usr/local/bin/loom-worker` names a unit may
-use instead are symlinks onto it — and they have separate resource domains and
-separate lifetimes. Stopping the worker cannot stop the control plane, and vice
-versa.
+The two units start the same installed file in a different role, and they have
+separate resource domains and separate lifetimes. Stopping the worker cannot stop
+the control plane, and vice versa.
 
-A single box can instead run both roles from one unit, with the server as the
-supervisor:
+Single box — both roles from one unit, with the server as the supervisor:
 
-```bash
+```ini
 # /etc/systemd/system/loom-local.service
+[Unit]
+Description=loom control plane and local worker
+After=network-online.target
+Wants=network-online.target
+
 [Service]
-ExecStart=/usr/local/bin/loom server --local-worker
-Environment=LOOM_BIND=127.0.0.1:38886
-Environment=LOOM_DATA_DIR=/var/lib/loom/server
+ExecStart=/usr/local/bin/loom server --bind 127.0.0.1:38886 --data-dir /var/lib/loom/server --local-worker
+Restart=on-failure
+User=loom
+StateDirectory=loom
+
+[Install]
+WantedBy=multi-user.target
 ```
 
-`deploy/env/loom-server.env` carries the same switch as `LOOM_LOCAL_WORKER=1`,
-so an install that already runs `loom-server.service` only needs its environment
-file edited. That unit gets a worker-friendly sandbox, not the server-only
-unit's `ProtectSystem=strict`, because the child writes workspaces and runs
-provider CLIs.
+The single-box unit must be the laxer of the two — the worker child writes
+workspaces and runs provider CLIs as the same user, so the server-only unit's
+`ProtectSystem=strict` must not be copied onto it. The pair also shares one
+process tree and one supervisor lifetime, which is the trade the single-box shape
+makes (§ The decision).
 
-Keep `LOOM_BIND` on loopback. The API has no authentication and a worker
-executes commands and reads files on its machine, so binding it to a public
-interface (bb's `--server-bind-host 0.0.0.0`, here `LOOM_BIND=0.0.0.0:38886`)
-exposes all of that. Put Tailscale or an authenticating reverse proxy in front
-instead; see [`remote-access.md`](remote-access.md).
+Keep the bind on loopback. The API has no authentication and a worker executes
+commands and reads files on its machine, so binding it to a public interface
+(`--bind 0.0.0.0:38886`) exposes all of that. Put Tailscale or an authenticating
+reverse proxy in front instead; see [`remote-access.md`](remote-access.md).

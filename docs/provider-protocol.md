@@ -144,7 +144,7 @@ Three rules, all enforced in code:
    missing one fails the run with a reason naming the path; it is not a license
    to use the worker's cwd. See `acp::session::drive`.
 3. **An operator override replaces the executable, not the workspace.**
-   `LOOM_PROVIDER_CMD` swaps what runs; `cwd` still comes from the dispatch.
+   `--provider-cmd` swaps what runs; `cwd` still comes from the dispatch.
 
 A thread with **no environment**, or one whose environment is not `ready`, is
 failed on dispatch with an explicit error. There is deliberately no default
@@ -177,7 +177,7 @@ comes back up the worker's socket like a report:
   "outcome": { "outcome": "failed", "error": "could not create …: permission denied" } }
 ```
 
-The worker creates `<workspace_root>/<env_id>` (`LOOM_WORKSPACE_ROOT`, default
+The worker creates `<workspace_root>/<env_id>` (`--workspace-root`, default
 `$HOME/.loom/workspaces`); the control plane only learns the resulting path
 from the report, then records it and publishes `environment_status_changed` to
 `project:{id}`. A failed attempt moves the environment to `error` with the
@@ -266,9 +266,9 @@ curl 'localhost:38886/api/v1/environments'
 ```
 
 An operator can override the provider executable on a machine with
-`LOOM_PROVIDER_CMD` / `LOOM_PROVIDER_ARGS`, cap a run with
-`LOOM_RUN_TIMEOUT_MS`, and choose the managed-workspace root with
-`LOOM_WORKSPACE_ROOT`. The override never changes the workspace.
+`--provider-cmd` / `--provider-args`, cap a run with
+`--run-timeout-ms`, and choose the managed-workspace root with
+`--workspace-root`. The override never changes the workspace.
 
 When a run behaves oddly — text arrives but the turn never closes, or an
 expected frame is missing — `LOOM_ACP_TRACE=1` makes the worker print what the

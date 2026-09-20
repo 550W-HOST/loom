@@ -8,12 +8,12 @@ ghcr.io/550w-host/loom-server:<version>
 ghcr.io/550w-host/loom-worker:<version>
 ```
 
-Each image carries the **same one binary** — the one `deploy/install.sh` installs
-— and runs it in one role: `/usr/local/bin/loom server` in the `loom-server`
-image, `/usr/local/bin/loom worker` in the `loom-worker` image. They have the
-same environment variables and the same data layout as the units, and the same
-split between server and worker: the server never starts a worker, and the worker
-never needs the server's process — only its socket. Two images and one file is
+Each image carries the **same one binary** — the one the release publishes — and
+runs it in one role: `/usr/local/bin/loom server` in the `loom-server` image,
+`/usr/local/bin/loom worker` in the `loom-worker` image. They take the same flags
+and use the same data layout as the units, and they keep the same split between
+server and worker: the server never starts a worker, and the worker never needs
+the server's process — only its socket. Two images and one file is
 not a contradiction, it is the two roles named separately so `docker run` and
 compose can start one each. What a container changes is where the
 filesystem boundary is, and for the worker that boundary is the whole question
@@ -41,20 +41,20 @@ CLIs, and a provider is usually not a static binary (`pi` is a Node program), so
 the image has to be a base something can be added to.
 
 The server image is the static binary and nothing else: the product app is
-compiled into it ([`ui.md`](ui.md)), so there is no directory to copy, no
-`LOOM_UI_DIR` to set and no second artifact that could disagree with the binary.
+compiled into it ([`ui.md`](ui.md)), so there is no directory to copy, no UI
+directory flag to set and no second artifact that could disagree with the binary.
 The 6.9 MB and 10.7 MB in the size column were measured before the client was
 embedded and before the two roles became one file, so today's images are the same
 one binary with or without the `alpine` base under it — but each is still one
-file, and one thing to pull, tag and roll back. `LOOM_UI_PROXY` (development
-only) is the only UI override the image's process accepts; a `LOOM_UI_DIR` left
-in an environment file by the bundle-on-disk shape is ignored, with one line
-saying so.
+file, and one thing to pull, tag and roll back. `--ui-proxy` (development only)
+is the only UI override the image's process accepts; `LOOM_UI_DIR`, the variable
+the bundle-on-disk shape used, is no longer read at all.
 
-The images carry no `loom-server` / `loom-worker` symlinks, because each is
-already started in one named role by its `ENTRYPOINT`; that also means the server
-image hosts no worker artifact for self-update unless `LOOM_ARTIFACT_DIR` points
-at one ([§ Upgrading](#upgrading)).
+The images carry no `loom-server` / `loom-worker` symlinks, because each names
+its role with a subcommand in its `ENTRYPOINT`; a worker self-update inside a
+container is served from the server's running `loom` executable itself, or from
+`--artifact-dir` when the target is another architecture
+([§ Upgrading](#upgrading)).
 
 Neither image carries a Rust toolchain, or anything else that was needed to
 build it.
@@ -64,7 +64,7 @@ build it.
 ```bash
 # from a checkout of the repository
 mkdir -p workspace && sudo chown 1000:1000 workspace
-docker compose -f deploy/containers/docker-compose.yml up -d
+docker compose -f containers/docker-compose.yml up -d
 curl -s http://127.0.0.1:38886/health
 ```
 
@@ -73,19 +73,24 @@ curl -s http://127.0.0.1:38886/health
 ```
 
 That is the all-in-one shape: one server, one worker on the same machine, each
-with its own volume. `LOOM_IMAGE_TAG` pins the version pulled, `LOOM_PORT`,
-`LOOM_HOST_NAME` and `LOOM_WORKSPACE` move the published port, the name in the
-host list and the directory the worker works in. A private repository needs
-`docker login ghcr.io` with a token that can read packages before any of this.
+with its own volume. The compose file's variables `LOOM_IMAGE_TAG`, `LOOM_PORT`
+and `LOOM_WORKSPACE` (compose-file interpolation, not loom configuration) pin
+the version pulled and move the published port and the worker's directory; the
+worker's display name is the `--name` flag in its service `command:`. A private
+repository needs `docker login ghcr.io` with a token that can read packages
+before any of this.
 
 The workspace directory has to exist and be writable by uid 1000 *before* compose
 starts: docker creates a missing bind-mount source as `root:root`, and the
-worker then cannot write into the very directory it exists to work in. This is the
-container form of the systemd install's `install -d -o loom -g loom`.
+worker then cannot write into the very directory it exists to work in.
 
 ## Running them by hand
 
-The compose file is a convenience over two `docker run` commands.
+The compose file is a convenience over two `docker run` commands. Both pass
+configuration the same way: the image's `ENTRYPOINT` names the role
+(`loom server` / `loom worker`) and the flags after the image — the compose
+service's `command:` — are the whole configuration. There is no `-e` /
+`--env-file` for loom settings any more.
 
 A control plane, reachable from its own machine only:
 
@@ -107,38 +112,37 @@ docker run -d --name loom-worker --restart unless-stopped \
   --network loom \
   -v loom-worker-state:/var/lib/loom \
   -v "$PWD/workspace:/workspace" \
-  -e LOOM_SERVER_URL=http://loom-server:38886 \
-  -e LOOM_HOST_NAME=builder-1 \
-  ghcr.io/550w-host/loom-worker:0.1.0
+  ghcr.io/550w-host/loom-worker:0.1.0 \
+  --server-url http://loom-server:38886 --name builder-1
 ```
 
 An execution machine joining a server somewhere else is the same command with
-that server's address in `LOOM_SERVER_URL` and no `--network` requirement:
+that server's address in `--server-url` and no `--network` requirement:
 
 ```bash
 docker run -d --name loom-worker --restart unless-stopped \
   -v loom-worker-state:/var/lib/loom \
   -v "$PWD/workspace:/workspace" \
-  -e LOOM_SERVER_URL=http://10.0.0.5:38886 \
-  -e LOOM_HOST_NAME=builder-1 \
-  ghcr.io/550w-host/loom-worker:0.1.0
+  ghcr.io/550w-host/loom-worker:0.1.0 \
+  --server-url http://10.0.0.5:38886 --name builder-1
 ```
 
-`LOOM_SERVER_URL` has no default in either the image or the binary. A worker
-container started without it exits immediately:
+`--server-url` has no default in either the image or the binary. A worker
+container started without it is refused before it connects:
 
 ```
-Error: "--server-url (or LOOM_SERVER_URL) is required"
+error: the following required arguments were not provided:
+  --server-url <URL>
 ```
 
 which is the failure worth having: an unconfigured worker that guessed would
 enrol somewhere nobody expected.
 
-Everything else in `deploy/env/loom-server.env` and `deploy/env/loom-worker.env`
-works as `docker run --env-file`. Those files are written for a host — a
-loopback bind, absolute paths a systemd unit created — so a container wants
-`LOOM_BIND=0.0.0.0:38886`, and neither the data paths nor `HOME` need setting at
-all: the images already point them at the volumes.
+Neither image needs an environment file any more — configuration is flags, and
+the compose file passes each service's flags in its `command:`. A container wants
+`--bind 0.0.0.0:38886` inside its namespace (the server default is loopback),
+and neither the data paths nor `HOME` need setting at all: the images already
+point them at the volumes.
 
 ## Volumes and permissions
 
@@ -199,19 +203,19 @@ docker run --rm -v loom-server-data:/data alpine:3 sh -c 'ls -l /data'
 
 ## Ports
 
-The server image sets `LOOM_BIND=0.0.0.0:38886` because anything else is
+The server image passes `--bind 0.0.0.0:38886` because anything else is
 unreachable from outside the container's network namespace. **Publishing** is
 what decides who can reach it, and the rule in
 [`remote-access.md`](remote-access.md) is not a property of the bind address:
 
 | Publishing | Means |
 | --- | --- |
-| `-p 127.0.0.1:38886:38886` | reachable from that host only — the container form of the default `LOOM_BIND` |
+| `-p 127.0.0.1:38886:38886` | reachable from that host only — the container form of the default `--bind 127.0.0.1:38886` |
 | `-p 38886:38886` | every interface the docker host has — the unauthenticated, command-executing API on a public address, which `remote-access.md` forbids |
 | a compose network + `expose`, or `--network` only | reachable by the workers on that network, by nothing else |
 
 With `network_mode: host` there is no namespace boundary left, and `0.0.0.0` is
-the host's own interfaces: set `LOOM_BIND=127.0.0.1:38886` there and publish
+the host's own interfaces: pass `--bind 127.0.0.1:38886` there and publish
 nothing.
 
 The worker image has no `EXPOSE` because the worker binds no port — it dials out,
@@ -316,15 +320,16 @@ benefit.
   deployment that matches the job.
 
 Nothing here is specific to containers: a systemd worker sandboxed to one
-directory has the same property, which is why the worker unit in
-`deploy/systemd/` is deliberately the laxer of the two.
+directory has the same property, which is why the worker unit
+([`process-model.md`](process-model.md) § Deploying it) is deliberately the
+laxer of the two.
 
-## Compared with the systemd install
+## Compared with a systemd deployment
 
 | | systemd unit | container |
 | --- | --- | --- |
-| Configuration | `/etc/loom/*.env` (`EnvironmentFile`) | `-e` / `--env-file` / compose `environment` |
-| Identity | `loom` system user, uid chosen at install | `USER 1000:1000`, fixed |
+| Configuration | flags on the unit's `ExecStart` | flags in the service's `command:` (or the arguments to `docker run`) |
+| Identity | `loom` system user, chosen by the operator | `USER 1000:1000`, fixed |
 | Data | `/var/lib/loom` owned by `loom` | a named volume owned by 1000 |
 | Restart | `Restart=always` / `on-failure` | `restart: unless-stopped` |
 | Sandbox | `ProtectSystem=strict`, `NoNewPrivileges`, empty capability set (server); deliberately light (worker) | namespaces, the image's userland, read-only-where-mounted |
@@ -333,7 +338,7 @@ directory has the same property, which is why the worker unit in
 | What the process sees | the host | the container's filesystem + mounts |
 
 The resource limits are suggestions in both cases and have to be sized to the
-machine; the asymmetry `deploy/README.md` describes — a bounded control plane, an
+machine; the asymmetry the process model describes — a bounded control plane, an
 execution plane allowed to exhaust a host and be OOM-killed first — carries over
 unchanged.
 
@@ -375,9 +380,9 @@ By hand, without the script, a single platform:
 ```bash
 mkdir -p dist/context
 install -m 0755 dist/loom-x86_64-unknown-linux-musl dist/context/loom-amd64
-install -m 0644 deploy/containers/keep dist/context/.keep
-docker build -f deploy/containers/loom-server.Dockerfile -t loom-server:dev dist/context
-docker build -f deploy/containers/loom-worker.Dockerfile -t loom-worker:dev dist/context
+install -m 0644 containers/keep dist/context/.keep
+docker build -f containers/loom-server.Dockerfile -t loom-server:dev dist/context
+docker build -f containers/loom-worker.Dockerfile -t loom-worker:dev dist/context
 ```
 
 A **multi-platform** build additionally needs a builder with the container driver
@@ -408,18 +413,17 @@ worker images are upgraded together. A worker image that moves second has a
 choice, and it is the same one a bare binary has (see
 [`upgrades.md`](upgrades.md) § Worker self-update):
 
-- **In-container self-update** works if the server hosts a worker artifact for
-  this container's architecture. The worker image already runs the loop, so all
-  that is needed is `LOOM_ARTIFACT_DIR` on the server pointing at a directory
-  holding `loom-worker-<triple>` — a copy of the release's `loom-<triple>`, which
-  is the same binary the image runs — and the container restart policy then
-  starts the new file exactly as `Restart=always` would. The public images are
-  not laid out for it — `loom-server` is `scratch` and carries no
-  `loom-worker`-named file — so this is
-  an explicit choice, not the default path.
+- **In-container self-update** works when the server can serve a worker artifact
+  for this container's architecture. A server built from the same `loom` file
+  serves its own running executable by default, so a same-architecture worker
+  updates with no extra configuration; serving a *different* architecture needs
+  `--artifact-dir` pointing at a directory holding `loom-worker-<triple>` — a
+  copy of the release's `loom-<triple>`, which is the same binary the image runs.
+  The container restart policy then starts the new file exactly as
+  `Restart=always` would.
 - **Rebuild the image**, which is the container-native equivalent: the
   replacement arrives as a new image and the runtime's restart policy is the
-  supervisor. Set `LOOM_AUTO_UPDATE=0` in the worker service's environment so the
+  supervisor. Pass `--no-auto-update` in the worker service's `command:` so the
   two mechanisms cannot both act on the same container.
 
 The dispatches that would have run on a worker while its container was being

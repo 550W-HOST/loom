@@ -15,11 +15,14 @@ import { loomApiJson } from "@/lib/loom-http";
  * `curl ... ${serverUrl}/install.sh | sh -s -- --join-code ... --host-id ...
  * --server ...`. Nothing in loom serves that:
  *
- * * `loom-server` exposes only `/install/version` and `/install/loom-daemon`
- *   (`crates/server/src/http.rs`); there is no `/install.sh`.
- * * The repository's own installer, `deploy/install.sh`, requires Bash and root
- *   and its daemon form is `daemon <server-key> <server-url> [<host-name>]`. It
- *   does not accept `--join-code`, `--host-id`, or `--server`.
+ * * The server role exposes only `/install/version` and `/install/loom-worker`
+ *   (the worker self-update artifact; `crates/server/src/http.rs`); there is no
+ *   `/install.sh`, and nothing else serves an install script.
+ * * The repository no longer ships an installer at all: a machine is set up by
+ *   putting the `loom` binary on it and running
+ *   `loom worker --server-url … --join-code … --name …`
+ *   (`docs/process-model.md` § Deploying it). That is a two-step operator
+ *   action, not a single command this dialog can render.
  *
  * W-593 must not add a server or release route, so a working command cannot be
  * produced from here. Presenting one anyway would be a command that looks

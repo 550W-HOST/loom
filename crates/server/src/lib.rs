@@ -34,6 +34,7 @@ pub mod b8;
 pub mod b9;
 pub mod build_info;
 pub mod catalogs;
+pub mod cli;
 pub mod domain_state;
 pub mod environments;
 pub mod file_previews;

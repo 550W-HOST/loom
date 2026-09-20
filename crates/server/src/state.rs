@@ -63,7 +63,7 @@ pub struct AppConfig {
     ///
     /// Defaults to `None`, which is what makes the server-only path safe: no
     /// local worker is assumed, so primary-host resolution never gets stranded
-    /// on an absent local machine. Set `LOOM_LOCAL_HOST_ID` (or this field) on
+    /// on an absent local machine. Set `--local-host-id` (or this field) on
     /// a single-machine deployment to prefer that machine while its worker is
     /// attached.
     pub local_host_id: Option<HostId>,
@@ -249,7 +249,7 @@ impl AppState {
     pub fn build(config: AppConfig) -> Result<Self, BuildStateError> {
         if config.backend_redis.is_some() && config.backend_path.is_some() {
             return Err(BuildStateError {
-                message: "LOOM_REDIS_URL (shared) and LOOM_DATA_DIR (local disk) are both set; \
+                message: "--redis-url (shared) and --data-dir (local disk) are both set; \
                           choose one backend"
                     .into(),
             });

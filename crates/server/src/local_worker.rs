@@ -1,10 +1,9 @@
 //! `--local-worker`: the server's opt-in supervisor for one worker child.
 //!
 //! `loom server` is server-only by construction, and that is still the default:
-//! unset flag, unset environment, no worker process, multi-machine shapes
-//! unchanged. This module is the single-machine convenience — the operator asks
-//! for it, and the server starts and supervises *one* worker child on the same
-//! box.
+//! no flag, no worker process, multi-machine shapes unchanged. This module is
+//! the single-machine convenience — the operator asks for it, and the server
+//! starts and supervises *one* worker child on the same box.
 //!
 //! It is a supervisor, not an embedding. The child is a real `loom worker`
 //! process: its own address space, its own provider and tool children, its own
@@ -43,7 +42,7 @@ pub struct LocalWorkerConfig {
     /// Display name in the host list.
     pub name: String,
     /// The child's data directory. `None` leaves the worker's own default
-    /// (`$HOME/.loom`) in place, which is what a server with no `LOOM_DATA_DIR`
+    /// (`$HOME/.loom`) in place, which is what a server with no `--data-dir`
     /// has to do.
     pub data_dir: Option<PathBuf>,
     /// File the enrolled host id is persisted in. `None` uses the worker's own
@@ -51,42 +50,30 @@ pub struct LocalWorkerConfig {
     pub state_path: Option<PathBuf>,
 }
 
-/// The URL a co-located worker dials for a given `LOOM_BIND`.
+/// The URL a co-located worker dials for a given `--bind`.
 ///
 /// A bind on the unspecified address (`0.0.0.0`, `[::]`) is reachable on
 /// loopback; a bind on one specific address is reachable only there, so the
 /// same address is what the child is given. Getting this wrong is not a crash:
 /// it is a worker that retries forever against a port nothing listens on, which
 /// is why it is a function with tests rather than a `format!` at the call site.
-pub fn server_url_for_bind(bind: &str) -> Result<String, String> {
-    let address: std::net::SocketAddr = bind
-        .parse()
-        .map_err(|error| format!("LOOM_BIND \"{bind}\" is not an address: {error}"))?;
+pub fn server_url_for_bind(address: std::net::SocketAddr) -> String {
     let host = match address.ip() {
         std::net::IpAddr::V4(ip) if ip.is_unspecified() => "127.0.0.1".to_owned(),
         std::net::IpAddr::V4(ip) => ip.to_string(),
         std::net::IpAddr::V6(ip) if ip.is_unspecified() => "127.0.0.1".to_owned(),
         std::net::IpAddr::V6(ip) => format!("[{ip}]"),
     };
-    Ok(format!("http://{host}:{}", address.port()))
+    format!("http://{host}:{}", address.port())
 }
 
 /// The program to run in the worker role.
 ///
-/// `LOOM_WORKER_BIN` wins first so a deployment that put the two names
-/// elsewhere can say so (and so tests can point at a stub). Otherwise the
-/// installed sibling — the layout `deploy/install.sh` leaves beside this file —
-/// is preferred, because that is the name anything spawning a worker by name
-/// already uses. Falling back to this executable is what makes a bare
-/// `target/debug/loom` work: the role dispatcher then reads the `worker`
-/// argument.
+/// A sibling `loom-worker` is preferred when one exists (an operator may keep
+/// one, and anything else that spawns a worker by name uses it). Otherwise this
+/// executable is used, with the `worker` subcommand: one installed `loom` is
+/// both roles, so the local worker needs no second name.
 pub fn worker_program() -> Result<PathBuf, String> {
-    if let Some(raw) = std::env::var_os("LOOM_WORKER_BIN") {
-        let path = PathBuf::from(raw);
-        if !path.as_os_str().is_empty() {
-            return Ok(path);
-        }
-    }
     let current = std::env::current_exe()
         .map_err(|error| format!("cannot resolve this executable: {error}"))?;
     if let Some(sibling) = worker_sibling(&current) {
@@ -204,12 +191,8 @@ async fn supervise(
 
 /// Build and spawn one worker child.
 ///
-/// The parent's `LOOM_SERVER_URL`, `LOOM_WORKER_STATE` and `LOOM_DATA_DIR`
-/// describe the *server*; the flags below and the explicit data directory are
-/// this child's truth, so they are overwritten rather than inherited. The
-/// provider variables (`LOOM_PROVIDER_CMD`, `LOOM_PROVIDER_ARGS`,
-/// `LOOM_WORKSPACE_ROOT`, `LOOM_AUTO_UPDATE`, …) are deliberately left to
-/// inherit: they mean the same thing to the worker as they do in the unit.
+/// Everything the child needs is a flag: the worker role reads no environment
+/// variable as configuration, so there is nothing to override or clear here.
 fn spawn_worker(program: &Path, config: &LocalWorkerConfig) -> std::io::Result<Child> {
     let mut command = Command::new(program);
     command
@@ -222,19 +205,12 @@ fn spawn_worker(program: &Path, config: &LocalWorkerConfig) -> std::io::Result<C
         // A server killed hard still takes its worker with it as far as the
         // kernel can arrange: this covers the graceful path, and the systemd
         // unit's `KillMode=control-group` covers the rest.
-        .kill_on_drop(true)
-        .env_remove("LOOM_SERVER_URL")
-        .env_remove("LOOM_WORKER_STATE");
+        .kill_on_drop(true);
     if let Some(path) = &config.state_path {
         command.arg("--state").arg(path);
     }
-    match &config.data_dir {
-        Some(directory) => {
-            command.env("LOOM_DATA_DIR", directory);
-        }
-        None => {
-            command.env_remove("LOOM_DATA_DIR");
-        }
+    if let Some(directory) = &config.data_dir {
+        command.arg("--data-dir").arg(directory);
     }
     command.spawn()
 }
@@ -243,10 +219,14 @@ fn spawn_worker(program: &Path, config: &LocalWorkerConfig) -> std::io::Result<C
 mod tests {
     use super::*;
 
+    fn address(bind: &str) -> std::net::SocketAddr {
+        bind.parse().expect("a socket address")
+    }
+
     #[test]
     fn a_loopback_bind_becomes_a_loopback_url() {
         assert_eq!(
-            server_url_for_bind("127.0.0.1:38886").unwrap(),
+            server_url_for_bind(address("127.0.0.1:38886")),
             "http://127.0.0.1:38886"
         );
     }
@@ -254,11 +234,11 @@ mod tests {
     #[test]
     fn an_unspecified_bind_is_dialled_on_loopback() {
         assert_eq!(
-            server_url_for_bind("0.0.0.0:38886").unwrap(),
+            server_url_for_bind(address("0.0.0.0:38886")),
             "http://127.0.0.1:38886"
         );
         assert_eq!(
-            server_url_for_bind("[::]:38886").unwrap(),
+            server_url_for_bind(address("[::]:38886")),
             "http://127.0.0.1:38886"
         );
     }
@@ -266,19 +246,13 @@ mod tests {
     #[test]
     fn a_specific_bind_is_dialled_where_it_is_bound() {
         assert_eq!(
-            server_url_for_bind("192.168.1.5:9000").unwrap(),
+            server_url_for_bind(address("192.168.1.5:9000")),
             "http://192.168.1.5:9000"
         );
         assert_eq!(
-            server_url_for_bind("[::1]:9000").unwrap(),
+            server_url_for_bind(address("[::1]:9000")),
             "http://[::1]:9000"
         );
-    }
-
-    #[test]
-    fn a_bind_that_is_not_an_address_is_refused() {
-        assert!(server_url_for_bind("/run/loom.sock").is_err());
-        assert!(server_url_for_bind("localhost:38886").is_err());
     }
 
     #[test]

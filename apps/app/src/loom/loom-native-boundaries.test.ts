@@ -48,8 +48,9 @@ describe("loom-native boundaries", () => {
 
   it("reports the install step as unavailable instead of faking a command", () => {
     // loom serves no `/install.sh` (only `/install/version` and
-    // `/install/loom-daemon`) and `deploy/install.sh` takes a `<server-key>`,
-    // not `--join-code`. Saying so is the only honest answer this phase allows.
+    // `/install/loom-worker`) and the repository ships no installer, so the UI
+    // cannot point at a working command. Saying so is the only honest answer
+    // this phase allows.
     expect(LOOM_MACHINE_INSTALL_AVAILABLE).toBe(false);
     const state = resolveLoomPairingState({
       joinCode: "jc",

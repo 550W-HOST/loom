@@ -101,7 +101,8 @@ subscriber, a room or a socket.
     per shard, shared by every node that points at the same Redis. This is
     the backend that makes a server upgrade invisible to connected workers
     and lets a second node attach to the same window. It is optional
-    configuration (`LOOM_REDIS_URL`), not a dependency: the client is a
+    configuration (`--redis-url`, or the `LOOM_REDIS_URL` environment
+    fallback), not a dependency: the client is a
     hand-rolled RESP2 client, so a default build still compiles nothing
     extra. Deployment and operational cost are in
     [`redis-backend.md`](redis-backend.md).
@@ -219,7 +220,7 @@ the worst possible moment to discover it.
 
 The relay log says *what happened*; the control plane's `DomainRegistry` (and
 the in-flight `RunRegistry`) is the *entity view* derived from it. With
-`LOOM_DATA_DIR` set, both the log and the entity view survive a restart. The
+`--data-dir` set, both the log and the entity view survive a restart. The
 entity view is stored as a **snapshot plus a replay cursor**, not as a second
 copy of the log:
 
@@ -277,8 +278,9 @@ desktop shell → loom server (loopback) → loom-relay (in-process) → UI + lo
 The server and each worker are separate services with separate data
 directories and separate resource domains. One agent exhausting a machine
 cannot take the control plane with it. Workers make outbound connections only,
-so they work behind NAT. This shape is packaged as systemd units in
-[`../deploy/`](../deploy/README.md), with the network boundary in
+so they work behind NAT. This shape is described in
+[`process-model.md`](process-model.md) and packaged as the compose file in
+[`containers.md`](containers.md), with the network boundary in
 [`remote-access.md`](remote-access.md) and the update rules in
 [`upgrades.md`](upgrades.md).
 
@@ -286,7 +288,7 @@ so they work behind NAT. This shape is packaged as systemd units in
 
 For a single server that must not lose its replay window on restart, the
 `DiskBackend` already covers it with no new process: the log lives in a data
-directory (`LOOM_DATA_DIR`), one append-only file per shard. When a server
+directory (`--data-dir`), one append-only file per shard. When a server
 upgrade must additionally not disconnect running workers *and* a second node
 must attach to the same log, point the server at Redis Streams instead:
 
@@ -306,13 +308,14 @@ must attach to the same log, point the server at Redis Streams instead:
 ```
 
 ```bash
-LOOM_REDIS_URL=redis://127.0.0.1:6379 loom server
+loom server --redis-url redis://127.0.0.1:6379
 ```
 
 Only the [`RelayBackend`] implementation changes: `loom-relay`, the fixed
 `SHARD_COUNT` readers, retention, dedup and every handler above it are
-untouched. The default remains the in-process backend, and `LOOM_DATA_DIR`
-and `LOOM_REDIS_URL` are mutually exclusive.
+untouched. The default remains the in-process backend, and `--data-dir`
+and `--redis-url` are mutually exclusive (`LOOM_REDIS_URL` is the environment
+fallback for `--redis-url`).
 
 We deliberately keep the reference design's **fixed shards plus fixed
 readers** model rather than per-scope subscriptions: `SHARD_COUNT` is still a
@@ -340,7 +343,7 @@ API. The UI is the product app in `apps/app`, built with
 `pnpm --filter @bb/app run build` and compiled into the binary by
 `crates/server/build.rs`, so a server deployment is one artifact: no bundle path
 to configure, and no way for a server's client to differ from its release.
-`LOOM_UI_PROXY` reverse-proxies to a dev server instead, and is development
+The `--ui-proxy` flag reverse-proxies to a dev server instead, and is development
 only. The client contract — typed `/api/v1` routes, the public `/ws`
 subprotocol with bb targets answered by `changed`/`pong`, and a reconnect that
 invalidates and reloads rather than replaying — is in [`ui.md`](ui.md).

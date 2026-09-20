@@ -128,11 +128,12 @@ impl Server {
         let mut command = Command::new(BINARY);
         command
             .arg("server")
+            .arg("--bind")
+            .arg(format!("127.0.0.1:{port}"))
+            .arg("--data-dir")
+            .arg(server_data)
             .arg("--local-worker")
             .args(extra)
-            .env("LOOM_BIND", format!("127.0.0.1:{port}"))
-            .env("LOOM_DATA_DIR", server_data)
-            .env_remove("LOOM_LOCAL_HOST_ID")
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())

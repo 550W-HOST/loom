@@ -43,29 +43,30 @@ USER 1000:1000
 # rebuild. To reuse a configuration that already exists on the host, mount it
 # over just that directory (`-v ~/.pi:/var/lib/loom/.pi:ro`).
 #
-#   LOOM_WORKER_STATE    the enrolled host id, so a rebuilt container is the
-#                        same machine instead of a second host
-#   LOOM_WORKSPACE_ROOT  where managed environments are created; the mount
-#                        point is the whole of what this container can edit
+# The default CMD flags keep the two paths a deployment cares about:
 #
-# LOOM_SERVER_URL has no default on purpose: the worker refuses to start
-# without it rather than guessing a server, so an unconfigured container fails
-# immediately and visibly.
-ENV HOME=/var/lib/loom \
-    LOOM_WORKER_STATE=/var/lib/loom/host-id \
-    LOOM_WORKSPACE_ROOT=/workspace
+#   --state           the enrolled host id, so a rebuilt container is the same
+#                     machine instead of a second host
+#   --workspace-root  where managed environments are created; the mount point
+#                     is the whole of what this container can edit
+#
+# --server-url has no default on purpose: the worker refuses to start without it
+# rather than guessing a server, so an unconfigured container fails immediately
+# and visibly. A compose run passes it (containers/docker-compose.yml).
+ENV HOME=/var/lib/loom
+CMD ["--state", "/var/lib/loom/host-id", "--workspace-root", "/workspace"]
 
 WORKDIR /var/lib/loom
 
 # The host identity and the replay cursor live here, which is what makes "the
 # container was rebuilt" different from "a new machine joined". There is no
 # EXPOSE and no port: the worker dials out and binds nothing, so it works behind
-# NAT and needs no inbound rule (deploy/README.md § Ports).
+# NAT and needs no inbound rule (docs/remote-access.md § Ports).
 VOLUME /var/lib/loom
 
 # The one binary, in its worker role: the same file the server image carries,
 # started as the other process. Self-update replaces that file in place and the
 # container's restart policy starts the new one (docs/upgrades.md § Worker
-# self-update); the server this container dials hosts the artifact under the
-# `loom-worker` name.
+# self-update); the server this container dials serves its own running `loom` as
+# the worker artifact, so no second file is needed beside it.
 ENTRYPOINT ["/usr/local/bin/loom", "worker"]

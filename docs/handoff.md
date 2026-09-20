@@ -391,11 +391,14 @@ Open questions carried forward:
 
 ## Environment notes
 
-- `LOOM_BIND` is the env var for the server's listen address (not
-  `LOOM_LISTEN`); default `127.0.0.1:38886`. Others: `LOOM_DATA_DIR`,
-  `LOOM_NODE_ID`, `LOOM_REDIS_URL`, `LOOM_UI_PROXY`, `LOOM_ARTIFACT_DIR`
-- worker: `LOOM_SERVER_URL`, `LOOM_HOST_NAME`, `LOOM_WORKER_STATE`,
-  `LOOM_AUTO_UPDATE`, and others listed at the top of `crates/worker/src/run.rs`
+- **Superseded by the CLI migration (after the date above).** Configuration is
+  flags now, not environment variables. server: `--bind` is the listen address,
+  default `127.0.0.1:38886`; the others are `--data-dir`, `--node-id`,
+  `--redis-url`, `--ui-proxy` and `--artifact-dir`. worker: `--server-url`,
+  `--name`, `--state` and `--auto-update`/`--no-auto-update`, with the rest in
+  `crates/worker/src/cli.rs`. The only env fallbacks left are `LOOM_REDIS_URL`
+  (for `--redis-url`) and `LOOM_JOIN_CODE` (for `--join-code`); the `LOOM_*`
+  configuration variables this section originally named are no longer read.
 - A stale `target/debug/loom server` from an earlier session held the default
   port. Check `ss -tln` before assuming a startup failure is a code problem
 - `sccache` occasionally fails with `exit status: 254`; `sccache --stop-server`

@@ -44,6 +44,7 @@
 //! [`RunDispatch`]: loom_provider_protocol::RunDispatch
 
 pub mod acp;
+pub mod cli;
 pub mod discovery;
 pub mod host_files;
 pub mod provider;
@@ -106,18 +107,15 @@ pub const DEFAULT_CATALOG_PROBE_BUDGET: Duration = Duration::from_secs(30);
 
 /// Where managed environments' workspaces are created by default.
 ///
-/// `LOOM_WORKSPACE_ROOT` overrides it; otherwise `$HOME/.loom/workspaces`, or
-/// the system temp directory when there is no home. The worker owns this
-/// layout: the control plane only learns the resulting path from the report.
+/// `$HOME/.loom/workspaces`, or the system temp directory when there is no
+/// home. `--workspace-root` overrides it. The worker owns this layout: the
+/// control plane only learns the resulting path from the report.
 ///
 /// Deliberately independent of [`default_data_dir`]: a data directory is where
 /// a machine's *own* data lives, a workspace root is where work happens, and
 /// defaulting one from the other would silently relocate every existing
-/// deployment's workspaces the moment `LOOM_DATA_DIR` was set.
+/// deployment's workspaces the moment `--data-dir` was set.
 pub fn default_environment_root() -> PathBuf {
-    if let Some(root) = std::env::var_os("LOOM_WORKSPACE_ROOT") {
-        return PathBuf::from(root);
-    }
     if let Some(home) = std::env::var_os("HOME") {
         return PathBuf::from(home).join(".loom").join("workspaces");
     }
@@ -126,14 +124,11 @@ pub fn default_environment_root() -> PathBuf {
 
 /// The worker's own data directory on this machine.
 ///
-/// `LOOM_DATA_DIR` overrides it; otherwise `$HOME/.loom`, or the system temp
-/// directory when there is no home. This is the root the worker reports at
+/// `$HOME/.loom`, or the system temp directory when there is no home.
+/// `--data-dir` overrides it. This is the root the worker reports at
 /// enrollment and the one thread storage is named from, so the control plane
 /// never has to guess where a machine keeps its data.
 pub fn default_data_dir() -> PathBuf {
-    if let Some(root) = std::env::var_os("LOOM_DATA_DIR") {
-        return PathBuf::from(root);
-    }
     if let Some(home) = std::env::var_os("HOME") {
         return PathBuf::from(home).join(".loom");
     }

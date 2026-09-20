@@ -65,8 +65,8 @@ pub const INSTALLED_DIGEST_FILE: &str = "host-artifact.sha256";
 #[derive(Clone, Debug)]
 pub struct UpdateConfig {
     /// Whether self-update is permitted. An operator turns it off with
-    /// `--no-auto-update` / `LOOM_AUTO_UPDATE=0`; the reason is logged and the
-    /// worker then refuses a mismatched server loudly instead of fetching.
+    /// `--no-auto-update`; the reason is logged and the worker then refuses a
+    /// mismatched server loudly instead of fetching.
     pub enabled: bool,
     /// The binary to replace. Defaults to the running executable.
     pub install_path: PathBuf,

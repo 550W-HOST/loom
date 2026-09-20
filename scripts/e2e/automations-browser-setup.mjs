@@ -4,9 +4,9 @@
  * real worker role with an ACP stub provider, and the product app compiled into
  * the binary.
  *
- * The browser talks to **the server's origin**, serving the same bundle a
- * release ships (`LOOM_UI_DIR`) — not a dev server, so the acceptance run
- * exercises the production shape. Build the bundle first:
+ * The browser talks to **the server's origin**, which serves the same bundle a
+ * release ships — the app compiled into the binary, not a dev server — so the
+ * acceptance run exercises the production shape. Build the bundle first:
  * `pnpm --filter @bb/app run build`. Nothing is mocked.
  *
  * Why a script and not a test: the repo has no browser runner, and this is the
@@ -43,7 +43,6 @@ const serverPort = Number(process.env.LOOM_E2E_SERVER_PORT ?? 38941);
 const apiOrigin = `http://127.0.0.1:${serverPort}`;
 // Same origin for the view and the API: the server serves the bundle.
 const appUrl = `${apiOrigin}/automations`;
-const uiDir = process.env.LOOM_E2E_UI_DIR ?? join(repoRoot, "apps", "app", "dist");
 
 const root = reuseRoot ?? mkdtempSync(join(tmpdir(), "loom-e2e-"));
 const serverDataDir = join(root, "server");
@@ -130,28 +129,40 @@ for (const binary of ["loom"]) {
     process.exit(1);
   }
 }
-if (!existsSync(join(uiDir, "index.html"))) {
+// The app is compiled into the binary, so the bundle has to have been built
+// before `cargo build` embedded it.
+const appDist = join(repoRoot, "apps", "app", "dist");
+if (!existsSync(join(appDist, "index.html"))) {
   process.stderr.write(
-    `[e2e] no UI bundle at ${uiDir}: run \`pnpm --filter @bb/app run build\` first\n`,
+    `[e2e] no UI bundle at ${appDist}: run \`pnpm --filter @bb/app run build\` first\n`,
   );
   process.exit(1);
 }
 
-start("server", join(repoRoot, "target", "debug", "loom"), ["server"], {
-  LOOM_BIND: `127.0.0.1:${serverPort}`,
-  LOOM_DATA_DIR: serverDataDir,
-  LOOM_UI_DIR: uiDir,
-});
+start(
+  "server",
+  join(repoRoot, "target", "debug", "loom"),
+  ["server", "--bind", `127.0.0.1:${serverPort}`, "--data-dir", serverDataDir],
+  {},
+);
 
 start(
   "worker",
   join(repoRoot, "target", "debug", "loom"),
-  ["worker", "--server-url", apiOrigin, "--name", "e2e"],
-  {
-    LOOM_DATA_DIR: workerDataDir,
-    LOOM_PROVIDER_CMD: stubPath,
-    LOOM_PROVIDER_ARGS: "",
-  },
+  [
+    "worker",
+    "--server-url",
+    apiOrigin,
+    "--name",
+    "e2e",
+    "--data-dir",
+    workerDataDir,
+    "--provider-cmd",
+    stubPath,
+    "--provider-args",
+    "",
+  ],
+  {},
 );
 
 // Readiness: the app answers, the API answers, and a host is enrolled (the

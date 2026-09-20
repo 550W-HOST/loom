@@ -3,7 +3,7 @@
 The relay can keep its log in Redis Streams instead of in process memory or in
 local files. This is the backend for one specific requirement:
 
-> **restarting or upgrading `loom-server` must not disconnect connected
+> **restarting or upgrading the server must not disconnect connected
 > workers, and a second server node must be able to attach to the same window.**
 
 Everything else — replay, idempotence, per-scope ordering, decoupled producers
@@ -20,12 +20,13 @@ process owns.
 ## Enabling it
 
 ```bash
-LOOM_REDIS_URL=redis://127.0.0.1:6379 loom-server
+loom server --redis-url redis://127.0.0.1:6379
 ```
 
-`LOOM_DATA_DIR` (local disk) and `LOOM_REDIS_URL` (shared) are alternatives;
+`--data-dir` (local disk) and `--redis-url` (shared) are alternatives;
 setting both is a startup error rather than a silent preference. With neither,
 the server uses the in-process backend and needs no configuration at all.
+`LOOM_REDIS_URL` is the environment fallback for `--redis-url`.
 
 The URL form is `redis://[user][:password]@host[:port][/db]`:
 
@@ -69,7 +70,8 @@ sharing a Redis must not share a prefix, or they will merge their logs.
   managed endpoint that always presents the primary on one address.
 - **No TLS in the client.** Terminate TLS in front of Redis (stunnel, Envoy,
   HAProxy, a service mesh sidecar, or a managed TLS endpoint) and point
-  `LOOM_REDIS_URL` at `redis://` of the terminator. This is deliberate: a TLS
+  `--redis-url` (or its `LOOM_REDIS_URL` fallback) at `redis://` of the
+  terminator. This is deliberate: a TLS
   stack is a large dependency for a layer that otherwise has none.
 - **Persistence, if you want Redis's own restarts to be transparent.**
   `appendonly yes` (AOF) is the right default; `appendfsync everysec` is a
@@ -110,7 +112,7 @@ sharing a Redis must not share a prefix, or they will merge their logs.
   single machine that cannot tolerate that; the shared backend trades
   availability of *writes* for availability of the *window across nodes*.
 - **Upgrading a server.** Stop the node, start the new binary with the same
-  `LOOM_REDIS_URL`, and its readers replay from the shared window. Connected
+  `--redis-url`, and its readers replay from the shared window. Connected
   workers have their own last-seen `EventId` and deduplicate the overlap, so a
   replayed frame is delivered once.
 - **Resetting.** `RedisBackend::purge` deletes exactly the eight shard keys;
@@ -138,7 +140,8 @@ nothing above `RelayBackend`.
 ## Testing
 
 The relay's contract suite runs every scenario over the memory, disk and Redis
-backends. The Redis cases are skipped unless `LOOM_REDIS_URL` names a reachable
+backends. The Redis cases are skipped unless `LOOM_REDIS_URL` — the environment
+fallback for `--redis-url`, which the tests read directly — names a reachable
 server, so a default `cargo test` still needs no service:
 
 ```bash

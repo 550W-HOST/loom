@@ -4,7 +4,7 @@ A phone is a **UI client and nothing else**. It points a browser at the server
 URL and installs that as a PWA. It never runs a worker.
 
 ```
-phone (installed PWA) ── HTTPS + WS ──▶ loom-server ── relay ──▶ frames
+phone (installed PWA) ── HTTPS + WS ──▶ loom server ── relay ──▶ frames
                                             ▲
                                          worker (a real machine)
 ```
