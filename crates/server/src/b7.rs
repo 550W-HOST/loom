@@ -1355,26 +1355,25 @@ pub async fn project_prompt_history(
         .into_iter()
         .filter(|thread| thread.project_id == project.id)
     {
-        let entries = match crate::http::thread_domain_events(&state, &thread.id) {
-            Ok(entries) => entries,
+        // What the user asked, from the store. The relay's retained window is
+        // not a place a prompt history can come from: a project whose threads
+        // have been quiet would answer with a partial history, or none.
+        let messages = match crate::http::thread_recorded_messages(&state, &thread.id) {
+            Ok(messages) => messages,
             Err(response) => return response,
         };
-        for (_event_id, _sequence, created_at_ms, event) in entries {
-            let loom_domain::DomainEvent::ThreadMessageAdded { message, .. } = event else {
-                continue;
-            };
+        for message in messages {
             if message.role != MessageRole::User {
                 continue;
             }
             prompts.push((
-                message.created_at_ms,
+                message.at_ms,
                 json!({
-                    "id": message.id.to_string(),
-                    "createdAt": message.created_at_ms,
+                    "id": message.id,
+                    "createdAt": message.at_ms,
                     "input": prompt_input_rows(&message.content),
                 }),
             ));
-            let _ = created_at_ms;
         }
     }
     prompts.sort_by_key(|entry| std::cmp::Reverse(entry.0));

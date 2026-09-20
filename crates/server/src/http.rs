@@ -1771,8 +1771,16 @@ fn parse_thread_id(raw: &str) -> Result<ThreadId, Response> {
         .map_err(|error| error_response(StatusCode::BAD_REQUEST, error.to_string()))
 }
 
+/// A thread's **domain** entries, from the retained log.
+///
+/// This is loom's own record of what happened to a thread — a goal, an
+/// occupancy, a status change, a run's frames for a transport that is catching
+/// up — and it is deliberately not the conversation. The conversation lives in
+/// the store, and a reader that wants what was said reads it there: the relay's
+/// retained window is a transport detail, and a conversation read through it
+/// disappears as soon as the thread has been quiet.
 #[allow(clippy::result_large_err)]
-pub(crate) fn thread_domain_events(
+pub(crate) fn thread_domain_entries(
     state: &AppState,
     thread_id: &ThreadId,
 ) -> Result<Vec<(String, u64, u64, DomainEvent)>, Response> {
@@ -1798,6 +1806,80 @@ pub(crate) fn thread_domain_events(
             })
         })
         .collect())
+}
+
+/// A message loom recorded itself, as the paths that want what was said need it.
+///
+/// Not a [`DomainEvent`]: the store keeps the provider frame the message became,
+/// and this is that frame read back into the four things these paths ask about —
+/// who said it, what they said, when, and where it sits in the conversation.
+#[derive(Clone, Debug)]
+pub(crate) struct RecordedMessage {
+    /// The position the store gave it, which a search result reports as its
+    /// `sourceSeq`.
+    pub(crate) seq: u64,
+    /// When loom recorded it. A message loom wrote knows this; a replayed frame
+    /// does not, which is why only recorded messages are here.
+    pub(crate) at_ms: u64,
+    pub(crate) role: MessageRole,
+    /// The loom message id, which is the id these paths report.
+    pub(crate) id: String,
+    pub(crate) content: String,
+}
+
+/// Loom's own messages on a thread, oldest first, read from the store.
+///
+/// What the agent replayed is not included: a replay is the agent's account of
+/// the conversation, and these paths are asking what loom recorded — a prompt
+/// the user sent, an answer the messages API posted. Reading them from the store
+/// is also what makes them survive the relay's window.
+#[allow(clippy::result_large_err)]
+pub(crate) fn thread_recorded_messages(
+    state: &AppState,
+    thread_id: &ThreadId,
+) -> Result<Vec<RecordedMessage>, Response> {
+    let view = state
+        .stored_view(thread_id)
+        .map_err(|error| error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
+    Ok(view.rows.iter().filter_map(recorded_message).collect())
+}
+
+/// The recorded message a stored row is, when it is one loom wrote itself.
+fn recorded_message(row: &crate::history_cache::CachedRow) -> Option<RecordedMessage> {
+    use loom_domain::{ProviderEvent, ThreadEventItem, UserContent};
+    let crate::history_cache::RowSource::Message { at_ms } = row.source else {
+        return None;
+    };
+    match &row.event {
+        ProviderEvent::ItemStarted {
+            item: ThreadEventItem::UserMessage { id, content, .. },
+            ..
+        } => Some(RecordedMessage {
+            seq: row.seq,
+            at_ms,
+            role: MessageRole::User,
+            id: id.clone(),
+            content: content
+                .iter()
+                .filter_map(|part| match part {
+                    UserContent::Text { text } => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join(""),
+        }),
+        ProviderEvent::ItemCompleted {
+            item: ThreadEventItem::AgentMessage { id, text, .. },
+            ..
+        } => Some(RecordedMessage {
+            seq: row.seq,
+            at_ms,
+            role: MessageRole::Assistant,
+            id: id.clone(),
+            content: text.clone(),
+        }),
+        _ => None,
+    }
 }
 
 #[allow(clippy::result_large_err)]
@@ -1935,38 +2017,18 @@ async fn thread_output(
         return response;
     }
 
-    let entries = match thread_domain_events(&state, &thread_id) {
-        Ok(entries) => entries,
-        Err(response) => return response,
-    };
-    // The same fold the timeline uses, so `threads.output` and the rows a client
-    // renders cannot disagree about an assistant answer.
-    let assistant_messages = assistant_message_timeline(&entries);
-    let mut completed_output = None;
-    for (_event_id, _sequence, _created_at_ms, event) in &entries {
-        let DomainEvent::ThreadRunEvent { run } = event else {
-            continue;
-        };
-        let value = serde_json::to_value(&run.event).expect("ThreadEvent always serializes");
-        if value.get("type").and_then(Value::as_str) == Some("item/completed")
-            && value
-                .get("item")
-                .and_then(|item| item.get("type"))
-                .and_then(Value::as_str)
-                == Some("agentMessage")
-        {
-            completed_output = value
-                .get("item")
-                .and_then(|item| item.get("text"))
-                .and_then(Value::as_str)
-                .map(str::to_owned);
-        }
-    }
-    let output = if assistant_messages.is_empty() {
-        completed_output
-    } else {
-        Some(assistant_messages.concatenated_text())
-    };
+    // The same projection the timeline serves, so `threads.output` and the rows
+    // a client renders cannot disagree about an answer. It comes from the store
+    // like the rest of the conversation, which is what lets the answer survive a
+    // restart or an eviction from the relay's window.
+    let answers = cached_thread_timeline_rows(&state, &thread_id)
+        .rows
+        .iter()
+        .filter(|row| row["kind"] == "conversation" && row["role"] == "assistant")
+        .filter_map(|row| row["text"].as_str())
+        .collect::<Vec<_>>()
+        .join("");
+    let output = (!answers.is_empty()).then_some(answers);
     Json(json!({ "output": output })).into_response()
 }
 
@@ -2987,22 +3049,19 @@ async fn thread_conversation_outline(
     if let Err(response) = public_thread_or_response(&state, &thread_id) {
         return response;
     }
-    let entries = match thread_domain_events(&state, &thread_id) {
-        Ok(entries) => entries,
+    let messages = match thread_recorded_messages(&state, &thread_id) {
+        Ok(messages) => messages,
         Err(response) => return response,
     };
     let mut items = Vec::new();
-    for (_event_id, _sequence, _created_at_ms, event) in &entries {
-        let DomainEvent::ThreadMessageAdded { message, .. } = event else {
-            continue;
-        };
+    for message in &messages {
         let role = match message.role {
             MessageRole::User => "user",
             MessageRole::Assistant => "assistant",
             MessageRole::System => continue,
         };
         items.push(json!({
-            "id": message.id.to_string(),
+            "id": message.id,
             "role": role,
             "preview": preview_text(&message.content, OUTLINE_PREVIEW_CHARS),
             // Loom's messages carry no attachments yet; a null summary is the
@@ -3010,10 +3069,7 @@ async fn thread_conversation_outline(
             "attachmentSummary": Value::Null,
         }));
     }
-    let max_seq = entries
-        .last()
-        .map(|(_, sequence, _, _)| *sequence)
-        .unwrap_or(0);
+    let max_seq = messages.last().map(|message| message.seq).unwrap_or(0);
     Json(json!({ "items": items, "maxSeq": max_seq })).into_response()
 }
 
@@ -3048,30 +3104,24 @@ async fn thread_prompt_history(
         Ok(None) => PROMPT_HISTORY_DEFAULT_LIMIT,
         Err(response) => return response,
     };
-    let entries = match thread_domain_events(&state, &thread_id) {
-        Ok(entries) => entries,
+    let messages = match thread_recorded_messages(&state, &thread_id) {
+        Ok(messages) => messages,
         Err(response) => return response,
     };
-    let mut prompts = entries
+    let mut prompts = messages
         .iter()
-        .filter_map(
-            |(_event_id, _sequence, _created_at_ms, event)| match event {
-                DomainEvent::ThreadMessageAdded { message, .. }
-                    if message.role == MessageRole::User =>
-                {
-                    Some(json!({
-                        "id": message.id.to_string(),
-                        "createdAt": message.created_at_ms,
-                        "input": [{
-                            "type": "text",
-                            "text": message.content,
-                            "mentions": [],
-                        }],
-                    }))
-                }
-                _ => None,
-            },
-        )
+        .filter(|message| message.role == MessageRole::User)
+        .map(|message| {
+            json!({
+                "id": message.id,
+                "createdAt": message.at_ms,
+                "input": [{
+                    "type": "text",
+                    "text": message.content,
+                    "mentions": [],
+                }],
+            })
+        })
         .collect::<Vec<_>>();
     prompts.reverse();
     prompts.truncate(limit);
@@ -3181,13 +3231,10 @@ fn thread_search_matches(
             }));
         }
     }
-    for (_event_id, sequence, _created_at_ms, event) in thread_domain_events(state, &thread.id)? {
+    for message in thread_recorded_messages(state, &thread.id)? {
         if matches.len() >= SEARCH_MAX_MATCHES_PER_THREAD {
             break;
         }
-        let DomainEvent::ThreadMessageAdded { message, .. } = event else {
-            continue;
-        };
         let occurrences = find_occurrences(&message.content, needle_lower);
         if occurrences.is_empty() {
             continue;
@@ -3202,7 +3249,7 @@ fn thread_search_matches(
             },
             "text": text,
             "highlightRanges": highlight_ranges,
-            "sourceSeq": sequence,
+            "sourceSeq": message.seq,
         }));
     }
     Ok(matches)
@@ -3515,30 +3562,35 @@ async fn retry_thread(
 
     // The prompt comes from the thread's own log: it is the only record of what
     // the turn was, and a retry has to repeat that turn.
-    let entries = match thread_domain_events(&state, &thread_id) {
+    // The prompt to retry is what the user said, which the store holds.
+    let prompt = match thread_recorded_messages(&state, &thread_id) {
+        Ok(messages) => messages
+            .into_iter()
+            .rev()
+            .find(|message| message.role == MessageRole::User)
+            .map(|message| message.content),
+        Err(response) => return response,
+    };
+    // How many runs have started is loom's own fact about the thread, not part
+    // of the conversation, so it still comes from the log.
+    let entries = match thread_domain_entries(&state, &thread_id) {
         Ok(entries) => entries,
         Err(response) => return response,
     };
-    let mut prompt = None;
     let mut runs_started = 0u64;
     for (_event_id, _sequence, _created_at_ms, event) in &entries {
-        match event {
-            DomainEvent::ThreadMessageAdded { message, .. }
-                if message.role == MessageRole::User =>
-            {
-                prompt = Some(message.content.clone());
-            }
-            // Every entry into `working` is one run of this thread, whoever
-            // caused it. That is the honest count to derive `attempt` from: a
-            // retry issued from `error` and one issued after a stop differ in
-            // their trigger but not in what the client is asking for, and a
-            // count that only watched `error -> working` reported the second
-            // retry as the first.
-            DomainEvent::ThreadStatusChanged {
-                to: ThreadStatus::Working,
-                ..
-            } => runs_started += 1,
-            _ => {}
+        // Every entry into `working` is one run of this thread, whoever
+        // caused it. That is the honest count to derive `attempt` from: a
+        // retry issued from `error` and one issued after a stop differ in
+        // their trigger but not in what the client is asking for, and a
+        // count that only watched `error -> working` reported the second
+        // retry as the first.
+        if let DomainEvent::ThreadStatusChanged {
+            to: ThreadStatus::Working,
+            ..
+        } = event
+        {
+            runs_started += 1;
         }
     }
     // A retry that was queued — and maybe delivered, cancelled, or still
@@ -3691,23 +3743,6 @@ async fn stop_thread_route(
             error_response(StatusCode::INTERNAL_SERVER_ERROR, error)
         }
     }
-}
-
-/// Folds every run event of a thread into the assistant messages it carried.
-///
-/// The ordering rule lives in [`crate::assistant_timeline`]; this is only the
-/// adapter from the stored [`DomainEvent`] shape to it, so `threads.timeline`
-/// and `threads.output` share one accumulator.
-fn assistant_message_timeline(
-    entries: &[(String, u64, u64, DomainEvent)],
-) -> crate::assistant_timeline::AssistantMessageTimeline {
-    let mut timeline = crate::assistant_timeline::AssistantMessageTimeline::new();
-    for (_event_id, sequence, _created_at_ms, event) in entries {
-        if let DomainEvent::ThreadRunEvent { run } = event {
-            timeline.absorb(&run.run_id.to_string(), &run.event.body, *sequence);
-        }
-    }
-    timeline
 }
 
 /// One timeline row for a folded thinking item.
@@ -4795,7 +4830,7 @@ async fn thread_timeline(
         Err(response) => return response,
     };
 
-    let entries = match thread_domain_events(&state, &thread_id) {
+    let entries = match thread_domain_entries(&state, &thread_id) {
         Ok(entries) => entries,
         Err(response) => return response,
     };
@@ -6205,7 +6240,7 @@ fn thread_event_rows(
     state: &AppState,
     thread_id: &ThreadId,
 ) -> Result<Vec<(u64, Value)>, Response> {
-    let entries = thread_domain_events(state, thread_id)?;
+    let entries = thread_domain_entries(state, thread_id)?;
     Ok(entries
         .into_iter()
         .filter_map(|(event_id, sequence, created_at_ms, event)| {
@@ -6566,7 +6601,7 @@ fn goal_value(
 /// the sidebar's goal affordance; the projection a client renders carries the
 /// status itself.
 fn thread_has_goal(state: &AppState, thread_id: &ThreadId) -> bool {
-    let entries = match thread_domain_events(state, thread_id) {
+    let entries = match thread_domain_entries(state, thread_id) {
         Ok(entries) => entries,
         Err(_) => return false,
     };
@@ -6591,7 +6626,7 @@ fn thread_has_goal(state: &AppState, thread_id: &ThreadId) -> bool {
 /// A plan that has not been removed by a later `plan/removed`/turn end counts
 /// as active.
 fn thread_has_active_plan(state: &AppState, thread_id: &ThreadId) -> bool {
-    let entries = match thread_domain_events(state, thread_id) {
+    let entries = match thread_domain_entries(state, thread_id) {
         Ok(entries) => entries,
         Err(_) => return false,
     };
@@ -7997,6 +8032,105 @@ mod tests {
         assert!(
             quiet_body.get("contextWindowUsage").is_none(),
             "a thread that never reported occupancy omits the field: {quiet_body}"
+        );
+        state.shutdown().unwrap();
+    }
+
+    /// The paths that want what was said read the store, so a quiet thread
+    /// still answers them.
+    ///
+    /// The relay's retained window is a transport detail: a conversation read
+    /// through it disappears as soon as the thread has been quiet long enough for
+    /// its frames to be evicted, which is exactly what happened to the outline,
+    /// the prompt history, the search and the retry prompt. Here the message is
+    /// aged out of the window first, and the store is the only place it can come
+    /// from.
+    #[tokio::test]
+    async fn a_quiet_thread_still_answers_what_was_said() {
+        let state = AppState::build(AppConfig {
+            backend_max_len: 4,
+            ..AppConfig::default()
+        })
+        .unwrap();
+        let app = router(state.clone());
+        let (thread, created) = state
+            .registry
+            .create_thread(
+                Some(state.registry.personal_project_id()),
+                Some("quiet".into()),
+                None,
+                loom_relay::now_ms(),
+            )
+            .unwrap();
+        state.publish_domain_event(&created).unwrap();
+        for (role, text) in [
+            (MessageRole::User, "the needle in the haystack"),
+            (
+                MessageRole::Assistant,
+                "the answer, also outside the window",
+            ),
+        ] {
+            for event in state
+                .registry
+                .post_message(&thread.id, role, text.into(), loom_relay::now_ms())
+                .unwrap()
+            {
+                state.publish_domain_event(&event).unwrap();
+            }
+        }
+        // Fill the shard so the message's own frame is evicted: what the log
+        // holds now is filler, and the conversation is only in the store.
+        for frame in 0..8 {
+            state
+                .publish(
+                    loom_relay::Scope::Thread(thread.id.to_string()),
+                    format!("{{\"filler\":{frame}}}"),
+                )
+                .unwrap();
+        }
+        assert!(
+            thread_domain_entries(&state, &thread.id)
+                .unwrap()
+                .iter()
+                .all(|(_, _, _, event)| !matches!(event, DomainEvent::ThreadMessageAdded { .. })),
+            "the message is outside the retained window"
+        );
+
+        let outline = body_json(
+            get(
+                &app,
+                &format!("/api/v1/threads/{}/conversation-outline", thread.id),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(outline["items"][0]["preview"], "the needle in the haystack");
+        assert_eq!(outline["items"][0]["role"], "user");
+
+        let prompts = body_json(
+            get(
+                &app,
+                &format!("/api/v1/threads/{}/prompt-history", thread.id),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(prompts[0]["input"][0]["text"], "the needle in the haystack");
+
+        let output =
+            body_json(get(&app, &format!("/api/v1/threads/{}/output", thread.id)).await).await;
+        assert_eq!(
+            output["output"], "the answer, also outside the window",
+            "the answer is read from the store too: {output}"
+        );
+
+        let matches =
+            body_json(get(&app, "/api/v1/threads/search?query=needle&limit=10").await).await;
+        assert!(
+            serde_json::to_string(&matches)
+                .unwrap()
+                .contains("the needle in the haystack"),
+            "search finds a message the window has dropped: {matches}"
         );
         state.shutdown().unwrap();
     }

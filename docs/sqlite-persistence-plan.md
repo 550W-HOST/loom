@@ -144,6 +144,8 @@ loom 自有事实保留原来源：
 实现要求：`thread_domain_events` 拆成两条读路径（会话条目 / 领域条目），调用方显式选择，
 不允许再用一个 helper 冒充两种语义。
 
+**进展（2026-09-21，1.6 完成）**：会话内容的读取口全部改到库，`thread_domain_events` 更名为 `thread_domain_entries` 并把语义写进文档（它只服务 loom 自己的领域事实：goal/occupancy、状态变更、run 计数、`threads.events` 的补帧）。新增 `thread_recorded_messages`（从 `stored_view` 里取 `RowSource::Message` 行，还原成「谁说的、说了什么、什么时候、在第几位」）。改用它的：`thread_conversation_outline`、`thread_prompt_history`、`thread_search_matches`（`sourceSeq` 现在是库里的号）、`retry_thread` 的「上一条用户输入」（run 计数仍读日志）、`b7` 的项目 prompt history 聚合。`thread_output` 改为复用 timeline 的同一份投影（库为源），并删掉只服务它的 `assistant_message_timeline`。测试 `a_quiet_thread_still_answers_what_was_said`：把消息挤出 relay 保留窗口后，outline / prompt-history / search / output 四个口都仍能答出内容，同时断言日志里确实已经没有这条会话（证明它们不再依赖窗口）。
+
 ### 4.4 普通读取不再依赖在线 worker
 
 - `threads.timeline`、output、outline、prompt history、搜索在**已提交**情况下不发 ACP 请求。
