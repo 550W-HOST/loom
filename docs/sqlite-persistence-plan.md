@@ -232,6 +232,8 @@ loom 自有事实保留原来源：
 
 **2.1 的一个设计取舍（明确记录）**：计划正文列的是「一个实体一张表」，实际实现用**一张 `entity(kind, id, parent_id, json)` + 一张 `entity_meta(key, value)`**。理由：11 张表的列完全同构（主键 id + 一个父 id + JSON），查询方式也同构（按 kind+id、按 kind+parent），分开只会得到 11 份几乎一样的读写代码；计划要求的「主键与查询字段必须成列」由 `kind`/`id`/`parent_id` 满足。若将来某类实体需要真正的列级索引（例如按状态查 run），再为它单独建表并保留 JSON 作为补充。
 
+**进展（2026-09-21，2.2 + 2.3 完成）**：实体视图现在**同时**写库与文件（`snapshot()` 里先 `replace_entities` 再写文件），并有测试逐字段断言两处一致（`the_stored_entity_view_matches_the_snapshot_file`）。恢复改成**先读库**：库里有视图就用库（watermark 之后的日志照旧重放），只有库从未存过视图时才回退读文件（老库/新库旁边放着旧文件），读库失败也不再拒绝启动而是退回日志重建。测试 `the_entity_view_comes_back_without_the_file_or_the_log`：`backend_max_len` 调到 2 把 thread 创建事件挤出日志、删掉 `domain.snapshot`、重启后 thread 仍在——证明确实来自库。顺带：`automations_conformance` 里两个「旧格式还能读」的测试原本手改 snapshot 文件再重启，现在改成手改**库里的视图**（同样的兼容策略，新的真源）；同时删掉了它们专用的手写快照编码/CRC 辅助函数。
+
 **进展（2026-09-21，2.1 完成）**：schema v3 落地 `entity(kind, id, parent_id, json)` + `entity_meta(key, value)`；`Store::replace_entities(&DomainSnapshot)` 在一个事务里整体替换（先清空再写入，崩溃只会看到旧视图或新视图），`Store::entities()` 读出并区分「库里没有视图」（`None`）与「视图是空的」。父 id（thread→project、environment→project、queued_message/interaction/run→thread）成列并有索引。测试 5 个：空库为 `None`、往返逐字段相等、替换后旧实体不残留、单行 JSON 坏掉会**报错**（不静默丢一个 project）、按 parent 列可查。仍未接线：写入与恢复还是走文件（2.2/2.3）。
 
 ### 5.2 表形状（2.1）

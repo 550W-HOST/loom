@@ -932,12 +932,36 @@ impl AppState {
     /// as absent and the log is replayed from the beginning, because refusing
     /// to start is a worse outcome than starting from a consistent older view.
     fn recover(&self) {
-        let Some(root) = &self.snapshot_root else {
-            return;
-        };
         let now = now_ms();
-        match persistence::read_snapshot(root) {
-            Ok(Some(snapshot)) => {
+        // The store is the entity view's home now. The file is read only when
+        // the store has never held a view, which is a store from before this
+        // step or a fresh one beside an old file; that fallback goes away once
+        // nothing can be in that position.
+        let snapshot = match self.store().entities() {
+            Ok(Some(snapshot)) => Some(snapshot),
+            Ok(None) => match &self.snapshot_root {
+                Some(root) => match persistence::read_snapshot(root) {
+                    Ok(snapshot) => snapshot,
+                    Err(error) => {
+                        eprintln!(
+                            "loom-server: the snapshot file is unusable ({error}); \
+                             rebuilding from the log"
+                        );
+                        None
+                    }
+                },
+                None => None,
+            },
+            Err(error) => {
+                eprintln!(
+                    "loom-server: the stored entity view could not be read ({error}); \
+                     rebuilding from the log"
+                );
+                None
+            }
+        };
+        match snapshot {
+            Some(snapshot) => {
                 let watermark = snapshot.watermark;
                 let runs = snapshot.runs.clone();
                 self.registry.restore(snapshot.registry);
@@ -958,31 +982,21 @@ impl AppState {
                 let replayed = self.replay_domain_events(watermark);
                 let failed = self.fail_in_flight_runs(runs, now);
                 eprintln!(
-                    "loom-server: restored the domain snapshot ({replayed} log events replayed, \
+                    "loom-server: restored the entity view ({replayed} log events replayed, \
                      {failed} in-flight runs failed)"
                 );
             }
-            Ok(None) => {
-                // No snapshot yet: the retained log is the only thing to go on.
+            None => {
+                // No stored view and no readable file: the retained log is the
+                // only thing to go on.
                 let replayed = self.replay_domain_events(None);
                 let failed = self.fail_in_flight_runs(Vec::new(), now);
                 if replayed > 0 || failed > 0 {
                     eprintln!(
-                        "loom-server: no domain snapshot; rebuilt {replayed} events from the log \
-                         ({failed} in-flight runs failed)"
+                        "loom-server: no stored entity view; rebuilt {replayed} events from the \
+                         log ({failed} in-flight runs failed)"
                     );
                 }
-            }
-            Err(error) => {
-                eprintln!(
-                    "loom-server: domain snapshot unusable ({error}); rebuilding from the log"
-                );
-                let replayed = self.replay_domain_events(None);
-                let failed = self.fail_in_flight_runs(Vec::new(), now);
-                eprintln!(
-                    "loom-server: rebuilt {replayed} events from the log ({failed} in-flight runs \
-                     failed)"
-                );
             }
         }
     }
@@ -1260,6 +1274,13 @@ impl AppState {
             settings: Some(self.settings.export()),
             automations: Some(self.automations.export()),
         };
+        // Written twice on purpose, while the file is still the source recovery
+        // reads: the same view, in the store and in the file, so the two can be
+        // compared in a test before the file stops being written. The store's
+        // copy is a transaction, so it is either the whole view or none of it.
+        self.store()
+            .replace_entities(&snapshot)
+            .map_err(|error| persistence::SnapshotError::Io(error.to_string()))?;
         persistence::write_snapshot(root, &snapshot)
     }
 
@@ -2022,6 +2043,96 @@ mod tests {
         assert_eq!(
             state.store().schema_version().unwrap(),
             crate::store::SCHEMA_VERSION
+        );
+        state.shutdown().unwrap();
+    }
+
+    /// The entity view comes back without the file, and without the log.
+    ///
+    /// This is what the move is for: the view used to be a file plus a replay of
+    /// whatever the bounded log still held, so a thread whose creation had been
+    /// evicted was a thread a restart could lose. Here the file is deleted, the
+    /// log is too small to hold the event, and the thread is still there.
+    #[tokio::test]
+    async fn the_entity_view_comes_back_without_the_file_or_the_log() {
+        let dir = TempDir::new().unwrap();
+        let mut config = durable_config(&dir);
+        config.backend_max_len = 2;
+        let thread_id;
+        {
+            let state = AppState::build(config.clone()).unwrap();
+            let (thread, created) = state
+                .registry
+                .create_thread(
+                    Some(state.registry.personal_project_id()),
+                    Some("only in the store".into()),
+                    None,
+                    now_ms(),
+                )
+                .unwrap();
+            thread_id = thread.id.clone();
+            state.publish_domain_event(&created).unwrap();
+            state.snapshot().unwrap();
+            // Push the creation out of the retained window.
+            for frame in 0..4 {
+                state
+                    .publish(
+                        loom_relay::Scope::Thread(thread_id.to_string()),
+                        format!("{{\"filler\":{frame}}}"),
+                    )
+                    .unwrap();
+            }
+            state.shutdown().unwrap();
+        }
+        std::fs::remove_file(dir.path().join(crate::persistence::SNAPSHOT_FILE)).unwrap();
+
+        let state = AppState::build(config).unwrap();
+        let thread = state
+            .registry
+            .thread(&thread_id)
+            .expect("the thread came back from the store, not from the log or the file");
+        assert_eq!(thread.title.as_deref(), Some("only in the store"));
+        state.shutdown().unwrap();
+    }
+
+    /// The two homes of the entity view hold the same thing while both are
+    /// written: the store's copy is what recovery will read, and the file's is
+    /// what it reads today, so they must not drift before the move.
+    #[tokio::test]
+    async fn the_stored_entity_view_matches_the_snapshot_file() {
+        let dir = TempDir::new().unwrap();
+        let state = AppState::build(durable_config(&dir)).unwrap();
+        let (thread, created) = state
+            .registry
+            .create_thread(
+                Some(state.registry.personal_project_id()),
+                Some("both homes".into()),
+                None,
+                now_ms(),
+            )
+            .unwrap();
+        state.publish_domain_event(&created).unwrap();
+
+        state.snapshot().unwrap();
+        let stored = state
+            .store()
+            .entities()
+            .unwrap()
+            .expect("the store holds the view");
+        let filed = crate::persistence::read_snapshot(dir.path())
+            .unwrap()
+            .expect("the file holds the view");
+        assert_eq!(
+            stored, filed,
+            "the store and the file must hold one view, not two"
+        );
+        assert!(
+            stored
+                .registry
+                .threads
+                .iter()
+                .any(|held| held.id == thread.id),
+            "the thread that was just created is in both"
         );
         state.shutdown().unwrap();
     }

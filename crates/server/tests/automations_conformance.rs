@@ -885,20 +885,18 @@ async fn an_older_snapshot_without_automations_still_loads() {
         Some(create_body("kept", &environment)),
     )
     .await;
-    // Shut down first, so the final snapshot cannot overwrite the hand-edited
-    // one this test restores from.
+    // Shut down first, so the final write cannot overwrite the hand-edited view
+    // this test restores from.
     state.shutdown().unwrap();
 
-    // A snapshot written before automations existed: the field is absent
-    // entirely, which is exactly what `#[serde(default)]` is for.
-    let path = dir.path().join("domain.snapshot");
-    let bytes = std::fs::read(&path).unwrap();
-    let header_len = 8 + 4 + 8 + 4;
-    let payload = &bytes[header_len..];
-    let mut snapshot: Value = serde_json::from_slice(payload).unwrap();
-    snapshot.as_object_mut().unwrap().remove("automations");
-    let rewritten = rewrite_snapshot(&snapshot);
-    std::fs::write(&path, &rewritten).unwrap();
+    // A stored view written before automations existed: the field is absent
+    // entirely, which is exactly what `#[serde(default)]` is for. The view lives
+    // in the store now, so that is what the hand edit rewrites — the same
+    // payload policy the file used to exercise.
+    let store = loom_server::store::Store::open(dir.path().join("loom.db")).unwrap();
+    let mut snapshot = store.entities().unwrap().expect("the view is stored");
+    snapshot.automations = None;
+    store.replace_entities(&snapshot).unwrap();
 
     let restored = AppState::build(config).unwrap();
     let app = router(restored.clone());
@@ -925,32 +923,6 @@ async fn an_older_snapshot_without_automations_still_loads() {
         .unwrap()
         .is_empty());
     restored.shutdown().unwrap();
-}
-
-/// Re-frames a snapshot payload the way `persistence.rs` does, so a test can
-/// write a hand-edited snapshot the reader will accept.
-fn rewrite_snapshot(snapshot: &Value) -> Vec<u8> {
-    let payload = serde_json::to_vec(snapshot).unwrap();
-    let mut out = Vec::with_capacity(payload.len() + 24);
-    out.extend_from_slice(b"LOOMSNAP");
-    out.extend_from_slice(&1u32.to_le_bytes());
-    out.extend_from_slice(&(payload.len() as u64).to_le_bytes());
-    out.extend_from_slice(&crc32(&payload).to_le_bytes());
-    out.extend_from_slice(&payload);
-    out
-}
-
-/// CRC-32/ISO-HDLC, matching the snapshot framing.
-fn crc32(bytes: &[u8]) -> u32 {
-    let mut crc = 0xffff_ffffu32;
-    for &byte in bytes {
-        crc ^= u32::from(byte);
-        for _ in 0..8 {
-            let mask = (crc & 1).wrapping_neg();
-            crc = (crc >> 1) ^ (0xedb8_8320 & mask);
-        }
-    }
-    !crc
 }
 
 #[tokio::test]
@@ -1514,14 +1486,18 @@ async fn a_payload_from_before_the_scheduler_reads_as_queued_work_after_a_restar
         .to_owned();
     state.shutdown().unwrap();
 
-    // Rewrite the snapshot the way the release before the scheduler wrote it:
+    // Rewrite the stored view the way the release before the scheduler wrote it:
     // version 1, no next window, and a run stored as `running` because nothing
     // could claim one yet.
-    let path = dir.path().join("domain.snapshot");
-    let bytes = std::fs::read(&path).unwrap();
-    let header_len = 8 + 4 + 8 + 4;
-    let mut snapshot: Value = serde_json::from_slice(&bytes[header_len..]).unwrap();
-    let payload = snapshot["automations"].as_object_mut().unwrap();
+    let store = loom_server::store::Store::open(dir.path().join("loom.db")).unwrap();
+    let mut snapshot = store.entities().unwrap().expect("the view is stored");
+    let automations = snapshot
+        .automations
+        .as_mut()
+        .expect("the automation is stored");
+    let payload = serde_json::to_value(&*automations).unwrap();
+    let mut payload = payload;
+    let payload = payload.as_object_mut().unwrap();
     payload.insert("version".into(), json!(1));
     for row in payload["automations"].as_array_mut().unwrap() {
         row["nextRunAt"] = Value::Null;
@@ -1535,7 +1511,8 @@ async fn a_payload_from_before_the_scheduler_reads_as_queued_work_after_a_restar
         "scheduledFor": 1_000,
         "startedAt": 1_000
     }]);
-    std::fs::write(&path, rewrite_snapshot(&snapshot)).unwrap();
+    snapshot.automations = Some(serde_json::from_value(Value::Object(payload.clone())).unwrap());
+    store.replace_entities(&snapshot).unwrap();
 
     let restored = AppState::build(config()).unwrap();
     let app = router(restored.clone());
