@@ -43,6 +43,12 @@ pub enum HistoryUnavailable {
     /// Refused rather than queued: a queue would hide the bound, and the
     /// caller can retry once another load has finished.
     Busy,
+    /// A run owns the thread, so there is nothing to load *yet*.
+    ///
+    /// The conversation is being written right now: a replay taken now would be
+    /// a snapshot without it. The caller shows what it has and asks again; the
+    /// load starts by itself once the run ends.
+    RunInFlight,
     /// The host reported a failure.
     Host { code: String, message: String },
     /// The load did not finish in time.
@@ -60,6 +66,9 @@ impl std::fmt::Display for HistoryUnavailable {
                 "host {host_id} does not offer the agent {agent:?} this session belongs to"
             ),
             Self::Busy => f.write_str("too many history loads are already in flight"),
+            Self::RunInFlight => {
+                f.write_str("the conversation's history waits for the run in flight")
+            }
             Self::Host { code, message } => {
                 write!(
                     f,
@@ -133,12 +142,14 @@ impl HistoryWaits {
 /// A read is more than a lookup: it is the only thing that knows somebody
 /// wants the conversation, so it is also where "this needs loading" is
 /// decided.
+#[derive(Debug)]
 pub enum ThreadHistoryRead {
     /// Serve these rows, whatever their status.
     Serve(CacheView),
-    /// Nothing to serve yet. A load is in flight — possibly started by this
-    /// read — and the caller asks again.
-    Loading,
+    /// Nothing to serve yet, and the caller asks again. `reason` says why the
+    /// wait is not over when that is not simply "the load is running" — a run
+    /// holding the thread, for instance.
+    Loading { reason: Option<String> },
     /// Nothing to serve and nothing that can be loaded, with the reason.
     Unavailable(String),
 }
@@ -164,7 +175,12 @@ impl AppState {
     pub fn read_thread_history(&self, thread_id: &ThreadId) -> ThreadHistoryRead {
         let Some(view) = self.history.view(thread_id) else {
             return match self.start_thread_history_load(thread_id) {
-                Ok(()) | Err(HistoryUnavailable::Busy) => ThreadHistoryRead::Loading,
+                Ok(()) | Err(HistoryUnavailable::Busy) => {
+                    ThreadHistoryRead::Loading { reason: None }
+                }
+                Err(HistoryUnavailable::RunInFlight) => ThreadHistoryRead::Loading {
+                    reason: Some(HistoryUnavailable::RunInFlight.to_string()),
+                },
                 Err(error) => ThreadHistoryRead::Unavailable(error.to_string()),
             };
         };
@@ -172,14 +188,12 @@ impl AppState {
             HistoryStatus::Ready | HistoryStatus::Loading | HistoryStatus::Unavailable => {
                 ThreadHistoryRead::Serve(view)
             }
-            HistoryStatus::Stale => {
+            // A stale or partial view is worth showing while a newer one loads.
+            // Whether a load may start is the loader's decision, not the
+            // reader's: it is the same decision as the claim, and splitting it
+            // across two steps is what let a run slip in between them.
+            HistoryStatus::Stale | HistoryStatus::Partial => {
                 let _ = self.start_thread_history_load(thread_id);
-                ThreadHistoryRead::Serve(view)
-            }
-            HistoryStatus::Partial => {
-                if !self.thread_has_run_in_flight(thread_id) {
-                    let _ = self.start_thread_history_load(thread_id);
-                }
                 ThreadHistoryRead::Serve(view)
             }
         }
@@ -191,9 +205,14 @@ impl AppState {
     /// provider session, and a load started behind it would either be refused
     /// or wait for the turn to end. The overlay is the honest answer until then.
     fn thread_has_run_in_flight(&self, thread_id: &ThreadId) -> bool {
-        self.registry
-            .thread(thread_id)
-            .is_some_and(|thread| thread.active_run_id.is_some())
+        // The claim is what a dispatch takes before it records the run on the
+        // thread, so it is the earlier signal; the thread's own `active_run_id`
+        // covers a run whose record is already gone.
+        self.runs.claims_thread(thread_id)
+            || self
+                .registry
+                .thread(thread_id)
+                .is_some_and(|thread| thread.active_run_id.is_some())
     }
 
     /// The conversation for a thread, loading it from its host if needed.
@@ -274,6 +293,18 @@ impl AppState {
             .thread_cache_binding(thread_id)
             .ok_or(HistoryUnavailable::NoBinding)?;
         let operation = self.history_operation(thread_id, &binding)?;
+        // Whether a run owns the thread and whether this load may start are one
+        // decision, taken under the lock a dispatch takes to claim the thread:
+        // otherwise a run can be claimed between the check and the claim, and
+        // the load it should have yielded to starts anyway. The guard is
+        // released before the load runs — a load may take a minute, and it must
+        // not hold the lifecycle lock while it does.
+        {
+            let _lifecycle = self.runs.lifecycle_lock();
+            if self.thread_has_run_in_flight(thread_id) {
+                return Err(HistoryUnavailable::RunInFlight);
+            }
+        }
         match self.history.begin_load(thread_id, &binding) {
             LoadTicket::Leader => {
                 self.history.mark_loading(thread_id, binding.clone());
@@ -559,6 +590,76 @@ mod tests {
             "the live event survived the refused install"
         );
         assert_ne!(view.status, HistoryStatus::Ready);
+        state.shutdown().unwrap();
+    }
+
+    /// A run in flight is what a load yields to, and the check is part of the
+    /// claim: a read that finds a run says *why* it is waiting, and a load
+    /// that arrives while one runs claims nothing.
+    #[tokio::test]
+    async fn a_load_yields_to_a_run_in_flight() {
+        let state = test_state();
+        let (thread, _) = state
+            .registry
+            .create_thread(
+                Some(state.registry.personal_project_id()),
+                Some("busy".into()),
+                None,
+                loom_relay::now_ms(),
+            )
+            .unwrap();
+        state
+            .registry
+            .set_provider_session_id(
+                &thread.id,
+                "acp-session-1",
+                Some(
+                    loom_domain::ProviderSessionBinding::new("pi", "/srv/project")
+                        .on_host(HostId::mint()),
+                ),
+                loom_relay::now_ms(),
+            )
+            .unwrap();
+        let run_id = loom_domain::RunId::mint();
+        state
+            .runs
+            .claim_thread(&thread.id, run_id.clone())
+            .expect("the thread is free");
+
+        // Nothing cached yet: the answer is "waiting for the run", not
+        // "unavailable" — the conversation is being written right now.
+        match state.read_thread_history(&thread.id) {
+            ThreadHistoryRead::Loading {
+                reason: Some(reason),
+            } => {
+                assert!(reason.contains("run in flight"), "{reason}");
+            }
+            other => panic!("expected a waiting read, got {other:?}"),
+        }
+        assert!(
+            !state.history.is_loading(&thread.id),
+            "a refused load must not claim anything"
+        );
+
+        // An overlay behind a run is served as it is, and still starts nothing.
+        state.history.append_live(
+            &thread.id,
+            None,
+            crate::history_cache::RowSource::Message { at_ms: 1 },
+            identity(),
+        );
+        assert!(matches!(
+            state.read_thread_history(&thread.id),
+            ThreadHistoryRead::Serve(_)
+        ));
+        assert!(!state.history.is_loading(&thread.id));
+
+        // The run ends, and the next read asks for the conversation.
+        assert!(state.runs.release_thread(&thread.id, &run_id));
+        assert!(
+            state.start_thread_history_load(&thread.id).is_ok(),
+            "a thread with no run is loaded again"
+        );
         state.shutdown().unwrap();
     }
 

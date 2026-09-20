@@ -327,7 +327,13 @@ async fn a_conversation_outside_the_relay_window_is_loaded_from_the_agent() {
     let base = format!("/api/v1/threads/{thread_id}/timeline");
     let first = http_json(&addr, &base).await;
     assert_eq!(first["history"]["complete"], false, "{first}");
-    assert_ne!(first["history"]["status"], "ready", "{first}");
+    assert!(
+        matches!(
+            first["history"]["status"].as_str(),
+            Some("loading") | Some("partial")
+        ),
+        "a read of an unsynced thread asks for a load rather than refusing: {first}"
+    );
     assert!(
         first["rows"]
             .as_array()

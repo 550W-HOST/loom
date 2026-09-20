@@ -337,6 +337,16 @@ impl RunRegistry {
     /// status transition — so this is a single lookup, not a list. The lowest
     /// run id wins if that invariant is ever broken, which keeps the answer
     /// deterministic instead of arbitrary.
+    /// Whether a run currently claims this thread.
+    ///
+    /// The claim is taken before the run is recorded on the thread and released
+    /// when its lifecycle settles, so it is the earliest and strongest "a run
+    /// owns this thread right now" signal — the one a history load has to yield
+    /// to.
+    pub fn claims_thread(&self, thread_id: &ThreadId) -> bool {
+        self.lock().thread_claims.contains_key(thread_id)
+    }
+
     pub fn for_thread(&self, thread_id: &ThreadId) -> Option<RunRecord> {
         let mut runs: Vec<RunRecord> = self
             .lock()

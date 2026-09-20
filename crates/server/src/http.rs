@@ -4582,7 +4582,7 @@ async fn thread_timeline(
         }
         // Nothing is cached, so this response is not a position in any
         // numbering: the caller has nothing to compare and nothing to keep.
-        crate::history::ThreadHistoryRead::Loading => (
+        crate::history::ThreadHistoryRead::Loading { reason } => (
             Vec::new(),
             None,
             0,
@@ -4590,7 +4590,7 @@ async fn thread_timeline(
             0,
             crate::history_cache::HistoryStatus::Loading,
             false,
-            None,
+            reason,
         ),
         crate::history::ThreadHistoryRead::Unavailable(reason) => (
             Vec::new(),
