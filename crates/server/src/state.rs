@@ -380,19 +380,22 @@ impl AppState {
     }
 
     /// Wires the relay, hub actor and readers together.
+    ///
+    /// The relay's frames live in the store: the same database that holds the
+    /// conversations and the entity view is the whole durable state, and the
+    /// shard files this used to write are gone. A store is therefore opened
+    /// here — before the relay — and handed to both.
     pub fn build(config: AppConfig) -> Result<Self, BuildStateError> {
-        let backend: loom_relay::SharedBackend = match &config.backend_path {
-            // Durable backend: replay survives a restart on this machine.
-            Some(path) => Arc::new(loom_relay::backend::disk::DiskBackend::open(
-                path,
-                config.backend_max_len,
-            )?),
-            // Default: in-process, zero external service.
-            None => Arc::new(loom_relay::backend::memory::MemoryBackend::new(
-                config.backend_max_len,
-            )),
+        let store = match &config.backend_path {
+            Some(path) => crate::store::Store::open(path.join("loom.db"))?,
+            None => crate::store::Store::open_in_memory()?,
         };
-        Self::build_from_backend(config, backend)
+        let store = Arc::new(Mutex::new(store));
+        let backend: loom_relay::SharedBackend = Arc::new(crate::store::StoreBackend::new(
+            Arc::clone(&store),
+            config.backend_max_len,
+        ));
+        Self::build_with_store(config, backend, store)
     }
 
     #[cfg(test)]
@@ -403,6 +406,9 @@ impl AppState {
         Self::build_from_backend(config, backend)
     }
 
+    /// Wires a state over an injected backend, for a test that wants to choose
+    /// the storage the relay runs on.
+    #[cfg(test)]
     fn build_from_backend(
         config: AppConfig,
         backend: loom_relay::SharedBackend,
@@ -412,6 +418,15 @@ impl AppState {
             None => crate::store::Store::open_in_memory()?,
         };
         let store = Arc::new(Mutex::new(store));
+        Self::build_with_store(config, backend, store)
+    }
+
+    /// Wires a state over a store and a relay backend that both already exist.
+    fn build_with_store(
+        config: AppConfig,
+        backend: loom_relay::SharedBackend,
+        store: Arc<Mutex<crate::store::Store>>,
+    ) -> Result<Self, BuildStateError> {
         // A store the last process was killed in the middle of may be missing
         // the tail a published-and-unwritten conversation held. What is stored
         // is kept and marked as possibly behind — not thrown away, and not
@@ -1607,12 +1622,18 @@ mod tests {
         let scope = Scope::Thread("thr_1".into());
         let envelope = state.publish(scope.clone(), "{\"n\":1}").unwrap();
 
-        // The default backend stays in-process; with a data directory the log
-        // is materialised on disk as well.
-        assert!(dir
-            .path()
-            .join(format!("shard-{}.log", scope.shard()))
-            .exists());
+        // The frames are in the store, and there is no shard file any more:
+        // the database is the log's home.
+        assert!(
+            state.store().relay_event_total().unwrap() >= 1,
+            "the frame reached the store"
+        );
+        assert!(
+            !dir.path()
+                .join(format!("shard-{}.log", scope.shard()))
+                .exists(),
+            "nothing writes the shard files"
+        );
 
         let replayed = state.relay.replay_scope(&scope, 10).unwrap();
         assert_eq!(replayed.len(), 1);
