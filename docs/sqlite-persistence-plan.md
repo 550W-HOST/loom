@@ -262,6 +262,19 @@ CREATE TABLE IF NOT EXISTS entity_meta (
 );
 ```
 
+### 5.3 阶段二退场条件：现状与证据（2026-09-21）
+
+| 条件 | 证据 |
+| --- | --- |
+| 实体/设置/自动化/run 在库里，一次写入是原子的 | `store::entities` 的 6 个测试（往返、替换不残留、坏 JSON 报错、parent 成列、run 单行写/忘） |
+| 恢复不再依赖有界 relay | `the_entity_view_comes_back_without_the_file_or_the_log`（窗口缩到 2、删文件后 thread 仍在） |
+| `domain.snapshot` 不再是任何恢复路径的输入 | 文件读写路径已整体删除（提交 `f1d1047`）；`a_view_that_was_never_written_is_rebuilt_from_the_log` 断言数据目录里没有该文件 |
+| 崩溃后恢复 | `a_conversation_that_outlived_an_unfinished_stop_is_not_complete`（未正常结束 → 标记可能落后）、`crates/loom/tests/history_durability.rs`（SIGKILL） |
+| run 状态变更即落库 | `runs::tests::every_run_change_reaches_the_sink`、`state::tests::a_run_state_is_written_when_it_changes` |
+| run 恢复不再读日志 | `recover_run_flags` / `latest_active_run_id` 已删除；三个窗口测试见 3.3 进展 |
+
+**阶段二完成。** `domain.snapshot` 文件不再存在。
+
 ## 6. 与阶段一并行、且与存储选择无关的修正（阶段 A）
 
 这些缺陷无论最终是内存缓存还是 SQLite 都存在，先修。
@@ -326,6 +339,17 @@ CREATE TABLE IF NOT EXISTS entity_meta (
 **进展（2026-09-21，3.1 完成）**：schema v4 增 `relay_event(event_id TEXT PK, shard, scope_kind, scope_id, payload BLOB, created_at_ms, origin)`，索引 `(shard, event_id)` 与 `(shard, created_at_ms)`。`Store` 提供 `append_relay_event(shard, record, max_len)`（**插入与按上限裁剪同一个事务**，超限删最旧；子查询在未超限时返回空，所以不会误删）、`read_relay_events(shard, after, limit)`（`event_id > cursor ORDER BY event_id`，与内存/磁盘后端**同一套语义**：游标在读取里而不是由调用方过滤，所以「同一毫秒的超大突发」不会卡住读者）、`trim_relay_events`、`relay_event_count`/`relay_event_total`。测试 5 个：往返逐字段相等（含 BLOB 载荷与 origin）、突发大于一页仍逐页推进不重不漏、满 shard 删最旧且顺序不变、按时间裁剪只删更旧的、六种 scope 全部往返。
 
 **3.2/3.3 的做法（下一步）**：把 `crates/relay/tests/relay.rs` 那套后端契约提成可复用套件（relay 侧一个非默认 feature 暴露的 `conformance` 模块），这样 `crates/server` 能用同一个 `RelayBackend` 实现跑**同一套**场景，而不是抄一份；store 后端实现落在 `crates/server/src/store/relay_backend.rs`（relay 不能依赖 store，所以实现只能在 server 侧）。先做同步实现跑通契约（每次 append 一次 `block_on`），量化每次 publish 的代价，再决定是否加「单写线程 + 读取时合并未落盘尾巴」（与阶段一 overlay 同构）。之后才是双层写、恢复改读库、删 `shard-*.log`。
+
+### 7.1 阶段三退场条件：现状与证据（2026-09-21）
+
+| 条件 | 证据 |
+| --- | --- |
+| 后端契约套件在库后端全绿 | `crates/server/tests/relay_store_contract.rs`：relay 自带的 14 个场景逐个跑 store 后端，14/14 |
+| worker 断线重连补帧通过 | `crates/worker/tests/provider_e2e.rs` 的 `a_dispatch_missed_while_disconnected_is_replayed_on_reconnect` 与 `a_reconnect_recovers_more_dispatches_than_one_replay_page`；客户端侧 `crates/server/tests/ws.rs` 的 `a_reconnecting_client_can_resume_from_a_cursor` |
+| 服务器不再写 `shard-*.log` | `state::tests::a_configured_data_directory_switches_to_the_durable_backend` 断言帧在库里且 shard 文件不存在 |
+| 每-shard 上限仍在 | `store::relay_log` 的 `a_full_shard_drops_its_oldest_frame` |
+
+**阶段三完成。** 服务器只写一个 `loom.db`；`DiskBackend` 代码保留在 relay crate 中，作为契约套件里那个真实持久化后端的对照实现，服务器不再使用它。
 
 ## 8. 通用测试清单（每阶段都要有）
 
@@ -392,7 +416,7 @@ CREATE TABLE IF NOT EXISTS entity_meta (
 
 **1.1 依赖与打开。** 引擎为 **turso**（`=0.8.0-pre.11`，`default-features = false`）：进程内、SQLite 兼容、Rust 实现，替换原先的 `rusqlite`（`bundled` C 版）。turso 的驱动是 async，store 用 `futures-executor::block_on` 在调用线程上驱动它，对外 API 保持同步（HTTP 读、写线程、测试都是同步调用；turso 不需要 Tokio 运行时即可推进，已实测四种上下文）。**三个必须一起记住的事实**（2026-09-21 实测）：① turso 是 pre-release，不是 1.0；② `roaring` 在 `Cargo.lock` 中钉在 `0.11.2`（0.11.3+ 要求 rustc 1.90，本仓库 MSRV 1.88），`cargo update` 必须保留该钉；③ turso **不是无 C 构建**——`cc` 会编译 SIMD/AEAD 内核，`bindgen`/libclang 生成扩展 ABI，因此 §10 的 musl 发布要求从「只需 musl C 编译器」变成「musl C 编译器 + 构建机 libclang」。新增 `crates/server/src/store/`（`mod.rs` 打开库、`schema.rs` 迁移）。`<server-data-dir>/loom.db`，WAL、`synchronous=NORMAL`、`foreign_keys=ON`、`busy_timeout`，`PRAGMA user_version` 记 schema 版本。打不开/迁移失败 = 启动失败，绝不回退内存。测试：建库幂等、版本表、坏库显式报错。
 
-**⚠️ 这一步会改变发布工具链。** 这是本仓库第一个 C 依赖：`bundled` 需要用 C 编译器编 SQLite。`x86_64-unknown-linux-musl` 现在靠宿主 `cc` 链接（`.cargo/config.toml` 注释），`aarch64-unknown-linux-musl` 只有 `rust-lld`；两者都没有 musl 交叉 C 编译器。因此 `release.yml` 必须同时加：x86_64 装 `musl-tools`，aarch64 装 aarch64 的 musl C 交叉编译器并设 `CC_aarch64_unknown_linux_musl`（`.cargo/config.toml` 记一笔）。本地只能验证 gnu 目标；musl 两个目标必须由 CI 或装了交叉工具链的机器验证后，才可以说发布路径完好。
+**⚠️ 这一步会改变发布工具链。**（2026-09-21 更新：引擎已换成 turso，本节最初的 `rusqlite bundled` 说法作废，但「发布路径需要新工具链」的结论仍然成立，而且更重。）turso 编译期会：用 `cc` 编译 SIMD/AEAD 内核，并用 `bindgen`/`libclang` 生成扩展 ABI。因此发布机需要**宿主 C 编译器 + libclang**；交叉到 musl 时还需要目标平台的 C 交叉编译器（x86_64/aarch64 目前都没有装，`.cargo/config.toml` 有注释）。本地只能验证 gnu 目标与 MSRV；musl 两个目标必须由 CI 或装了交叉工具链的机器验证后，才可以说发布路径完好。`release.yml` 这一步尚未做（见文末「尚未做」）。
 
 **1.2 表与迁移（v1）。** `thread_history`（binding、`provider_session_id`、`revision`、`synced_at_ms`、`last_error`）与 `thread_history_row`（`thread_id, seq, source_kind, source_run_id, source_at_ms, event_json`，`seq` 写入时分配、永不重算）。测试：往返、并发分配不重号、同 `(thread_id, seq)` 唯一、删除 thread 同事务清行。
 
@@ -409,3 +433,22 @@ CREATE TABLE IF NOT EXISTS entity_meta (
 **1.8 显式刷新入口。** `POST /api/v1/threads/{id}/history/refresh`：强制一次同步；失败保留旧基线，成功推进 revision；运行中沿用现有串行规则。UI 最小入口（stale 时出现"重试加载"）。测试：失败后旧内容仍可读、点刷新后恢复。
 
 **1.9 收尾。** thread 删除清行、磁盘写失败显式报错、SIGKILL 后重启不出现"看似完整实则缺尾"、更新 `architecture.md` / `domain-persistence.md` / 本文件状态。
+
+---
+
+## 11. 完成状态（2026-09-21）
+
+三个阶段的实施步骤全部完成，每个子步骤都有测试与门禁证据，逐条列在 §4.6、§5.3、§7.1：
+
+- **阶段一**：会话历史落盘、读取统一、客户端持久 revision、显式刷新入口、收尾（删 thread 清行、写盘失败如实上报、SIGKILL、文档）。
+- **阶段二**：实体/设置/自动化/run 进库（一实体一行、整视图一个事务、run 变更即写），`domain.snapshot` 文件**读写路径整体删除**。
+- **阶段三**：relay 帧进库（`relay_event`，按上限自裁剪）、后端契约套件在库后端 14/14、服务器改用库后端、`shard-*.log` 不再写、run 恢复改读库（判决先于终帧落库，日志扫描彻底删除）。
+
+现在服务器只写一个 `<data-dir>/loom.db`：会话行、实体视图、relay 帧、run 记录全在其中。没配 `--data-dir` 时用内存库，语义一致、随进程消失。
+
+**尚未做（刻意留在本计划之外）**：
+
+1. `release.yml` 的发布工具链（turso 的 `cc` + libclang，以及 musl 目标的交叉 C 编译器）——见 §1.1 的 ⚠️。
+2. 跨机器/多 loom 共用一个 ACP 会话的协调（用户已明确「跨机器续聊继续单独处理」）。
+3. `docs/history-convergence-review.md` 的状态表（该文件由用户维护，未改动）。
+4. `roaring` 的版本钉必须随 `Cargo.lock` 一起保留（MSRV 1.88）。
