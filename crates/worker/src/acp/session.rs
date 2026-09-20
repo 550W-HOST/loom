@@ -25,9 +25,12 @@
 
 use std::sync::Arc;
 
+use std::collections::VecDeque;
+
 use agent_client_protocol::schema::v1::{
-    ContentBlock, InitializeRequest, LoadSessionRequest, NewSessionRequest, PromptRequest,
-    RequestPermissionRequest, SessionId, SessionNotification, SessionUpdate, TextContent,
+    CancelNotification, ContentBlock, InitializeRequest, LoadSessionRequest, NewSessionRequest,
+    PromptRequest, RequestPermissionRequest, SessionId, SessionNotification, SessionUpdate,
+    TextContent,
 };
 use agent_client_protocol::schema::{v2, ProtocolVersion};
 use agent_client_protocol::{
@@ -134,6 +137,7 @@ pub async fn drive(
     catalogs: &mpsc::Sender<ProviderCatalogReport>,
     permissions: PermissionRegistry,
     interactions: mpsc::Sender<InteractionRequest>,
+    steers: &crate::steer::SteerRegistry,
 ) -> Result<(), String> {
     let cwd = run.spec.cwd.clone().ok_or_else(|| {
         "an ACP session requires a working directory, and the dispatch has none".to_string()
@@ -148,6 +152,12 @@ pub async fn drive(
             "the dispatched working directory {cwd:?} does not exist on this host"
         ));
     }
+
+    // The run's steer channel is opened before its session is, so a steer that
+    // arrives while the session is still being constructed waits for the loop
+    // instead of being dropped. It is closed when the run ends, however it
+    // ends, which is what makes a later steer a harmless no-op.
+    let steer_rx = steers.register(run.run_id.clone()).await;
 
     let sink = UpdateSink {
         run: run.clone(),
@@ -173,6 +183,8 @@ pub async fn drive(
             permissions,
             run.permission_timeout,
         ),
+        steers: Arc::new(tokio::sync::Mutex::new(Some(steer_rx))),
+        steer_in_flight: Arc::new(std::sync::atomic::AtomicBool::new(false)),
     };
 
     let operation = async {
@@ -199,14 +211,17 @@ pub async fn drive(
     let outcome = match tokio::time::timeout(run.timeout, operation).await {
         Ok(outcome) => outcome,
         Err(_) => {
-            sink.terminal_timeout(format!(
-                "ACP agent did not settle within {}ms",
-                run.timeout.as_millis()
-            ))
-            .await?;
-            return Ok(());
+            let result = sink
+                .terminal_timeout(format!(
+                    "ACP agent did not settle within {}ms",
+                    run.timeout.as_millis()
+                ))
+                .await;
+            steers.forget(&run.run_id).await;
+            return result;
         }
     };
+    steers.forget(&run.run_id).await;
 
     match outcome {
         Ok(()) => Ok(()),
@@ -529,6 +544,21 @@ struct UpdateSink {
     /// not decide a permission the user has not granted. See
     /// [`crate::acp::permission`].
     broker: PermissionBroker,
+    /// The steers the control plane sent for this run, in arrival order.
+    ///
+    /// Shared with the run's task rather than owned by it because the sink is
+    /// cloned into the ACP client callbacks; the conversation takes the
+    /// receiver for its own loop when it starts prompting.
+    steers: Arc<tokio::sync::Mutex<Option<mpsc::Receiver<String>>>>,
+    /// Whether a steer is replacing the prompt that is in flight.
+    ///
+    /// A v2 agent reports the end of a turn through `state_update: idle`, and
+    /// that notification translates to a terminal event. While a steer is being
+    /// applied, the cancelled prompt's idle must not end the run: the
+    /// conversation is about to re-prompt on the same session, and *it* owns the
+    /// run's one terminal. This gates exactly that — set when a steer is queued,
+    /// cleared once nothing is waiting.
+    steer_in_flight: Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// The ACP session config option ids for the model and the reasoning level.
@@ -608,7 +638,59 @@ fn select_state(
     ))
 }
 
+/// Waits for the next steer for this run.
+///
+/// Never resolves when the run has no channel — the conversation takes the
+/// receiver once, and a closed channel means the worker is shutting the run
+/// down — so a `select!` over it waits on the prompt instead of spinning.
+async fn next_steer(steers: &mut Option<mpsc::Receiver<String>>) -> String {
+    match steers {
+        Some(receiver) => match receiver.recv().await {
+            Some(text) => text,
+            None => std::future::pending().await,
+        },
+        None => std::future::pending().await,
+    }
+}
+
+/// Moves every steer that is already waiting into `queued`.
+///
+/// Called after a prompt settles: a steer that arrived alongside the response
+/// belongs to the turn and must be honoured before the turn is allowed to end.
+fn drain_steers(steers: &mut Option<mpsc::Receiver<String>>, queued: &mut VecDeque<String>) {
+    if let Some(receiver) = steers.as_mut() {
+        while let Ok(text) = receiver.try_recv() {
+            queued.push_back(text);
+        }
+    }
+}
+
+/// Asks a v1 agent to abandon the prompt in flight.
+///
+/// A steer is delivered by cancelling the running prompt and re-prompting on
+/// the same session, which is how every ACP client — Zed's "send immediately",
+/// bb's `steerMode: "queue"` bridge — does it: ACP has no injection method.
+async fn cancel_prompt(connection: &ConnectionTo<Agent>, session_id: &str) {
+    let _ = connection.send_notification(CancelNotification::new(SessionId::new(session_id)));
+}
+
+/// Asks a v2 agent to abandon the prompt in flight. The v2 spelling of
+/// [`cancel_prompt`].
+async fn cancel_prompt_v2(connection: &ConnectionTo<Agent>, session_id: &str) {
+    let _ = connection.send_notification(v2::CancelSessionNotification::new(v2::SessionId::new(
+        session_id,
+    )));
+}
+
 impl UpdateSink {
+    /// Takes this run's steer receiver for the conversation loop.
+    ///
+    /// `None` only when a conversation already took it, which cannot happen for
+    /// a run that prompts once.
+    async fn take_steers(&self) -> Option<mpsc::Receiver<String>> {
+        self.steers.lock().await.take()
+    }
+
     /// One ACP session update: translate, then report.
     ///
     /// ACP notifications can arrive while `session/new` or `session/load` is
@@ -696,6 +778,22 @@ impl UpdateSink {
             }
             state.translator.on_v2_session_update(&notification.update)
         };
+        if self
+            .steer_in_flight
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            // A steer is replacing the prompt this update ended, so the run is
+            // not over: dropping the terminal keeps it open for the re-prompt,
+            // and the conversation emits the run's one terminal when nothing is
+            // waiting. Anything else in the batch still belongs to the session
+            // and is reported.
+            let rest = events
+                .into_iter()
+                .filter(|event| !event.is_terminal())
+                .collect();
+            self.report_all(rest).await;
+            return;
+        }
         self.report_all(events).await;
     }
 
@@ -846,19 +944,51 @@ impl UpdateSink {
             };
             self.report_all(events).await;
         }
-        let prompt = PromptRequest::new(
-            SessionId::new(session_id),
-            vec![ContentBlock::Text(TextContent::new(
-                self.run.prompt.clone(),
-            ))],
-        );
-        let response = connection.send_request(prompt).block_task().await?;
-        let events = {
-            let mut state = self.state.lock().await;
-            state.translator.on_stop_reason(response.stop_reason)
-        };
-        self.report_all(events).await;
-        Ok(())
+        // The turn is a small loop because a steer *joins* it rather than
+        // starting a second one. When a steer arrives the prompt in flight is
+        // cancelled and the steer text becomes the next prompt on the same
+        // session, so the model sees it at the next tool boundary with the
+        // conversation intact. The run ends only when nothing is waiting, which
+        // keeps its terminal event with the last prompt rather than a cancelled
+        // one.
+        let mut steers = self.take_steers().await;
+        let mut queued: VecDeque<String> = VecDeque::new();
+        let mut pending = self.run.prompt.clone();
+        loop {
+            let prompt = PromptRequest::new(
+                SessionId::new(session_id.clone()),
+                vec![ContentBlock::Text(TextContent::new(pending.clone()))],
+            );
+            let mut prompt_fut = Box::pin(connection.send_request(prompt).block_task());
+            let mut cancel_sent = false;
+            let response = loop {
+                tokio::select! {
+                    result = &mut prompt_fut => break result?,
+                    text = next_steer(&mut steers) => {
+                        queued.push_back(text);
+                        // One cancel is enough: the first steer abandons the
+                        // prompt, and any steer behind it waits for the
+                        // re-prompt the loop is about to send.
+                        if !cancel_sent {
+                            cancel_sent = true;
+                            cancel_prompt(connection, &session_id).await;
+                        }
+                    }
+                }
+            };
+            drain_steers(&mut steers, &mut queued);
+            match queued.pop_front() {
+                Some(next) => pending = next,
+                None => {
+                    let events = {
+                        let mut state = self.state.lock().await;
+                        state.translator.on_stop_reason(response.stop_reason)
+                    };
+                    self.report_all(events).await;
+                    return Ok(());
+                }
+            }
+        }
     }
 
     /// Apply the client's model and reasoning choices to a session.
@@ -1061,32 +1191,90 @@ impl UpdateSink {
             };
             self.report_all(events).await;
         }
-        let prompt = v2::PromptRequest::new(
-            v2::SessionId::new(session_id),
-            vec![v2::ContentBlock::Text(v2::TextContent::new(
-                self.run.prompt.clone(),
-            ))],
-        );
-        let _response = connection.send_request(prompt).block_task().await?;
-        // The response ends the prompt. A v2 agent normally reports the *reason*
-        // through `state_update: idle`, and that notification is the primary
-        // signal — but the response is evidence too, and an agent can lose the
-        // notification on the way out: pi-acp, for instance, tears down its
-        // outbound connector when one update fails to convert, and the idle
-        // update that follows is dropped. Trusting only the notification leaves
-        // the run in flight until the control plane's timeout (W-623), so the
-        // response closes the turn when nothing else has.
-        self.settle_from_prompt_response().await;
-        self.wait_for_completion().await;
-        Ok(())
+        // The turn is a small loop for the same reason the v1 one is: a steer
+        // joins the turn by cancelling the prompt in flight and re-prompting on
+        // the same session. v2 reports a turn's end through `state_update: idle`
+        // as well as the response, so while a steer is being applied the
+        // notification path suppresses the terminal (see `steer_in_flight`) and
+        // this loop owns the run's one terminal, emitting it from the response
+        // of the last prompt. The response ends the prompt. A v2 agent normally
+        // reports the *reason* through `state_update: idle`, and that
+        // notification is the primary signal — but the response is evidence too,
+        // and an agent can lose the notification on the way out: pi-acp, for
+        // instance, tears down its outbound connector when one update fails to
+        // convert, and the idle update that follows is dropped. Trusting only
+        // the notification leaves the run in flight until the control plane's
+        // timeout (W-623), so the response closes the turn when nothing else
+        // has.
+        let mut steers = self.take_steers().await;
+        let mut queued: VecDeque<String> = VecDeque::new();
+        let mut pending = self.run.prompt.clone();
+        loop {
+            let prompt = v2::PromptRequest::new(
+                v2::SessionId::new(session_id.clone()),
+                vec![v2::ContentBlock::Text(v2::TextContent::new(
+                    pending.clone(),
+                ))],
+            );
+            let mut prompt_fut = Box::pin(connection.send_request(prompt).block_task());
+            let mut cancel_sent = false;
+            loop {
+                tokio::select! {
+                    result = &mut prompt_fut => {
+                        result?;
+                        break;
+                    }
+                    text = next_steer(&mut steers) => {
+                        queued.push_back(text);
+                        self.steer_in_flight
+                            .store(true, std::sync::atomic::Ordering::SeqCst);
+                        // One cancel is enough: the first steer abandons the
+                        // prompt, and any steer behind it waits for the
+                        // re-prompt the loop is about to send.
+                        if !cancel_sent {
+                            cancel_sent = true;
+                            cancel_prompt_v2(connection, &session_id).await;
+                        }
+                    }
+                }
+            }
+            drain_steers(&mut steers, &mut queued);
+            match queued.pop_front() {
+                Some(next) => {
+                    if self.terminal_sent.load(std::sync::atomic::Ordering::SeqCst) {
+                        // The turn's own end reached the run before this steer
+                        // could join it — the notification path emitted a
+                        // terminal because no steer was pending at that instant.
+                        // The control plane has already finished the run, so
+                        // re-prompting would only run an unowned turn.
+                        return Ok(());
+                    }
+                    pending = next;
+                }
+                None => {
+                    // No steer is left, so the run ends here, from the last
+                    // prompt's response. Clearing the flag first lets the
+                    // terminal through; a stale idle from an earlier cancelled
+                    // prompt arrives after `terminal_sent` is set and is
+                    // dropped by the guard in `report_all`.
+                    self.steer_in_flight
+                        .store(false, std::sync::atomic::Ordering::SeqCst);
+                    self.settle_from_prompt_response().await;
+                    self.wait_for_completion().await;
+                    return Ok(());
+                }
+            }
+        }
     }
 
     /// Ends the turn from the prompt response, when nothing else did.
     ///
-    /// The reason a v2 response cannot carry is `EndTurn`: a cancelled turn is
-    /// reported as `Cancelled` by the notification path, and loom has no
-    /// client-side cancel for an ACP run at all. The mapping is therefore the
-    /// same one pi-acp uses to build the idle notification it may have dropped.
+    /// The reason a v2 response cannot carry is `EndTurn`. A turn cancelled by
+    /// a **steer** is not this run's end at all — the conversation re-prompts
+    /// instead — so only the last prompt reaches here, and `EndTurn` is the
+    /// honest verdict for it. The mapping is the same one pi-acp uses to build
+    /// the idle notification it may have dropped, which is why this also closes
+    /// the turn when that notification never arrives (W-623).
     async fn settle_from_prompt_response(&self) {
         use std::sync::atomic::Ordering;
         if self.terminal_sent.load(Ordering::SeqCst) {
@@ -1212,6 +1400,7 @@ pub fn spawn(
     catalogs: mpsc::Sender<ProviderCatalogReport>,
     permissions: PermissionRegistry,
     interactions: mpsc::Sender<InteractionRequest>,
+    steers: crate::steer::SteerRegistry,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         if let Err(message) = drive(
@@ -1221,6 +1410,7 @@ pub fn spawn(
             &catalogs,
             permissions,
             interactions,
+            &steers,
         )
         .await
         {
@@ -1342,5 +1532,227 @@ mod tests {
             thought_level_value(&options, &ReasoningLevel::from("low")),
             None
         );
+    }
+
+    // --- steering a running turn -------------------------------------------
+
+    use std::time::Duration;
+
+    use agent_client_protocol::schema::v2;
+
+    /// A v2 ACP agent whose first prompt runs until it is cancelled and whose
+    /// later prompts answer immediately.
+    ///
+    /// That is exactly the shape a steer needs: the first prompt is the turn in
+    /// flight, the cancel is what a steer sends to join it, and every prompt
+    /// after it is the steer re-prompted on the same session. Recording the
+    /// prompt texts is what lets a test assert the session was *reused* rather
+    /// than restarted.
+    #[derive(Clone)]
+    struct SteerableAgent {
+        prompts: Arc<tokio::sync::Mutex<Vec<String>>>,
+        first_prompt_seen: Arc<tokio::sync::Notify>,
+        cancel_seen: Arc<tokio::sync::Notify>,
+    }
+
+    impl SteerableAgent {
+        fn new() -> Self {
+            Self {
+                prompts: Arc::new(tokio::sync::Mutex::new(Vec::new())),
+                first_prompt_seen: Arc::new(tokio::sync::Notify::new()),
+                cancel_seen: Arc::new(tokio::sync::Notify::new()),
+            }
+        }
+
+        /// The plain text of a prompt, concatenated.
+        fn prompt_text(request: &v2::PromptRequest) -> String {
+            request
+                .prompt
+                .iter()
+                .filter_map(|block| match block {
+                    v2::ContentBlock::Text(text) => Some(text.text.clone()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("")
+        }
+    }
+
+    impl ConnectTo<Client> for SteerableAgent {
+        async fn connect_to(self, client: impl ConnectTo<Agent>) -> Result<(), Error> {
+            let prompts = self.clone();
+            let cancels = self.clone();
+            Agent
+                .v2()
+                .on_receive_request(
+                    async move |_request: v2::InitializeRequest, responder, _cx| {
+                        let mut capabilities = v2::AgentCapabilities::default();
+                        capabilities.session = Some(v2::SessionCapabilities::default());
+                        responder.respond(
+                            v2::InitializeResponse::new(
+                                ProtocolVersion::V2,
+                                v2::Implementation::new("steerable", "0"),
+                            )
+                            .capabilities(capabilities),
+                        )
+                    },
+                    on_receive_request!(),
+                )
+                .on_receive_request(
+                    async move |_request: v2::NewSessionRequest, responder, _cx| {
+                        responder.respond(v2::NewSessionResponse::new("steerable-session"))
+                    },
+                    on_receive_request!(),
+                )
+                .on_receive_request(
+                    async move |request: v2::PromptRequest, responder, cx| {
+                        let agent = prompts.clone();
+                        cx.spawn(async move {
+                            let text = SteerableAgent::prompt_text(&request);
+                            let index = {
+                                let mut prompts = agent.prompts.lock().await;
+                                prompts.push(text);
+                                prompts.len()
+                            };
+                            if index == 1 {
+                                // The first turn stays open until the steer's
+                                // cancel arrives; the response then ends it, and
+                                // the worker re-prompts on this same session.
+                                agent.first_prompt_seen.notify_one();
+                                agent.cancel_seen.notified().await;
+                            }
+                            responder.respond(v2::PromptResponse::new())
+                        })?;
+                        Ok(())
+                    },
+                    on_receive_request!(),
+                )
+                .on_receive_notification(
+                    async move |_notification: v2::CancelSessionNotification, _cx| {
+                        cancels.cancel_seen.notify_one();
+                        Ok(())
+                    },
+                    on_receive_notification!(),
+                )
+                .connect_to(client)
+                .await
+        }
+    }
+
+    /// Builds the sink `drive` would build for `run`, with a steer channel the
+    /// test can drive directly.
+    async fn sink_for(
+        run: &ProviderRun,
+        cwd: &str,
+        steers: &crate::steer::SteerRegistry,
+        reports: mpsc::Sender<ProviderReport>,
+        catalogs: mpsc::Sender<ProviderCatalogReport>,
+    ) -> UpdateSink {
+        let (interactions, _interaction_requests) = mpsc::channel(8);
+        let steer_rx = steers.register(run.run_id.clone()).await;
+        UpdateSink {
+            run: run.clone(),
+            state: Arc::new(tokio::sync::Mutex::new(UpdateState {
+                translator: AcpTranslator::new(RunContext {
+                    thread_id: run.thread_id.clone(),
+                    cwd: Some(cwd.to_owned()),
+                    provider_session_id: None,
+                }),
+                phase: UpdatePhase::Constructing,
+                pending: Vec::new(),
+                pending_load_usage: None,
+                pending_load_usage_v2: None,
+            })),
+            reports,
+            catalogs,
+            report_lock: Arc::new(tokio::sync::Mutex::new(())),
+            terminal_sent: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            completion_notify: Arc::new(tokio::sync::Notify::new()),
+            broker: PermissionBroker::new(
+                run.clone(),
+                interactions,
+                PermissionRegistry::new(),
+                run.permission_timeout,
+            ),
+            steers: Arc::new(tokio::sync::Mutex::new(Some(steer_rx))),
+            steer_in_flight: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        }
+    }
+
+    /// A steer cancels the prompt in flight and re-prompts the **same session**,
+    /// so the run reports exactly one terminal event — from the prompt the steer
+    /// became, not from the one it replaced.
+    #[tokio::test]
+    async fn a_steer_cancels_the_prompt_in_flight_and_reprompts_the_same_session() {
+        let dir = tempfile::tempdir().expect("a temporary workspace");
+        let cwd = dir.path().to_string_lossy().into_owned();
+
+        let mut spec = loom_provider_protocol::ProviderSpec::acp("unused", Vec::new());
+        spec.cwd = Some(cwd.clone());
+        let run = ProviderRun {
+            spec,
+            prompt: "first".to_string(),
+            host_id: loom_domain::HostId::mint(),
+            thread_id: loom_domain::ThreadId::mint(),
+            project_id: loom_domain::ProjectId::mint(),
+            run_id: loom_domain::RunId::mint(),
+            timeout: Duration::from_secs(10),
+            permission_timeout: Duration::from_secs(5),
+            permission_ceiling: loom_domain::HostPermissionMode::Full,
+            provider_session_id: None,
+            model: None,
+            reasoning_level: None,
+        };
+
+        let steers = crate::steer::SteerRegistry::new();
+        let (reports_tx, mut reports_rx) = mpsc::channel(64);
+        let (catalogs_tx, _catalog_reports) = mpsc::channel(64);
+        let sink = sink_for(&run, &cwd, &steers, reports_tx, catalogs_tx).await;
+
+        let agent = SteerableAgent::new();
+        let drive_sink = sink.clone();
+        let drive_cwd = cwd.clone();
+        let drive_agent = agent.clone();
+        let driver = tokio::spawn(async move {
+            serve(move || drive_agent.clone(), &drive_sink, &drive_cwd).await
+        });
+
+        // The first prompt is in flight; join it with a steer.
+        agent.first_prompt_seen.notified().await;
+        assert!(
+            steers
+                .steer(&run.run_id, "actually, use the other fixture".into())
+                .await,
+            "the run registered a steer channel"
+        );
+
+        // The run must end once, and from the steer's prompt.
+        let mut terminal = None;
+        while let Some(report) = reports_rx.recv().await {
+            if report.event.is_terminal() {
+                terminal = Some(report.event);
+                break;
+            }
+        }
+        let terminal = terminal.expect("a terminal event");
+        assert_eq!(
+            terminal.terminal_status(),
+            Some(loom_domain::TurnStatus::Completed),
+            "the terminal comes from the prompt the steer became"
+        );
+
+        // Two prompts reached the agent, in order, on one session.
+        let prompts = agent.prompts.lock().await.clone();
+        assert_eq!(
+            prompts,
+            vec![
+                "first".to_string(),
+                "actually, use the other fixture".to_string()
+            ],
+            "the steer is the next prompt, after the cancelled one"
+        );
+
+        let outcome = driver.await.expect("the driver task did not panic");
+        assert!(outcome.is_ok(), "the connection ended cleanly: {outcome:?}");
     }
 }

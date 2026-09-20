@@ -378,12 +378,15 @@ than the null the contract allows.
 | mode | thread idle | thread busy |
 | --- | --- | --- |
 | `auto` | sent | queued (`waitingOn: thread-busy`) |
-| `steer` | sent | `501 not_configured` |
+| `steer` | sent | steered: the row is marked sent and its text joins the running turn |
 
-`steer` is refused while busy because steering means injecting input into the
-**running** turn, and `loom_provider_protocol` has no frame for that. Appending
-the text as a second concurrent turn would be a different operation wearing the
-same name. This is the same class of refusal as `threads.compact`.
+`steer` while busy publishes a `RunSteer` to the host that owns the run and
+marks the queued row sent; the contract's `sent` branch carries no
+`queuedMessage`, so the row's `thread_queued_message_changed` event is what
+removes it from a client's queue. When the run ended between the status check
+and the publish there is no turn to join, so the message falls back to an
+ordinary delivery and becomes the next turn — exactly the `appliedAs:
+"new-turn"` fallback bb's host daemon makes.
 
 A send of a message whose `sendAt` is still in the future answers the queued
 branch too — but a **manual** send is authoritative over the schedule (the
@@ -399,7 +402,20 @@ B3 completes what B2 deferred. `threads.send` now honours `mode`:
 | --- | --- | --- |
 | `start` | sent | `501 not_configured` |
 | `auto` / `queue-if-active` | sent | queued |
-| `steer` / `steer-if-active` | sent | `501 not_configured` |
+| `steer` / `steer-if-active` | sent | steered: sent, joined to the running turn |
+
+A **steer** joins the turn in flight rather than starting a second one. The
+control plane appends the message to the timeline and publishes a `RunSteer`
+through the relay to the host that owns the run. ACP has no "inject into the
+running prompt" method, so the worker delivers the text the way every ACP client
+does: it cancels the prompt in flight and re-prompts on the **same session**,
+keeping the run open so its one terminal event still comes from the provider.
+That is Zed's "send immediately" and bb's `steerMode: "queue"` bridge, and the
+run reads as one turn rather than two. A steer that loses the race on the
+control plane — no run in flight by the time it is handled — is sent as a fresh
+turn (bb's `appliedAs: "new-turn"`); one that loses it on the worker is already
+recorded on the thread and is seen by the next turn. Neither case drops the
+message.
 
 A future `sendAt` is always a queue entry, never an immediate turn. A
 `threads.retry` of a busy thread, or one with a future `sendAt`, is likewise a

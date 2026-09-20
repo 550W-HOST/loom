@@ -52,6 +52,7 @@ pub mod provider;
 pub mod run;
 pub mod scripts;
 pub mod session;
+pub mod steer;
 pub mod terminal;
 pub mod update;
 pub mod workspace;
@@ -65,7 +66,7 @@ use loom_domain::{HostId, RunId};
 use loom_provider_protocol::{
     EnvironmentProvision, EnvironmentProvisionOutcome, EnvironmentProvisionReport, HostFileRequest,
     HostRpcReport, HostRpcRequest, InteractionRequest, InteractionResolutionFrame,
-    ProviderCatalogReport, ProviderLaunch, ProviderSpec, RunDispatch,
+    ProviderCatalogReport, ProviderLaunch, ProviderSpec, RunDispatch, RunSteer,
 };
 use loom_relay::dedup::SeenSet;
 use loom_relay::{EventId, Scope};
@@ -460,6 +461,13 @@ pub struct Worker {
     /// The permission requests currently held open, so an answer arriving on
     /// the socket can be handed to the provider task waiting for it.
     permissions: crate::acp::permission::PermissionRegistry,
+    /// The live ACP turns a steer can join, keyed by run id.
+    ///
+    /// The socket loop receives a [`RunSteer`] and hands it here; the run's own
+    /// conversation task registered the receiving half when its session was
+    /// established. A steer for a run that is not present has no turn to join
+    /// and is dropped — see [`crate::steer`].
+    steers: crate::steer::SteerRegistry,
     /// Environment-provisioning reports waiting to be forwarded to the server.
     env_reports: mpsc::Receiver<EnvironmentProvisionReport>,
     env_reports_tx: mpsc::Sender<EnvironmentProvisionReport>,
@@ -542,6 +550,7 @@ impl Worker {
                     interactions,
                     interactions_tx,
                     permissions: crate::acp::permission::PermissionRegistry::new(),
+                    steers: crate::steer::SteerRegistry::new(),
                     env_reports,
                     env_reports_tx,
                     host_file_reports,
@@ -974,6 +983,8 @@ impl Worker {
         // domain events in the same room are none of them.
         if let Ok(dispatch) = serde_json::from_str::<RunDispatch>(payload) {
             self.start_dispatch(dispatch);
+        } else if let Ok(steer) = serde_json::from_str::<RunSteer>(payload) {
+            self.steer_run(steer);
         } else if let Ok(resolution) = serde_json::from_str::<InteractionResolutionFrame>(payload) {
             self.resolve_interaction(resolution);
         } else if let Ok(provision) = serde_json::from_str::<EnvironmentProvision>(payload) {
@@ -1125,6 +1136,7 @@ impl Worker {
         // dispatch, reconciliation and relay remain unaware of that detail.
         let permissions = self.permissions.clone();
         let interactions = self.interactions_tx.clone();
+        let steers = self.steers.clone();
         match run.spec.launch {
             loom_provider_protocol::ProviderLaunch::AcpStdio => {
                 let transport = crate::acp::session::Transport::Stdio {
@@ -1138,6 +1150,7 @@ impl Worker {
                     self.catalog_reports_tx.clone(),
                     permissions,
                     interactions,
+                    steers,
                 );
             }
             loom_provider_protocol::ProviderLaunch::AcpEmbeddedPi => {
@@ -1152,9 +1165,33 @@ impl Worker {
                     self.catalog_reports_tx.clone(),
                     permissions,
                     interactions,
+                    steers,
                 );
             }
         }
+    }
+
+    /// Hands a steer to the run's conversation loop.
+    ///
+    /// The loop is the only thing that can cancel and re-prompt its own ACP
+    /// session, so this is a hand-off, not an action. A steer for a run that is
+    /// not live — one that already ended, or that this worker never started —
+    /// is dropped: the relay may replay a frame the worker already applied, and
+    /// a steer can lose a race with the run's own terminal event, and neither
+    /// is a failure.
+    fn steer_run(&self, steer: RunSteer) {
+        if self.host_id.as_ref() != Some(&steer.host_id) {
+            return;
+        }
+        let steers = self.steers.clone();
+        tokio::spawn(async move {
+            if !steers.steer(&steer.run_id, steer.text).await {
+                eprintln!(
+                    "loom-worker: a steer for run {} arrived with no live turn; dropping it",
+                    steer.run_id
+                );
+            }
+        });
     }
 
     /// Creates a managed environment's workspace in the background and queues

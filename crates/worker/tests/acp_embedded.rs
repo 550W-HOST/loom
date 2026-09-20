@@ -133,6 +133,7 @@ async fn drive_embedded(run: ProviderRun) -> Vec<loom_domain::RunEvent> {
             &catalogs,
             PermissionRegistry::new(),
             interactions,
+            &loom_worker::steer::SteerRegistry::new(),
         )
         .await;
     });
@@ -259,6 +260,7 @@ async fn provider_arguments_are_refused_rather_than_dropped() {
         &catalogs,
         PermissionRegistry::new(),
         interactions,
+        &loom_worker::steer::SteerRegistry::new(),
     )
     .await;
     drop(tx);

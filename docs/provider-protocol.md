@@ -11,7 +11,7 @@ thread turn crosses the boundary*.
 ```text
                      relay  host:{id}                     thread:{id}
   server ── RunDispatch ─────────▶ worker ── ProviderReport ──▶ server ──▶ relay
-             (published to a scope)          (up the worker's own socket)     │
+             (RunDispatch; RunSteer joins it)          (up the worker's own socket)     │
                                                                               ▼
                                                              replayable client frames
 ```
@@ -20,6 +20,10 @@ thread turn crosses the boundary*.
   `run_id`, records the run, and publishes a `RunDispatch` to `host:{host_id}`.
   It never looks at a worker socket. Consequences: a worker that is reconnecting
   still gets the run, and dispatch is replayable.
+* **Downward: a steer joins a dispatched turn the same way.** `RunSteer` goes to
+  the same scope through the same relay, so a steer for a run published while
+  the worker was away is delivered late rather than lost. See
+  [Joining a turn](#joining-a-turn-the-steer-frame).
 * **Upward: reports go up the worker's own socket.** A report is an
   observation, not a command. The server turns it into a `thread_run_event` and
   publishes it to `thread:{thread_id}` **through the relay**, so provider
@@ -120,6 +124,48 @@ is outside the contract event so the inner payload still validates against
 `contracts/bb/thread-event.json`. It is how a deadline (`timed_out`), a stale
 host (`host_stale`) and a cancellation (`cancelled`) stay distinguishable even
 though the contract folds them into `status`
+
+## Joining a turn: the steer frame
+
+A user can type while the agent is working, and that input belongs to the turn
+already running rather than to a new one. `RunSteer` carries it, and it travels
+**downward through the relay** exactly like a dispatch:
+
+```jsonc
+// RunSteer — server -> relay host:{id} -> worker
+{
+  "run_id":       "run_01M…",   // the turn to join; also the idempotency key
+  "thread_id":    "thr_01M…",
+  "project_id":   "proj_01M…",
+  "host_id":      "host_01M…",
+  "text":         "actually, use the other fixture",
+  "created_at_ms": 1789120430000
+}
+```
+
+ACP has no "inject into the running prompt" method. Every ACP client therefore
+delivers a steer the same way: **cancel the prompt in flight and send the text as
+the next prompt on the same session.** Zed calls the control "send immediately"
+and does exactly that; bb's provider bridge calls the capability
+`steerMode: "queue"` and does exactly that. loom's worker does it too, and keeps
+the run open across it, so the timeline reads as **one turn** with the input
+appended rather than two. The run's one terminal event still comes from the last
+prompt the worker sent, never from the cancelled one — the invariant at the top
+of this document is not weakened.
+
+Three consequences worth being explicit about:
+
+1. **The session is preserved.** The steer re-prompts the same ACP session, so
+   the model keeps its context and sees the new input at the next tool boundary
+   — not after a `session/load` of a fresh process.
+2. **A steer can lose a race with the run's end.** A frame naming a run the
+   worker is not executing is dropped. If the control plane noticed first (no
+   run in flight) it sends the message as a fresh turn instead — bb's
+   `appliedAs: "new-turn"` — and if the worker noticed first, the message is
+   already recorded on the thread and the next turn sees it. Either way nothing
+   is lost.
+3. **No second concurrent turn starts.** The server does not mint a run for a
+   steer; it publishes the frame to the host that owns the running one.
 
 ## The workspace is part of the dispatch
 
@@ -285,6 +331,9 @@ turn was over" and "the worker never heard it".
 | environment registry, lifecycle, provisioning dispatch + reports | `crates/server/src/domain_state.rs`, `crates/server/src/environments.rs` unit tests |
 | environment HTTP API (create/list/get/destroy, path validation) | `crates/server/src/http.rs` unit tests |
 | normal ACP turn, provider crash, provider timeout, missed-dispatch replay, silent-worker reaping | `crates/worker/tests/provider_e2e.rs` (real sockets, real ACP agents) |
+| steer routing: the HTTP routes publish `RunSteer`, a steered queued row leaves the queue | `crates/server/tests/b3_conformance.rs` |
+| the live-run registry that carries a steer to its conversation (delivery, unknown run, forget) | `crates/worker/src/steer.rs` unit tests |
+| a steer cancels the prompt in flight, re-prompts the same session, and the run ends once | `crates/worker/src/acp/session.rs`, `a_steer_cancels_the_prompt_in_flight...` |
 | two-run ACP session/load resume and identity persistence | `crates/worker/tests/acp_session.rs`, `crates/worker/tests/acp_dispatch.rs` |
 | embedded Pi through `pi-acp` | `crates/worker/tests/acp_embedded.rs` |
 | the real `pi` binary | same provider e2e file, `#[ignore]`d |

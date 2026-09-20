@@ -190,6 +190,43 @@ pub struct RunDispatch {
     pub created_at_ms: u64,
 }
 
+/// A request to join the turn a run is already executing.
+///
+/// This is the downward half of a **steer**: a user typed while the agent was
+/// working, and the input belongs to the turn that is already running rather
+/// than to a new one.
+///
+/// It travels through the relay to `host:{host_id}`, exactly like a
+/// [`RunDispatch`], so a steer for a worker that was reconnecting still arrives
+/// on replay. The worker delivers `text` into the run's active ACP turn the way
+/// every ACP client does — ACP has no "inject into the running prompt"
+/// method — by cancelling the prompt in flight and sending `text` as the next
+/// prompt on the **same session**. The model therefore sees the input at the
+/// next tool boundary while the conversation context is preserved, and the run
+/// stays open: its terminal event still comes from the last prompt it sent,
+/// never from the cancelled one. bb calls this `steerMode: "queue"`, and this
+/// is the same behaviour.
+///
+/// `run_id` is the correlation key and the expectation: a steer naming a run
+/// this worker is not executing is dropped, which makes a redelivery and a race
+/// with the run's own end both harmless. There is deliberately no separate
+/// turn id — loom's `run_id` *is* the turn identity.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RunSteer {
+    /// The run whose turn the text joins.
+    pub run_id: RunId,
+    /// The thread it is advancing.
+    pub thread_id: ThreadId,
+    /// Its project, carried so an event needs no lookup.
+    pub project_id: ProjectId,
+    /// The host expected to be executing the run.
+    pub host_id: HostId,
+    /// The text to deliver into the running turn.
+    pub text: String,
+    /// When the control plane minted the steer.
+    pub created_at_ms: u64,
+}
+
 /// A request to provision a managed environment's workspace on a host.
 ///
 /// Like [`RunDispatch`] this travels **through the relay**, published to the

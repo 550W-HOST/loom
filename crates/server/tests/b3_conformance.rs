@@ -12,7 +12,7 @@
 //!   one outside the contract is rejected, both as `validate_request_by_id`
 //!   samples and against the live server, where the `validate_contract_request`
 //!   middleware answers `422`;
-//! * the refusals the routes have — steer, a mismatch between an interaction's
+//! * the refusals the routes have — a mismatch between an interaction's
 //!   kind and its resolution, a settled interaction — as the uniform error body
 //!   with a code drawn from the contract's own list at a status it declares;
 //! * the two new domains' state machines as plain unit-level assertions on the
@@ -552,8 +552,9 @@ async fn sending_a_queued_message_while_busy_answers_the_queued_branch() {
         "thread-busy"
     );
 
-    // `steer` is refused rather than downgraded: the provider protocol has no
-    // frame that injects input into a running turn.
+    // `steer` joins the run in flight: the text is published to the host that
+    // owns the run, the row is marked sent, and the route answers the sent
+    // branch rather than refusing.
     let steer = fixture
         .post(
             &format!(
@@ -563,9 +564,18 @@ async fn sending_a_queued_message_while_busy_answers_the_queued_branch() {
             json!({ "mode": "steer" }),
         )
         .await;
-    assert_eq!(steer.status, 501, "{}", steer.body);
-    assert_error(501, &steer.body);
-    assert_eq!(steer.body["code"], "not_configured");
+    assert_eq!(steer.status, 200, "{}", steer.body);
+    assert_response("threads.sendQueuedMessage", 200, &steer.body);
+    assert_eq!(steer.body["delivery"], "sent");
+
+    // The row is no longer in the queue: the change event the route published
+    // is what removes it from a client's list.
+    let listed = fixture.get(&path).await;
+    assert!(
+        listed.body.as_array().unwrap().is_empty(),
+        "a steered queued message must leave the queue: {}",
+        listed.body
+    );
 
     fixture.state.shutdown();
 }
@@ -677,7 +687,7 @@ async fn a_send_of_an_unknown_queued_message_is_refused() {
 }
 
 #[tokio::test]
-async fn threads_send_queues_while_busy_and_steers_are_refused() {
+async fn threads_send_queues_while_busy_and_steers_join_the_turn() {
     let fixture = fixture().await;
     let path = format!("/api/v1/threads/{}/send", fixture.thread_id);
 
@@ -705,17 +715,18 @@ async fn threads_send_queues_while_busy_and_steers_are_refused() {
         "thread-busy"
     );
 
-    // `steer-if-active` while busy is the one that must refuse: it asked to
-    // inject into the running turn.
+    // `steer-if-active` while busy joins the turn in flight: the text is
+    // published to the host that owns the run and delivered into it, so the
+    // route answers the sent branch.
     let steer = fixture
         .post(
             &path,
             json!({ "input": [{ "type": "text", "text": "three" }], "mode": "steer-if-active" }),
         )
         .await;
-    assert_eq!(steer.status, 501, "{}", steer.body);
-    assert_error(501, &steer.body);
-    assert_eq!(steer.body["code"], "not_configured");
+    assert_eq!(steer.status, 200, "{}", steer.body);
+    assert_response("threads.send", 200, &steer.body);
+    assert_eq!(steer.body["delivery"], "sent");
 
     // `start` while busy asked for a turn now and cannot have one.
     let start = fixture

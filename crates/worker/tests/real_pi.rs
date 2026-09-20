@@ -92,6 +92,7 @@ async fn drive_one(run: ProviderRun) -> Vec<loom_domain::RunEvent> {
             &catalogs,
             PermissionRegistry::new(),
             interactions,
+            &loom_worker::steer::SteerRegistry::new(),
         )
         .await;
     });

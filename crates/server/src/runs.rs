@@ -34,7 +34,7 @@ use loom_domain::{
     DomainEvent, Environment, EnvironmentStatus, HostId, HostStatus, ProjectId, ProviderEvent,
     RunEvent, RunId, RunOutcome, Thread, ThreadId, ThreadStatus, ThreadTrigger, TurnError,
 };
-use loom_provider_protocol::{ProviderReport, RunDispatch};
+use loom_provider_protocol::{ProviderReport, RunDispatch, RunSteer};
 use loom_relay::{now_ms, Result as RelayResult, Scope};
 use serde::{Deserialize, Serialize};
 
@@ -479,6 +479,24 @@ pub enum StopOutcome {
     },
 }
 
+/// Result of asking the run advancing a thread to take a steer.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SteerOutcome {
+    /// The steer was published to the host that owns the run. The worker keeps
+    /// the run open and delivers the text into its turn.
+    Published,
+    /// The thread had no run in flight, so there was no turn to join. The run
+    /// ended between the caller's check and this lookup, and the caller decides
+    /// what to do with the message (loom sends it as a new turn).
+    NoRun,
+    /// The relay rejected the frame, so the steer never reached a worker. The
+    /// run is unchanged and a caller may fall back to a normal send.
+    PublishFailed {
+        /// Why the relay rejected the frame.
+        error: String,
+    },
+}
+
 impl AppState {
     /// Mints a run, records it, and publishes the dispatch to `host:{id}`.
     ///
@@ -681,6 +699,40 @@ impl AppState {
             }
             FinishRunResult::AlreadyFinished => StopOutcome::NoRun,
             FinishRunResult::PublishFailed(error) => StopOutcome::PublishFailed { error },
+        }
+    }
+
+    /// Asks the run advancing a thread to take one more piece of input.
+    ///
+    /// A steer travels **through the relay** to `host:{id}`, exactly like a
+    /// dispatch, so a worker that was reconnecting still receives it on replay.
+    /// The control plane does not touch the run record: the run stays in flight
+    /// and its terminal event still comes from the provider, because the worker
+    /// keeps the same ACP session and re-prompts it rather than starting a
+    /// second turn. See [`loom_provider_protocol::RunSteer`].
+    ///
+    /// A thread with no run in flight answers [`SteerOutcome::NoRun`] rather
+    /// than an error. That is a race, not a fault: the run may have ended
+    /// between the caller's status check and this lookup, and the caller
+    /// already has the message and can send it as a fresh turn.
+    pub fn steer_thread(&self, thread_id: &ThreadId, text: &str) -> SteerOutcome {
+        let Some(record) = self.runs.for_thread(thread_id) else {
+            return SteerOutcome::NoRun;
+        };
+        let steer = RunSteer {
+            run_id: record.run_id.clone(),
+            thread_id: record.thread_id.clone(),
+            project_id: record.project_id.clone(),
+            host_id: record.host_id.clone(),
+            text: text.to_owned(),
+            created_at_ms: now_ms(),
+        };
+        let payload = serde_json::to_vec(&steer).expect("a RunSteer always serializes to JSON");
+        match self.publish(Scope::Host(record.host_id.to_string()), payload) {
+            Ok(_) => SteerOutcome::Published,
+            Err(error) => SteerOutcome::PublishFailed {
+                error: error.to_string(),
+            },
         }
     }
 

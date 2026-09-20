@@ -2447,14 +2447,23 @@ fn text_from_send_input(input: &[SendInput]) -> Option<String> {
 /// | `start` | send | `501 not_configured` |
 /// | `auto` | send | queue, answer `delivery: "queued"` |
 /// | `queue-if-active` | send | queue, answer `delivery: "queued"` |
-/// | `steer` | send | `501 not_configured` |
-/// | `steer-if-active` | send | `501 not_configured` |
+/// | `steer` | send | steer, answer `delivery: "sent"` |
+/// | `steer-if-active` | send | steer, answer `delivery: "sent"` |
 ///
-/// The two `steer` modes are refused while busy because steering means
-/// injecting input into the running turn, and `loom_provider_protocol` has no
-/// frame for that. Appending the text as a second concurrent turn would be a
-/// different operation under the same name. A future `sendAt` is likewise a
-/// queue entry, never an immediate turn.
+/// A **steer** joins the turn in flight rather than starting a second one. The
+/// control plane publishes a [`loom_provider_protocol::RunSteer`] to the host
+/// that owns the run, and the worker delivers the text into the same ACP
+/// session — ACP has no injection method, so it cancels the prompt in flight
+/// and re-prompts on that session, which is how Zed's "send immediately" and
+/// bb's provider bridge both do it. The run is not restarted: its terminal
+/// event still comes from the provider. A steer that loses the race on the
+/// control plane — no run in flight by the time it is handled — is sent as a
+/// fresh turn instead, which is bb's `appliedAs: "new-turn"`; the message is
+/// recorded either way, so neither case drops it.
+///
+/// `start` while busy remains the one combination with no honest answer: the
+/// mode asked for a turn now, and there is already one. A future `sendAt` is
+/// likewise a queue entry, never an immediate turn.
 async fn send_thread(
     State(state): State<AppState>,
     Path(raw_thread_id): Path<String>,
@@ -2475,22 +2484,40 @@ async fn send_thread(
         );
     };
 
-    let busy =
+    let mut busy =
         !matches!(thread.status, ThreadStatus::Idle) || state.runs.for_thread(&thread_id).is_some();
     let scheduled = request.send_at.is_some_and(|at| at > loom_relay::now_ms());
     let steers = matches!(request.mode, SendMode::Steer | SendMode::SteerIfActive);
     let queues_when_busy = matches!(request.mode, SendMode::Auto | SendMode::QueueIfActive);
 
-    if busy && steers {
-        return error_response_with_code(
-            StatusCode::NOT_IMPLEMENTED,
-            "not_configured",
-            format!(
-                "loom's provider protocol cannot steer a running turn; thread {thread_id} is \
-                 {}",
-                thread.status
-            ),
-        );
+    if busy && steers && !scheduled {
+        // A steer *joins* the turn in flight instead of starting a second one:
+        // the message is published to the host that owns the run, whose worker
+        // delivers it into the same ACP session. The control plane records the
+        // message on the thread so the timeline shows it where it happened. A
+        // future `sendAt` is a queue entry even for a steer — the schedule is
+        // the client's instruction, and it outranks "now".
+        match state.steer_thread(&thread_id, &content) {
+            crate::runs::SteerOutcome::Published => {
+                if let Err(response) =
+                    append_thread_message(&state, &thread_id, MessageRole::User, content.clone())
+                {
+                    return response;
+                }
+                return Json(json!({ "ok": true, "delivery": "sent" })).into_response();
+            }
+            crate::runs::SteerOutcome::NoRun => {
+                // The run ended between the status check and the publish, so
+                // there is no turn to join. Nothing has been recorded yet:
+                // fall through to the ordinary send path, which starts a fresh
+                // turn — the fallback bb's host daemon reports as
+                // `appliedAs: "new-turn"`.
+                busy = false;
+            }
+            crate::runs::SteerOutcome::PublishFailed { error } => {
+                return error_response(StatusCode::INTERNAL_SERVER_ERROR, error)
+            }
+        }
     }
     if busy && !queues_when_busy {
         // `start` while busy is the one combination with no honest answer: the
@@ -4413,10 +4440,10 @@ enum SendQueuedMessageMode {
 /// * `delivery: "queued"` — it is still in the queue, with a `waitingOn` that
 ///   names the reason and a `queuedMessage` the client re-renders.
 ///
-/// `steer` is refused with `501 not_configured` rather than downgraded to a
-/// queued send. `loom_provider_protocol` has no frame that injects input into a
-/// running turn, so the only way to honour `steer` would be to append a second
-/// concurrent turn — which is a different operation wearing the same name.
+/// `steer` joins the turn already in flight when there is one — the text is
+/// published to the host that owns the run and the row is marked sent — and
+/// otherwise falls back to an ordinary delivery, because there is no running
+/// turn to inject into. There is no `501`: a steer is a real operation now.
 async fn send_queued_message(
     State(state): State<AppState>,
     Path((raw_thread_id, raw_queued_message_id)): Path<(String, String)>,
@@ -4445,15 +4472,44 @@ async fn send_queued_message(
             format!("queued message {queued_message_id} belongs to another thread"),
         );
     }
-    if request.mode == SendQueuedMessageMode::Steer {
-        return error_response_with_code(
-            StatusCode::NOT_IMPLEMENTED,
-            "not_configured",
-            format!(
-                "loom's provider protocol has no frame that injects input into a running turn; \
-                 queued message {queued_message_id} cannot be steered"
-            ),
-        );
+    if request.mode == SendQueuedMessageMode::Steer && state.runs.for_thread(&thread_id).is_some() {
+        // A queued message sent as a steer joins the run in flight instead of
+        // becoming the next turn: the text goes to the host that owns the run
+        // and the row is marked sent. With no run in flight the branch is
+        // skipped and the ordinary delivery below starts the turn — the same
+        // `steer-if-active` fallback `threads.send` makes.
+        match state.steer_thread(&thread_id, &message.text) {
+            crate::runs::SteerOutcome::Published => {
+                let now = loom_relay::now_ms();
+                return match state
+                    .registry
+                    .mark_queued_message_sent(&queued_message_id, now)
+                {
+                    Ok((message, event)) => {
+                        let _ = state.publish_domain_event(&event);
+                        match append_thread_message(
+                            &state,
+                            &thread_id,
+                            MessageRole::User,
+                            message.text.clone(),
+                        ) {
+                            // The contract's `sent` branch carries no
+                            // `queuedMessage`: the row's change event is what
+                            // updates the client's queue.
+                            Ok(_) => {
+                                Json(json!({ "ok": true, "delivery": "sent" })).into_response()
+                            }
+                            Err(response) => response,
+                        }
+                    }
+                    Err(error) => command_error_response(error),
+                };
+            }
+            crate::runs::SteerOutcome::NoRun => {}
+            crate::runs::SteerOutcome::PublishFailed { error } => {
+                return error_response(StatusCode::INTERNAL_SERVER_ERROR, error)
+            }
+        }
     }
 
     let now = loom_relay::now_ms();

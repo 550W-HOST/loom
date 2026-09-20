@@ -81,6 +81,7 @@ async fn drive_with_agent(run: ProviderRun, agent: PathBuf) -> Vec<loom_domain::
             &catalogs,
             PermissionRegistry::new(),
             interactions,
+            &loom_worker::steer::SteerRegistry::new(),
         )
         .await;
     });
@@ -414,6 +415,7 @@ async fn a_missing_agent_ends_the_run_rather_than_hanging_it() {
         &catalogs,
         PermissionRegistry::new(),
         interactions,
+        &loom_worker::steer::SteerRegistry::new(),
     )
     .await;
     drop(tx);
@@ -452,6 +454,7 @@ async fn a_dispatch_without_a_working_directory_is_refused() {
         &catalogs,
         PermissionRegistry::new(),
         interactions,
+        &loom_worker::steer::SteerRegistry::new(),
     )
     .await;
     drop(tx);
@@ -606,6 +609,7 @@ async fn a_workspace_that_does_not_exist_is_refused() {
         &catalogs,
         PermissionRegistry::new(),
         interactions,
+        &loom_worker::steer::SteerRegistry::new(),
     )
     .await;
     drop(tx);
@@ -660,6 +664,7 @@ async fn a_resume_in_a_missing_workspace_fails_and_names_the_path() {
         &catalogs,
         PermissionRegistry::new(),
         interactions,
+        &loom_worker::steer::SteerRegistry::new(),
     )
     .await;
     drop(tx);
@@ -724,6 +729,7 @@ async fn a_resume_against_an_agent_without_load_session_fails() {
         &catalogs,
         PermissionRegistry::new(),
         interactions,
+        &loom_worker::steer::SteerRegistry::new(),
     )
     .await;
     drop(tx);
