@@ -6,7 +6,7 @@
 //! one root. The B8 content route only accepts a lease token.
 //!
 //! Leases are deliberately process-local capabilities. They are not part of
-//! the domain snapshot or the relay log: a restart invalidates them, and a
+//! the stored entity view or the relay log: a restart invalidates them, and a
 //! request routed to another node cannot use one. Deployments that need
 //! cross-node preview URLs must add a shared capability store and routing
 //! affinity; the in-memory registry remains the zero-dependency default.

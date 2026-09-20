@@ -145,7 +145,7 @@ pub struct UiPreference {
     pub value: Value,
 }
 
-/// Versioned settings data carried inside the durable domain snapshot.
+/// Versioned settings data carried inside the durable entity view.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SettingsSnapshot {

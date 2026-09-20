@@ -769,7 +769,7 @@ async fn automations_survive_a_durable_server_restart() {
     let config = AppConfig {
         backend_path: Some(dir.path().to_path_buf()),
         reconcile_interval: std::time::Duration::ZERO,
-        snapshot_interval: std::time::Duration::ZERO,
+        entity_write_interval: std::time::Duration::ZERO,
         ..AppConfig::default()
     };
     let state = AppState::build(config.clone()).unwrap();
@@ -872,7 +872,7 @@ async fn an_older_snapshot_without_automations_still_loads() {
     let config = AppConfig {
         backend_path: Some(dir.path().to_path_buf()),
         reconcile_interval: std::time::Duration::ZERO,
-        snapshot_interval: std::time::Duration::ZERO,
+        entity_write_interval: std::time::Duration::ZERO,
         ..AppConfig::default()
     };
     let state = AppState::build(config.clone()).unwrap();
@@ -1382,7 +1382,7 @@ async fn a_claimed_window_is_not_replayed_and_its_interrupted_turn_fails_once() 
     let config = || AppConfig {
         backend_path: Some(dir.path().to_path_buf()),
         reconcile_interval: std::time::Duration::ZERO,
-        snapshot_interval: std::time::Duration::ZERO,
+        entity_write_interval: std::time::Duration::ZERO,
         schedule_interval: std::time::Duration::ZERO,
         ..AppConfig::default()
     };
@@ -1464,7 +1464,7 @@ async fn a_payload_from_before_the_scheduler_reads_as_queued_work_after_a_restar
     let config = || AppConfig {
         backend_path: Some(dir.path().to_path_buf()),
         reconcile_interval: std::time::Duration::ZERO,
-        snapshot_interval: std::time::Duration::ZERO,
+        entity_write_interval: std::time::Duration::ZERO,
         schedule_interval: std::time::Duration::ZERO,
         ..AppConfig::default()
     };

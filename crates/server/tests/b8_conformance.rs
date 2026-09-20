@@ -55,7 +55,7 @@ fn assert_response(route_id: &str, status: StatusCode, body: &Value) {
 fn test_state() -> AppState {
     AppState::build(AppConfig {
         reconcile_interval: Duration::ZERO,
-        snapshot_interval: Duration::ZERO,
+        entity_write_interval: Duration::ZERO,
         ..AppConfig::default()
     })
     .unwrap()

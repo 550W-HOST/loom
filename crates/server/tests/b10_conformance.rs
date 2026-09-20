@@ -291,7 +291,7 @@ async fn b10_settings_survive_a_durable_server_restart() {
     let config = AppConfig {
         backend_path: Some(dir.path().to_path_buf()),
         reconcile_interval: std::time::Duration::ZERO,
-        snapshot_interval: std::time::Duration::ZERO,
+        entity_write_interval: std::time::Duration::ZERO,
         ..AppConfig::default()
     };
     let state = AppState::build(config.clone()).unwrap();

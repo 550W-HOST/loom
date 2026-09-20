@@ -225,7 +225,7 @@ pub struct DomainRegistry {
     inner: Mutex<RegistryInner>,
 }
 
-/// A point-in-time copy of the registry, as stored in a domain snapshot.
+/// A point-in-time copy of the registry, as stored in the entity view.
 ///
 /// Vectors rather than maps so the serialized form is stable and diffable;
 /// [`DomainRegistry::export`] sorts each one by id before returning.

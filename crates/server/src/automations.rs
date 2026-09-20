@@ -466,7 +466,7 @@ fn read_result(row: &StoredAutomation) -> AutomationReadResult {
 /* State                                                               */
 /* ------------------------------------------------------------------ */
 
-/// The durable automation payload, as stored in the domain snapshot.
+/// The durable automation payload, as stored in the durable entity view.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AutomationState {
@@ -1551,7 +1551,7 @@ fn error_response(error: AutomationError) -> Response {
 
 /// Writes the snapshot after a successful mutation.
 fn persist(state: &AppState) -> Result<(), Response> {
-    state.snapshot().map_err(|error| {
+    state.write_entity_view().map_err(|error| {
         api_error(
             StatusCode::INTERNAL_SERVER_ERROR,
             "internal_error",

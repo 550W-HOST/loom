@@ -210,7 +210,7 @@ impl RunRegistry {
         previous
     }
 
-    /// Restores runs from a domain snapshot before recovery settles them.
+    /// Restores runs from the stored entity view before recovery settles them.
     pub(crate) fn restore(&self, records: impl IntoIterator<Item = RunRecord>) {
         for record in records {
             self.insert(record);

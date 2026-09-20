@@ -844,7 +844,7 @@ mod tests {
         AppState::build(AppConfig {
             reconcile_interval: Duration::ZERO,
             schedule_interval: Duration::ZERO,
-            snapshot_interval: Duration::ZERO,
+            entity_write_interval: Duration::ZERO,
             ..AppConfig::default()
         })
         .unwrap()

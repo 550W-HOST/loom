@@ -286,7 +286,7 @@ mod tests {
 
     /// A real view from the registry, so the fixture is the shape the server
     /// actually produces rather than one this test invented.
-    fn snapshot() -> DomainSnapshot {
+    fn fixture() -> DomainSnapshot {
         let registry = crate::domain_state::DomainRegistry::new(1);
         registry
             .create_thread(
@@ -319,7 +319,7 @@ mod tests {
     #[test]
     fn the_entity_view_round_trips() {
         let store = Store::open_in_memory().unwrap();
-        let written = snapshot();
+        let written = fixture();
         store.replace_entities(&written).unwrap();
         assert_eq!(store.entities().unwrap(), Some(written));
     }
@@ -329,10 +329,10 @@ mod tests {
     #[test]
     fn replacing_the_view_leaves_nothing_of_the_old_one() {
         let store = Store::open_in_memory().unwrap();
-        let first = snapshot();
+        let first = fixture();
         store.replace_entities(&first).unwrap();
 
-        let mut second = snapshot();
+        let mut second = fixture();
         second.registry.hosts.clear();
         second.watermark = None;
         store.replace_entities(&second).unwrap();
@@ -351,7 +351,7 @@ mod tests {
     #[test]
     fn an_unreadable_entity_fails_the_read() {
         let store = Store::open_in_memory().unwrap();
-        store.replace_entities(&snapshot()).unwrap();
+        store.replace_entities(&fixture()).unwrap();
         crate::store::block_on(store.connection().execute(
             "UPDATE entity SET json = 'not an entity' WHERE kind = 'thread'",
             (),
@@ -371,7 +371,7 @@ mod tests {
     #[test]
     fn parents_are_columns() {
         let store = Store::open_in_memory().unwrap();
-        let written = snapshot();
+        let written = fixture();
         let thread = written
             .registry
             .threads

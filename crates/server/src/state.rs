@@ -112,14 +112,14 @@ pub struct AppConfig {
     /// `Duration::ZERO` disables it, which is what a test wants when it drives
     /// the sweep itself. The default matches the reference sweep's cadence.
     pub schedule_interval: Duration,
-    /// How often a domain snapshot is written to disk.
+    /// How often the entity view is written to the store.
     ///
     /// Only meaningful when [`AppConfig::backend_path`] names a data
     /// directory: the in-process default keeps no domain state, so it has no
     /// local snapshot to write.
     /// `Duration::ZERO` disables the periodic writer; a snapshot is still
     /// written once, on a clean shutdown.
-    pub snapshot_interval: Duration,
+    pub entity_write_interval: Duration,
     /// The agents the control plane can ask execution machines to run, in
     /// preference order.
     ///
@@ -161,7 +161,7 @@ impl Default for AppConfig {
             host_stale_after: Duration::from_secs(60),
             reconcile_interval: Duration::from_secs(5),
             schedule_interval: Duration::from_secs(10),
-            snapshot_interval: Duration::from_secs(30),
+            entity_write_interval: Duration::from_secs(30),
             providers: vec![ProviderSpec::pi()],
             ui_proxy: None,
             artifact_dir: None,
@@ -295,10 +295,15 @@ pub struct AppState {
     /// on. Re-enrollment replaces a host's entry in place.
     host_providers: HostProviders,
     reconcile_stop: Arc<AtomicBool>,
-    snapshot_stop: Arc<AtomicBool>,
+    entity_write_stop: Arc<AtomicBool>,
     schedule_stop: Arc<AtomicBool>,
-    snapshot_lock: Arc<Mutex<()>>,
-    snapshot_root: Option<PathBuf>,
+    entity_write_lock: Arc<Mutex<()>>,
+    /// The data directory a **legacy** `domain.snapshot` may still be in.
+    ///
+    /// Nothing writes it any more. It is read only when the store has never held
+    /// an entity view, so a store from before that move still starts, and this
+    /// field goes away once that read does.
+    legacy_snapshot_root: Option<PathBuf>,
     started_at: Instant,
     started_at_ms: u64,
 }
@@ -423,11 +428,10 @@ impl AppState {
         ));
         let started_at_ms = now_ms();
 
-        // Domain-state persistence rides on the durable backend: it is the
-        // deployment where a restart has a log to recover from. The in-process
-        // backend leaves the entity view ephemeral (see
-        // `docs/domain-persistence.md`).
-        let snapshot_root = config.backend_path.clone();
+        // The entity view is durable on a store that outlives the process; the
+        // data directory is also where a legacy `domain.snapshot` may be, which
+        // is read once and never written (see `docs/domain-persistence.md`).
+        let legacy_snapshot_root = config.backend_path.clone();
         // Normalised once, so every accessor can promise at least one provider.
         let provider_specs = if config.providers.is_empty() {
             vec![ProviderSpec::pi()]
@@ -473,10 +477,10 @@ impl AppState {
             provider_specs,
             host_providers: Arc::new(Mutex::new(Vec::new())),
             reconcile_stop: Arc::new(AtomicBool::new(false)),
-            snapshot_stop: Arc::new(AtomicBool::new(false)),
+            entity_write_stop: Arc::new(AtomicBool::new(false)),
             schedule_stop: Arc::new(AtomicBool::new(false)),
-            snapshot_lock: Arc::new(Mutex::new(())),
-            snapshot_root,
+            entity_write_lock: Arc::new(Mutex::new(())),
+            legacy_snapshot_root,
             started_at: Instant::now(),
             started_at_ms,
         };
@@ -491,8 +495,8 @@ impl AppState {
         if !config.reconcile_interval.is_zero() {
             state.spawn_reconciler(config.reconcile_interval);
         }
-        if !config.snapshot_interval.is_zero() && state.snapshot_root.is_some() {
-            state.spawn_snapshotter(config.snapshot_interval);
+        if !config.entity_write_interval.is_zero() && state.legacy_snapshot_root.is_some() {
+            state.spawn_entity_writer(config.entity_write_interval);
         }
         // The scheduler is what actually fires automations. Tests disable it and
         // call `sweep_automations` themselves.
@@ -563,7 +567,7 @@ impl AppState {
         let report = self.automations.sweep_due(now_ms);
         let executed = self.execute_pending_automation_runs(now_ms);
         if report.changed() || executed.changed() {
-            if let Err(error) = self.snapshot() {
+            if let Err(error) = self.write_entity_view() {
                 eprintln!("loom-server: persisting scheduled automation runs failed: {error}");
             }
         }
@@ -580,10 +584,10 @@ impl AppState {
         report
     }
 
-    /// Starts the periodic domain-snapshot writer.
-    fn spawn_snapshotter(&self, interval: Duration) {
+    /// Starts the periodic entity-view writer.
+    fn spawn_entity_writer(&self, interval: Duration) {
         let state = self.clone();
-        let stop = Arc::clone(&self.snapshot_stop);
+        let stop = Arc::clone(&self.entity_write_stop);
         tokio::spawn(async move {
             let mut ticker = tokio::time::interval(interval);
             ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -595,7 +599,7 @@ impl AppState {
                 if stop.load(Ordering::Relaxed) {
                     return;
                 }
-                if let Err(error) = state.snapshot() {
+                if let Err(error) = state.write_entity_view() {
                     eprintln!("loom-server: periodic domain snapshot failed: {error}");
                 }
             }
@@ -939,7 +943,7 @@ impl AppState {
         // nothing can be in that position.
         let snapshot = match self.store().entities() {
             Ok(Some(snapshot)) => Some(snapshot),
-            Ok(None) => match &self.snapshot_root {
+            Ok(None) => match &self.legacy_snapshot_root {
                 Some(root) => match persistence::read_snapshot(root) {
                     Ok(snapshot) => snapshot,
                     Err(error) => {
@@ -1253,13 +1257,13 @@ impl AppState {
     /// the view is copied. A mutation that raced ahead of the watermark can
     /// only make the snapshot fresher than the watermark, and replaying its
     /// event is idempotent.
-    pub fn snapshot(&self) -> Result<(), persistence::SnapshotError> {
-        let Some(root) = &self.snapshot_root else {
+    pub fn write_entity_view(&self) -> Result<(), persistence::SnapshotError> {
+        let Some(root) = &self.legacy_snapshot_root else {
             return Ok(());
         };
         let _run_lifecycle_guard = self.runs.lifecycle_lock();
         let _snapshot_guard = self
-            .snapshot_lock
+            .entity_write_lock
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
         let watermark = self
@@ -1274,14 +1278,14 @@ impl AppState {
             settings: Some(self.settings.export()),
             automations: Some(self.automations.export()),
         };
-        // Written twice on purpose, while the file is still the source recovery
-        // reads: the same view, in the store and in the file, so the two can be
-        // compared in a test before the file stops being written. The store's
-        // copy is a transaction, so it is either the whole view or none of it.
+        // One write, in one transaction: the file this used to write is not
+        // written any more. It is still *read* when the store has never held a
+        // view — a store from before this move, or a fresh one beside an old
+        // file — and that read goes away with the next version.
+        let _ = root;
         self.store()
             .replace_entities(&snapshot)
-            .map_err(|error| persistence::SnapshotError::Io(error.to_string()))?;
-        persistence::write_snapshot(root, &snapshot)
+            .map_err(|error| persistence::SnapshotError::Io(error.to_string()))
     }
 
     /// Stops the writers, snapshots the entity view, and flushes the log.
@@ -1311,9 +1315,9 @@ impl AppState {
     /// of truth. Its failure is reported and does not stop the flush.
     pub fn shutdown(&self) -> Result<(), ShutdownError> {
         self.reconcile_stop.store(true, Ordering::Relaxed);
-        self.snapshot_stop.store(true, Ordering::Relaxed);
+        self.entity_write_stop.store(true, Ordering::Relaxed);
         self.schedule_stop.store(true, Ordering::Relaxed);
-        if let Err(error) = self.snapshot() {
+        if let Err(error) = self.write_entity_view() {
             eprintln!("loom-server: writing the domain snapshot on shutdown failed: {error}");
         }
         self.relay.close();
@@ -1622,9 +1626,20 @@ mod tests {
         AppConfig {
             backend_path: Some(dir.path().to_path_buf()),
             reconcile_interval: Duration::ZERO,
-            snapshot_interval: Duration::ZERO,
+            entity_write_interval: Duration::ZERO,
             ..AppConfig::default()
         }
+    }
+
+    /// Clears the stored entity view, leaving only the log to recover from.
+    ///
+    /// This is what "there was no snapshot" means now: the view's home is the
+    /// store, so a test that wants the log to be the only source empties it.
+    /// The file is left where it is — nothing writes it any more, and a start
+    /// with no stored view reads a legacy one if a test put it there.
+    fn drop_entity_view(dir: &TempDir) {
+        let store = crate::store::Store::open(dir.path().join("loom.db")).unwrap();
+        crate::store::block_on(store.connection().execute("DELETE FROM entity", ())).unwrap();
     }
 
     /// Every state change a thread's log ended with, oldest first.
@@ -1988,7 +2003,7 @@ mod tests {
             state.shutdown().unwrap();
         }
 
-        std::fs::remove_file(persistence::snapshot_path(dir.path())).unwrap();
+        drop_entity_view(&dir);
         let state = AppState::build(durable_config(&dir)).unwrap();
         assert_eq!(
             state.registry.thread(&thread_id).unwrap().status,
@@ -2072,7 +2087,7 @@ mod tests {
                 .unwrap();
             thread_id = thread.id.clone();
             state.publish_domain_event(&created).unwrap();
-            state.snapshot().unwrap();
+            state.write_entity_view().unwrap();
             // Push the creation out of the retained window.
             for frame in 0..4 {
                 state
@@ -2084,7 +2099,9 @@ mod tests {
             }
             state.shutdown().unwrap();
         }
-        std::fs::remove_file(dir.path().join(crate::persistence::SNAPSHOT_FILE)).unwrap();
+        // Nothing writes the file any more; removing it is what the old
+        // recovery path would have needed, so it is removed if it is there.
+        let _ = std::fs::remove_file(dir.path().join(crate::persistence::SNAPSHOT_FILE));
 
         let state = AppState::build(config).unwrap();
         let thread = state
@@ -2092,48 +2109,6 @@ mod tests {
             .thread(&thread_id)
             .expect("the thread came back from the store, not from the log or the file");
         assert_eq!(thread.title.as_deref(), Some("only in the store"));
-        state.shutdown().unwrap();
-    }
-
-    /// The two homes of the entity view hold the same thing while both are
-    /// written: the store's copy is what recovery will read, and the file's is
-    /// what it reads today, so they must not drift before the move.
-    #[tokio::test]
-    async fn the_stored_entity_view_matches_the_snapshot_file() {
-        let dir = TempDir::new().unwrap();
-        let state = AppState::build(durable_config(&dir)).unwrap();
-        let (thread, created) = state
-            .registry
-            .create_thread(
-                Some(state.registry.personal_project_id()),
-                Some("both homes".into()),
-                None,
-                now_ms(),
-            )
-            .unwrap();
-        state.publish_domain_event(&created).unwrap();
-
-        state.snapshot().unwrap();
-        let stored = state
-            .store()
-            .entities()
-            .unwrap()
-            .expect("the store holds the view");
-        let filed = crate::persistence::read_snapshot(dir.path())
-            .unwrap()
-            .expect("the file holds the view");
-        assert_eq!(
-            stored, filed,
-            "the store and the file must hold one view, not two"
-        );
-        assert!(
-            stored
-                .registry
-                .threads
-                .iter()
-                .any(|held| held.id == thread.id),
-            "the thread that was just created is in both"
-        );
         state.shutdown().unwrap();
     }
 
@@ -2439,7 +2414,7 @@ mod tests {
             AppConfig {
                 reconcile_interval: Duration::ZERO,
                 schedule_interval: Duration::ZERO,
-                snapshot_interval: Duration::ZERO,
+                entity_write_interval: Duration::ZERO,
                 ..AppConfig::default()
             },
             Arc::new(Unflushable(
@@ -2487,8 +2462,8 @@ mod tests {
             state.shutdown().unwrap();
         }
 
-        // Drop the snapshot: the retained log is the only surviving source.
-        std::fs::remove_file(persistence::snapshot_path(dir.path())).unwrap();
+        // Drop the view: the retained log is the only surviving source.
+        drop_entity_view(&dir);
 
         let state = AppState::build(durable_config(&dir)).unwrap();
         let rebuilt = state
@@ -2520,8 +2495,21 @@ mod tests {
             state.publish_domain_event(&created).unwrap();
             state.shutdown().unwrap();
         }
-        // A torn or bit-rotted snapshot must not stop the server; the log
-        // still holds the creation event.
+        // A torn or bit-rotted *legacy* file must not stop the server; the log
+        // still holds the creation event. Nothing writes that file any more, so
+        // the test writes one — the shape a store from before the move would
+        // find beside it — and then rots it. The file is only read when the
+        // store has never held a view, which is the window it stays for.
+        drop_entity_view(&dir);
+        let legacy = DomainSnapshot {
+            version: SNAPSHOT_VERSION,
+            watermark: None,
+            registry: crate::domain_state::DomainRegistry::new(1).export(),
+            runs: Vec::new(),
+            settings: None,
+            automations: None,
+        };
+        persistence::write_snapshot(dir.path(), &legacy).unwrap();
         let path = persistence::snapshot_path(dir.path());
         let mut bytes = std::fs::read(&path).unwrap();
         let last = bytes.len() - 1;
@@ -2536,7 +2524,7 @@ mod tests {
     #[tokio::test]
     async fn a_snapshot_is_not_written_without_a_data_directory() {
         let state = AppState::build(AppConfig::default()).unwrap();
-        assert!(state.snapshot().is_ok());
+        assert!(state.write_entity_view().is_ok());
         state.shutdown().unwrap();
     }
 }

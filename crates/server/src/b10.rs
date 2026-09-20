@@ -1,7 +1,7 @@
 //! Batch B10: server settings, themes and UI preferences.
 //!
 //! These handlers own server-local configuration state. Settings are persisted
-//! in the domain snapshot and publish typed public cache invalidations; active
+//! in the stored entity view and publish typed public cache invalidations; active
 //! runs remain owned by the run registry and provider session on the worker.
 
 #![allow(clippy::result_large_err)]
@@ -29,7 +29,7 @@ fn api_error(status: StatusCode, code: &'static str, message: impl Into<String>)
 }
 
 fn persist(state: &AppState) -> Result<(), Response> {
-    state.snapshot().map_err(|error| {
+    state.write_entity_view().map_err(|error| {
         api_error(
             StatusCode::INTERNAL_SERVER_ERROR,
             "internal_error",

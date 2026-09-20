@@ -28,8 +28,7 @@
 //! never corruption. The log delta since that point is replayed on top.
 
 use std::fmt;
-use std::fs::{self, File};
-use std::io::Write;
+use std::fs;
 use std::path::{Path, PathBuf};
 
 use loom_relay::event_id::EventId;
@@ -42,7 +41,11 @@ use crate::settings::SettingsSnapshot;
 
 /// Name of the snapshot file inside the data directory.
 pub const SNAPSHOT_FILE: &str = "domain.snapshot";
-/// Suffix of the temporary file the snapshot is staged in.
+/// Suffix of the temporary file a legacy snapshot was staged in.
+///
+/// Only the test-side writer uses it: nothing in a running server writes this
+/// file any more.
+#[cfg(test)]
 const TEMP_SUFFIX: &str = "tmp";
 /// Marks the start of a framed snapshot.
 const SNAPSHOT_MAGIC: &[u8; 8] = b"LOOMSNAP";
@@ -129,6 +132,7 @@ pub fn read_snapshot(root: &Path) -> Result<Option<DomainSnapshot>, SnapshotErro
 }
 
 /// Writes a snapshot atomically under `root`.
+#[cfg(test)]
 pub fn write_snapshot(root: &Path, snapshot: &DomainSnapshot) -> Result<(), SnapshotError> {
     fs::create_dir_all(root).map_err(|error| SnapshotError::Io(error.to_string()))?;
     let payload =
@@ -137,9 +141,11 @@ pub fn write_snapshot(root: &Path, snapshot: &DomainSnapshot) -> Result<(), Snap
 
     let temp = root.join(format!("{SNAPSHOT_FILE}.{TEMP_SUFFIX}"));
     {
-        let mut file = File::create(&temp).map_err(|error| SnapshotError::Io(error.to_string()))?;
-        file.write_all(&framed)
+        let mut file =
+            fs::File::create(&temp).map_err(|error| SnapshotError::Io(error.to_string()))?;
+        std::io::Write::write_all(&mut file, &framed)
             .map_err(|error| SnapshotError::Io(error.to_string()))?;
+        std::io::Write::flush(&mut file).map_err(|error| SnapshotError::Io(error.to_string()))?;
         file.sync_all()
             .map_err(|error| SnapshotError::Io(error.to_string()))?;
     }
@@ -148,12 +154,13 @@ pub fn write_snapshot(root: &Path, snapshot: &DomainSnapshot) -> Result<(), Snap
     fs::rename(&temp, snapshot_path(root)).map_err(|error| SnapshotError::Io(error.to_string()))?;
     // Make the rename itself durable, so a crash cannot leave the directory
     // entry pointing at a file that lost its contents.
-    if let Ok(directory) = File::open(root) {
+    if let Ok(directory) = fs::File::open(root) {
         let _ = directory.sync_all();
     }
     Ok(())
 }
 
+#[cfg(test)]
 fn encode(payload: &[u8]) -> Vec<u8> {
     let mut framed = Vec::with_capacity(HEADER_LEN + payload.len());
     framed.extend_from_slice(SNAPSHOT_MAGIC);
@@ -222,7 +229,7 @@ mod tests {
     use crate::domain_state::DomainRegistry;
     use tempfile::TempDir;
 
-    fn snapshot() -> DomainSnapshot {
+    fn fixture() -> DomainSnapshot {
         let registry = DomainRegistry::new(10);
         DomainSnapshot {
             version: SNAPSHOT_VERSION,
@@ -239,36 +246,15 @@ mod tests {
         let dir = TempDir::new().unwrap();
         assert_eq!(read_snapshot(dir.path()).unwrap(), None);
 
-        let written = snapshot();
+        let written = fixture();
         write_snapshot(dir.path(), &written).unwrap();
         assert_eq!(read_snapshot(dir.path()).unwrap(), Some(written));
     }
 
     #[test]
-    fn writing_replaces_atomically_and_leaves_no_temp_file() {
-        let dir = TempDir::new().unwrap();
-        let first = snapshot();
-        write_snapshot(dir.path(), &first).unwrap();
-        let second = {
-            let mut second = snapshot();
-            second.watermark = None;
-            second
-        };
-        write_snapshot(dir.path(), &second).unwrap();
-
-        assert_eq!(read_snapshot(dir.path()).unwrap(), Some(second));
-        assert!(
-            !dir.path()
-                .join(format!("{SNAPSHOT_FILE}.{TEMP_SUFFIX}"))
-                .exists(),
-            "the staging file must be renamed, not left behind"
-        );
-    }
-
-    #[test]
     fn a_truncated_snapshot_is_rejected_rather_than_half_read() {
         let dir = TempDir::new().unwrap();
-        write_snapshot(dir.path(), &snapshot()).unwrap();
+        write_snapshot(dir.path(), &fixture()).unwrap();
         let path = snapshot_path(dir.path());
         let full = fs::read(&path).unwrap();
 
@@ -285,7 +271,7 @@ mod tests {
     #[test]
     fn a_bit_flip_in_the_body_is_caught_by_the_checksum() {
         let dir = TempDir::new().unwrap();
-        write_snapshot(dir.path(), &snapshot()).unwrap();
+        write_snapshot(dir.path(), &fixture()).unwrap();
         let path = snapshot_path(dir.path());
         let mut bytes = fs::read(&path).unwrap();
         let last = bytes.len() - 1;

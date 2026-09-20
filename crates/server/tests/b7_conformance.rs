@@ -1823,7 +1823,7 @@ async fn sections_projects_and_their_order_survive_a_restart() {
         // The background sweeper would race the snapshot this test writes by
         // hand; the test drives reconciliation itself.
         reconcile_interval: Duration::ZERO,
-        snapshot_interval: Duration::ZERO,
+        entity_write_interval: Duration::ZERO,
         ..AppConfig::default()
     };
 
@@ -1880,7 +1880,7 @@ async fn sections_projects_and_their_order_survive_a_restart() {
             .registry
             .delete_project(&doomed.id, loom_relay::now_ms())
             .unwrap();
-        state.snapshot().unwrap();
+        state.write_entity_view().unwrap();
         state.shutdown().unwrap();
     }
 

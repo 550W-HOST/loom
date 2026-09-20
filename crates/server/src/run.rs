@@ -111,7 +111,7 @@ pub async fn run(args: ServerArgs) -> Result<(), Box<dyn std::error::Error>> {
     eprintln!("self-update {}", state.artifacts.describe());
 
     // A SIGINT/Ctrl-C or SIGTERM drains connections, then the process writes a
-    // final domain snapshot and stops its background tasks. A hard kill skips
+    // final entity view and stops its background tasks. A hard kill skips
     // the snapshot; the periodic writer and log replay are what make that safe.
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
