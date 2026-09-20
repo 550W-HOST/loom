@@ -23,7 +23,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use loom_domain::{ProviderEvent, RunOutcome};
+use loom_domain::{ProviderEvent, RunOutcome, ThreadEventItem};
 use loom_provider_protocol::ProviderSpec;
 use loom_worker::acp::permission::PermissionRegistry;
 use loom_worker::acp::session::{drive, Transport};
@@ -244,4 +244,106 @@ async fn real_pi_reports_a_usable_session_mapping() {
     let events = drive_one(run).await;
     assert_one_terminal(&events);
     assert!(identity(&events).is_some());
+}
+
+/// The assistant text a replay carried, concatenated per message.
+fn replayed_user_texts(entries: &[ProviderEvent]) -> Vec<String> {
+    entries
+        .iter()
+        .filter_map(|event| match event {
+            ProviderEvent::ItemStarted {
+                item: ThreadEventItem::UserMessage { content, .. },
+                ..
+            } => content.iter().find_map(|part| match part {
+                loom_domain::UserContent::Text { text } => Some(text.clone()),
+                _ => None,
+            }),
+            _ => None,
+        })
+        .collect()
+}
+
+fn replayed_assistant_text(entries: &[ProviderEvent]) -> String {
+    entries
+        .iter()
+        .filter_map(|event| match event {
+            ProviderEvent::ItemAgentMessageDelta { delta, .. } => Some(delta.as_str()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// A real conversation, replayed to a real history load.
+///
+/// This is the real-agent half of the history acceptance. Two real turns write
+/// a conversation; then `load_history` opens a connection of its own, asks for
+/// a replay, and must get both turns back in order, with no prompt sent — the
+/// same path the server drives when a thread outside the relay window is
+/// opened. The stub tests cover the lifecycle; this one covers the agent, whose
+/// session storage is the only durable copy of the conversation there is.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "runs the real `pi` CLI and needs model credentials"]
+async fn real_pi_replays_a_conversation_to_a_history_load() {
+    let workspace = tempfile::tempdir().unwrap();
+    let cwd = workspace.path().to_string_lossy().into_owned();
+
+    let first = drive_one(run(
+        &cwd,
+        "Remember the number 41. Reply with just: ok",
+        None,
+    ))
+    .await;
+    assert_one_terminal(&first);
+    let session_id = identity(&first).expect("the agent names its session");
+
+    let second = drive_one(run(
+        &cwd,
+        "Add one to the number I asked you to remember. Reply with just the number.",
+        Some(&session_id),
+    ))
+    .await;
+    assert_one_terminal(&second);
+    assert_eq!(
+        terminal(&second).and_then(|event| event.terminal_status()),
+        Some(loom_domain::TurnStatus::Completed),
+        "the second turn must complete: {:?}",
+        terminal(&second).and_then(loom_domain::RunEvent::terminal_error)
+    );
+
+    // The load runs on its own connection, exactly as the server runs it.
+    let entries = loom_worker::acp::history::load_history(
+        Transport::EmbeddedPi {
+            command: pi_binary(),
+            args: Vec::new(),
+        },
+        cwd,
+        loom_domain::ThreadId::mint(),
+        session_id,
+        loom_worker::acp::history::HistoryLimits {
+            max_total_bytes: 8 * 1024 * 1024,
+            budget: TURN_BUDGET,
+        },
+    )
+    .await
+    .expect("the agent replays the session it just wrote");
+
+    let prompts = replayed_user_texts(&entries);
+    assert!(
+        prompts.len() >= 2,
+        "both prompts are part of the conversation, in order: {prompts:#?}"
+    );
+    assert!(
+        prompts[0].contains("41"),
+        "the first prompt is the first thing replayed: {prompts:#?}"
+    );
+    assert!(
+        prompts[1].contains("Add one"),
+        "the second prompt follows it: {prompts:#?}"
+    );
+
+    let answer = replayed_assistant_text(&entries);
+    assert!(
+        answer.contains("42"),
+        "a resumed conversation remembers what the first turn was told; got {answer:?}"
+    );
 }

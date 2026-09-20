@@ -298,3 +298,37 @@ ACP 缺失的历史时间允许为未知，不能把加载时刻冒充消息发�
 - 其余：`README.md`、`Cargo.toml`（仅注释提及 `--redis-url`）。
 
 无 Redis 客户端依赖需要移除（RESP2 是手写的）；`crates/relay-hub/src/lib.rs` 中的 Redis 只是注释举例。
+
+## 11. 实施记录（2026-09-20）
+
+§8 六步的落地情况，以及 §9 验收对应的自动化证据。提交均为本仓库 `main`。
+
+### 已落地
+
+| §8 步骤 | 提交 | 内容 |
+| --- | --- | --- |
+| 1 ACP 回放闭环 | `2f13a18`(pi-acp)、`6558128`、`b2ccc03` | pi-acp 先回放后响应；`crates/worker/tests/history.rs` 用 v1/v2 stub agent 验证只 load、不 prompt、顺序与角色正确、超预算返回 `too_large` |
+| 2 binding 与 worker 协议 | `ff13e43`、`7e8cde2` | `ProviderSessionBinding.host_id` 与 `may_resume_session(agent,cwd,host)`；`HostRpcOperation::LoadHistory` + `HistoryPart`/`HistoryReport` 有界分批；server 侧 broker 校验批序、终止帧与预算 |
+| 3 服务端缓存 | `d0ed50a`、`5f01d73`、`11d7d2d`、`29e5366`、`13aed2a`、`8abe9d2` | 按需加载、并发合并、LRU 与字节上限、generation 不复用、实时覆盖层在 `publish_domain_event` 处写入；读取触发集与原子基线替换见下 |
+| 4 HTTP 与客户端 | `986a2a0`、`e4ef834`、`8abe9d2` | timeline 由缓存投影；`generation` 与 `history{status,complete,reason}` 进入契约与生成类型；行时间可空；`timelineTurnSummaryDetails` 改为同一行集的筛选视图 |
+| 5 移除 Redis | `ee0f85d` | backend、配置、CLI、专用测试、部署入口全部删除；`--redis-url` / `LOOM_REDIS_URL` 保留为墓碑并带启动诊断 |
+| 6 文档与验收 | `93379d1`、本文件 §11 | `architecture.md` § The conversation is not in the log 统一叙述并写明代价；`acp-adapter.md` 补历史加载路径与回放边界；`ui-package-sync.md` 记录客户端漂移 |
+
+### §9 验收的自动化证据
+
+- **协议层**：`cargo test -p loom-worker --test history`（v1/v2 回放、拒绝审批、超预算失败）。
+- **缓存层**：`cargo test -p loom-server --lib`（缓存规则、读取触发集、原子替换、并发合并、LRU/字节淘汰）。
+- **HTTP 与契约**：`cargo test -p loom-server --test b3_conformance`（行形状与契约一致性，含 generation/history 字段与新宽化的可空时间）。
+- **端到端（真实进程形状）**：`cargo test -p loom-server --test history` 的 `a_conversation_outside_the_relay_window_is_loaded_from_the_agent` —— 真实 server + 真实 worker WebSocket + 真实 `host.load_history`/`history_report` 帧；对话帧被挤出保留窗口后重启 server，打开 thread 触发加载，断言顺序、角色、本地分组键、无伪造时间，且不产生 run、不发送 prompt、不重绑 session。
+- **客户端分页合并**：`pnpm --filter @bb/client-core run test`（generation 变化时重置而非拼接）。
+- **Redis 迁移诊断**：`crates/server/src/run.rs::the_removed_shared_log_flag_is_refused_with_a_reason`。
+
+真实 pi-acp 的加载路径由 `crates/worker/tests/real_pi.rs::real_pi_replays_a_conversation_to_a_history_load` 覆盖（`#[ignore]`，需 `pi` 与模型凭据，本机实测通过：两轮真实对话后用独立连接 `load_history`，两轮 prompt 顺序正确、第二轮答案依赖第一轮）。CI 不跑它，因为它要凭据。
+
+**「真 agent + 重启」的合并用例刻意不做。** 曾写过 `provider_e2e.rs` 版本（两轮真实对话 → 挤出窗口 → 重启 → 加载），但同进程内"重启"会让两个 `DiskBackend` 同时持有同一批 `shard-*.log`：旧 `AppState` 仍被 router/axum task 与 run 定时任务持有，其 writer 线程在 compaction 重写文件，新 backend 读到半写状态并以 `failed to fill whole buffer` latch 成 sticky error。真实重启是新进程，不存在这个竞态，所以这是测试工装的产物而非产品缺陷。结论：重启路径由 `crates/server/tests/history.rs` 的 stub 端到端覆盖（真 server、真 worker socket、真 `host.load_history`/`history_report` 帧），真 agent 的回放由上面的 `real_pi` 测试覆盖；两者合起来是同一条路径。
+
+### 刻意留下的两处
+
+- **`unavailable` 不自动重试。** 读取可用性时，`unavailable` 只返回原因，重试被定义为显式动作（§6 的触发集里有"用户显式刷新"），而显式刷新入口尚未实现。因此在 `unavailable` 之后，客户端只能靠再次触发缓存缺失（重启、binding 变化、淘汰后重载）恢复。若要闭环，需要给 `threads.timeline` 增加刷新语义并在契约里体现。当前的选择是为了避免"session 已删除"这类失败在每次轮询时都去开一次 ACP 连接。
+- **`AppState::shutdown()` 不 flush relay 日志。** 日志落盘依赖 `DiskBackend::Drop`（Stop + join），进程正常退出会走到，但同进程内 shutdown 后立刻重开同一目录不会。这解释了既有测试 `state::tests::a_log_without_a_snapshot_rebuilds_without_panicking` 的偶发红（shutdown → 同目录重建时读到未落盘的尾记录）。`DiskBackend::flush()` 已存在但无生产调用点；要收口就是给 `RelayBackend` 加 `flush` 并在 `shutdown()` 调用。本次按"不做真机重启用例"的决定未改，属独立的小修。
+- **基线替换会丢弃 loom 自有的行。** 覆盖层里的 provider 错误、恢复诊断等行来自 relay 日志中的 `ThreadRunEvent`，ACP 回放里没有它们；基线安装后这些行不再出现在 timeline 上。恢复期诊断因此可能"闪现后消失"。若要在替换后保留它们，需要把 loom 自有的运行行作为独立来源与缓存基线合并——这是显示层面的改进，不影响会话内容本身。
