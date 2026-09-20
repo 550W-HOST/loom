@@ -337,17 +337,11 @@ function applyLoomExtensions(serverApi: JsonValue): JsonValue {
     ],
   });
 
-  requestProperties.cacheInstance = {
-    type: "string",
-    minLength: 1,
-    description:
-      "The cache instance the cursors in this request came from. Omitted or mismatched means the cursors are not positions in what the server is serving, and the answer is the newest page.",
-  };
-  requestProperties.generation = {
+  requestProperties.historyRevision = {
     type: "string",
     pattern: "^\\d+$",
     description:
-      "The revision, inside `cacheInstance`, the cursors in this request came from.",
+      "The history revision the cursors in this request came from. Omitted or mismatched means the cursors are not positions in the conversation the server is serving, and the answer is the newest page.",
   };
   const properties = schema.properties as
     | Record<string, JsonValue>
@@ -359,16 +353,11 @@ function applyLoomExtensions(serverApi: JsonValue): JsonValue {
     );
   }
 
-  properties.cacheInstance = {
-    type: ["string", "null"],
-    description:
-      "Which cache instance produced this response, or null when nothing is cached yet. A generation is only a revision inside one instance: a restarted server numbers from one again, so a client that compared bare integers across a restart would read the new numbering as a rollback.",
-  };
-  properties.generation = {
-    type: "integer",
+  properties.historyRevision = {
+    type: ["integer", "null"],
     minimum: 0,
     description:
-      "The revision, inside `cacheInstance`, every sequence in this response belongs to. A cursor from another instance or revision is stale, not a position in this one.",
+      "The revision every sequence in this response belongs to, or null when there is nothing to be a position in yet. Durable: it lives with the conversation, moves only when a rebuild replaces what the agent replayed, and a restart does not change it. A cursor from another revision is stale, not a position in this one.",
   };
   properties.history = {
     type: "object",
@@ -392,7 +381,7 @@ function applyLoomExtensions(serverApi: JsonValue): JsonValue {
       },
     },
   };
-  for (const name of ["cacheInstance", "generation", "history"]) {
+  for (const name of ["historyRevision", "history"]) {
     if (!required.includes(name)) {
       required.push(name);
     }

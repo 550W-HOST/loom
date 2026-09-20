@@ -828,12 +828,12 @@ export const threadTimelineQuerySchema = z
     beforeAnchorId: z.string().min(1),
     summaryOnly: z.enum(["true", "false"]),
     afterSequence: z.string().regex(/^\d+$/),
-    // The numbering the cursors above came from. A cache is in memory, so a
-    // restarted server (or a rebuilt baseline) numbers from one again; a
-    // request that cannot name the numbering its cursor belongs to is answered
-    // with the newest page rather than filtered by a position from another one.
-    cacheInstance: z.string().min(1),
-    generation: z.string().regex(/^\d+$/),
+    // The numbering the cursors above came from: the thread's history revision.
+    // Rows are never renumbered, so a restart keeps a cursor meaningful, and
+    // only a rebuilt baseline moves the revision; a request that cannot name the
+    // numbering its cursor belongs to is answered with the newest page rather
+    // than filtered by a position from another one.
+    historyRevision: z.string().regex(/^\d+$/),
   })
   .partial()
   .superRefine((query, context) => {
@@ -969,13 +969,13 @@ export const threadTimelineResponseSchema = z.object({
   contextWindowUsage: threadContextWindowUsageSchema.optional(),
   timelinePage: timelinePageMetadataSchema,
   maxSeq: z.number().int().nonnegative(),
-  // The numbering a page's cursors belong to: which cache instance, and which
-  // revision inside it. A rebuild or a restart renumbers every row, so a client
-  // holding a cursor from another identity must refetch rather than read its
-  // cursor as a position in this numbering. Null when nothing is cached yet,
-  // which is not a numbering at all.
-  cacheInstance: z.string().nullable(),
-  generation: z.number().int().nonnegative(),
+  // The numbering a page's cursors belong to: the thread's history revision.
+  // It lives with the conversation rather than in the server's memory, so a
+  // restart does not change it and a cursor stays meaningful; a rebuild moves
+  // it, and a client holding a cursor from another revision must refetch rather
+  // than read it as a position in this numbering. Null when there is nothing to
+  // be a position in yet.
+  historyRevision: z.number().int().nonnegative().nullable(),
   history: threadTimelineHistorySchema,
   delta: timelineDeltaSchema.optional(),
 });

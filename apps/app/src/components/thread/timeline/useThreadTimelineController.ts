@@ -64,8 +64,7 @@ export function useThreadTimelineController({
   const [loadedTimeline, setLoadedTimeline] = useState<LoadedTimelineState>(
     () =>
       buildLoadedTimelineState({
-        cacheInstance: null,
-        generation: null,
+        historyRevision: null,
         latestWindowEndSequence: null,
         latestRows: [],
         olderCursor: null,
@@ -82,8 +81,7 @@ export function useThreadTimelineController({
         current.surfaceKey === surfaceKey
           ? current
           : buildLoadedTimelineState({
-              cacheInstance: null,
-              generation: null,
+              historyRevision: null,
               latestWindowEndSequence: null,
               latestRows: [],
               olderCursor: null,
@@ -124,25 +122,20 @@ export function useThreadTimelineController({
       // it the server cannot tell "the older page after this anchor" from "a
       // cursor out of a numbering that no longer exists", and answers the
       // newest page — which must not be prepended as if it were older.
-      const cacheInstance = loadedTimeline.cacheInstance;
-      const generation = loadedTimeline.generation;
+      const historyRevision = loadedTimeline.historyRevision;
       const response = await sdk.threads.timeline({
         beforeAnchorId: nextOlderCursor.anchorId,
         beforeAnchorSeq: String(nextOlderCursor.anchorSeq),
-        ...(cacheInstance === null
+        ...(historyRevision === null
           ? {}
-          : {
-              cacheInstance,
-              generation: String(generation ?? 0),
-            }),
+          : { historyRevision: String(historyRevision) }),
         threadId,
       });
       const olderRows = [...response.rows];
       setLoadedTimeline((current) => {
         if (
           current.surfaceKey !== surfaceKey ||
-          current.cacheInstance !== response.cacheInstance ||
-          current.generation !== response.generation ||
+          current.historyRevision !== response.historyRevision ||
           current.historySnapshot !== response.timelinePage.historySnapshot
         ) {
           // The numbering moved under this request: the response is a page of

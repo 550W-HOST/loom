@@ -447,7 +447,7 @@ async fn a_conversation_outside_the_relay_window_is_loaded_from_the_agent() {
         }))
         .await;
 
-    // --- The conversation is served from the cache, in the order it happened.
+    // --- The conversation is served from the store, in the order it happened.
     let timeline = loop {
         let body = http_json(&addr, &base).await;
         if body["history"]["status"] == "ready" {
@@ -457,8 +457,8 @@ async fn a_conversation_outside_the_relay_window_is_loaded_from_the_agent() {
     };
     assert_eq!(timeline["history"]["complete"], true, "{timeline}");
     assert!(
-        timeline["generation"].as_u64().unwrap() >= 1,
-        "a loaded baseline is numbered under a generation: {timeline}"
+        timeline["historyRevision"].as_u64().unwrap() >= 1,
+        "a loaded baseline moves the conversation's revision: {timeline}"
     );
 
     let rows = timeline["rows"].as_array().unwrap();

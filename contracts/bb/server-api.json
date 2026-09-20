@@ -28450,13 +28450,8 @@
               "pattern": "^[1-9]\\d*$",
               "type": "string"
             },
-            "cacheInstance": {
-              "description": "The cache instance the cursors in this request came from. Omitted or mismatched means the cursors are not positions in what the server is serving, and the answer is the newest page.",
-              "minLength": 1,
-              "type": "string"
-            },
-            "generation": {
-              "description": "The revision, inside `cacheInstance`, the cursors in this request came from.",
+            "historyRevision": {
+              "description": "The history revision the cursors in this request came from. Omitted or mismatched means the cursors are not positions in the conversation the server is serving, and the answer is the newest page.",
               "pattern": "^\\d+$",
               "type": "string"
             },
@@ -28554,13 +28549,6 @@
               "activeWorkflows": {
                 "$ref": "#/$defs/d70"
               },
-              "cacheInstance": {
-                "description": "Which cache instance produced this response, or null when nothing is cached yet. A generation is only a revision inside one instance: a restarted server numbers from one again, so a client that compared bare integers across a restart would read the new numbering as a rollback.",
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
               "contextBoundarySeq": {
                 "anyOf": [
                   {
@@ -28619,11 +28607,6 @@
                     "type": "null"
                   }
                 ]
-              },
-              "generation": {
-                "description": "The revision, inside `cacheInstance`, every sequence in this response belongs to. A cursor from another instance or revision is stale, not a position in this one.",
-                "minimum": 0,
-                "type": "integer"
               },
               "goal": {
                 "anyOf": [
@@ -28705,6 +28688,14 @@
                   "complete"
                 ],
                 "type": "object"
+              },
+              "historyRevision": {
+                "description": "The revision every sequence in this response belongs to, or null when there is nothing to be a position in yet. Durable: it lives with the conversation, moves only when a rebuild replaces what the agent replayed, and a restart does not change it. A cursor from another revision is stale, not a position in this one.",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
               },
               "maxSeq": {
                 "type": "number"
@@ -31110,8 +31101,7 @@
               "modelFallback",
               "timelinePage",
               "maxSeq",
-              "cacheInstance",
-              "generation",
+              "historyRevision",
               "history"
             ],
             "type": "object"

@@ -75,8 +75,7 @@ function timelineResponse(
   rows: TimelineRow[],
   olderCursor: TimelinePaginationCursor | null,
   maxSeq?: number,
-  generation = 1,
-  cacheInstance: string | null = "cache-a",
+  historyRevision: number | null = 1,
 ): ThreadTimelineResponse {
   return {
     rows,
@@ -89,8 +88,7 @@ function timelineResponse(
     goal: null,
     modelFallback: null,
     maxSeq: maxSeq ?? Math.max(0, ...rows.map((row) => row.sourceSeqEnd)),
-    cacheInstance,
-    generation,
+    historyRevision,
     history: { status: "ready", complete: true, reason: null },
     timelinePage: {
       kind: "latest",
@@ -108,8 +106,7 @@ function loadedState(
   latestWindowEndSequence: number,
 ): LoadedTimelineState {
   return {
-    cacheInstance: "cache-a",
-    generation: 1,
+    historyRevision: 1,
     latestWindowEndSequence,
     rows,
     olderCursor,
@@ -243,7 +240,7 @@ describe("timeline page merging", () => {
   it("drops a response from an earlier revision of the same server", () => {
     const current = {
       ...loadedState([userRow("newer", 3)], null, 3),
-      generation: 2,
+      historyRevision: 2,
     };
     const late = timelineResponse([userRow("older", 1)], null, 1, 1);
 
@@ -257,40 +254,16 @@ describe("timeline page merging", () => {
     expect(merged.rows.map((row) => row.id)).toEqual(["newer"]);
   });
 
-  // A rebuild renumbers every row from one, so the rows a new generation
-  // carries cannot be merged with the ones it replaced: they share no
-  // numbering, and the older cursor belongs to a window that no longer exists.
-  // A restarted server is a new cache instance that numbers from one. It is not
-  // a rollback: comparing bare integers would drop every page it ever sends.
-  it("accepts a new server instance even though its generation is lower", () => {
-    const current = {
-      ...loadedState([userRow("before-restart", 9)], null, 9),
-      generation: 9,
-    };
-    const restarted = timelineResponse(
-      [userRow("after-restart", 1)],
-      null,
-      1,
-      1,
-      "cache-b",
-    );
+  // A restart is not a rollback, and no longer needs a second identity to say
+  // so: the revision lives with the conversation, so a server that comes back
+  // serves the same one and the client keeps merging. What it must not merge is
+  // a response from another revision, which the cases above cover.
 
-    const merged = mergeLoadedTimelineWithLatest({
-      current,
-      latestTimeline: restarted,
-      surfaceKey: "thread-1:default",
-    });
-
-    expect(merged.cacheInstance).toBe("cache-b");
-    expect(merged.generation).toBe(1);
-    expect(merged.rows.map((row) => row.id)).toEqual(["after-restart"]);
-  });
-
-  // A response that carries no numbering at all (nothing cached yet) says
-  // nothing about what the client holds, so it must not blank it.
-  it("keeps what it has when the server has nothing cached yet", () => {
+  // A response that carries no numbering at all (nothing to be a position in
+  // yet) says nothing about what the client holds, so it must not blank it.
+  it("keeps what it has when the server has nothing to be a position in yet", () => {
     const current = loadedState([userRow("prompt", 1)], null, 1);
-    const loading = timelineResponse([], null, 0, 0, null);
+    const loading = timelineResponse([], null, 0, null);
 
     const merged = mergeLoadedTimelineWithLatest({
       current,
@@ -301,7 +274,7 @@ describe("timeline page merging", () => {
     expect(merged).toBe(current);
   });
 
-  it("replaces the rows when the server's generation changes", () => {
+  it("replaces the rows when the server's revision changes", () => {
     const current = loadedState(
       [userRow("prompt", 1), userRow("answer", 8)],
       null,
@@ -318,7 +291,7 @@ describe("timeline page merging", () => {
       surfaceKey: "thread-1:default",
     });
 
-    expect(merged.generation).toBe(2);
+    expect(merged.historyRevision).toBe(2);
     expect(merged.rows.map((row) => row.id)).toEqual(["rebuilt"]);
     expect(merged.latestWindowEndSequence).toBe(20);
   });

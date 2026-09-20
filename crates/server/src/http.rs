@@ -1753,16 +1753,15 @@ struct ThreadTimelineQuery {
     include_nested_rows: Option<String>,
     segment_limit: Option<String>,
     summary_only: Option<String>,
-    /// The cache instance the caller's cursors came from.
+    /// The revision the caller's cursors came from.
     ///
-    /// A sequence is a position in one instance's numbering and nowhere else:
-    /// this cache is in memory, so a restarted server numbers from one again.
-    /// A pair that does not match what the server is serving is answered with
-    /// the newest page instead of being filtered by a position that describes
-    /// nothing — see [`ThreadTimelineQuery::generation`].
-    cache_instance: Option<String>,
-    /// The revision, inside `cacheInstance`, the caller's cursors came from.
-    generation: Option<String>,
+    /// A sequence is a position in one numbering, and the numbering is the
+    /// thread's: its rows are never renumbered, so a restart keeps them
+    /// meaningful, and only a rebuild of the replayed conversation moves the
+    /// revision. A request whose revision does not match what is being served is
+    /// answered with the newest page instead of being filtered by a position
+    /// that describes a different numbering.
+    history_revision: Option<String>,
 }
 
 #[allow(clippy::result_large_err)]
@@ -4825,10 +4824,11 @@ async fn thread_timeline(
         Ok(None) => 100,
         Err(response) => return response,
     };
-    let claimed_generation = match parse_query_sequence(query.generation.as_ref(), "generation") {
-        Ok(value) => value,
-        Err(response) => return response,
-    };
+    let claimed_revision =
+        match parse_query_sequence(query.history_revision.as_ref(), "historyRevision") {
+            Ok(value) => value,
+            Err(response) => return response,
+        };
 
     let entries = match thread_domain_entries(&state, &thread_id) {
         Ok(entries) => entries,
@@ -4847,8 +4847,7 @@ async fn thread_timeline(
         all_rows,
         model_fallback,
         max_seq,
-        cache_instance,
-        generation,
+        history_revision,
         history_status,
         history_complete,
         history_reason,
@@ -4859,8 +4858,7 @@ async fn thread_timeline(
                 built.rows,
                 built.model_fallback,
                 built.max_seq,
-                Some(view.instance.clone()),
-                view.generation,
+                Some(view.generation),
                 view.status,
                 view.complete,
                 view.reason.clone(),
@@ -4873,7 +4871,6 @@ async fn thread_timeline(
             None,
             0,
             None,
-            0,
             crate::history_cache::HistoryStatus::Loading,
             false,
             reason,
@@ -4883,25 +4880,20 @@ async fn thread_timeline(
             None,
             0,
             None,
-            0,
             crate::history_cache::HistoryStatus::Unavailable,
             false,
             Some(reason),
         ),
     };
-    // A cursor is a position in one numbering, and this cache is in memory: a
-    // restarted server numbers from one again, and so does a baseline rebuild.
-    // A request whose identity does not match what is being served is answered
-    // with the **newest** page rather than filtered by a position from another
-    // numbering — which is what turns "the client holds a cursor from before
-    // the restart" into a reset instead of an empty or wrong slice.
-    let cursors_are_current = cache_instance
-        .as_deref()
-        .zip(query.cache_instance.as_deref().zip(claimed_generation));
+    // A cursor is a position in one numbering, and the numbering is the
+    // thread's revision: its rows are never renumbered, so a restart keeps the
+    // cursor meaningful, and a rebuild moves the revision. A request whose
+    // revision does not match what is being served is answered with the
+    // **newest** page rather than filtered by a position from another
+    // numbering — which is what turns "the client holds a cursor from before a
+    // rebuild" into a reset instead of an empty or wrong slice.
     let cursors_are_current =
-        cursors_are_current.is_some_and(|(instance, (claimed_instance, claimed))| {
-            instance == claimed_instance && generation == claimed
-        });
+        claimed_revision.is_some_and(|claimed| history_revision == Some(claimed));
     let (after, before_sequence) = if cursors_are_current {
         (after, before_sequence)
     } else {
@@ -4962,14 +4954,13 @@ async fn thread_timeline(
             "olderCursor": older_cursor
         },
         "maxSeq": max_seq,
-        // A cursor is only meaningful inside one numbering: this cache is in
-        // memory, so a restart renumbers from one, and a rebuild inside a
-        // running server does the same. `cacheInstance` says *which* server run
-        // the numbers belong to and `generation` which rebuild inside it, and a
-        // client that cannot match both must refetch rather than read its old
-        // cursor as a position in the new numbering.
-        "cacheInstance": cache_instance,
-        "generation": generation,
+        // A cursor is only meaningful inside one numbering, and this says which
+        // one: the thread's revision, which only a rebuild moves and which
+        // lives with the conversation rather than in this process. A client that
+        // cannot match it must refetch rather than read its old cursor as a
+        // position in a different numbering. Null when there is nothing to be a
+        // position in yet.
+        "historyRevision": history_revision,
         // How much of the conversation this is. "No rows" and "could not load"
         // are different answers, and a client that cannot tell them apart shows
         // an empty conversation where it should offer a reason.
@@ -8255,23 +8246,19 @@ mod tests {
 
         let base = format!("/api/v1/threads/{}/timeline", thread.id);
         let first = body_json(get(&app, &base).await).await;
-        let instance = first["cacheInstance"]
-            .as_str()
-            .expect("a served timeline names its cache instance")
-            .to_owned();
-        let generation = first["generation"].as_u64().unwrap();
+        let revision = first["historyRevision"]
+            .as_u64()
+            .expect("a served timeline names the revision of its numbering");
         let newest = first["rows"].as_array().unwrap().last().unwrap()["sourceSeqEnd"]
             .as_u64()
             .unwrap();
 
-        // The cursor and its identity agree with what is being served: the
+        // The cursor and its revision agree with what is being served: the
         // cursor keeps its meaning, and there is nothing after the newest row.
         let current = body_json(
             get(
                 &app,
-                &format!(
-                    "{base}?afterSequence={newest}&cacheInstance={instance}&generation={generation}"
-                ),
+                &format!("{base}?afterSequence={newest}&historyRevision={revision}"),
             )
             .await,
         )
@@ -8280,18 +8267,14 @@ mod tests {
             current["rows"].as_array().unwrap().is_empty(),
             "a current cursor filters: {current}"
         );
-        assert_eq!(current["cacheInstance"], json!(instance));
+        assert_eq!(current["historyRevision"], json!(revision));
 
-        // No identity, another instance, or a stale revision: each is answered
+        // No revision, or a revision from another numbering: each is answered
         // with the newest page rather than filtered by a position that does not
         // describe this numbering.
         for query in [
             format!("afterSequence={newest}"),
-            format!("afterSequence={newest}&cacheInstance=somewhere-else&generation={generation}"),
-            format!(
-                "afterSequence={newest}&cacheInstance={instance}&generation={}",
-                generation + 1
-            ),
+            format!("afterSequence={newest}&historyRevision={}", revision + 1),
         ] {
             let reset = body_json(get(&app, &format!("{base}?{query}")).await).await;
             assert_eq!(

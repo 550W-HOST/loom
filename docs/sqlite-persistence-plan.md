@@ -144,6 +144,8 @@ loom 自有事实保留原来源：
 实现要求：`thread_domain_events` 拆成两条读路径（会话条目 / 领域条目），调用方显式选择，
 不允许再用一个 helper 冒充两种语义。
 
+**进展（2026-09-21，1.7 完成）**：线上的游标身份收敛成一个**持久的** `historyRevision`。服务端 `threads.timeline` 响应去掉 `cacheInstance`+`generation`、改发 `historyRevision`（就是该 thread 持久保存的 revision，`null` 表示还没有任何编号可归属），请求参数同样只带 `historyRevision`，游标校验改成「请求里的 revision 是否等于正在服务的 revision」。契约扩展里替换这两项并重新导出（二次导出字节一致）。客户端：`server-contract` 的请求/响应 schema、`client-core` 的 `LoadedTimelineState`/`identityRelation`（小 = 重建前发出的迟到响应 → 丢弃；大 = 重建 → 重来；相等 → 合并）、`useThreadTimelineController` 的翻页参数与竞态校验全部改名。**为什么可以去掉 instance**：行号不再因重启而重排（库里的号跨重启继续），所以「服务器重启」不再是需要单独识别的信号——唯一会改变编号的是重建，而重建会动 revision。客户端因此少一个比较维度，旧的「跨重启把新编号读成回退」问题从根上没有了。测试：`timeline-merge` 的丢弃/重来/合并三例改到新语义，服务端 `historyRevision` 游标一致/不一致两例，重启端到端（`historyRevision >= 1`）。门禁全绿（Rust + pnpm）。
+
 **进展（2026-09-21，1.6 完成）**：会话内容的读取口全部改到库，`thread_domain_events` 更名为 `thread_domain_entries` 并把语义写进文档（它只服务 loom 自己的领域事实：goal/occupancy、状态变更、run 计数、`threads.events` 的补帧）。新增 `thread_recorded_messages`（从 `stored_view` 里取 `RowSource::Message` 行，还原成「谁说的、说了什么、什么时候、在第几位」）。改用它的：`thread_conversation_outline`、`thread_prompt_history`、`thread_search_matches`（`sourceSeq` 现在是库里的号）、`retry_thread` 的「上一条用户输入」（run 计数仍读日志）、`b7` 的项目 prompt history 聚合。`thread_output` 改为复用 timeline 的同一份投影（库为源），并删掉只服务它的 `assistant_message_timeline`。测试 `a_quiet_thread_still_answers_what_was_said`：把消息挤出 relay 保留窗口后，outline / prompt-history / search / output 四个口都仍能答出内容，同时断言日志里确实已经没有这条会话（证明它们不再依赖窗口）。
 
 ### 4.4 普通读取不再依赖在线 worker
