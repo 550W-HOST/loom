@@ -7170,6 +7170,89 @@ mod tests {
         state.shutdown();
     }
 
+    /// A conversation longer than the shard's retention cap must still show
+    /// its newest rows to a client polling from `afterSequence`.
+    ///
+    /// `sourceSeq` is currently the row's index in the scope's *retained*
+    /// events. Once the shard is full, appending an event evicts the oldest
+    /// one, so that index stops growing: `maxSeq` saturates and a fetch with
+    /// `afterSequence=maxSeq` filters every new row out. The thread looks
+    /// frozen in the UI.
+    ///
+    /// Ignored because it pins the behaviour the timeline rework has to
+    /// deliver, not the behaviour the current code has: it fails today, by
+    /// design. Un-ignore it with the change that reads a thread's history from
+    /// the ACP-backed cache instead of the retained relay window — see
+    /// `docs/acp-history-plan.md` §7 (sequence) and §8 step 3.
+    #[ignore = "specifies the timeline rework's outcome (docs/acp-history-plan.md §7/§8.3)"]
+    #[tokio::test]
+    async fn a_thread_that_fills_its_shard_still_reports_its_newest_rows() {
+        let state = AppState::build(AppConfig {
+            backend_max_len: 4,
+            ..AppConfig::default()
+        })
+        .unwrap();
+        let app = router(state.clone());
+        let (thread, created) = state
+            .registry
+            .create_thread(
+                Some(state.registry.personal_project_id()),
+                Some("a long conversation".into()),
+                None,
+                loom_relay::now_ms(),
+            )
+            .unwrap();
+        state.publish_domain_event(&created).unwrap();
+        for index in 0..10 {
+            for event in state
+                .registry
+                .post_message(
+                    &thread.id,
+                    MessageRole::User,
+                    format!("message {index}"),
+                    loom_relay::now_ms(),
+                )
+                .unwrap()
+            {
+                state.publish_domain_event(&event).unwrap();
+            }
+        }
+
+        let latest =
+            body_json(get(&app, &format!("/api/v1/threads/{}/timeline", thread.id)).await).await;
+        let max_seq = latest["maxSeq"].as_u64().expect("a max seq");
+        for event in state
+            .registry
+            .post_message(
+                &thread.id,
+                MessageRole::User,
+                "the newest message".into(),
+                loom_relay::now_ms(),
+            )
+            .unwrap()
+        {
+            state.publish_domain_event(&event).unwrap();
+        }
+
+        let delta = body_json(
+            get(
+                &app,
+                &format!(
+                    "/api/v1/threads/{}/timeline?afterSequence={max_seq}",
+                    thread.id
+                ),
+            )
+            .await,
+        )
+        .await;
+        let rows = delta["rows"].as_array().unwrap();
+        assert!(
+            rows.iter().any(|row| row["text"] == "the newest message"),
+            "the newest row must be visible after the cursor: {delta}"
+        );
+        state.shutdown();
+    }
+
     /// The diagnostic row a user reads when a turn dies.
     ///
     /// An agent's failure text can be a bundled runtime's whole stderr tail, so
