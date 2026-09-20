@@ -28603,6 +28603,11 @@
                   }
                 ]
               },
+              "generation": {
+                "description": "The generation every sequence in this response belongs to. A cursor from another generation is stale, not a position in this one.",
+                "minimum": 0,
+                "type": "integer"
+              },
               "goal": {
                 "anyOf": [
                   {
@@ -28652,6 +28657,37 @@
                     "type": "null"
                   }
                 ]
+              },
+              "history": {
+                "additionalProperties": false,
+                "properties": {
+                  "complete": {
+                    "description": "Whether the rows are the whole conversation. A ready entry with no rows is a real empty conversation; anything else is partial.",
+                    "type": "boolean"
+                  },
+                  "reason": {
+                    "description": "Why the conversation is not fully available, when it is not.",
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "status": {
+                    "description": "How much of the conversation the server can offer, and whether a newer view is being loaded.",
+                    "enum": [
+                      "loading",
+                      "partial",
+                      "ready",
+                      "stale",
+                      "unavailable"
+                    ]
+                  }
+                },
+                "required": [
+                  "status",
+                  "complete"
+                ],
+                "type": "object"
               },
               "maxSeq": {
                 "type": "number"
@@ -28756,7 +28792,2195 @@
                 ]
               },
               "rows": {
-                "$ref": "#/$defs/d495"
+                "items": {
+                  "anyOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "attachments": {
+                          "$ref": "#/$defs/d239"
+                        },
+                        "createdAt": {
+                          "type": [
+                            "number",
+                            "null"
+                          ]
+                        },
+                        "id": {
+                          "type": "string"
+                        },
+                        "initiator": {
+                          "$ref": "#/$defs/d352"
+                        },
+                        "kind": {
+                          "const": "conversation",
+                          "type": "string"
+                        },
+                        "mentions": {
+                          "$ref": "#/$defs/d577"
+                        },
+                        "role": {
+                          "const": "user",
+                          "type": "string"
+                        },
+                        "senderThreadId": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "sourceSeqEnd": {
+                          "type": "number"
+                        },
+                        "sourceSeqStart": {
+                          "type": "number"
+                        },
+                        "startedAt": {
+                          "type": [
+                            "number",
+                            "null"
+                          ]
+                        },
+                        "systemMessageKind": {
+                          "$ref": "#/$defs/d690"
+                        },
+                        "systemMessageSubject": {
+                          "$ref": "#/$defs/d267"
+                        },
+                        "text": {
+                          "type": "string"
+                        },
+                        "threadId": {
+                          "type": "string"
+                        },
+                        "turnId": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "turnRequest": {
+                          "$ref": "#/$defs/d255"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "threadId",
+                        "turnId",
+                        "sourceSeqStart",
+                        "sourceSeqEnd",
+                        "startedAt",
+                        "createdAt",
+                        "kind",
+                        "text",
+                        "attachments",
+                        "role",
+                        "initiator",
+                        "senderThreadId",
+                        "systemMessageKind",
+                        "systemMessageSubject",
+                        "turnRequest",
+                        "mentions"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "attachments": {
+                          "$ref": "#/$defs/d239"
+                        },
+                        "createdAt": {
+                          "type": [
+                            "number",
+                            "null"
+                          ]
+                        },
+                        "id": {
+                          "type": "string"
+                        },
+                        "kind": {
+                          "const": "conversation",
+                          "type": "string"
+                        },
+                        "role": {
+                          "const": "assistant",
+                          "type": "string"
+                        },
+                        "sourceSeqEnd": {
+                          "type": "number"
+                        },
+                        "sourceSeqStart": {
+                          "type": "number"
+                        },
+                        "startedAt": {
+                          "type": [
+                            "number",
+                            "null"
+                          ]
+                        },
+                        "text": {
+                          "type": "string"
+                        },
+                        "threadId": {
+                          "type": "string"
+                        },
+                        "turnId": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "turnRequest": {
+                          "type": "null"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "threadId",
+                        "turnId",
+                        "sourceSeqStart",
+                        "sourceSeqEnd",
+                        "startedAt",
+                        "createdAt",
+                        "kind",
+                        "text",
+                        "attachments",
+                        "role",
+                        "turnRequest"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "createdAt": {
+                          "type": [
+                            "number",
+                            "null"
+                          ]
+                        },
+                        "detail": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "id": {
+                          "type": "string"
+                        },
+                        "kind": {
+                          "const": "system",
+                          "type": "string"
+                        },
+                        "sourceSeqEnd": {
+                          "type": "number"
+                        },
+                        "sourceSeqStart": {
+                          "type": "number"
+                        },
+                        "startedAt": {
+                          "type": [
+                            "number",
+                            "null"
+                          ]
+                        },
+                        "status": {
+                          "$ref": "#/$defs/d231"
+                        },
+                        "systemKind": {
+                          "$ref": "#/$defs/d371"
+                        },
+                        "threadId": {
+                          "type": "string"
+                        },
+                        "title": {
+                          "type": "string"
+                        },
+                        "turnId": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "threadId",
+                        "turnId",
+                        "sourceSeqStart",
+                        "sourceSeqEnd",
+                        "startedAt",
+                        "createdAt",
+                        "kind",
+                        "title",
+                        "detail",
+                        "status",
+                        "systemKind"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "completedAt": {
+                          "anyOf": [
+                            {
+                              "type": "number"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "createdAt": {
+                          "type": [
+                            "number",
+                            "null"
+                          ]
+                        },
+                        "detail": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "id": {
+                          "type": "string"
+                        },
+                        "kind": {
+                          "const": "system",
+                          "type": "string"
+                        },
+                        "operationKind": {
+                          "const": "parent-change",
+                          "type": "string"
+                        },
+                        "parentChange": {
+                          "$ref": "#/$defs/d543"
+                        },
+                        "sourceSeqEnd": {
+                          "type": "number"
+                        },
+                        "sourceSeqStart": {
+                          "type": "number"
+                        },
+                        "startedAt": {
+                          "type": [
+                            "number",
+                            "null"
+                          ]
+                        },
+                        "status": {
+                          "$ref": "#/$defs/d450"
+                        },
+                        "systemKind": {
+                          "const": "operation",
+                          "type": "string"
+                        },
+                        "threadId": {
+                          "type": "string"
+                        },
+                        "title": {
+                          "type": "string"
+                        },
+                        "turnId": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "threadId",
+                        "turnId",
+                        "sourceSeqStart",
+                        "sourceSeqEnd",
+                        "startedAt",
+                        "createdAt",
+                        "kind",
+                        "title",
+                        "detail",
+                        "systemKind",
+                        "operationKind",
+                        "status",
+                        "parentChange",
+                        "completedAt"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "completedAt": {
+                          "anyOf": [
+                            {
+                              "type": "number"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "createdAt": {
+                          "type": [
+                            "number",
+                            "null"
+                          ]
+                        },
+                        "detail": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "id": {
+                          "type": "string"
+                        },
+                        "kind": {
+                          "const": "system",
+                          "type": "string"
+                        },
+                        "operationKind": {
+                          "$ref": "#/$defs/d635"
+                        },
+                        "reasoningId": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "sourceSeqEnd": {
+                          "type": "number"
+                        },
+                        "sourceSeqStart": {
+                          "type": "number"
+                        },
+                        "startedAt": {
+                          "type": [
+                            "number",
+                            "null"
+                          ]
+                        },
+                        "status": {
+                          "$ref": "#/$defs/d231"
+                        },
+                        "systemKind": {
+                          "const": "operation",
+                          "type": "string"
+                        },
+                        "threadId": {
+                          "type": "string"
+                        },
+                        "title": {
+                          "type": "string"
+                        },
+                        "turnId": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "threadId",
+                        "turnId",
+                        "sourceSeqStart",
+                        "sourceSeqEnd",
+                        "startedAt",
+                        "createdAt",
+                        "kind",
+                        "title",
+                        "detail",
+                        "status",
+                        "systemKind",
+                        "operationKind",
+                        "completedAt"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "activityIntents": {
+                          "$ref": "#/$defs/d269"
+                        },
+                        "approvalStatus": {
+                          "$ref": "#/$defs/d425"
+                        },
+                        "callId": {
+                          "type": "string"
+                        },
+                        "command": {
+                          "type": "string"
+                        },
+                        "completedAt": {
+                          "anyOf": [
+                            {
+                              "type": "number"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "createdAt": {
+                          "type": [
+                            "number",
+                            "null"
+                          ]
+                        },
+                        "cwd": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "exitCode": {
+                          "anyOf": [
+                            {
+                              "type": "number"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "id": {
+                          "type": "string"
+                        },
+                        "kind": {
+                          "const": "work",
+                          "type": "string"
+                        },
+                        "output": {
+                          "type": "string"
+                        },
+                        "outputPreview": {
+                          "$ref": "#/$defs/d719"
+                        },
+                        "presentation": {
+                          "$ref": "#/$defs/d406"
+                        },
+                        "source": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "sourceSeqEnd": {
+                          "type": "number"
+                        },
+                        "sourceSeqStart": {
+                          "type": "number"
+                        },
+                        "startedAt": {
+                          "type": [
+                            "number",
+                            "null"
+                          ]
+                        },
+                        "status": {
+                          "$ref": "#/$defs/d450"
+                        },
+                        "threadId": {
+                          "type": "string"
+                        },
+                        "turnId": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "workKind": {
+                          "const": "command",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "threadId",
+                        "turnId",
+                        "sourceSeqStart",
+                        "sourceSeqEnd",
+                        "startedAt",
+                        "createdAt",
+                        "kind",
+                        "status",
+                        "workKind",
+                        "callId",
+                        "command",
+                        "cwd",
+                        "source",
+                        "output",
+                        "exitCode",
+                        "completedAt",
+                        "approvalStatus",
+                        "activityIntents"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "approvalStatus": {
+                          "$ref": "#/$defs/d425"
+                        },
+                        "callId": {
+                          "type": "string"
+                        },
+                        "completedAt": {
+                          "anyOf": [
+                            {
+                              "type": "number"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "createdAt": {
+                          "type": [
+                            "number",
+                            "null"
+                          ]
+                        },
+                        "id": {
+                          "type": "string"
+                        },
+                        "kind": {
+                          "const": "work",
+                          "type": "string"
+                        },
+                        "output": {
+                          "type": "string"
+                        },
+                        "outputPreview": {
+                          "$ref": "#/$defs/d719"
+                        },
+                        "presentation": {
+                          "$ref": "#/$defs/d406"
+                        },
+                        "sourceSeqEnd": {
+                          "type": "number"
+                        },
+                        "sourceSeqStart": {
+                          "type": "number"
+                        },
+                        "startedAt": {
+                          "type": [
+                            "number",
+                            "null"
+                          ]
+                        },
+                        "status": {
+                          "$ref": "#/$defs/d450"
+                        },
+                        "threadId": {
+                          "type": "string"
+                        },
+                        "toolArgs": {
+                          "$ref": "#/$defs/d227"
+                        },
+                        "toolName": {
+                          "type": "string"
+                        },
+                        "turnId": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "workKind": {
+                          "const": "tool",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "threadId",
+                        "turnId",
+                        "sourceSeqStart",
+                        "sourceSeqEnd",
+                        "startedAt",
+                        "createdAt",
+                        "kind",
+                        "status",
+                        "workKind",
+                        "callId",
+                        "toolName",
+                        "toolArgs",
+                        "output",
+                        "completedAt",
+                        "approvalStatus"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "approvalStatus": {
+                          "$ref": "#/$defs/d425"
+                        },
+                        "callId": {
+                          "type": "string"
+                        },
+                        "change": {
+                          "$ref": "#/$defs/d249"
+                        },
+                        "createdAt": {
+                          "type": [
+                            "number",
+                            "null"
+                          ]
+                        },
+                        "id": {
+                          "type": "string"
+                        },
+                        "kind": {
+                          "const": "work",
+                          "type": "string"
+                        },
+                        "presentation": {
+                          "$ref": "#/$defs/d406"
+                        },
+                        "sourceSeqEnd": {
+                          "type": "number"
+                        },
+                        "sourceSeqStart": {
+                          "type": "number"
+                        },
+                        "startedAt": {
+                          "type": [
+                            "number",
+                            "null"
+                          ]
+                        },
+                        "status": {
+                          "$ref": "#/$defs/d450"
+                        },
+                        "stderr": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "stdout": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "threadId": {
+                          "type": "string"
+                        },
+                        "turnId": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "workKind": {
+                          "const": "file-change",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "threadId",
+                        "turnId",
+                        "sourceSeqStart",
+                        "sourceSeqEnd",
+                        "startedAt",
+                        "createdAt",
+                        "kind",
+                        "status",
+                        "workKind",
+                        "callId",
+                        "change",
+                        "stdout",
+                        "stderr",
+                        "approvalStatus"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "callId": {
+                          "type": "string"
+                        },
+                        "completedAt": {
+                          "anyOf": [
+                            {
+                              "type": "number"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "createdAt": {
+                          "type": [
+                            "number",
+                            "null"
+                          ]
+                        },
+                        "id": {
+                          "type": "string"
+                        },
+                        "kind": {
+                          "const": "work",
+                          "type": "string"
+                        },
+                        "presentation": {
+                          "$ref": "#/$defs/d406"
+                        },
+                        "queries": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "sourceSeqEnd": {
+                          "type": "number"
+                        },
+                        "sourceSeqStart": {
+                          "type": "number"
+                        },
+                        "startedAt": {
+                          "type": [
+                            "number",
+                            "null"
+                          ]
+                        },
+                        "status": {
+                          "$ref": "#/$defs/d450"
+                        },
+                        "threadId": {
+                          "type": "string"
+                        },
+                        "turnId": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "workKind": {
+                          "const": "web-search",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "threadId",
+                        "turnId",
+                        "sourceSeqStart",
+                        "sourceSeqEnd",
+                        "startedAt",
+                        "createdAt",
+                        "kind",
+                        "status",
+                        "workKind",
+                        "callId",
+                        "queries",
+                        "completedAt"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "callId": {
+                          "type": "string"
+                        },
+                        "completedAt": {
+                          "anyOf": [
+                            {
+                              "type": "number"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "createdAt": {
+                          "type": [
+                            "number",
+                            "null"
+                          ]
+                        },
+                        "id": {
+                          "type": "string"
+                        },
+                        "kind": {
+                          "const": "work",
+                          "type": "string"
+                        },
+                        "pattern": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "presentation": {
+                          "$ref": "#/$defs/d406"
+                        },
+                        "prompt": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "sourceSeqEnd": {
+                          "type": "number"
+                        },
+                        "sourceSeqStart": {
+                          "type": "number"
+                        },
+                        "startedAt": {
+                          "type": [
+                            "number",
+                            "null"
+                          ]
+                        },
+                        "status": {
+                          "$ref": "#/$defs/d450"
+                        },
+                        "threadId": {
+                          "type": "string"
+                        },
+                        "turnId": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "url": {
+                          "type": "string"
+                        },
+                        "workKind": {
+                          "const": "web-fetch",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "threadId",
+                        "turnId",
+                        "sourceSeqStart",
+                        "sourceSeqEnd",
+                        "startedAt",
+                        "createdAt",
+                        "kind",
+                        "status",
+                        "workKind",
+                        "callId",
+                        "url",
+                        "prompt",
+                        "pattern",
+                        "completedAt"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "callId": {
+                          "type": "string"
+                        },
+                        "completedAt": {
+                          "anyOf": [
+                            {
+                              "type": "number"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "createdAt": {
+                          "type": [
+                            "number",
+                            "null"
+                          ]
+                        },
+                        "id": {
+                          "type": "string"
+                        },
+                        "kind": {
+                          "const": "work",
+                          "type": "string"
+                        },
+                        "path": {
+                          "type": "string"
+                        },
+                        "presentation": {
+                          "$ref": "#/$defs/d406"
+                        },
+                        "sourceSeqEnd": {
+                          "type": "number"
+                        },
+                        "sourceSeqStart": {
+                          "type": "number"
+                        },
+                        "startedAt": {
+                          "type": [
+                            "number",
+                            "null"
+                          ]
+                        },
+                        "status": {
+                          "$ref": "#/$defs/d450"
+                        },
+                        "threadId": {
+                          "type": "string"
+                        },
+                        "turnId": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "workKind": {
+                          "const": "image-view",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "threadId",
+                        "turnId",
+                        "sourceSeqStart",
+                        "sourceSeqEnd",
+                        "startedAt",
+                        "createdAt",
+                        "kind",
+                        "status",
+                        "workKind",
+                        "callId",
+                        "path",
+                        "completedAt"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "callId": {
+                          "type": "string"
+                        },
+                        "completedAt": {
+                          "anyOf": [
+                            {
+                              "type": "number"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "createdAt": {
+                          "type": [
+                            "number",
+                            "null"
+                          ]
+                        },
+                        "error": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "id": {
+                          "type": "string"
+                        },
+                        "kind": {
+                          "const": "work",
+                          "type": "string"
+                        },
+                        "path": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "presentation": {
+                          "$ref": "#/$defs/d406"
+                        },
+                        "prompt": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "sourceSeqEnd": {
+                          "type": "number"
+                        },
+                        "sourceSeqStart": {
+                          "type": "number"
+                        },
+                        "startedAt": {
+                          "type": [
+                            "number",
+                            "null"
+                          ]
+                        },
+                        "status": {
+                          "$ref": "#/$defs/d450"
+                        },
+                        "threadId": {
+                          "type": "string"
+                        },
+                        "transparentBackground": {
+                          "type": "boolean"
+                        },
+                        "turnId": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "workKind": {
+                          "const": "image-generation",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "threadId",
+                        "turnId",
+                        "sourceSeqStart",
+                        "sourceSeqEnd",
+                        "startedAt",
+                        "createdAt",
+                        "kind",
+                        "status",
+                        "workKind",
+                        "callId",
+                        "prompt",
+                        "path",
+                        "error",
+                        "transparentBackground",
+                        "completedAt"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "callId": {
+                          "type": "string"
+                        },
+                        "cmd": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "completedAt": {
+                          "anyOf": [
+                            {
+                              "type": "number"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "createdAt": {
+                          "type": [
+                            "number",
+                            "null"
+                          ]
+                        },
+                        "id": {
+                          "type": "string"
+                        },
+                        "kind": {
+                          "const": "work",
+                          "type": "string"
+                        },
+                        "path": {
+                          "type": "string"
+                        },
+                        "presentation": {
+                          "$ref": "#/$defs/d406"
+                        },
+                        "sourceSeqEnd": {
+                          "type": "number"
+                        },
+                        "sourceSeqStart": {
+                          "type": "number"
+                        },
+                        "startedAt": {
+                          "type": [
+                            "number",
+                            "null"
+                          ]
+                        },
+                        "status": {
+                          "$ref": "#/$defs/d450"
+                        },
+                        "threadId": {
+                          "type": "string"
+                        },
+                        "turnId": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "workKind": {
+                          "const": "file-read",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "threadId",
+                        "turnId",
+                        "sourceSeqStart",
+                        "sourceSeqEnd",
+                        "startedAt",
+                        "createdAt",
+                        "kind",
+                        "status",
+                        "workKind",
+                        "callId",
+                        "path",
+                        "cmd",
+                        "completedAt"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "callId": {
+                          "type": "string"
+                        },
+                        "cmd": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "completedAt": {
+                          "anyOf": [
+                            {
+                              "type": "number"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "createdAt": {
+                          "type": [
+                            "number",
+                            "null"
+                          ]
+                        },
+                        "id": {
+                          "type": "string"
+                        },
+                        "kind": {
+                          "const": "work",
+                          "type": "string"
+                        },
+                        "mode": {
+                          "$ref": "#/$defs/d21"
+                        },
+                        "path": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "presentation": {
+                          "$ref": "#/$defs/d406"
+                        },
+                        "query": {
+                          "type": "string"
+                        },
+                        "sourceSeqEnd": {
+                          "type": "number"
+                        },
+                        "sourceSeqStart": {
+                          "type": "number"
+                        },
+                        "startedAt": {
+                          "type": [
+                            "number",
+                            "null"
+                          ]
+                        },
+                        "status": {
+                          "$ref": "#/$defs/d450"
+                        },
+                        "threadId": {
+                          "type": "string"
+                        },
+                        "turnId": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "workKind": {
+                          "const": "search",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "threadId",
+                        "turnId",
+                        "sourceSeqStart",
+                        "sourceSeqEnd",
+                        "startedAt",
+                        "createdAt",
+                        "kind",
+                        "status",
+                        "workKind",
+                        "callId",
+                        "mode",
+                        "query",
+                        "path",
+                        "cmd",
+                        "completedAt"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "callId": {
+                          "type": "string"
+                        },
+                        "completedAt": {
+                          "anyOf": [
+                            {
+                              "type": "number"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "createdAt": {
+                          "type": [
+                            "number",
+                            "null"
+                          ]
+                        },
+                        "explanation": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "id": {
+                          "type": "string"
+                        },
+                        "kind": {
+                          "const": "work",
+                          "type": "string"
+                        },
+                        "presentation": {
+                          "$ref": "#/$defs/d406"
+                        },
+                        "sourceSeqEnd": {
+                          "type": "number"
+                        },
+                        "sourceSeqStart": {
+                          "type": "number"
+                        },
+                        "startedAt": {
+                          "type": [
+                            "number",
+                            "null"
+                          ]
+                        },
+                        "status": {
+                          "$ref": "#/$defs/d450"
+                        },
+                        "steps": {
+                          "$ref": "#/$defs/d54"
+                        },
+                        "threadId": {
+                          "type": "string"
+                        },
+                        "turnId": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "workKind": {
+                          "const": "plan-steps",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "threadId",
+                        "turnId",
+                        "sourceSeqStart",
+                        "sourceSeqEnd",
+                        "startedAt",
+                        "createdAt",
+                        "kind",
+                        "status",
+                        "workKind",
+                        "callId",
+                        "steps",
+                        "explanation",
+                        "completedAt"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "callId": {
+                          "type": "string"
+                        },
+                        "completedAt": {
+                          "anyOf": [
+                            {
+                              "type": "number"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "createdAt": {
+                          "type": [
+                            "number",
+                            "null"
+                          ]
+                        },
+                        "extensionKind": {
+                          "type": "string"
+                        },
+                        "id": {
+                          "type": "string"
+                        },
+                        "kind": {
+                          "const": "work",
+                          "type": "string"
+                        },
+                        "payload": {
+                          "$ref": "#/$defs/d139"
+                        },
+                        "presentation": {
+                          "$ref": "#/$defs/d22"
+                        },
+                        "sourceSeqEnd": {
+                          "type": "number"
+                        },
+                        "sourceSeqStart": {
+                          "type": "number"
+                        },
+                        "startedAt": {
+                          "type": [
+                            "number",
+                            "null"
+                          ]
+                        },
+                        "status": {
+                          "$ref": "#/$defs/d450"
+                        },
+                        "threadId": {
+                          "type": "string"
+                        },
+                        "turnId": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "workKind": {
+                          "const": "extension",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "threadId",
+                        "turnId",
+                        "sourceSeqStart",
+                        "sourceSeqEnd",
+                        "startedAt",
+                        "createdAt",
+                        "kind",
+                        "status",
+                        "workKind",
+                        "callId",
+                        "extensionKind",
+                        "payload",
+                        "completedAt",
+                        "presentation"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "approvalKind": {
+                          "const": "file-edit",
+                          "type": "string"
+                        },
+                        "createdAt": {
+                          "type": [
+                            "number",
+                            "null"
+                          ]
+                        },
+                        "id": {
+                          "type": "string"
+                        },
+                        "interactionId": {
+                          "type": "string"
+                        },
+                        "kind": {
+                          "const": "work",
+                          "type": "string"
+                        },
+                        "lifecycle": {
+                          "$ref": "#/$defs/d114"
+                        },
+                        "sourceSeqEnd": {
+                          "type": "number"
+                        },
+                        "sourceSeqStart": {
+                          "type": "number"
+                        },
+                        "startedAt": {
+                          "type": [
+                            "number",
+                            "null"
+                          ]
+                        },
+                        "status": {
+                          "$ref": "#/$defs/d450"
+                        },
+                        "target": {
+                          "$ref": "#/$defs/d746"
+                        },
+                        "threadId": {
+                          "type": "string"
+                        },
+                        "turnId": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "workKind": {
+                          "const": "approval",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "threadId",
+                        "turnId",
+                        "sourceSeqStart",
+                        "sourceSeqEnd",
+                        "startedAt",
+                        "createdAt",
+                        "kind",
+                        "status",
+                        "workKind",
+                        "interactionId",
+                        "target",
+                        "approvalKind",
+                        "lifecycle"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "approvalKind": {
+                          "const": "permission-grant",
+                          "type": "string"
+                        },
+                        "createdAt": {
+                          "type": [
+                            "number",
+                            "null"
+                          ]
+                        },
+                        "grantScope": {
+                          "$ref": "#/$defs/d125"
+                        },
+                        "id": {
+                          "type": "string"
+                        },
+                        "interactionId": {
+                          "type": "string"
+                        },
+                        "kind": {
+                          "const": "work",
+                          "type": "string"
+                        },
+                        "lifecycle": {
+                          "$ref": "#/$defs/d200"
+                        },
+                        "sourceSeqEnd": {
+                          "type": "number"
+                        },
+                        "sourceSeqStart": {
+                          "type": "number"
+                        },
+                        "startedAt": {
+                          "type": [
+                            "number",
+                            "null"
+                          ]
+                        },
+                        "status": {
+                          "$ref": "#/$defs/d450"
+                        },
+                        "statusReason": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "target": {
+                          "$ref": "#/$defs/d746"
+                        },
+                        "threadId": {
+                          "type": "string"
+                        },
+                        "turnId": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "workKind": {
+                          "const": "approval",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "threadId",
+                        "turnId",
+                        "sourceSeqStart",
+                        "sourceSeqEnd",
+                        "startedAt",
+                        "createdAt",
+                        "kind",
+                        "status",
+                        "workKind",
+                        "interactionId",
+                        "target",
+                        "approvalKind",
+                        "lifecycle",
+                        "grantScope",
+                        "statusReason"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "answers": {
+                          "$ref": "#/$defs/d36"
+                        },
+                        "createdAt": {
+                          "type": [
+                            "number",
+                            "null"
+                          ]
+                        },
+                        "id": {
+                          "type": "string"
+                        },
+                        "interactionId": {
+                          "type": "string"
+                        },
+                        "kind": {
+                          "const": "work",
+                          "type": "string"
+                        },
+                        "lifecycle": {
+                          "$ref": "#/$defs/d154"
+                        },
+                        "questions": {
+                          "$ref": "#/$defs/d538"
+                        },
+                        "sourceSeqEnd": {
+                          "type": "number"
+                        },
+                        "sourceSeqStart": {
+                          "type": "number"
+                        },
+                        "startedAt": {
+                          "type": [
+                            "number",
+                            "null"
+                          ]
+                        },
+                        "status": {
+                          "$ref": "#/$defs/d450"
+                        },
+                        "statusReason": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "threadId": {
+                          "type": "string"
+                        },
+                        "turnId": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "workKind": {
+                          "const": "question",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "threadId",
+                        "turnId",
+                        "sourceSeqStart",
+                        "sourceSeqEnd",
+                        "startedAt",
+                        "createdAt",
+                        "kind",
+                        "status",
+                        "workKind",
+                        "interactionId",
+                        "lifecycle",
+                        "questions",
+                        "answers",
+                        "statusReason"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "background": {
+                          "type": "boolean"
+                        },
+                        "callId": {
+                          "type": "string"
+                        },
+                        "childRef": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "childRows": {},
+                        "completedAt": {
+                          "anyOf": [
+                            {
+                              "type": "number"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "createdAt": {
+                          "type": [
+                            "number",
+                            "null"
+                          ]
+                        },
+                        "description": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "id": {
+                          "type": "string"
+                        },
+                        "kind": {
+                          "const": "work",
+                          "type": "string"
+                        },
+                        "output": {
+                          "type": "string"
+                        },
+                        "presentation": {
+                          "$ref": "#/$defs/d406"
+                        },
+                        "sourceSeqEnd": {
+                          "type": "number"
+                        },
+                        "sourceSeqStart": {
+                          "type": "number"
+                        },
+                        "startedAt": {
+                          "type": [
+                            "number",
+                            "null"
+                          ]
+                        },
+                        "status": {
+                          "$ref": "#/$defs/d450"
+                        },
+                        "subagentType": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "threadId": {
+                          "type": "string"
+                        },
+                        "toolName": {
+                          "type": "string"
+                        },
+                        "turnId": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "workKind": {
+                          "const": "delegation",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "workKind",
+                        "callId",
+                        "toolName",
+                        "childRef",
+                        "background",
+                        "subagentType",
+                        "description",
+                        "output",
+                        "completedAt",
+                        "childRows",
+                        "kind",
+                        "status",
+                        "id",
+                        "threadId",
+                        "turnId",
+                        "sourceSeqStart",
+                        "sourceSeqEnd",
+                        "startedAt",
+                        "createdAt"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "completedAt": {
+                          "anyOf": [
+                            {
+                              "type": "number"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "createdAt": {
+                          "type": [
+                            "number",
+                            "null"
+                          ]
+                        },
+                        "description": {
+                          "type": "string"
+                        },
+                        "error": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "id": {
+                          "type": "string"
+                        },
+                        "itemId": {
+                          "type": "string"
+                        },
+                        "kind": {
+                          "const": "work",
+                          "type": "string"
+                        },
+                        "model": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "presentation": {
+                          "$ref": "#/$defs/d406"
+                        },
+                        "sourceSeqEnd": {
+                          "type": "number"
+                        },
+                        "sourceSeqStart": {
+                          "type": "number"
+                        },
+                        "startedAt": {
+                          "type": [
+                            "number",
+                            "null"
+                          ]
+                        },
+                        "status": {
+                          "$ref": "#/$defs/d450"
+                        },
+                        "summary": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "taskStatus": {
+                          "$ref": "#/$defs/d357"
+                        },
+                        "taskType": {
+                          "type": "string"
+                        },
+                        "threadId": {
+                          "type": "string"
+                        },
+                        "turnId": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "usage": {
+                          "$ref": "#/$defs/d673"
+                        },
+                        "workKind": {
+                          "const": "workflow",
+                          "type": "string"
+                        },
+                        "workflow": {
+                          "$ref": "#/$defs/d241"
+                        },
+                        "workflowName": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "threadId",
+                        "turnId",
+                        "sourceSeqStart",
+                        "sourceSeqEnd",
+                        "startedAt",
+                        "createdAt",
+                        "kind",
+                        "status",
+                        "workKind",
+                        "itemId",
+                        "taskType",
+                        "workflowName",
+                        "description",
+                        "model",
+                        "taskStatus",
+                        "workflow",
+                        "usage",
+                        "summary",
+                        "error",
+                        "completedAt"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "children": {
+                          "anyOf": [
+                            {},
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "completedAt": {
+                          "anyOf": [
+                            {
+                              "type": "number"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "createdAt": {
+                          "type": [
+                            "number",
+                            "null"
+                          ]
+                        },
+                        "id": {
+                          "type": "string"
+                        },
+                        "kind": {
+                          "const": "turn",
+                          "type": "string"
+                        },
+                        "sourceSeqEnd": {
+                          "type": "number"
+                        },
+                        "sourceSeqStart": {
+                          "type": "number"
+                        },
+                        "startedAt": {
+                          "type": [
+                            "number",
+                            "null"
+                          ]
+                        },
+                        "status": {
+                          "$ref": "#/$defs/d450"
+                        },
+                        "summaryCount": {
+                          "type": "number"
+                        },
+                        "threadId": {
+                          "type": "string"
+                        },
+                        "turnId": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "turnId",
+                        "status",
+                        "summaryCount",
+                        "completedAt",
+                        "children",
+                        "id",
+                        "threadId",
+                        "sourceSeqStart",
+                        "sourceSeqEnd",
+                        "startedAt",
+                        "createdAt"
+                      ],
+                      "type": "object"
+                    }
+                  ]
+                },
+                "type": "array"
               },
               "timelinePage": {
                 "additionalProperties": false,
@@ -28868,7 +31092,9 @@
               "goal",
               "modelFallback",
               "timelinePage",
-              "maxSeq"
+              "maxSeq",
+              "generation",
+              "history"
             ],
             "type": "object"
           },

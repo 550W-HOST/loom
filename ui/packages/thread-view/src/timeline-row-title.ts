@@ -198,10 +198,14 @@ function visibleDurationMs(durationMs: number | null): number | null {
 }
 
 function durationDecoration(
-  startedAt: number,
+  // A row restored from an agent's replay carries no time, and a duration it
+  // cannot measure is not shown rather than measured from the moment the
+  // conversation was loaded.
+  startedAt: number | null,
   completedAt: number | null,
   options: { em?: boolean } = {},
 ): TimelineTitleDecoration | null {
+  if (startedAt === null) return null;
   if (completedAt !== null) {
     const finalMs = completedAt - startedAt;
     if (visibleDurationMs(finalMs) === null) return null;
@@ -215,10 +219,10 @@ function durationDecoration(
 }
 
 function completedTurnDurationDecoration(
-  startedAt: number,
+  startedAt: number | null,
   completedAt: number | null,
 ): TimelineTitleDecoration | null {
-  if (completedAt === null) return null;
+  if (startedAt === null || completedAt === null) return null;
   return {
     kind: "duration",
     startedAt,
@@ -382,7 +386,7 @@ function presentationLabel(
 interface PresentedTitleArgs {
   presentation: TimelineRowPresentation;
   status: TimelineRowStatus;
-  startedAt: number;
+  startedAt: number | null;
   completedAt: number | null;
   content?: string | null;
   plainContent?: string;
@@ -414,7 +418,10 @@ function presentedTitle({
       }),
     );
   }
-  const durationMs = completedAt !== null ? completedAt - startedAt : null;
+  const durationMs =
+    completedAt !== null && startedAt !== null
+      ? completedAt - startedAt
+      : null;
   const decorations: TimelineTitleDecoration[] = [
     ...badgeDecorations({ presentation }),
     ...(status === "error"
@@ -507,7 +514,9 @@ function mapExecutionTitle(row: TimelineExecutionWorkRow): TimelineTitle {
           ...badges,
           statusDecoration(
             "error",
-            row.completedAt !== null ? row.completedAt - row.startedAt : null,
+            row.completedAt !== null && row.startedAt !== null
+              ? row.completedAt - row.startedAt
+              : null,
           ),
         ],
       });
@@ -521,7 +530,9 @@ function mapExecutionTitle(row: TimelineExecutionWorkRow): TimelineTitle {
           ...badges,
           statusDecoration(
             "interrupted",
-            row.completedAt !== null ? row.completedAt - row.startedAt : null,
+            row.completedAt !== null && row.startedAt !== null
+              ? row.completedAt - row.startedAt
+              : null,
           ),
         ],
       });
@@ -742,7 +753,9 @@ function mapWebSearchTitle(row: TimelineWebSearchWorkRow): TimelineTitle {
         decorations: [
           statusDecoration(
             "error",
-            row.completedAt !== null ? row.completedAt - row.startedAt : null,
+            row.completedAt !== null && row.startedAt !== null
+              ? row.completedAt - row.startedAt
+              : null,
           ),
         ],
       });
@@ -752,7 +765,9 @@ function mapWebSearchTitle(row: TimelineWebSearchWorkRow): TimelineTitle {
         decorations: [
           statusDecoration(
             "interrupted",
-            row.completedAt !== null ? row.completedAt - row.startedAt : null,
+            row.completedAt !== null && row.startedAt !== null
+              ? row.completedAt - row.startedAt
+              : null,
           ),
         ],
       });
@@ -791,7 +806,9 @@ function mapWebFetchTitle(row: TimelineWebFetchWorkRow): TimelineTitle {
         decorations: [
           statusDecoration(
             "error",
-            row.completedAt !== null ? row.completedAt - row.startedAt : null,
+            row.completedAt !== null && row.startedAt !== null
+              ? row.completedAt - row.startedAt
+              : null,
           ),
         ],
       });
@@ -801,7 +818,9 @@ function mapWebFetchTitle(row: TimelineWebFetchWorkRow): TimelineTitle {
         decorations: [
           statusDecoration(
             "interrupted",
-            row.completedAt !== null ? row.completedAt - row.startedAt : null,
+            row.completedAt !== null && row.startedAt !== null
+              ? row.completedAt - row.startedAt
+              : null,
           ),
         ],
       });
@@ -844,7 +863,9 @@ function mapImageViewTitle(row: TimelineImageViewWorkRow): TimelineTitle {
         decorations: [
           statusDecoration(
             "error",
-            row.completedAt !== null ? row.completedAt - row.startedAt : null,
+            row.completedAt !== null && row.startedAt !== null
+              ? row.completedAt - row.startedAt
+              : null,
           ),
         ],
       });
@@ -854,7 +875,9 @@ function mapImageViewTitle(row: TimelineImageViewWorkRow): TimelineTitle {
         decorations: [
           statusDecoration(
             "interrupted",
-            row.completedAt !== null ? row.completedAt - row.startedAt : null,
+            row.completedAt !== null && row.startedAt !== null
+              ? row.completedAt - row.startedAt
+              : null,
           ),
         ],
       });

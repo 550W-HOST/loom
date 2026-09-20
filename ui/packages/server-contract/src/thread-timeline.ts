@@ -71,10 +71,39 @@ export const timelineRowBaseSchema = z.object({
   turnId: z.string().nullable(),
   sourceSeqStart: z.number().int(),
   sourceSeqEnd: z.number().int(),
-  startedAt: z.number(),
-  createdAt: z.number(),
+  // Nullable because a row can come from an agent's replay of a conversation
+  // rather than from a live turn: a replay carries no timestamps, and a row
+  // says it does not know rather than borrowing the moment it was loaded.
+  startedAt: z.number().nullable(),
+  createdAt: z.number().nullable(),
 });
 export type TimelineRowBase = z.infer<typeof timelineRowBaseSchema>;
+
+/**
+ * How much of a conversation the server can currently offer.
+ *
+ * "No rows" and "could not load" are different answers, and a client that
+ * cannot tell them apart shows an empty conversation where it should offer a
+ * reason. `complete` is the stronger claim: the rows are the whole
+ * conversation, not a suffix of it.
+ */
+export const timelineHistoryStatusValues = [
+  "loading",
+  "partial",
+  "ready",
+  "stale",
+  "unavailable",
+] as const;
+export type TimelineHistoryStatus = (typeof timelineHistoryStatusValues)[number];
+
+export const threadTimelineHistorySchema = z.object({
+  status: z.enum(timelineHistoryStatusValues),
+  complete: z.boolean(),
+  reason: z.string().nullable(),
+});
+export type ThreadTimelineHistory = z.infer<
+  typeof threadTimelineHistorySchema
+>;
 
 export const timelineConversationAttachmentsSchema = z.object({
   webImages: z.number().int().nonnegative(),

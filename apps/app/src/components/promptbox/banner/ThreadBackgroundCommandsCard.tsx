@@ -103,8 +103,18 @@ function compactBackgroundActivityLabel(
   return `Running ${rows.length} background activities`;
 }
 
-function BackgroundActivityDuration({ startedAt }: { startedAt: number }) {
-  const elapsed = useSecondTick() - startedAt;
+function BackgroundActivityDuration({
+  startedAt,
+}: {
+  // A row restored from an agent's replay carries no time, and an elapsed time
+  // measured from "when we loaded it" would be a number the server never said.
+  startedAt: number | null;
+}) {
+  const now = useSecondTick();
+  if (startedAt === null) {
+    return null;
+  }
+  const elapsed = now - startedAt;
   if (elapsed <= 1_000) {
     return null;
   }

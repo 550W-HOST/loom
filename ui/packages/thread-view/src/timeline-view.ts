@@ -685,16 +685,24 @@ function summarizeRange(
 
   let sourceSeqStart = first.sourceSeqStart;
   let sourceSeqEnd = first.sourceSeqEnd;
-  let startedAt = first.startedAt;
-  let createdAt = first.createdAt;
+  // A summary spans its children, so it knows a time only when every child
+  // does: a range with one unknown end is not a range.
+  let startedAt: number | null = first.startedAt;
+  let createdAt: number | null = first.createdAt;
   let turnId = first.turnId;
   let status = first.status;
 
   for (const child of children) {
     sourceSeqStart = Math.min(sourceSeqStart, child.sourceSeqStart);
     sourceSeqEnd = Math.max(sourceSeqEnd, child.sourceSeqEnd);
-    startedAt = Math.min(startedAt, child.startedAt);
-    createdAt = Math.max(createdAt, child.createdAt);
+    startedAt =
+      startedAt === null || child.startedAt === null
+        ? null
+        : Math.min(startedAt, child.startedAt);
+    createdAt =
+      createdAt === null || child.createdAt === null
+        ? null
+        : Math.max(createdAt, child.createdAt);
     status = mergeTimelineStatus(status, child.status);
     if (turnId !== child.turnId) {
       turnId = null;

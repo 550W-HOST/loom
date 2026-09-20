@@ -75,6 +75,7 @@ function timelineResponse(
   rows: TimelineRow[],
   olderCursor: TimelinePaginationCursor | null,
   maxSeq?: number,
+  generation = 1,
 ): ThreadTimelineResponse {
   return {
     rows,
@@ -87,6 +88,8 @@ function timelineResponse(
     goal: null,
     modelFallback: null,
     maxSeq: maxSeq ?? Math.max(0, ...rows.map((row) => row.sourceSeqEnd)),
+    generation,
+    history: { status: "ready", complete: true, reason: null },
     timelinePage: {
       kind: "latest",
       segmentLimit: 20,
@@ -103,6 +106,7 @@ function loadedState(
   latestWindowEndSequence: number,
 ): LoadedTimelineState {
   return {
+    generation: 1,
     latestWindowEndSequence,
     rows,
     olderCursor,
@@ -228,5 +232,30 @@ describe("timeline page merging", () => {
 
     expect(merged.rows.map((row) => row.id)).toEqual(["prompt", "answer"]);
     expect(merged.rows[0]).toBe(prompt);
+  });
+
+  // A rebuild renumbers every row from one, so the rows a new generation
+  // carries cannot be merged with the ones it replaced: they share no
+  // numbering, and the older cursor belongs to a window that no longer exists.
+  it("replaces the rows when the server's generation changes", () => {
+    const current = loadedState(
+      [userRow("prompt", 1), userRow("answer", 8)],
+      null,
+      11,
+    );
+    // The rebuilt window looks contiguous with what we hold — its sequences
+    // are higher — but it is a different numbering, so merging it would put a
+    // row from the old numbering among rows it shares no numbers with.
+    const rebuilt = timelineResponse([userRow("rebuilt", 5)], null, 20, 2);
+
+    const merged = mergeLoadedTimelineWithLatest({
+      current,
+      latestTimeline: rebuilt,
+      surfaceKey: "thread-1:default",
+    });
+
+    expect(merged.generation).toBe(2);
+    expect(merged.rows.map((row) => row.id)).toEqual(["rebuilt"]);
+    expect(merged.latestWindowEndSequence).toBe(20);
   });
 });

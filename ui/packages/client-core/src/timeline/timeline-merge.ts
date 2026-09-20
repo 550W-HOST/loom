@@ -8,6 +8,17 @@ import { isOptimisticTimelineRowId } from "./optimistic-timeline-row.js";
 type NullableTimelinePaginationCursor = TimelinePaginationCursor | null;
 
 export interface LoadedTimelineState {
+  /**
+   * The server's numbering generation for the rows.
+   *
+   * Sequences are only comparable inside one generation: a rebuild renumbers
+   * every row from one, so a cursor read as a position in the new numbering
+   * would land in the wrong place, or past the end. Holding it here is what
+   * lets a page from another generation be recognised as a restart rather than
+   * stitched onto rows it shares no numbers with. It is `null` before any page
+   * has arrived, when there is no numbering to belong to.
+   */
+  generation: number | null;
   historySnapshot?: string;
   latestWindowEndSequence: number | null;
   olderCursor: NullableTimelinePaginationCursor;
@@ -16,6 +27,7 @@ export interface LoadedTimelineState {
 }
 
 interface BuildLoadedTimelineStateArgs {
+  generation: number | null;
   historySnapshot?: string;
   latestWindowEndSequence: number | null;
   latestRows: TimelineRow[];
@@ -76,6 +88,7 @@ interface RecoverLoadedTimelineAfterStaleCursorArgs {
 }
 
 export function buildLoadedTimelineState({
+  generation,
   historySnapshot,
   latestWindowEndSequence,
   latestRows,
@@ -83,6 +96,7 @@ export function buildLoadedTimelineState({
   surfaceKey,
 }: BuildLoadedTimelineStateArgs): LoadedTimelineState {
   return {
+    generation,
     historySnapshot,
     latestWindowEndSequence,
     olderCursor,
@@ -353,10 +367,12 @@ export function mergeLoadedTimelineWithLatest({
 }: MergeLoadedTimelineWithLatestArgs): LoadedTimelineState {
   if (
     current.surfaceKey !== surfaceKey ||
+    current.generation !== latestTimeline.generation ||
     current.historySnapshot !== latestTimeline.timelinePage.historySnapshot ||
     !timelineWindowsAreContiguous(current, latestTimeline)
   ) {
     return buildLoadedTimelineState({
+      generation: latestTimeline.generation,
       historySnapshot: latestTimeline.timelinePage.historySnapshot,
       latestWindowEndSequence: latestTimeline.maxSeq,
       latestRows: latestTimeline.rows,
@@ -384,6 +400,7 @@ export function mergeLoadedTimelineWithLatest({
   });
   if (!latestMerge.canMerge) {
     return buildLoadedTimelineState({
+      generation: latestTimeline.generation,
       historySnapshot: latestTimeline.timelinePage.historySnapshot,
       latestWindowEndSequence: latestTimeline.maxSeq,
       latestRows: latestTimeline.rows,
@@ -410,9 +427,11 @@ export function recoverLoadedTimelineAfterStaleCursor({
 }: RecoverLoadedTimelineAfterStaleCursorArgs): LoadedTimelineState {
   if (
     current.surfaceKey !== surfaceKey ||
+    current.generation !== latestTimeline.generation ||
     current.historySnapshot !== latestTimeline.timelinePage.historySnapshot
   ) {
     return buildLoadedTimelineState({
+      generation: latestTimeline.generation,
       historySnapshot: latestTimeline.timelinePage.historySnapshot,
       latestWindowEndSequence: latestTimeline.maxSeq,
       latestRows: latestTimeline.rows,
@@ -428,6 +447,7 @@ export function recoverLoadedTimelineAfterStaleCursor({
   });
   if (!latestMerge.canMerge) {
     return buildLoadedTimelineState({
+      generation: latestTimeline.generation,
       historySnapshot: latestTimeline.timelinePage.historySnapshot,
       latestWindowEndSequence: latestTimeline.maxSeq,
       latestRows: latestTimeline.rows,
@@ -437,6 +457,7 @@ export function recoverLoadedTimelineAfterStaleCursor({
   }
 
   return {
+    generation: latestTimeline.generation,
     historySnapshot: latestTimeline.timelinePage.historySnapshot,
     latestWindowEndSequence: latestTimeline.maxSeq,
     olderCursor: latestTimeline.timelinePage.olderCursor,

@@ -61,7 +61,10 @@ impl std::fmt::Display for HistoryUnavailable {
             ),
             Self::Busy => f.write_str("too many history loads are already in flight"),
             Self::Host { code, message } => {
-                write!(f, "the host could not load the conversation ({code}): {message}")
+                write!(
+                    f,
+                    "the host could not load the conversation ({code}): {message}"
+                )
             }
             Self::Timeout => f.write_str("loading the conversation took too long"),
             Self::Incomplete(message) => write!(f, "the conversation was incomplete: {message}"),
@@ -180,24 +183,74 @@ impl AppState {
                 // reading it right now.
                 self.history.mark_loading(thread_id, binding.clone());
                 let outcome = load().await;
-                self.history.finish_load(thread_id);
-                match outcome {
-                    Ok(events) => {
-                        self.history.install_baseline(thread_id, binding, events);
-                    }
-                    Err(error) => {
-                        self.history
-                            .mark_unavailable(thread_id, binding, error.to_string());
-                        self.history_waits.wake(thread_id);
-                        return Err(HistoryUnavailable::from(error));
-                    }
-                }
-                self.history_waits.wake(thread_id);
-                self.complete_view_result(thread_id)
+                self.settle_history_load(thread_id, binding, outcome)
             }
             LoadTicket::Follower => self.await_leader(thread_id).await,
             LoadTicket::Refused => Err(HistoryUnavailable::Busy),
         }
+    }
+
+    /// Starts a thread's load without waiting for it.
+    ///
+    /// A load can take as long as an agent's cold start, so a page fetch must
+    /// not hold a connection for one. The caller is told `loading` and retries,
+    /// and every other caller joins the same load rather than starting another.
+    ///
+    /// The request is built before the claim is taken, so a thread whose bound
+    /// agent cannot be resolved fails here and leaves nothing claimed.
+    pub fn start_thread_history_load(
+        &self,
+        thread_id: &ThreadId,
+    ) -> Result<(), HistoryUnavailable> {
+        let binding = self
+            .thread_cache_binding(thread_id)
+            .ok_or(HistoryUnavailable::NoBinding)?;
+        let operation = self.history_operation(thread_id, &binding)?;
+        match self.history.begin_load(thread_id, &binding) {
+            LoadTicket::Leader => {
+                self.history.mark_loading(thread_id, binding.clone());
+                let state = self.clone();
+                let thread_id = thread_id.clone();
+                tokio::spawn(async move {
+                    let outcome = state
+                        .load_thread_history(&binding.host_id, operation, HISTORY_LOAD_DEADLINE)
+                        .await;
+                    let _ = state.settle_history_load(&thread_id, binding, outcome);
+                });
+                Ok(())
+            }
+            // Already being loaded: this caller waits by retrying, which is
+            // what a page fetch with a `loading` status does.
+            LoadTicket::Follower => Ok(()),
+            LoadTicket::Refused => Err(HistoryUnavailable::Busy),
+        }
+    }
+
+    /// Installs the outcome of one load and wakes whoever is waiting on it.
+    ///
+    /// The single place a load's result reaches the cache, so a failure can
+    /// never leave a partial conversation behind and a claim can never be held
+    /// past the load that took it.
+    fn settle_history_load(
+        &self,
+        thread_id: &ThreadId,
+        binding: CacheBinding,
+        outcome: Result<Vec<ProviderEvent>, HistoryTransportError>,
+    ) -> Result<CacheView, HistoryUnavailable> {
+        self.history.finish_load(thread_id);
+        match outcome {
+            Ok(events) => {
+                self.history.install_baseline(thread_id, binding, events);
+            }
+            Err(error) => {
+                self.history
+                    .mark_unavailable(thread_id, binding, error.to_string());
+                self.history_waits.wake(thread_id);
+                return Err(HistoryUnavailable::from(error));
+            }
+        }
+        self.history_waits.wake(thread_id);
+        self.complete_view_result(thread_id)
     }
 
     /// Waits for the load another caller started, then reads what it produced.
@@ -227,10 +280,7 @@ impl AppState {
     }
 
     /// The cached view, or the reason there is not a usable one.
-    fn complete_view_result(
-        &self,
-        thread_id: &ThreadId,
-    ) -> Result<CacheView, HistoryUnavailable> {
+    fn complete_view_result(&self, thread_id: &ThreadId) -> Result<CacheView, HistoryUnavailable> {
         match self.history.view(thread_id) {
             Some(view) if view.status == HistoryStatus::Ready => Ok(view),
             Some(view) => Err(HistoryUnavailable::Incomplete(
@@ -403,7 +453,10 @@ mod tests {
                 message: "the agent no longer has it".to_owned(),
             }
         );
-        let view = state.history.view(&thread).expect("the failure is recorded");
+        let view = state
+            .history
+            .view(&thread)
+            .expect("the failure is recorded");
         assert_eq!(view.status, HistoryStatus::Unavailable);
         assert!(
             view.rows.is_empty(),

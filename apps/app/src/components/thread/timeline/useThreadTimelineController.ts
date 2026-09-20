@@ -64,6 +64,7 @@ export function useThreadTimelineController({
   const [loadedTimeline, setLoadedTimeline] = useState<LoadedTimelineState>(
     () =>
       buildLoadedTimelineState({
+        generation: null,
         latestWindowEndSequence: null,
         latestRows: [],
         olderCursor: null,
@@ -80,6 +81,7 @@ export function useThreadTimelineController({
         current.surfaceKey === surfaceKey
           ? current
           : buildLoadedTimelineState({
+              generation: null,
               latestWindowEndSequence: null,
               latestRows: [],
               olderCursor: null,

@@ -25,7 +25,7 @@
 use std::collections::HashMap;
 use std::sync::Mutex;
 
-use loom_domain::{HostId, ProviderEvent, ThreadId};
+use loom_domain::{HostId, ProviderEvent, RunId, ThreadId};
 
 /// What a cached conversation is bound to.
 ///
@@ -63,11 +63,51 @@ pub enum HistoryStatus {
     Unavailable,
 }
 
-/// One cached row: a stable sequence and the provider event behind it.
+impl HistoryStatus {
+    /// The token the timeline contract carries this status as.
+    pub fn token(self) -> &'static str {
+        match self {
+            Self::Loading => "loading",
+            Self::Partial => "partial",
+            Self::Ready => "ready",
+            Self::Stale => "stale",
+            Self::Unavailable => "unavailable",
+        }
+    }
+}
+
+/// Where one cached row came from.
+///
+/// The distinction is not bookkeeping: a row's origin decides what its
+/// projection may say about it. A frame loom published while the thread was
+/// live knows which turn it belongs to and when it happened; a frame the agent
+/// replayed when the conversation was loaded knows neither, and inventing
+/// either would misdate the conversation or offer an action on a run that never
+/// existed. Both end up in the same cache, in the order they happened, which is
+/// why the origin has to travel *with* the row.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RowSource {
+    /// A message loom recorded itself — the user's prompt, or a reply posted
+    /// through the messages API — rather than a frame a run published. It knows
+    /// when it was said, and belongs to no run.
+    Message { at_ms: u64 },
+    /// A frame a run published. The run is its grouping key, and `at_ms` is when
+    /// the run published it.
+    Run { run_id: RunId, at_ms: u64 },
+    /// A frame the agent replayed when the conversation was loaded. It carries
+    /// no loom time and belongs to no run: a replay is a reconstruction, not a
+    /// record of when things happened.
+    Replayed,
+}
+
+/// One cached row: a stable sequence, where it came from, and the frame behind
+/// it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CachedRow {
     /// Stable within the entry's generation. Assigned once, never recomputed.
     pub seq: u64,
+    /// Where the frame came from, which its projection must respect.
+    pub source: RowSource,
     /// The contract event a projection turns into a timeline row.
     pub event: ProviderEvent,
 }
@@ -206,7 +246,13 @@ impl HistoryCache {
         for event in events {
             seq += 1;
             bytes = bytes.saturating_add(row_bytes(&event));
-            rows.push(CachedRow { seq, event });
+            rows.push(CachedRow {
+                seq,
+                // A baseline *is* a replay: the agent's own account of the
+                // conversation, with no loom times in it.
+                source: RowSource::Replayed,
+                event,
+            });
         }
         inner.remove(thread_id);
         inner.insert(
@@ -242,6 +288,7 @@ impl HistoryCache {
         &self,
         thread_id: &ThreadId,
         binding: Option<&CacheBinding>,
+        source: RowSource,
         event: ProviderEvent,
     ) -> Option<u64> {
         let mut inner = self.lock();
@@ -283,7 +330,7 @@ impl HistoryCache {
             let seq = entry.next_seq;
             entry.next_seq += 1;
             entry.bytes = entry.bytes.saturating_add(size);
-            entry.rows.push(CachedRow { seq, event });
+            entry.rows.push(CachedRow { seq, source, event });
             entry.last_used = tick;
             seq
         };
@@ -368,12 +415,9 @@ impl HistoryCache {
         // A cached conversation stays visible while it is refreshed: it is
         // stale, not loading, because there is something to show. Resolved
         // before the mutable borrow for the same reason as `mark_unavailable`.
-        let refresh = inner
-            .entries
-            .get(thread_id)
-            .is_some_and(|entry| {
-                entry.binding.as_ref() == Some(&binding) && !entry.rows.is_empty()
-            });
+        let refresh = inner.entries.get(thread_id).is_some_and(|entry| {
+            entry.binding.as_ref() == Some(&binding) && !entry.rows.is_empty()
+        });
 
         if refresh {
             let entry = inner
@@ -524,6 +568,14 @@ mod tests {
         }
     }
 
+    /// A live frame, as a run publishes it.
+    fn live() -> RowSource {
+        RowSource::Run {
+            run_id: RunId::mint(),
+            at_ms: 1_700_000_000_000,
+        }
+    }
+
     fn identity() -> ProviderEvent {
         ProviderEvent::ThreadIdentity {
             provider_thread_id: "acp-session-1".into(),
@@ -538,7 +590,8 @@ mod tests {
     fn a_baseline_is_numbered_from_one_under_a_new_generation() {
         let cache = cache();
         let thread = ThreadId::mint();
-        let generation = cache.install_baseline(&thread, binding("pi"), vec![identity(), identity()]);
+        let generation =
+            cache.install_baseline(&thread, binding("pi"), vec![identity(), identity()]);
 
         let view = cache.view(&thread).expect("the baseline is cached");
         assert_eq!(view.generation, generation);
@@ -561,11 +614,11 @@ mod tests {
         cache.install_baseline(&thread, binding.clone(), vec![identity()]);
 
         assert_eq!(
-            cache.append_live(&thread, Some(&binding), identity()),
+            cache.append_live(&thread, Some(&binding), live(), identity()),
             Some(2)
         );
         assert_eq!(
-            cache.append_live(&thread, Some(&binding), identity()),
+            cache.append_live(&thread, Some(&binding), live(), identity()),
             Some(3)
         );
 
@@ -574,6 +627,44 @@ mod tests {
             view.rows.iter().map(|row| row.seq).collect::<Vec<_>>(),
             vec![1, 2, 3]
         );
+    }
+
+    /// Where a row came from is part of the row, not something a projection can
+    /// recover: a live frame knows its turn and its time, and a replayed one
+    /// knows neither.
+    #[test]
+    fn a_rows_origin_travels_with_it() {
+        let cache = cache();
+        let thread = ThreadId::mint();
+        let binding = binding("pi");
+        let run_id = RunId::mint();
+        cache.install_baseline(&thread, binding.clone(), vec![identity()]);
+        cache.append_live(
+            &thread,
+            Some(&binding),
+            RowSource::Run {
+                run_id: run_id.clone(),
+                at_ms: 1_700_000_000_000,
+            },
+            identity(),
+        );
+        cache.append_live(
+            &thread,
+            Some(&binding),
+            RowSource::Message { at_ms: 5 },
+            identity(),
+        );
+
+        let view = cache.view(&thread).unwrap();
+        assert_eq!(view.rows[0].source, RowSource::Replayed);
+        assert_eq!(
+            view.rows[1].source,
+            RowSource::Run {
+                run_id,
+                at_ms: 1_700_000_000_000
+            }
+        );
+        assert_eq!(view.rows[2].source, RowSource::Message { at_ms: 5 });
     }
 
     #[test]
@@ -603,7 +694,7 @@ mod tests {
         let thread = ThreadId::mint();
         cache.install_baseline(&thread, binding("pi"), vec![identity()]);
         assert_eq!(
-            cache.append_live(&thread, Some(&binding("omp")), identity()),
+            cache.append_live(&thread, Some(&binding("omp")), live(), identity()),
             None
         );
         assert_eq!(cache.view(&thread).unwrap().rows.len(), 1);
@@ -618,7 +709,10 @@ mod tests {
     fn a_live_event_without_a_baseline_starts_a_partial_conversation() {
         let cache = cache();
         let thread = ThreadId::mint();
-        assert_eq!(cache.append_live(&thread, None, identity()), Some(1));
+        assert_eq!(
+            cache.append_live(&thread, None, live(), identity()),
+            Some(1)
+        );
 
         let view = cache.view(&thread).expect("the conversation is shown");
         assert_eq!(view.status, HistoryStatus::Partial);
@@ -633,14 +727,14 @@ mod tests {
         let cache = cache();
         let thread = ThreadId::mint();
         let pi = binding("pi");
-        cache.append_live(&thread, None, identity());
+        cache.append_live(&thread, None, live(), identity());
         assert_eq!(
-            cache.append_live(&thread, Some(&pi), identity()),
+            cache.append_live(&thread, Some(&pi), live(), identity()),
             Some(2)
         );
         // A different conversation is still refused.
         assert_eq!(
-            cache.append_live(&thread, Some(&binding("omp")), identity()),
+            cache.append_live(&thread, Some(&binding("omp")), live(), identity()),
             None
         );
     }
@@ -667,10 +761,7 @@ mod tests {
         let view = cache.view(&thread).unwrap();
         assert_eq!(view.status, HistoryStatus::Unavailable);
         assert!(!view.complete);
-        assert_eq!(
-            view.reason.as_deref(),
-            Some("the session no longer exists")
-        );
+        assert_eq!(view.reason.as_deref(), Some("the session no longer exists"));
     }
 
     /// A refresh must not blank the conversation the user is looking at.
@@ -716,8 +807,14 @@ mod tests {
     fn a_changed_binding_is_admitted_as_its_own_load() {
         let cache = cache();
         let thread = ThreadId::mint();
-        assert_eq!(cache.begin_load(&thread, &binding("pi")), LoadTicket::Leader);
-        assert_eq!(cache.begin_load(&thread, &binding("omp")), LoadTicket::Leader);
+        assert_eq!(
+            cache.begin_load(&thread, &binding("pi")),
+            LoadTicket::Leader
+        );
+        assert_eq!(
+            cache.begin_load(&thread, &binding("omp")),
+            LoadTicket::Leader
+        );
     }
 
     #[test]

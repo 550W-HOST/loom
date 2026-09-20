@@ -25,8 +25,12 @@ const WORKFLOW_HEADER_BUTTON_CLASS = activityRowClass(
   "flex min-h-8 w-full min-w-0 cursor-pointer items-center gap-1.5 rounded-none px-3 py-1.5 text-xs text-foreground transition-colors hover:bg-background/80",
 );
 
-function WorkflowDuration({ startedAt }: { startedAt: number }) {
-  const elapsed = useSecondTick() - startedAt;
+function WorkflowDuration({ startedAt }: { startedAt: number | null }) {
+  const now = useSecondTick();
+  if (startedAt === null) {
+    return null;
+  }
+  const elapsed = now - startedAt;
   if (elapsed <= 1_000) {
     return null;
   }

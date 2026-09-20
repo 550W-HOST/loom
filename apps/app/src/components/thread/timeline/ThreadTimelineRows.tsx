@@ -1713,7 +1713,10 @@ function isUnreadDividerCandidateAfterCutoff({
   cutoffAt,
   row,
 }: IsUnreadDividerCandidateAfterCutoffArgs): boolean {
-  if (row.createdAt <= cutoffAt) {
+  // A row whose creation time is unknown cannot be placed relative to the
+  // cutoff, so it never opens the divider: claiming unread for a row we cannot
+  // date is the one answer the divider must not give.
+  if (row.createdAt === null || row.createdAt <= cutoffAt) {
     return false;
   }
 

@@ -35,6 +35,7 @@ import {
   timelineDeltaSchema,
   timelineRowSchema,
   timelineWorkflowWorkRowSchema,
+  threadTimelineHistorySchema,
 } from "../thread-timeline.js";
 import {
   createThreadEnvironmentArgsSchema,
@@ -962,6 +963,11 @@ export const threadTimelineResponseSchema = z.object({
   contextWindowUsage: threadContextWindowUsageSchema.optional(),
   timelinePage: timelinePageMetadataSchema,
   maxSeq: z.number().int().nonnegative(),
+  // The sequence numbering a page's cursors belong to. A rebuild renumbers
+  // every row, so a client holding a cursor from another generation must
+  // refetch rather than read its cursor as a position in this numbering.
+  generation: z.number().int().nonnegative(),
+  history: threadTimelineHistorySchema,
   delta: timelineDeltaSchema.optional(),
 });
 export type ThreadTimelineResponse = z.infer<

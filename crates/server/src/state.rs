@@ -697,30 +697,38 @@ impl AppState {
 
     /// Adds one live thread event to the timeline cache's overlay.
     ///
-    /// Two shapes reach the timeline: a run's provider frames, and the user's
-    /// own message, which the control plane appends itself. Both go in, because
-    /// a thread whose agent has not reported a session yet still has a
-    /// conversation as far as the user is concerned — the message they just
-    /// sent.
+    /// Three shapes reach the timeline: a run's provider frames, and the
+    /// messages the control plane appends itself — the user's prompt, and a
+    /// reply posted through the messages API. All go in, because a thread whose
+    /// agent has not reported a session yet still has a conversation as far as
+    /// the user is concerned — the messages they just sent and received.
+    ///
+    /// The frame carries where it came from, because a projection must not have
+    /// to guess: a run's frame belongs to that run and knows when it happened,
+    /// and a message the control plane appended is a whole message rather than a
+    /// step of one. A message is converted to the same provider frame an agent
+    /// would have replayed for that role (`ItemStarted` for a prompt,
+    /// `ItemCompleted` for an answer), so the live and restored projections
+    /// build one row from one frame.
     ///
     /// The binding is offered when it is known and omitted when it is not: a
     /// thread with no session yet has events but nothing to load a history
     /// from, which the cache records as a partial conversation rather than
     /// pretending it is the whole one.
     fn cache_live_event(&self, event: &loom_domain::DomainEvent) {
-        let (thread_id, body) = match event {
-            loom_domain::DomainEvent::ThreadRunEvent { run } => {
-                (run.thread_id.clone(), run.event.body.clone())
-            }
-            // The user's own message. The live timeline renders it from this
-            // domain event; the cache renders it from the frame the agent would
-            // have replayed, so it is converted once, here.
-            loom_domain::DomainEvent::ThreadMessageAdded { thread_id, message }
-                if message.role == loom_domain::MessageRole::User =>
-            {
-                (
-                    thread_id.clone(),
-                    loom_domain::ProviderEvent::ItemStarted {
+        use loom_domain::{MessageRole, ProviderEvent};
+        let (thread_id, source, body) = match event {
+            loom_domain::DomainEvent::ThreadRunEvent { run } => (
+                run.thread_id.clone(),
+                crate::history_cache::RowSource::Run {
+                    run_id: run.run_id.clone(),
+                    at_ms: run.at_ms,
+                },
+                run.event.body.clone(),
+            ),
+            loom_domain::DomainEvent::ThreadMessageAdded { thread_id, message } => {
+                let frame = match message.role {
+                    MessageRole::User => ProviderEvent::ItemStarted {
                         item: loom_domain::ThreadEventItem::UserMessage {
                             id: message.id.to_string(),
                             content: vec![loom_domain::UserContent::Text {
@@ -731,6 +739,27 @@ impl AppState {
                         },
                         provider_thread_id: String::new(),
                     },
+                    MessageRole::Assistant => ProviderEvent::ItemCompleted {
+                        item: loom_domain::ThreadEventItem::AgentMessage {
+                            id: message.id.to_string(),
+                            text: message.content.clone(),
+                            presentation: None,
+                            parent_tool_call_id: None,
+                        },
+                        provider_thread_id: String::new(),
+                    },
+                    // A system message has no provider frame to be: the
+                    // messages API does not accept the role, so nothing
+                    // produces one, and inventing a frame for it would put a
+                    // row on the timeline that no agent ever said.
+                    MessageRole::System => return,
+                };
+                (
+                    thread_id.clone(),
+                    crate::history_cache::RowSource::Message {
+                        at_ms: message.created_at_ms,
+                    },
+                    frame,
                 )
             }
             _ => return,
@@ -744,18 +773,20 @@ impl AppState {
             thread.provider_session_binding.as_ref(),
         ) {
             (Some(provider_session_id), Some(binding)) => {
-                binding.host_id.clone().map(|host_id| {
-                    crate::history_cache::CacheBinding {
+                binding
+                    .host_id
+                    .clone()
+                    .map(|host_id| crate::history_cache::CacheBinding {
                         host_id,
                         agent: binding.agent.clone(),
                         provider_session_id,
                         cwd: binding.cwd.clone(),
-                    }
-                })
+                    })
             }
             _ => None,
         };
-        self.history.append_live(&thread_id, binding.as_ref(), body);
+        self.history
+            .append_live(&thread_id, binding.as_ref(), source, body);
     }
 
     /// Publishes a durable public cache invalidation with no domain-event peer.

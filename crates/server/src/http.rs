@@ -18,10 +18,9 @@ use loom_domain::{
     DomainError, DomainEvent, DomainScope, Environment, EnvironmentId, EnvironmentKind,
     EnvironmentStatus, Host, HostId, HostStatus, Interaction, InteractionId, InteractionOrigin,
     MessageRole, NewQueuedMessage, Project, ProjectId, ProjectKind, ProjectSourceId, ProviderEvent,
-    QueuedMessage,
-    QueuedMessageId, QueuedMessageInitiator, QueuedMessagePayload, QueuedMessageStatus,
-    ReasoningLevel, Resolution, ServiceTier, Thread, ThreadId, ThreadStatus, ThreadTrigger,
-    ThreadUpdate,
+    QueuedMessage, QueuedMessageId, QueuedMessageInitiator, QueuedMessagePayload,
+    QueuedMessageStatus, ReasoningLevel, Resolution, ServiceTier, Thread, ThreadId, ThreadStatus,
+    ThreadTrigger, ThreadUpdate,
 };
 use loom_provider_protocol::ProviderSpec;
 use loom_relay::scope::Scope;
@@ -3726,14 +3725,21 @@ struct TimelineInput<'a> {
     /// When the source recorded it. `None` for a restored conversation, whose
     /// agent replay carries no timestamps.
     at_ms: Option<u64>,
-    /// What frames fold by, and what the row's `turnId` becomes: a live run's
-    /// id, or a local key that can never parse as one.
+    /// What frames fold by, and what the row's `turnId` becomes when the row
+    /// belongs to a turn: a live run's id, or a local key that can never parse
+    /// as one.
     group: String,
+    /// The row's `turnId`, when it is not the group.
+    ///
+    /// It is the group for every row that is *in* a turn: a run's frames are
+    /// grouped by their turn, and a restored conversation's local key is the
+    /// turn it stands for. It is `None` for a message the control plane
+    /// appended, which opens a turn rather than belonging to one: bb's client
+    /// reads a null turn as "this row is not part of a run", which is exactly
+    /// what the user's prompt and a posted reply are.
+    turn_id: Option<String>,
     /// The provider body, when this input is a run event.
     body: Option<&'a ProviderEvent>,
-    /// The row the source emits for this event on its own, used when no fold
-    /// claims it. A user's own message has no provider body and no fold.
-    direct_row: Option<Value>,
     /// Whether a user-message frame in this input opens a row.
     ///
     /// A live thread already carries the user's own message as a domain event,
@@ -3805,6 +3811,7 @@ fn build_timeline_rows(thread_id: &ThreadId, inputs: &[TimelineInput<'_>]) -> Ti
                         user_rows.push(user_message_row(
                             thread_id,
                             group,
+                            input.turn_id.as_deref(),
                             input.seq,
                             id,
                             &user_content_text(content),
@@ -3866,6 +3873,7 @@ fn build_timeline_rows(thread_id: &ThreadId, inputs: &[TimelineInput<'_>]) -> Ti
                         if let Some(message) = assistant_messages.get(group, item_id) {
                             assistant_rows.push(assistant_timeline_row(
                                 group,
+                                input.turn_id.as_deref(),
                                 thread_id,
                                 input.at_ms,
                                 message,
@@ -3875,7 +3883,18 @@ fn build_timeline_rows(thread_id: &ThreadId, inputs: &[TimelineInput<'_>]) -> Ti
                     return None;
                 }
             }
-            input.direct_row.clone()
+            // A frame no fold claimed is still the frame's own row, when the
+            // timeline has one for it. This is what carries a provider error (and
+            // any later diagnostic) into a restored conversation: the fold knows
+            // nothing about it, and the frame is the only place it exists.
+            if let Some(body) = input.body {
+                if let Some(row) =
+                    provider_event_row(thread_id, &input.group, input.seq, input.at_ms, body)
+                {
+                    return Some(row);
+                }
+            }
+            None
         })
         .collect::<Vec<_>>();
 
@@ -3902,40 +3921,65 @@ fn build_timeline_rows(thread_id: &ThreadId, inputs: &[TimelineInput<'_>]) -> Ti
     }
 }
 
-/// The timeline inputs a restored conversation supplies.
+/// The timeline inputs a cached conversation supplies.
 ///
-/// A restored conversation has no loom run ids — it belongs to no run — so it
-/// is grouped by a **local** key: a new group starts at each user message,
-/// which is the only turn boundary an ACP replay states. The key carries no
-/// `run_` prefix, so it cannot parse as a run id and no run action can be
-/// offered from a row grouped by it.
+/// A cached conversation is a mixture of two kinds of row, and each input says
+/// which it is holding:
 ///
-/// No time is supplied either: an agent's replay carries none, and the moment
-/// the server loaded the conversation is not the moment anything in it
-/// happened.
-fn restored_timeline_inputs(view: &crate::history_cache::CacheView) -> Vec<TimelineInput<'_>> {
-    let mut group: u32 = 0;
+/// * A **run's frame** folds and renders by its run, with the time the run
+///   published it. That is what keeps one turn's rows together and gives a
+///   thinking row the duration it reports.
+/// * A frame with **no run** — a message the control plane appended, or a frame
+///   the agent replayed when the conversation was loaded — is grouped by a
+///   **local** key: a new group starts at each message the user sent, which is
+///   the only turn boundary either kind states. The key carries no `run_`
+///   prefix, so it cannot parse as a run id and no run action can be offered
+///   from a row grouped by it. A replayed frame also carries no time: an
+///   agent's replay carries none, and the moment the conversation was loaded is
+///   not the moment anything in it happened.
+fn cached_timeline_inputs(view: &crate::history_cache::CacheView) -> Vec<TimelineInput<'_>> {
+    use crate::history_cache::RowSource;
+    let mut local: u32 = 0;
     view.rows
         .iter()
         .map(|row| {
-            if matches!(
-                &row.event,
-                ProviderEvent::ItemStarted {
-                    item: loom_domain::ThreadEventItem::UserMessage { .. },
-                    ..
+            let (group, at_ms, turn_id) = match &row.source {
+                RowSource::Run { run_id, at_ms } => {
+                    let group = run_id.to_string();
+                    (group.clone(), Some(*at_ms), Some(group))
                 }
-            ) {
-                group += 1;
-            }
+                RowSource::Message { at_ms } => {
+                    local += 1;
+                    // A message opens the turn it is answered in; it is not
+                    // part of a run, and its row says so with a null turn.
+                    (format!("local-{local}"), Some(*at_ms), None)
+                }
+                RowSource::Replayed => {
+                    // A replay's only turn boundary is a user message.
+                    if matches!(
+                        &row.event,
+                        ProviderEvent::ItemStarted {
+                            item: loom_domain::ThreadEventItem::UserMessage { .. },
+                            ..
+                        }
+                    ) {
+                        local += 1;
+                    }
+                    let group = format!("local-{}", local.max(1));
+                    (group.clone(), None, Some(group))
+                }
+            };
             TimelineInput {
                 seq: row.seq,
-                at_ms: None,
-                group: format!("restored-{}", group.max(1)),
+                at_ms,
+                group,
+                turn_id,
                 body: Some(&row.event),
-                direct_row: None,
-                // A restored conversation has no domain event behind its user
-                // message: the replayed frame is the only place it exists.
-                user_frame_opens_row: true,
+                // A frame with no run behind it is the only trace of its
+                // message, so it opens the row; a run's frame may be the agent
+                // echoing the prompt loom already recorded, and must not open a
+                // second one.
+                user_frame_opens_row: !matches!(row.source, RowSource::Run { .. }),
             }
         })
         .collect()
@@ -3943,34 +3987,62 @@ fn restored_timeline_inputs(view: &crate::history_cache::CacheView) -> Vec<Timel
 
 /// The rows a cached conversation projects to.
 ///
-/// The other source for [`build_timeline_rows`]: same folds, same row shapes,
-/// different answers to "where does the sequence come from" and "what folds
-/// together".
-fn restored_timeline_rows(
+/// The source for [`build_timeline_rows`]: the folds are a live thread's,
+/// because the frames are.
+fn cached_timeline_rows(
     thread_id: &ThreadId,
     view: &crate::history_cache::CacheView,
 ) -> TimelineRows {
-    let inputs = restored_timeline_inputs(view);
+    let inputs = cached_timeline_inputs(view);
     build_timeline_rows(thread_id, &inputs)
+}
+
+/// The rows a thread's timeline is made of, from the cache.
+///
+/// Both `threads.timeline` and a turn's details are this same row set: the
+/// details route **selects** from it rather than projecting the log a second
+/// time, which is what keeps a row it answers byte-identical to the row the
+/// timeline showed.
+fn cached_thread_timeline_rows(state: &AppState, thread_id: &ThreadId) -> TimelineRows {
+    state
+        .history
+        .view(thread_id)
+        .map(|view| cached_timeline_rows(thread_id, &view))
+        .unwrap_or(TimelineRows {
+            rows: Vec::new(),
+            model_fallback: None,
+            max_seq: 0,
+        })
 }
 
 #[cfg(test)]
 mod restored_timeline_tests {
     use super::*;
-    use crate::history_cache::{CacheBinding, CacheView, CachedRow, HistoryStatus};
+    use crate::history_cache::{CacheBinding, CacheView, CachedRow, HistoryStatus, RowSource};
     use loom_domain::{HostId, ItemStatus, ThreadEventItem, UserContent};
 
+    /// A cached conversation of replayed frames: what a load installs.
     fn view(events: Vec<ProviderEvent>) -> CacheView {
+        view_of(
+            events
+                .into_iter()
+                .map(|event| (RowSource::Replayed, event))
+                .collect(),
+        )
+    }
+
+    fn view_of(rows: Vec<(RowSource, ProviderEvent)>) -> CacheView {
         CacheView {
             generation: 1,
             status: HistoryStatus::Ready,
             complete: true,
             reason: None,
-            rows: events
+            rows: rows
                 .into_iter()
                 .enumerate()
-                .map(|(index, event)| CachedRow {
+                .map(|(index, (source, event))| CachedRow {
                     seq: index as u64 + 1,
+                    source,
                     event,
                 })
                 .collect(),
@@ -4023,7 +4095,7 @@ mod restored_timeline_tests {
     #[test]
     fn a_restored_conversation_projects_to_rows_in_order() {
         let thread_id = ThreadId::mint();
-        let rows = restored_timeline_rows(
+        let rows = cached_timeline_rows(
             &thread_id,
             &view(vec![
                 user_message("user-1", "what changed?"),
@@ -4047,7 +4119,7 @@ mod restored_timeline_tests {
     #[test]
     fn every_restored_row_is_grouped_by_a_key_that_is_not_a_run_id() {
         let thread_id = ThreadId::mint();
-        let rows = restored_timeline_rows(
+        let rows = cached_timeline_rows(
             &thread_id,
             &view(vec![
                 user_message("user-1", "first"),
@@ -4064,7 +4136,7 @@ mod restored_timeline_tests {
                 .as_str()
                 .unwrap_or_else(|| panic!("a restored row names a group: {row}"));
             assert!(
-                turn.starts_with("restored-"),
+                turn.starts_with("local-"),
                 "the group key must be visibly local: {turn}"
             );
             assert!(
@@ -4079,7 +4151,7 @@ mod restored_timeline_tests {
     #[test]
     fn a_user_message_starts_a_new_group() {
         let thread_id = ThreadId::mint();
-        let rows = restored_timeline_rows(
+        let rows = cached_timeline_rows(
             &thread_id,
             &view(vec![
                 user_message("user-1", "first"),
@@ -4097,7 +4169,7 @@ mod restored_timeline_tests {
         turns.dedup();
         assert_eq!(
             turns,
-            vec!["restored-1", "restored-2"],
+            vec!["local-1", "local-2"],
             "two user messages are two groups"
         );
     }
@@ -4107,12 +4179,9 @@ mod restored_timeline_tests {
     #[test]
     fn a_restored_row_carries_no_fabricated_time() {
         let thread_id = ThreadId::mint();
-        let rows = restored_timeline_rows(
+        let rows = cached_timeline_rows(
             &thread_id,
-            &view(vec![
-                user_message("user-1", "hello"),
-                tool_call("call-1"),
-            ]),
+            &view(vec![user_message("user-1", "hello"), tool_call("call-1")]),
         )
         .rows;
 
@@ -4126,6 +4195,96 @@ mod restored_timeline_tests {
         }
     }
 
+    /// One provider frame, one row.
+    ///
+    /// A run's frame and a replayed frame reach the timeline through different
+    /// origins: one knows its run and when it happened, the other knows neither.
+    /// What the row *says* must not depend on that, so the two are compared
+    /// field by field — only the grouping key, the sequence numbering, and the
+    /// time a replay does not carry may differ.
+    #[test]
+    fn a_provider_error_reads_the_same_in_both_origins() {
+        let thread_id = ThreadId::mint();
+        let run_id = loom_domain::RunId::mint();
+        let error = ProviderEvent::ProviderError {
+            provider_thread_id: "acp-session-1".to_owned(),
+            message: "the ACP connection ended".to_owned(),
+            detail: Some("stderr tail".to_owned()),
+            error_info: None,
+            will_retry: Some(false),
+        };
+
+        let live = cached_timeline_rows(
+            &thread_id,
+            &view_of(vec![(
+                RowSource::Run {
+                    run_id: run_id.clone(),
+                    at_ms: 1_700_000_000_000,
+                },
+                error.clone(),
+            )]),
+        )
+        .rows;
+        assert_eq!(live.len(), 1, "an error is one row: {live:?}");
+        let live = &live[0];
+        let restored = cached_timeline_rows(&thread_id, &view(vec![error])).rows;
+        assert_eq!(restored.len(), 1, "an error is one row: {restored:?}");
+        let restored = &restored[0];
+
+        for key in ["kind", "title", "detail", "status", "systemKind"] {
+            assert_eq!(live[key], restored[key], "`{key}` differs between origins");
+        }
+        assert_eq!(live["turnId"], json!(run_id.to_string()));
+        assert!(
+            restored["turnId"].as_str().unwrap().starts_with("local-"),
+            "a replayed row is grouped locally: {restored}"
+        );
+        // The live row knows when it happened; a replay has no time to give.
+        assert!(live["createdAt"].is_number());
+        assert!(restored["createdAt"].is_null());
+        assert!(restored["startedAt"].is_null());
+    }
+
+    /// A run's frames keep their run and their time, which is what a live
+    /// thread's rows are grouped and dated by.
+    #[test]
+    fn a_live_frame_keeps_its_run_and_its_time() {
+        let thread_id = ThreadId::mint();
+        let run_id = loom_domain::RunId::mint();
+        let at_ms = 1_700_000_000_000;
+        let rows = cached_timeline_rows(
+            &thread_id,
+            &view_of(vec![
+                (
+                    RowSource::Message { at_ms: 1 },
+                    user_message("user-1", "count"),
+                ),
+                (
+                    RowSource::Run {
+                        run_id: run_id.clone(),
+                        at_ms,
+                    },
+                    assistant_delta("assistant-1", "Sixty."),
+                ),
+            ]),
+        )
+        .rows;
+
+        let answer = rows
+            .iter()
+            .find(|row| row["role"] == "assistant")
+            .expect("the answer is a row");
+        assert_eq!(answer["turnId"], json!(run_id.to_string()));
+        assert_eq!(answer["createdAt"], json!(at_ms));
+
+        let prompt = rows.iter().find(|row| row["role"] == "user").unwrap();
+        assert!(
+            prompt["turnId"].is_null(),
+            "a prompt belongs to no run: {prompt}"
+        );
+        assert_eq!(prompt["createdAt"], json!(1));
+    }
+
     /// A live thread already carried the user's own message as a domain event.
     /// An agent that echoes the accepted prompt back must not open a second row
     /// for it, which is why the source, not the frame, decides.
@@ -4137,8 +4296,8 @@ mod restored_timeline_tests {
             seq: 1,
             at_ms: Some(1_700_000_000_000),
             group: "run_abc".to_owned(),
+            turn_id: Some("run_abc".to_owned()),
             body: Some(&event),
-            direct_row: None,
             user_frame_opens_row: false,
         }];
 
@@ -4186,6 +4345,7 @@ fn user_content_text(content: &[loom_domain::UserContent]) -> String {
 fn user_message_row(
     thread_id: &ThreadId,
     group: &str,
+    turn_id: Option<&str>,
     sequence: u64,
     item_id: &str,
     text: &str,
@@ -4194,7 +4354,7 @@ fn user_message_row(
     let mut row = timeline_row_base(
         format!("{thread_id}:{group}:{item_id}"),
         thread_id,
-        Some(group.to_owned()),
+        turn_id.map(str::to_owned),
         sequence,
         at_ms,
     );
@@ -4224,6 +4384,7 @@ fn user_message_row(
 /// and last frame that contributed to it.
 fn assistant_timeline_row(
     run_id: &str,
+    turn_id: Option<&str>,
     thread_id: &ThreadId,
     created_at_ms: Option<u64>,
     message: &crate::assistant_timeline::AssistantMessage,
@@ -4231,7 +4392,7 @@ fn assistant_timeline_row(
     let mut row = timeline_row_base(
         format!("{thread_id}:{run_id}:{}", message.id.item_id),
         thread_id,
-        Some(run_id.to_owned()),
+        turn_id.map(str::to_owned),
         message.start_sequence,
         created_at_ms,
     );
@@ -4284,107 +4445,49 @@ fn bounded_error_text(text: &str) -> String {
     format!("{}…(truncated)", &text[..end])
 }
 
-fn timeline_row_for_event(
+/// The row a provider event contributes on its own, when no fold claims it.
+///
+/// This is the one mapping from a provider's own frames to a timeline row, and
+/// both sources go through it: a live thread through its run event's provider
+/// body, a restored conversation through the cache. Which of the two produced a
+/// row must not change what the row says, so neither source spells the shape
+/// itself.
+///
+/// `None` means the frame is not a row: either a fold owns it (an answer is many
+/// deltas, a call is several frames) or the timeline has nothing to say about it.
+fn provider_event_row(
     thread_id: &ThreadId,
+    group: &str,
     sequence: u64,
-    event: &DomainEvent,
+    at_ms: Option<u64>,
+    event: &ProviderEvent,
 ) -> Option<Value> {
-    let mut base = match event {
-        DomainEvent::ThreadMessageAdded { message, .. } => timeline_row_base(
-            message.id.to_string(),
-            thread_id,
-            None,
-            sequence,
-            Some(message.created_at_ms),
-        ),
-        DomainEvent::ThreadRunEvent { run } => timeline_row_base(
-            format!("{}-{sequence}", run.run_id),
-            thread_id,
-            Some(run.run_id.to_string()),
-            sequence,
-            Some(run.at_ms),
-        ),
-        _ => return None,
-    };
+    let mut base = timeline_row_base(
+        format!("{group}-{sequence}"),
+        thread_id,
+        Some(group.to_owned()),
+        sequence,
+        at_ms,
+    );
     let object = base
         .as_object_mut()
         .expect("timeline row base is an object");
     match event {
-        DomainEvent::ThreadMessageAdded { message, .. } => match message.role {
-            MessageRole::User => {
-                object.extend([
-                    ("kind".into(), json!("conversation")),
-                    ("text".into(), json!(message.content)),
-                    ("attachments".into(), Value::Null),
-                    ("role".into(), json!("user")),
-                    ("initiator".into(), json!("user")),
-                    ("senderThreadId".into(), Value::Null),
-                    ("systemMessageKind".into(), json!("unlabeled")),
-                    ("systemMessageSubject".into(), Value::Null),
-                    (
-                        "turnRequest".into(),
-                        json!({ "isGrouped": false, "kind": "message", "status": "accepted" }),
-                    ),
-                    ("mentions".into(), json!([])),
-                ]);
-            }
-            MessageRole::Assistant => {
-                object.extend([
-                    ("kind".into(), json!("conversation")),
-                    ("text".into(), json!(message.content)),
-                    ("attachments".into(), Value::Null),
-                    ("role".into(), json!("assistant")),
-                    ("turnRequest".into(), Value::Null),
-                ]);
-            }
-            MessageRole::System => {
-                object.extend([
-                    ("kind".into(), json!("system")),
-                    ("title".into(), json!("System message")),
-                    ("detail".into(), json!(message.content)),
-                    ("status".into(), Value::Null),
-                    ("systemKind".into(), json!("debug")),
-                ]);
-            }
-        },
-        DomainEvent::ThreadRunEvent { run } => {
-            let event_value =
-                serde_json::to_value(&run.event).expect("ThreadEvent always serializes");
-            match event_value.get("type").and_then(Value::as_str) {
-                // An assistant delta is not a row: `threads.timeline` folds the
-                // deltas that share an item id into the message they spell, and
-                // emits that one row through
-                // `assistant_message_timeline`/`assistant_timeline_row`. A row
-                // per delta is what chopped a streamed answer into its chunks.
-                Some("item/agentMessage/delta") => return None,
-                Some("item/completed")
-                    if event_value
-                        .get("item")
-                        .and_then(|item| item.get("type"))
-                        .and_then(Value::as_str)
-                        == Some("agentMessage") =>
-                {
-                    return None;
-                }
-                Some("provider/error") => {
-                    let title = event_value
-                        .get("message")
-                        .and_then(Value::as_str)
-                        .unwrap_or("Provider error");
-                    let detail = event_value
-                        .get("detail")
-                        .and_then(Value::as_str)
-                        .map_or(Value::Null, |detail| json!(bounded_error_text(detail)));
-                    object.extend([
-                        ("kind".into(), json!("system")),
-                        ("title".into(), json!(bounded_error_text(title))),
-                        ("detail".into(), detail),
-                        ("status".into(), json!("error")),
-                        ("systemKind".into(), json!("error")),
-                    ]);
-                }
-                _ => return None,
-            }
+        ProviderEvent::ProviderError {
+            message, detail, ..
+        } => {
+            object.extend([
+                ("kind".into(), json!("system")),
+                ("title".into(), json!(bounded_error_text(message))),
+                (
+                    "detail".into(),
+                    detail
+                        .as_deref()
+                        .map_or(Value::Null, |detail| json!(bounded_error_text(detail))),
+                ),
+                ("status".into(), json!("error")),
+                ("systemKind".into(), json!("error")),
+            ]);
         }
         _ => return None,
     }
@@ -4422,40 +4525,50 @@ async fn thread_timeline(
         Ok(entries) => entries,
         Err(response) => return response,
     };
-    // The projection's inputs from this source. Folding and row shapes are
-    // decided by `build_timeline_rows`; what a source supplies is where the
-    // sequence comes from, what folds together, and whether a time is known.
-    let inputs: Vec<TimelineInput<'_>> = entries
-        .iter()
-        .map(|(_event_id, sequence, created_at_ms, event)| {
-            let direct_row = timeline_row_for_event(&thread_id, *sequence, event);
-            match event {
-                DomainEvent::ThreadRunEvent { run } => TimelineInput {
-                    seq: *sequence,
-                    at_ms: Some(*created_at_ms),
-                    group: run.run_id.to_string(),
-                    body: Some(&run.event.body),
-                    direct_row,
-                    // The user's own message arrived as a domain event, so an
-                    // agent echoing the prompt back must not open a second row.
-                    user_frame_opens_row: false,
-                },
-                _ => TimelineInput {
-                    seq: *sequence,
-                    at_ms: Some(*created_at_ms),
-                    group: String::new(),
-                    body: None,
-                    direct_row,
-                    user_frame_opens_row: false,
-                },
-            }
-        })
-        .collect();
-    let TimelineRows {
-        rows: all_rows,
+    // The timeline is served from the cache. A conversation's authority is the
+    // agent that owns its session, and the cache holds a displayable form of
+    // it: a baseline from that agent plus everything that has happened since.
+    // The log is still read above, but for loom's own facts — a goal, a
+    // reported occupancy — which are not the conversation and must keep their
+    // own meaning.
+    let (
+        all_rows,
         model_fallback,
         max_seq,
-    } = build_timeline_rows(&thread_id, &inputs);
+        generation,
+        history_status,
+        history_complete,
+        history_reason,
+    ) = match state.history.view(&thread_id) {
+        Some(view) => {
+            let built = cached_timeline_rows(&thread_id, &view);
+            (
+                built.rows,
+                built.model_fallback,
+                built.max_seq,
+                view.generation,
+                view.status,
+                view.complete,
+                view.reason.clone(),
+            )
+        }
+        None => {
+            // Nothing is cached yet. Reading a thread asks for its history, and
+            // the read must not wait for an agent to start — a load can take as
+            // long as a cold start. The answer is `loading`, and the client
+            // asks again; every other reader joins the same load.
+            let (status, reason) = match state.start_thread_history_load(&thread_id) {
+                Ok(()) | Err(crate::history::HistoryUnavailable::Busy) => {
+                    (crate::history_cache::HistoryStatus::Loading, None)
+                }
+                Err(error) => (
+                    crate::history_cache::HistoryStatus::Unavailable,
+                    Some(error.to_string()),
+                ),
+            };
+            (Vec::new(), None, 0, 0, status, false, reason)
+        }
+    };
     let before_id_sequence = query.before_anchor_id.as_ref().and_then(|anchor_id| {
         all_rows.iter().find_map(|row| {
             (row.get("id").and_then(Value::as_str) == Some(anchor_id.as_str()))
@@ -4506,7 +4619,19 @@ async fn thread_timeline(
             "hasOlderRows": has_older_rows,
             "olderCursor": older_cursor
         },
-        "maxSeq": max_seq
+        "maxSeq": max_seq,
+        // A cursor is only meaningful inside a generation: a rebuild renumbers
+        // from one, and a client that held a cursor across one must refetch
+        // rather than read its old cursor as a position in the new numbering.
+        "generation": generation,
+        // How much of the conversation this is. "No rows" and "could not load"
+        // are different answers, and a client that cannot tell them apart shows
+        // an empty conversation where it should offer a reason.
+        "history": {
+            "status": history_status.token(),
+            "complete": history_complete,
+            "reason": history_reason,
+        }
     });
     // The composer's occupancy indicator is a read of the thread's own log, so
     // it is projected here rather than stored. The ported contract makes the
@@ -5798,11 +5923,12 @@ struct TurnSummaryDetailsQuery {
 /// first.
 ///
 /// This is a **filtered view of `threads.timeline`, not a second projection**:
-/// the rows are built by the same [`timeline_row_for_event`], so a row this
-/// route answers is byte-identical to the same row in the timeline it came
-/// from. What differs is the selection — the caller names a turn and a source
-/// sequence range — and the paging, which walks *backwards* because the UI
-/// expands a collapsed turn from its newest summary row towards its oldest.
+/// the rows come from the same [`cached_thread_timeline_rows`] the timeline
+/// itself serves, so a row this route answers is byte-identical to the same row
+/// in the timeline it came from. What differs is the selection — the caller
+/// names a turn and a source sequence range — and the paging, which walks
+/// *backwards* because the UI expands a collapsed turn from its newest summary
+/// row towards its oldest.
 ///
 /// `beforeCursor` is the `rows[].id` of the oldest row the caller already has;
 /// the response carries every matching row strictly before it, capped at the
@@ -5853,19 +5979,23 @@ async fn thread_turn_summary_details(
         );
     }
 
-    let entries = match thread_domain_events(&state, &thread_id) {
-        Ok(entries) => entries,
-        Err(response) => return response,
-    };
     // The row set is the timeline's, filtered to the turn's range. Filtering on
-    // the event's own turn scope would drop the user message that opened the
-    // turn — it is thread-scoped by construction — which is exactly the row a
-    // summary expansion is anchored on.
-    let mut rows = entries
-        .iter()
-        .filter(|(_, sequence, _, _)| *sequence >= source_start && *sequence <= source_end)
-        .filter_map(|(_event_id, sequence, _created_at_ms, event)| {
-            timeline_row_for_event(&thread_id, *sequence, event)
+    // the row's own turn would drop the user message that opened the turn — it
+    // belongs to no run — which is exactly the row a summary expansion is
+    // anchored on, so the range is what selects.
+    let mut rows = cached_thread_timeline_rows(&state, &thread_id)
+        .rows
+        .into_iter()
+        .filter(|row| {
+            let start = row
+                .get("sourceSeqStart")
+                .and_then(Value::as_u64)
+                .unwrap_or_default();
+            let end = row
+                .get("sourceSeqEnd")
+                .and_then(Value::as_u64)
+                .unwrap_or_default();
+            start >= source_start && end <= source_end
         })
         .collect::<Vec<_>>();
 
@@ -7667,9 +7797,14 @@ mod tests {
                 will_retry: Some(false),
             },
         );
-        let event = DomainEvent::ThreadRunEvent { run: Box::new(run) };
-
-        let row = timeline_row_for_event(&thread_id, 7, &event).expect("a row for the diagnostic");
+        let row = provider_event_row(
+            &thread_id,
+            &run.run_id.to_string(),
+            7,
+            Some(run.at_ms),
+            &run.event.body,
+        )
+        .expect("a row for the diagnostic");
         assert_eq!(row["kind"], "system");
         assert_eq!(row["systemKind"], "error");
         assert_eq!(row["status"], "error");
