@@ -46,6 +46,7 @@
 pub mod acp;
 pub mod cli;
 pub mod discovery;
+pub mod failure_text;
 pub mod host_files;
 pub mod provider;
 pub mod run;

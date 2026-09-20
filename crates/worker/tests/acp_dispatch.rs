@@ -146,6 +146,28 @@ fn thread_events(state: &AppState, thread_id: &loom_domain::ThreadId) -> Vec<Val
         .collect()
 }
 
+/// A raw HTTP/1.1 GET, so the assertion is on the row the server actually
+/// serves rather than on a re-derivation of it.
+///
+/// This file has no HTTP client dependency, and one request does not justify
+/// adding one.
+async fn get_json(url: &str, path: &str) -> Value {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let authority = url.trim_start_matches("http://");
+    let mut stream = tokio::net::TcpStream::connect(authority).await.unwrap();
+    let request = format!("GET {path} HTTP/1.1\r\nHost: {authority}\r\nConnection: close\r\n\r\n");
+    stream.write_all(request.as_bytes()).await.unwrap();
+    let mut response = Vec::new();
+    stream.read_to_end(&mut response).await.unwrap();
+    let text = String::from_utf8_lossy(&response);
+    let body = text
+        .split_once("\r\n\r\n")
+        .map(|(_, body)| body)
+        .expect("an HTTP response has a body");
+    serde_json::from_str(body).expect("the timeline response is JSON")
+}
+
 fn turn_completions(events: &[Value]) -> Vec<&Value> {
     events
         .iter()
@@ -222,7 +244,8 @@ async fn an_acp_dispatch_runs_through_a_real_worker() {
 }
 
 /// An ACP spec naming a binary that does not exist fails the run rather than
-/// leaving the thread in `working`.
+/// leaving the thread in `working`, and the failure reaches the timeline as a
+/// row rather than as silence.
 #[tokio::test(flavor = "multi_thread")]
 async fn an_acp_dispatch_to_a_missing_agent_fails_cleanly() {
     let workspace = tempfile::tempdir().unwrap();
@@ -266,6 +289,40 @@ async fn an_acp_dispatch_to_a_missing_agent_fails_cleanly() {
         state.registry.thread(&thread_id).unwrap().status,
         ThreadStatus::Error,
         "the thread is in error, not stuck"
+    );
+
+    // A failed turn owes the timeline a diagnosis, not silence: the worker
+    // reports a `provider/error` before the terminal event, and the server
+    // serves it as a system error row a client can render.
+    let kinds: Vec<_> = events
+        .iter()
+        .filter_map(|e| e.pointer("/event/type").and_then(Value::as_str))
+        .collect();
+    let diagnostic = kinds
+        .iter()
+        .position(|kind| *kind == "provider/error")
+        .unwrap_or_else(|| panic!("the failure is diagnosed: {kinds:?}"));
+    let terminal = kinds
+        .iter()
+        .position(|kind| *kind == "turn/completed")
+        .expect("the run settled");
+    assert!(
+        diagnostic < terminal,
+        "the diagnosis precedes the terminal: {kinds:?}"
+    );
+
+    let timeline = get_json(&url, &format!("/api/v1/threads/{thread_id}/timeline")).await;
+    let row = timeline["rows"]
+        .as_array()
+        .expect("the timeline has rows")
+        .iter()
+        .find(|row| row["systemKind"] == "error")
+        .unwrap_or_else(|| panic!("the timeline carries the diagnosis: {timeline}"));
+    assert_eq!(row["kind"], "system");
+    assert_eq!(row["status"], "error");
+    assert!(
+        !row["title"].as_str().unwrap_or_default().is_empty(),
+        "the row has a headline: {row}"
     );
 
     worker.abort();

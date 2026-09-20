@@ -10,7 +10,7 @@ use agent_client_protocol_schema::v1::{
     ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields, ToolKind,
 };
 use agent_client_protocol_schema::v2;
-use loom_domain::{ItemStatus, ProviderEvent, ThreadEventItem, TurnStatus};
+use loom_domain::{ItemStatus, ProviderErrorCategory, ProviderEvent, ThreadEventItem, TurnStatus};
 
 use super::{AcpTranslator, RunContext};
 
@@ -73,10 +73,40 @@ fn every_stop_reason_produces_exactly_one_terminal_event() {
 }
 
 #[test]
-fn a_failure_also_ends_the_turn() {
+fn a_failure_reports_a_diagnostic_before_it_ends_the_turn() {
     let mut t = translator();
     t.on_prompt_sent();
-    let events = t.on_failure("transport closed".into());
+    let events = t.on_failure(
+        "transport closed".into(),
+        ProviderErrorCategory::ConnectionFailed,
+    );
+
+    // The terminal event is still exactly one, and still last: the timeline can
+    // read the diagnostic and the control plane can settle the run.
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event, ProviderEvent::TurnCompleted { .. }))
+            .count(),
+        1,
+        "a failure still produces exactly one terminal event: {events:?}"
+    );
+    match events.first() {
+        Some(ProviderEvent::ProviderError {
+            message,
+            error_info,
+            will_retry,
+            ..
+        }) => {
+            assert_eq!(message, "transport closed");
+            assert_eq!(
+                error_info.as_ref().map(|info| info.category),
+                Some(ProviderErrorCategory::ConnectionFailed)
+            );
+            assert_eq!(*will_retry, Some(false));
+        }
+        other => panic!("expected a provider error, got {other:?}"),
+    }
     match events.last() {
         Some(ProviderEvent::TurnCompleted { status, error, .. }) => {
             assert_eq!(*status, TurnStatus::Failed);
@@ -86,6 +116,66 @@ fn a_failure_also_ends_the_turn() {
             );
         }
         other => panic!("expected a terminal event, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_failure_keeps_the_verbatim_message_on_the_terminal_event() {
+    // The diagnostic is the readable projection; the terminal event is the
+    // record. A bundled runtime's stderr tail is tens of kilobytes, so the two
+    // must not be the same string.
+    let raw = "the ACP connection ended: boom; stderr tail:\n\
+               TypeError: Cannot read properties of undefined (reading 'runtime')\n\
+               at streamSimple (chunk.js:1:2)\n\
+               at worker-stream.ts:43:45";
+    let mut t = translator();
+    t.on_prompt_sent();
+    let events = t.on_failure(raw.into(), ProviderErrorCategory::ConnectionFailed);
+
+    match events.last() {
+        Some(ProviderEvent::TurnCompleted { error, .. }) => {
+            assert_eq!(
+                error.as_ref().map(|e| e.message.as_str()),
+                Some(raw),
+                "the terminal event keeps the message verbatim"
+            );
+        }
+        other => panic!("expected a terminal event, got {other:?}"),
+    }
+    match events.first() {
+        Some(ProviderEvent::ProviderError {
+            message, detail, ..
+        }) => {
+            assert!(
+                message.starts_with("the ACP connection ended"),
+                "the diagnostic headline is the reason: {message}"
+            );
+            let detail = detail.as_deref().expect("the exception survives");
+            assert!(detail.contains("TypeError:"), "{detail}");
+            assert!(detail.contains("worker-stream.ts:43:45"), "{detail}");
+        }
+        other => panic!("expected a provider error, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_refusal_also_reports_a_diagnostic() {
+    let mut t = translator();
+    t.on_prompt_sent();
+    let events = t.on_stop_reason(StopReason::Refusal);
+    match events.first() {
+        Some(ProviderEvent::ProviderError {
+            message,
+            error_info,
+            ..
+        }) => {
+            assert_eq!(message, "the agent refused the turn");
+            assert_eq!(
+                error_info.as_ref().map(|info| info.category),
+                Some(ProviderErrorCategory::Policy)
+            );
+        }
+        other => panic!("expected a provider error, got {other:?}"),
     }
 }
 

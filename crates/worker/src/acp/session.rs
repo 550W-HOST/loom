@@ -34,7 +34,8 @@ use agent_client_protocol::{
     on_receive_notification, on_receive_request, Agent, Client, ConnectTo, ConnectionTo, Error,
 };
 use loom_domain::{
-    ModelFallbackReason, ProviderEvent, ProviderWarningCategory, ReasoningLevel, RunEvent,
+    ModelFallbackReason, ProviderErrorCategory, ProviderEvent, ProviderWarningCategory,
+    ReasoningLevel, RunEvent,
 };
 use loom_provider_protocol::{InteractionRequest, ProviderCatalogReport, ProviderReport};
 use tokio::sync::mpsc;
@@ -1111,7 +1112,9 @@ impl UpdateSink {
     async fn terminal_failure(&self, message: String) -> Result<(), String> {
         let events = {
             let mut state = self.state.lock().await;
-            state.translator.on_failure(message)
+            state
+                .translator
+                .on_failure(message, ProviderErrorCategory::ConnectionFailed)
         };
         self.report_all(events).await;
         Ok(())
@@ -1121,7 +1124,9 @@ impl UpdateSink {
     async fn terminal_timeout(&self, message: String) -> Result<(), String> {
         let events = {
             let mut state = self.state.lock().await;
-            state.translator.on_failure(message)
+            state
+                .translator
+                .on_failure(message, ProviderErrorCategory::ConnectionFailed)
         };
         self.report_all_with_outcome(events, Some(loom_domain::RunOutcome::TimedOut))
             .await;

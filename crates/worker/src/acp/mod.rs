@@ -39,10 +39,12 @@ use agent_client_protocol_schema::v1::{
 };
 use agent_client_protocol_schema::v2;
 use loom_domain::{
-    ItemStatus, PlanStep, PlanStepStatus, ProviderEvent, SearchMode, ThreadEventItem, TurnError,
-    TurnStatus, UserContent,
+    ItemStatus, PlanStep, PlanStepStatus, ProviderErrorCategory, ProviderErrorInfo, ProviderEvent,
+    SearchMode, ThreadEventItem, TurnError, TurnStatus, UserContent,
 };
 use serde_json::Value;
+
+use crate::failure_text::summarize_agent_failure;
 
 /// What a translator is built from: the parts of a run every event needs.
 pub struct RunContext {
@@ -353,6 +355,12 @@ impl AcpTranslator {
             _ => (TurnStatus::Completed, None),
         };
         self.turn_open = false;
+        if let Some(message) = &error {
+            // A refusal ends the turn as a failure like any other, so it owes
+            // the timeline the same diagnostic row. It is a policy refusal by
+            // construction: that is the stop reason that produced it.
+            events.push(self.provider_error(message, ProviderErrorCategory::Policy));
+        }
         events.push(ProviderEvent::TurnCompleted {
             provider_thread_id: Some(self.ptid()),
             status,
@@ -363,9 +371,16 @@ impl AcpTranslator {
     }
 
     /// A failure that ends the turn out of band: a transport error, a deadline.
-    pub fn on_failure(&mut self, message: String) -> Translated {
+    ///
+    /// The terminal event must stay the last one, so the diagnostic that
+    /// precedes it is built here rather than at each call site. Its message is
+    /// the readable projection of the agent's failure; the terminal event keeps
+    /// the text verbatim.
+    pub fn on_failure(&mut self, message: String, category: ProviderErrorCategory) -> Translated {
+        let diagnostic = self.provider_error(&message, category);
         let mut events = self.flush_assistant();
         self.turn_open = false;
+        events.push(diagnostic);
         events.push(ProviderEvent::TurnCompleted {
             provider_thread_id: Some(self.ptid()),
             status: TurnStatus::Failed,
@@ -373,6 +388,26 @@ impl AcpTranslator {
             provider_checkpoint_id: None,
         });
         events
+    }
+
+    /// The `provider/error` diagnostic that opens a failed turn.
+    ///
+    /// The message is summarized because an agent's stderr tail can be tens of
+    /// kilobytes of bundled source; [`summarize_agent_failure`] keeps the
+    /// headline and the exception.
+    fn provider_error(&self, message: &str, category: ProviderErrorCategory) -> ProviderEvent {
+        let summary = summarize_agent_failure(message);
+        ProviderEvent::ProviderError {
+            provider_thread_id: self.ptid(),
+            message: summary.headline,
+            detail: summary.detail,
+            error_info: Some(ProviderErrorInfo {
+                category,
+                provider_code: None,
+                http_status_code: None,
+            }),
+            will_retry: Some(false),
+        }
     }
 
     // --- messages ---------------------------------------------------------

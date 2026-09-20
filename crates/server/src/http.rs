@@ -3768,6 +3768,26 @@ fn timeline_row_base(
     })
 }
 
+/// The largest error text a timeline row carries.
+///
+/// A row is copied into every timeline response and every replayed frame, and
+/// an agent's failure text can be a bundled runtime's whole stderr tail. The
+/// row is bounded here as the last line of defence; the run event keeps the
+/// full text, and that is where a diagnosis is read from.
+const MAX_TIMELINE_ERROR_BYTES: usize = 8 * 1024;
+
+/// Caps an error text at [`MAX_TIMELINE_ERROR_BYTES`], on a char boundary.
+fn bounded_error_text(text: &str) -> String {
+    if text.len() <= MAX_TIMELINE_ERROR_BYTES {
+        return text.to_owned();
+    }
+    let mut end = MAX_TIMELINE_ERROR_BYTES;
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}…(truncated)", &text[..end])
+}
+
 fn timeline_row_for_event(
     thread_id: &ThreadId,
     sequence: u64,
@@ -3858,10 +3878,10 @@ fn timeline_row_for_event(
                     let detail = event_value
                         .get("detail")
                         .and_then(Value::as_str)
-                        .map_or(Value::Null, |detail| json!(detail));
+                        .map_or(Value::Null, |detail| json!(bounded_error_text(detail)));
                     object.extend([
                         ("kind".into(), json!("system")),
-                        ("title".into(), json!(title)),
+                        ("title".into(), json!(bounded_error_text(title))),
                         ("detail".into(), detail),
                         ("status".into(), json!("error")),
                         ("systemKind".into(), json!("error")),
@@ -6863,6 +6883,59 @@ mod tests {
         );
         assert_eq!(error["status"], "error");
         state.shutdown();
+    }
+
+    /// The diagnostic row a user reads when a turn dies.
+    ///
+    /// An agent's failure text can be a bundled runtime's whole stderr tail, so
+    /// the row is bounded while the run event keeps the full text.
+    #[test]
+    fn a_provider_error_projects_to_a_bounded_system_error_row() {
+        let thread_id = ThreadId::mint();
+        let run = loom_domain::RunEvent::new(
+            thread_id.clone(),
+            ProjectId::mint(),
+            loom_domain::RunId::mint(),
+            1_700_000_000_000,
+            loom_domain::ProviderEvent::ProviderError {
+                provider_thread_id: "ptid".into(),
+                message: "the ACP connection ended".into(),
+                detail: Some("d".repeat(100 * 1024)),
+                error_info: Some(loom_domain::ProviderErrorInfo {
+                    category: loom_domain::ProviderErrorCategory::ConnectionFailed,
+                    provider_code: None,
+                    http_status_code: None,
+                }),
+                will_retry: Some(false),
+            },
+        );
+        let event = DomainEvent::ThreadRunEvent { run: Box::new(run) };
+
+        let row = timeline_row_for_event(&thread_id, 7, &event).expect("a row for the diagnostic");
+        assert_eq!(row["kind"], "system");
+        assert_eq!(row["systemKind"], "error");
+        assert_eq!(row["status"], "error");
+        assert_eq!(row["title"], "the ACP connection ended");
+        let detail = row["detail"].as_str().expect("the detail is carried");
+        assert!(detail.ends_with("…(truncated)"), "the detail is marked");
+        assert!(
+            detail.len() <= MAX_TIMELINE_ERROR_BYTES + "…(truncated)".len(),
+            "the detail is bounded: {}",
+            detail.len()
+        );
+    }
+
+    #[test]
+    fn a_bounded_error_text_leaves_short_text_alone_and_cuts_on_a_boundary() {
+        assert_eq!(bounded_error_text("boom"), "boom");
+
+        // A multi-byte character straddling the cap must not be split: the cut
+        // backs off to the last char boundary instead of through the `é`.
+        let text = format!("{}é{}", "a".repeat(MAX_TIMELINE_ERROR_BYTES - 1), "b");
+        assert_eq!(
+            bounded_error_text(&text),
+            format!("{}…(truncated)", "a".repeat(MAX_TIMELINE_ERROR_BYTES - 1))
+        );
     }
 
     #[tokio::test]
