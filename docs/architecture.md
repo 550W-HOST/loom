@@ -219,14 +219,16 @@ the worst possible moment to discover it.
 
 The relay log says *what happened*; the control plane's `DomainRegistry` (and
 the in-flight `RunRegistry`) is the *entity view* derived from it. With
-`--data-dir` set, both the log and the entity view survive a restart. The
-entity view is stored as a **snapshot plus a replay cursor**, not as a second
-copy of the log:
+`--data-dir` set, both the log and the entity view survive a restart, and both
+live in the store's database (`loom.db`). The entity view is stored as a
+**whole-view write plus a replay cursor**, not as a second copy of the log:
 
-- the snapshot holds projects, threads, hosts and environments, plus the
-  newest `EventId` it incorporates and the runs that were in flight;
-- recovery loads it and replays only the retained log events **after** that
-  cursor;
+- one transaction (or a run's own record as it changes) holds projects, threads,
+  hosts, environments, runs, settings and automations, plus the newest `EventId`
+  the write incorporates;
+- recovery loads it and replays only the log events **after** that cursor;
+  a run's own flags are written as the run changes, so the cursor is not what
+  tells recovery whether a turn started or ended;
 - a thread left `working` by a restart is failed with a terminal run event, so
   "a thread cannot be stuck in `working`" holds across restarts too.
 
@@ -241,8 +243,9 @@ Three stores have three different jobs, and the split is the point:
 | What | Where it lives | What it is for |
 | --- | --- | --- |
 | The **conversation** | the ACP agent's own session | the authority. Messages, tool calls and their order |
-| The **entity view** | `domain.snapshot` under `--data-dir` | projects, threads, hosts, environments — and each thread's session **binding**: agent, cwd, session id, owning host |
-| The **relay log** | memory, or per-shard files under `--data-dir` | live delivery, cursor replay for a bounded window, and the delta the entity snapshot needs to catch up |
+| The **entity view** | the store's `entity` table | projects, threads, hosts, environments — and each thread's session **binding**: agent, cwd, session id, owning host |
+| The **conversation's stored rows** | the store's `thread_history*` tables | what was said, so a thread reads after its agent is gone |
+| The **relay log** | the store's `relay_event` table | live delivery, cursor replay, and the delta the entity view needs to catch up |
 
 The relay log is **not** a transcript. It retains a bounded window per shard
 (`--retention`, `backend_max_len`), it is trimmed oldest-first, and no part of
@@ -367,16 +370,16 @@ so they work behind NAT. This shape is described in
 ### C. Restart-transparent within one server
 
 A server that must not lose its replay window on restart needs no second
-process: the log lives in a data directory (`--data-dir`), one append-only file
-per shard, and a restart replays it. Workers reconnect and resume from the event
-id they last saw, so the window — not the connection — is what makes the
-upgrade transparent.
+process: the log lives in the data directory (`--data-dir`), in the same
+database as everything else the server must not lose, and a restart replays it.
+Workers reconnect and resume from the event id they last saw, so the window —
+not the connection — is what makes the upgrade transparent.
 
 ```
                   ┌────────────────────────────────────┐
                   │ loom server (systemd unit)         │
-                  │ loom-relay + DiskBackend           │
-                  │ /var/lib/loom/server/shard-0 … 7   │
+                  │ loom-relay + StoreBackend          │
+                  │ /var/lib/loom/server/loom.db       │
                   └───────────────┬────────────────────┘
                                   │  workers reconnect and replay
                   ┌───────────────┴────────────────────┐
