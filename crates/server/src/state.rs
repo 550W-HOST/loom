@@ -61,13 +61,6 @@ pub struct AppConfig {
     /// `Some(path)` uses the durable backend, so the grace window replays
     /// across a restart.
     pub backend_path: Option<PathBuf>,
-    /// A shared relay log in Redis Streams.
-    ///
-    /// `None` (the default) is the single-machine shape. `Some` makes the log
-    /// the source of truth for every node pointed at the same Redis and key
-    /// prefix, so a server restart or upgrade reattaches to the same window
-    /// instead of losing it. Mutually exclusive with [`AppConfig::backend_path`].
-    pub backend_redis: Option<loom_relay::backend::redis::RedisConfig>,
     /// Retention windows for the log.
     pub retention: Retention,
     /// Bound on the hub actor's command queue.
@@ -107,8 +100,8 @@ pub struct AppConfig {
     /// How often a domain snapshot is written to disk.
     ///
     /// Only meaningful when [`AppConfig::backend_path`] names a data
-    /// directory: the in-process default keeps no domain state, and the Redis
-    /// log is shared across nodes, so neither has a local snapshot to write.
+    /// directory: the in-process default keeps no domain state, so it has no
+    /// local snapshot to write.
     /// `Duration::ZERO` disables the periodic writer; a snapshot is still
     /// written once, on a clean shutdown.
     pub snapshot_interval: Duration,
@@ -145,7 +138,6 @@ impl Default for AppConfig {
             node_id: "loom-node".into(),
             backend_max_len: 2_000,
             backend_path: None,
-            backend_redis: None,
             retention: Retention::default(),
             hub_queue_capacity: 1_024,
             pump: PumpConfig::default(),
@@ -270,32 +262,16 @@ fn push_once(specs: &mut Vec<ProviderSpec>, spec: &ProviderSpec) {
 impl AppState {
     /// Wires the relay, hub actor and readers together.
     pub fn build(config: AppConfig) -> Result<Self, BuildStateError> {
-        if config.backend_redis.is_some() && config.backend_path.is_some() {
-            return Err(BuildStateError {
-                message: "--redis-url (shared) and --data-dir (local disk) are both set; \
-                          choose one backend"
-                    .into(),
-            });
-        }
-
-        let backend: loom_relay::SharedBackend = match (&config.backend_redis, &config.backend_path)
-        {
-            // Shared backend: every node attaches to the same window, so a
-            // restart does not drop what a connected worker already had.
-            (Some(redis), None) => Arc::new(loom_relay::backend::redis::RedisBackend::open(
-                redis.clone(),
-                config.backend_max_len,
-            )?),
+        let backend: loom_relay::SharedBackend = match &config.backend_path {
             // Durable backend: replay survives a restart on this machine.
-            (None, Some(path)) => Arc::new(loom_relay::backend::disk::DiskBackend::open(
+            Some(path) => Arc::new(loom_relay::backend::disk::DiskBackend::open(
                 path,
                 config.backend_max_len,
             )?),
             // Default: in-process, zero external service.
-            (None, None) => Arc::new(loom_relay::backend::memory::MemoryBackend::new(
+            None => Arc::new(loom_relay::backend::memory::MemoryBackend::new(
                 config.backend_max_len,
             )),
-            (Some(_), Some(_)) => unreachable!("guarded above"),
         };
         Self::build_from_backend(config, backend)
     }
@@ -327,8 +303,8 @@ impl AppState {
         let started_at_ms = now_ms();
 
         // Domain-state persistence rides on the durable backend: it is the
-        // deployment where a restart has a log to recover from. The Redis and
-        // in-process backends leave the entity view ephemeral (see
+        // deployment where a restart has a log to recover from. The in-process
+        // backend leaves the entity view ephemeral (see
         // `docs/domain-persistence.md`).
         let snapshot_root = config.backend_path.clone();
         // Normalised once, so every accessor can promise at least one provider.
@@ -1386,21 +1362,6 @@ mod tests {
         assert_eq!(replayed[0].event_id, envelope.event_id);
 
         state.shutdown();
-    }
-
-    #[tokio::test]
-    async fn refuses_two_durable_backends_at_once() {
-        let dir = TempDir::new().unwrap();
-        let config = AppConfig {
-            backend_path: Some(dir.path().to_path_buf()),
-            backend_redis: Some(loom_relay::backend::redis::RedisConfig::new(
-                "127.0.0.1",
-                6_379,
-            )),
-            ..AppConfig::default()
-        };
-        let error = AppState::build(config).unwrap_err();
-        assert!(error.to_string().contains("choose one backend"));
     }
 
     #[tokio::test]

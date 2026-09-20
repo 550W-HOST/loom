@@ -183,8 +183,8 @@ machine A.
 
 There is no installer and no environment file. A deployment is one or two
 `ExecStart` lines under whatever supervisor the operator already runs, and every
-setting is a flag on that line. (`--redis-url` and `--join-code` additionally
-read `LOOM_REDIS_URL` and `LOOM_JOIN_CODE`, because a secret is a poor thing to
+setting is a flag on that line. (`--join-code` additionally reads
+`LOOM_JOIN_CODE`, because a secret is a poor thing to
 put in argv; nothing else is read from the environment.)
 
 The two supported shapes are **single box** (`loom server --local-worker`) and

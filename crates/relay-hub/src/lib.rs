@@ -5,7 +5,7 @@
 //!
 //! The split exists so that neither concern constrains the other:
 //!
-//! * the relay can be tested, measured and re-backed (memory -> Redis -> NATS)
+//! * the relay can be tested, measured and re-backed (memory -> disk)
 //!   without opening a socket;
 //! * the hub can be tested with an in-memory transport, without a broker.
 //!

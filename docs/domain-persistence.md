@@ -199,10 +199,9 @@ simply does not claim a second one while it waits.
 - **Shutdown write**: `Ctrl-C` drains connections and then writes a final
   snapshot. A hard kill skips it; the periodic writer and log replay are what
   make that safe.
-- **In-process and Redis backends**: no local entity-view persistence. The
-  in-process backend has no durability at all; the Redis log is shared across
-  nodes, so a per-node snapshot would be ambiguous. Domain state there is
-  ephemeral, which is unchanged from before this work.
+- **In-process backend**: no local entity-view persistence at all. There is no
+  log to recover from, so there is nothing to snapshot against; domain state
+  there is ephemeral, which is unchanged from before this work.
 - **Retention is untouched.** `replay_grace` / `trim_horizon` / `ttl` and the
   per-shard cap keep exactly the semantics they had. The snapshot only decides
   how far back replay *needs* to look.

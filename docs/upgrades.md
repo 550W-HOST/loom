@@ -369,9 +369,10 @@ re-run and no configuration it could overwrite.
   after a self-update — updates the existing host instead of enrolling a second
   one. A host is "a machine, not a connection".
 - **The replay window.** With `--data-dir` the log is on disk and survives a
-  server restart; with `--redis-url` (or its `LOOM_REDIS_URL` fallback) it is
-  shared and also lets a second node
-  attach to the same window. Only the default in-process backend loses it.
+  server restart, so an upgrade does not lose what a connected worker already
+  had. Only the default in-process backend loses it. A log *shared between
+  servers* was withdrawn with multi-server support: `--redis-url` and
+  `LOOM_REDIS_URL` now fail at startup with that reason.
 - **Missed frames.** A worker persists its host-scope cursor next to its host id
   and, on start, subscribes *then* replays from that cursor. A dispatch published
   while it was restarting arrives late rather than being lost, and the event-id
@@ -426,9 +427,16 @@ Rules:
   (`worker-update-attempt.json`, `host-artifact.sha256`) are safe to delete:
   the next attempt is then unconditional and unthrottled.
 - The relay log needs no migration within a `protocol_version`. It is an
-  append-only per-shard file (or Redis streams) that both the old and the new
-  binary read with the same framing. If a future release changes that framing, it
-  will bump `protocol_version` and this page will say so.
+  append-only per-shard file that both the old and the new binary read with the
+  same framing. If a future release changes that framing, it will bump
+  `protocol_version` and this page will say so.
+
+  One migration *did* happen outside that rule: an installation whose units pass
+  `--redis-url` (or export `LOOM_REDIS_URL`) will not start after this upgrade.
+  That is deliberate — the flag names a topology the release does not serve, and
+  the startup error says so — and the fix is to drop the flag and pass
+  `--data-dir` instead. A deployment that was sharing one Redis log between two
+  servers has no equivalent shape here and must be reduced to one server.
 
 ## Why this is not a package manager
 

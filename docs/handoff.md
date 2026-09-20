@@ -396,8 +396,9 @@ Open questions carried forward:
   default `127.0.0.1:38886`; the others are `--data-dir`, `--node-id`,
   `--redis-url`, `--ui-proxy` and `--artifact-dir`. worker: `--server-url`,
   `--name`, `--state` and `--auto-update`/`--no-auto-update`, with the rest in
-  `crates/worker/src/cli.rs`. The only env fallbacks left are `LOOM_REDIS_URL`
-  (for `--redis-url`) and `LOOM_JOIN_CODE` (for `--join-code`); the `LOOM_*`
+  `crates/worker/src/cli.rs`. The only env fallback left is `LOOM_JOIN_CODE`
+  (for `--join-code`); `LOOM_REDIS_URL` survives only as a removed tombstone
+  that fails at startup, and the `LOOM_*`
   configuration variables this section originally named are no longer read.
 - A stale `target/debug/loom server` from an earlier session held the default
   port. Check `ss -tln` before assuming a startup failure is a code problem

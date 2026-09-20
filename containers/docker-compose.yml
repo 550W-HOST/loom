@@ -39,18 +39,12 @@ services:
       # `network_mode: host`, where 0.0.0.0 would mean the host's interfaces).
       - "--bind"
       - "0.0.0.0:38886"
-      # The durable relay log, matching the volume below. Mutually exclusive
-      # with `--redis-url`.
+      # The durable relay log, matching the volume below.
       - "--data-dir"
       - "/var/lib/loom/server"
-      # Two server containers must not share this: it is stamped on every
-      # envelope the node produces.
+      # This node's identity, stamped on every envelope it produces.
       - "--node-id"
       - "loom-server"
-      # A shared log in place of --data-dir above, for a restart-transparent
-      # window across more than one node (docs/redis-backend.md):
-      # - "--redis-url"
-      # - "redis://redis:6379"
 
   worker:
     image: ghcr.io/550w-host/loom-worker:${LOOM_IMAGE_TAG:-latest}

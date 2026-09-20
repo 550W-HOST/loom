@@ -3,21 +3,21 @@
 //! A backend stores append-ordered records per shard and can replay and trim
 //! them. Everything above this trait — control plane, connection layer, the
 //! frames themselves — is independent of which backend is in use. That is what
-//! makes "single-process in-memory", "durable on local disk" and "shared
-//! Redis Streams" a deployment choice rather than a rewrite.
+//! makes "single-process in-memory" and "durable on local disk" a deployment
+//! choice rather than a rewrite.
 //!
 //! Two backends ship here: [`memory::MemoryBackend`] (the zero-configuration
 //! default) and [`disk::DiskBackend`], which keeps the replay window across a
 //! process restart in one crash-safe append-only file per shard.
 //!
-//! A third, [`redis::RedisBackend`], moves the log into Redis Streams so that
-//! a restart is transparent to connected workers *and* a second node can
-//! attach to the same window. It is optional configuration, not a dependency:
-//! the default build still needs no external service.
+//! A **shared** log — one that several server processes attach to — was tried
+//! as a Redis Streams backend and has been removed. loom is one server with
+//! many workers; a second server sharing a log needs a story for the domain
+//! store and for run ownership that this codebase does not have, and shipping
+//! the log alone invited a deployment that could not work.
 
 pub mod disk;
 pub mod memory;
-pub mod redis;
 
 use std::sync::Arc;
 

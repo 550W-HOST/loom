@@ -37,15 +37,9 @@ pub async fn run(args: ServerArgs) -> Result<(), Box<dyn std::error::Error>> {
     // Without --data-dir the relay log is in-process and the server needs no
     // configuration at all. Setting it turns on the durable backend.
     let backend_path = data_dir;
-    // --redis-url moves the log into Redis Streams so several nodes share one
-    // window and a server restart does not lose it. It replaces, rather than
-    // supplements, the local data directory.
-    let backend_redis = match redis_url.as_deref().map(str::trim) {
-        Some(url) if !url.is_empty() => {
-            Some(loom_relay::backend::redis::RedisConfig::from_url(url)?)
-        }
-        _ => None,
-    };
+    // A shared log across servers was removed with multi-server support. The
+    // flag (and its environment fallback) is refused rather than ignored.
+    reject_removed_shared_log(redis_url.as_deref())?;
     // The UI is the product app compiled into this binary, so a server serves a
     // client with no configuration at all. --ui-proxy is the one override, for
     // developing the app against a real server.
@@ -73,7 +67,6 @@ pub async fn run(args: ServerArgs) -> Result<(), Box<dyn std::error::Error>> {
     let config = AppConfig {
         node_id: node_id.clone(),
         backend_path,
-        backend_redis,
         local_host_id: local_host_id.clone(),
         ui_proxy,
         artifact_dir,
@@ -127,6 +120,26 @@ pub async fn run(args: ServerArgs) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// Refuses the removed shared-log flag and its environment fallback.
+///
+/// A deployment that still asks for a shared log is asking for a topology loom
+/// no longer serves, and starting anyway would give it an unshared in-memory
+/// log it did not ask for — the kind of silent difference an operator only
+/// notices when a restart loses state. An empty value is not a request (an
+/// unset variable and a blank one mean the same thing on a command line), so it
+/// is allowed through like any other default.
+fn reject_removed_shared_log(redis_url: Option<&str>) -> Result<(), String> {
+    if redis_url.is_some_and(|url| !url.trim().is_empty()) {
+        return Err(concat!(
+            "--redis-url was removed: loom is one server with many workers, and a ",
+            "log shared between servers is no longer supported. Remove the flag ",
+            "(or unset LOOM_REDIS_URL) and use --data-dir for a durable local log."
+        )
+        .to_owned());
+    }
+    Ok(())
+}
+
 /// Resolve when the process is asked to stop: Ctrl-C, or SIGTERM.
 ///
 /// SIGTERM is what systemd sends, so handling it is what makes the unit's
@@ -153,5 +166,30 @@ async fn shutdown_signal() {
     #[cfg(not(unix))]
     {
         let _ = tokio::signal::ctrl_c().await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::reject_removed_shared_log;
+
+    /// The removed flag is a tombstone with a reason, not a flag that is
+    /// ignored: a deployment that still passes it must hear about it at
+    /// startup rather than run with a log it did not ask for.
+    #[test]
+    fn the_removed_shared_log_flag_is_refused_with_a_reason() {
+        let error = reject_removed_shared_log(Some("redis://localhost:6379"))
+            .expect_err("a shared log is refused");
+        assert!(error.contains("--redis-url was removed"), "{error}");
+        assert!(error.contains("--data-dir"), "{error}");
+    }
+
+    /// An unset or blank value is not a request for a shared log, so a unit file
+    /// that leaves the variable empty still starts.
+    #[test]
+    fn a_blank_shared_log_value_is_not_a_request() {
+        assert!(reject_removed_shared_log(None).is_ok());
+        assert!(reject_removed_shared_log(Some("")).is_ok());
+        assert!(reject_removed_shared_log(Some("   ")).is_ok());
     }
 }

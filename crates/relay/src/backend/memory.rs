@@ -11,7 +11,7 @@
 //! It is deliberately not durable. A server restart loses the in-memory log,
 //! which is the same guarantee as "the process was down and the grace window
 //! was empty". Deployments that must survive a server restart without
-//! disconnecting workers swap in the Redis/NATS backend instead; nothing above
+//! disconnecting workers swap in a different backend instead; nothing above
 //! this trait changes.
 
 use std::sync::{Mutex, MutexGuard};

@@ -22,10 +22,11 @@
 //! in-process [`backend::memory::MemoryBackend`], which needs no external
 //! service and is enough for a single self-hosted server. [`backend::disk::DiskBackend`]
 //! adds a dependency-free local log so a restart replays the grace window
-//! instead of losing it. [`backend::redis::RedisBackend`] keeps the log in
-//! Redis Streams, which a second node can attach to and which makes a server
-//! restart invisible to connected workers; it is configuration, not a new
-//! default. None of them change anything above this line.
+//! instead of losing it. Either changes nothing above this line.
+//!
+//! The log is **not** shared between servers: loom is one server with many
+//! workers, and the layer that would let a second server join it — a durable
+//! domain store with one writer — does not exist yet.
 
 #![forbid(unsafe_code)]
 

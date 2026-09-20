@@ -34,7 +34,7 @@ on it and it can be validated on its own.
   (`loom worker` is the reference implementation of that contract and exercises
   all of it today)
 - [x] Automations: domain, durable storage, typed HTTP surface, a cron/timezone scheduler and agent execution through the existing thread/run/ACP path (`docs/automations.md`)
-- [x] Redis Streams relay backend for restart-transparent upgrades (`--redis-url`, or its `LOOM_REDIS_URL` fallback)
+- [x] One server, many workers: the log is in-process or durable on local disk, and a second server sharing it is out of scope (`--redis-url` is a removed tombstone)
 - [x] bb's HTTP/WebSocket/worker contract exported to JSON Schema, with a Rust conformance harness (`docs/contract.md`)
 - [x] CI on every push and PR: format, lint, the full test suite, the declared MSRV and contract reproducibility (`docs/ci.md`)
 
@@ -75,7 +75,6 @@ docs/
   provider-protocol.md
   provider-sessions-research.md
   provider-strategy.md
-  redis-backend.md
   releasing.md
   ui.md
   ui-package-sync.md
@@ -135,12 +134,15 @@ jobs, the required checks and the measured duration.
 
 No external services are required: the default backend is in-process. `--data-dir`
 keeps the replay window on local disk **and** persists the domain entity view
-(projects, threads, hosts, environments) across restarts; `--redis-url` (or its
-`LOOM_REDIS_URL` fallback) moves the log to Redis Streams so it is shared and
-survives a server upgrade. See [`docs/domain-persistence.md`](docs/domain-persistence.md)
-for how domain state recovers, and
-[`docs/redis-backend.md`](docs/redis-backend.md) for the Redis deployment
-contract.
+(projects, threads, hosts, environments) across restarts. See
+[`docs/domain-persistence.md`](docs/domain-persistence.md) for how domain state
+recovers.
+
+loom is **one server with many workers**. A log shared between servers was tried
+as a Redis Streams backend and has been removed: it needs a durable domain store
+with a single writer and a story for which server owns a run, and neither exists
+yet. `--redis-url` and `LOOM_REDIS_URL` are kept as tombstones that fail at
+startup with that reason rather than being ignored.
 
 Run it:
 

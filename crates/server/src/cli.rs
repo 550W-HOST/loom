@@ -1,9 +1,8 @@
 //! The server role's command line.
 //!
-//! Flags are the configuration surface. The two exceptions carry an `env`
-//! fallback because they are values a command line is a bad home for: a
-//! `redis://` URL that may embed a password, and a one-time join code. Both are
-//! marked `hide_env_values` so `--help` cannot print them.
+//! Flags are the configuration surface. The one exception carries an `env`
+//! fallback because it is a value a command line is a bad home for: a one-time
+//! join code, marked `hide_env_values` so `--help` cannot print it.
 //!
 //! `--version` is answered by the dispatcher (`crates/loom/src/main.rs`) before
 //! clap runs, because the release contract fixes its exact shape
@@ -46,9 +45,11 @@ pub struct ServerArgs {
     #[arg(long, value_name = "ID", default_value = DEFAULT_NODE_ID)]
     pub node_id: String,
 
-    /// Redis Streams URL for a log shared by several nodes. Mutually exclusive
-    /// with --data-dir. Falls back to LOOM_REDIS_URL because a URL may embed a
-    /// password.
+    /// Removed. A shared Redis log was withdrawn with multi-server support.
+    ///
+    /// The flag is kept as a tombstone so a deployment that still passes it —
+    /// or still exports `LOOM_REDIS_URL` — fails at startup with a reason,
+    /// instead of silently starting an unshared in-memory log.
     #[arg(
         long,
         value_name = "URL",

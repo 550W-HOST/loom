@@ -1,24 +1,20 @@
 //! End-to-end behaviour of the relay layer through its public API.
 //!
 //! Every scenario runs over every available backend: the in-process
-//! `MemoryBackend`, the durable `DiskBackend`, and — when `LOOM_REDIS_URL`
-//! points at a reachable Redis — the shared `RedisBackend`. The relay facade,
-//! retention policy and replay semantics must be indistinguishable between
-//! them, so the only thing that changes is which storage the `Relay` is built
-//! over. That is the backend contract test: adding a backend means adding a
-//! case here, not writing a parallel suite.
+//! `MemoryBackend` and the durable `DiskBackend`. The relay facade, retention
+//! policy and replay semantics must be indistinguishable between them, so the
+//! only thing that changes is which storage the `Relay` is built over. That is
+//! the backend contract test: adding a backend means adding a case here, not
+//! writing a parallel suite.
 
 use bytes::Bytes;
 use loom_relay::backend::disk::DiskBackend;
 use loom_relay::backend::memory::MemoryBackend;
-use loom_relay::backend::redis::{RedisBackend, RedisConfig};
 use loom_relay::backend::SharedBackend;
 use loom_relay::dedup::SeenSet;
 use loom_relay::retention::Retention;
 use loom_relay::{now_ms, Envelope, Relay, Scope, WireEnvelope, SHARD_COUNT};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 use tempfile::TempDir;
 
 /// The backends every scenario is exercised against.
@@ -26,11 +22,6 @@ use tempfile::TempDir;
 enum BackendKind {
     Memory,
     Disk,
-    /// A shared Redis, with the key prefix unique to one test case.
-    Redis {
-        url: String,
-        prefix: String,
-    },
 }
 
 /// One test run: a backend choice plus the scratch directory a disk backend
@@ -53,11 +44,6 @@ impl Case {
         match &self.kind {
             BackendKind::Memory => Arc::new(MemoryBackend::new(max_len)),
             BackendKind::Disk => Arc::new(DiskBackend::open(self.dir.path(), max_len).unwrap()),
-            BackendKind::Redis { url, prefix } => {
-                let mut config = RedisConfig::from_url(url).unwrap();
-                config.key_prefix = prefix.clone();
-                Arc::new(RedisBackend::open(config, max_len).unwrap())
-            }
         }
     }
 
@@ -67,30 +53,8 @@ impl Case {
     }
 }
 
-impl Drop for Case {
-    fn drop(&mut self) {
-        if let BackendKind::Redis { url, prefix } = &self.kind {
-            // Best-effort: a test must not fail because cleanup could not
-            // reach Redis after the assertions already ran.
-            if let Ok(mut config) = RedisConfig::from_url(url) {
-                config.key_prefix = prefix.clone();
-                if let Ok(backend) = RedisBackend::open(config, 8) {
-                    let _ = backend.purge();
-                }
-            }
-        }
-    }
-}
-
 fn cases() -> Vec<Case> {
-    let mut kinds = vec![BackendKind::Memory, BackendKind::Disk];
-    match redis_case_kind() {
-        Some(kind) => kinds.push(kind),
-        None => eprintln!(
-            "loom-relay: skipping the Redis backend cases; set LOOM_REDIS_URL to a reachable redis:// URL to run them"
-        ),
-    }
-    kinds
+    [BackendKind::Memory, BackendKind::Disk]
         .into_iter()
         .map(|kind| Case {
             kind,
@@ -102,32 +66,6 @@ fn cases() -> Vec<Case> {
 /// The subset of cases whose log survives the process.
 fn durable_cases() -> Vec<Case> {
     cases().into_iter().filter(Case::is_durable).collect()
-}
-
-/// Detects a usable shared Redis once, so an unconfigured run still passes.
-fn redis_case_kind() -> Option<BackendKind> {
-    let url = std::env::var("LOOM_REDIS_URL").ok()?;
-    let prefix = unique_prefix();
-    let mut config = RedisConfig::from_url(&url).ok()?;
-    config.key_prefix = prefix.clone();
-    match RedisBackend::open(config, 8) {
-        Ok(_) => Some(BackendKind::Redis { url, prefix }),
-        Err(error) => {
-            eprintln!("loom-relay: LOOM_REDIS_URL is set but unusable: {error}");
-            None
-        }
-    }
-}
-
-/// A key prefix no other test, run or machine sharing the Redis will use.
-fn unique_prefix() -> String {
-    static COUNTER: AtomicUsize = AtomicUsize::new(0);
-    let counter = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let micros = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_micros())
-        .unwrap_or(0);
-    format!("loom:test:{}:{micros:x}:{counter}", std::process::id())
 }
 
 #[test]

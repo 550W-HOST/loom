@@ -41,9 +41,9 @@ axum = { version = "0.8", default-features = false, features = ["http1", "json",
 base64 = "0.22"
 # The command line, for all three entry points (`loom`, `loom server`, `loom
 # worker`). Configuration is flags first: the roles read no `LOOM_*` variable
-# except the two secrets whose env fallback is deliberate (`--redis-url`,
-# `--join-code`), so `--help` is the surface and a unit's ExecStart is the one
-# place a deployment is written down.
+# except the one secret whose env fallback is deliberate (`--join-code`), so
+# `--help` is the surface and a unit's ExecStart is the one place a deployment
+# is written down.
 clap = { version = "4.6", features = ["derive", "env"] }
 # Scheduling: `croner` parses and evaluates the cron expression, `chrono-tz`
 # supplies the timezone database it reads the expression in. The database is

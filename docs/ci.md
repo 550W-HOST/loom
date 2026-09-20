@@ -219,34 +219,12 @@ checkout, toolchain download and cache restore. Every job has a 20-minute
 `timeout-minutes`, which is generous enough that a timeout means something
 hangs rather than something is slow.
 
-## The Redis tests
+## The relay's backend cases
 
-`loom-relay`'s contract suite runs over the in-process, disk and Redis backends;
-the Redis cases are skipped unless `LOOM_REDIS_URL` names a reachable server. CI
-sets nothing, so they skip and the two other backends still run — the suite is
-green with no service, which is the behaviour
-[`redis-backend.md`](redis-backend.md) promises.
-
-Confirming the skip needs `--nocapture`, because the message goes to stderr and
-the harness captures it:
-
-```bash
-cargo test -p loom-relay -- --nocapture
-# loom-relay: skipping the Redis backend cases; set LOOM_REDIS_URL …
-```
-
-Adding the service is only worth doing if a change touches `RedisBackend`. A
-`redis` service container on the `checks` job plus
-
-```yaml
-env:
-  LOOM_REDIS_URL: redis://127.0.0.1:6379
-```
-
-is the whole change; the mechanisms that exist today (`unique_prefix()`, the
-unreachable-server skip, `purge`) already make these tests safe to run against a
-shared server. It is not enabled here because it would make every push wait on a
-service for a backend the default build does not use.
+`loom-relay`'s contract suite runs every scenario over both backends it has: the
+in-process one and the durable one, each in its own scratch directory. There is
+no service to start and no environment variable to set, so the suite is green on
+a bare machine.
 
 ## The contract job
 

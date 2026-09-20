@@ -57,8 +57,8 @@ jobs:
       - name: cargo clippy --workspace --all-targets -- -D warnings
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
-      # No LOOM_REDIS_URL is set, so the Redis-backed relay cases skip through
-      # the existing mechanism; the in-process and disk backends still run.
+      # The relay's scenarios run over both backends it has: the in-process one
+      # and the durable one, each in its own scratch directory.
       - name: cargo test --workspace
         run: cargo test --workspace --locked
 

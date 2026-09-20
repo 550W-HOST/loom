@@ -57,9 +57,10 @@ USER 1000:1000
 # The product app needs no flag: the image carries the server built with the
 # client compiled into it, so `/` serves the app with nothing configured here.
 #
-# --redis-url is deliberately not passed: the in-process/disk backend needs no
-# second service (docs/redis-backend.md). LOOM_REDIS_URL remains its only
-# environment fallback, for a URL that cannot go on a command line.
+# No shared-log flag is passed and none exists: the disk backend needs no second
+# service, and one server with many workers is the deployment this image is for.
+# `--redis-url` (and its `LOOM_REDIS_URL` fallback) is a removed tombstone: it
+# fails at startup with a reason rather than being ignored.
 CMD ["--bind", "0.0.0.0:38886", "--data-dir", "/var/lib/loom/server", "--node-id", "loom-server"]
 
 # Where the relative paths a unit would write land. The two paths that matter

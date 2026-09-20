@@ -128,10 +128,13 @@ If the host has a public interface at all, prove the port is not on it:
 ss -ltnp | grep 38886          # must be 127.0.0.1:38886, never 0.0.0.0:38886
 ```
 
-If the optional Redis backend is enabled, apply the same rule to Redis: bind it
+There is no second service to expose: the relay log is in-process or on local
+disk, and the only inbound port is the server's own. (A removed shared-log
+backend would have needed the same rule; it is gone, and the flags that named it
+now fail at startup.) The same rule would apply to any future store, so: bind it
 to a private interface, require a password, and firewall its port to the server
 nodes. The relay log contains every client frame. See
-[`redis-backend.md`](redis-backend.md) § Deployment requirements.
+[`architecture.md`](architecture.md) § Deployment shapes.
 
 ## Why not just put a password on the API
 

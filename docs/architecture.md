@@ -90,24 +90,23 @@ subscriber, a room or a socket.
 
 ### Why the split matters
 
-- **Backends are swappable.** Three are defined, and the trait is the only
+- **Backends are swappable.** Two are defined, and the trait is the only
   thing the relay sees:
   - [`backend::memory::MemoryBackend`] — in-process, zero configuration, lost
     on restart. The server's default.
   - [`backend::disk::DiskBackend`] — one crash-safe append-only file per
     shard under a data directory. Still in-process and dependency-free, but
     the replay window survives a restart.
-  - [`backend::redis::RedisBackend`] — the log in Redis Streams, one stream
-    per shard, shared by every node that points at the same Redis. This is
-    the backend that makes a server upgrade invisible to connected workers
-    and lets a second node attach to the same window. It is optional
-    configuration (`--redis-url`, or the `LOOM_REDIS_URL` environment
-    fallback), not a dependency: the client is a
-    hand-rolled RESP2 client, so a default build still compiles nothing
-    extra. Deployment and operational cost are in
-    [`redis-backend.md`](redis-backend.md).
 
   Nothing above `RelayBackend` changes between them.
+
+  A third, [`backend::redis::RedisBackend`], put the log in Redis Streams so
+  that *several servers* could share it. It was **removed**: sharing a log
+  between servers needs a durable domain store with a single writer and a rule
+  for which server owns an in-flight run, and loom has neither. Ship the shared
+  log alone and a second server is a deployment that looks supported and is
+  not. `--redis-url` and `LOOM_REDIS_URL` are tombstones that fail at startup
+  with that reason.
 
   A backend whose IO is asynchronous reports failures at the call site;
   `DiskBackend` hands writes to a per-shard thread and therefore latches a
@@ -284,44 +283,40 @@ so they work behind NAT. This shape is described in
 [`remote-access.md`](remote-access.md) and the update rules in
 [`upgrades.md`](upgrades.md).
 
-### C. Shared relay, restart-transparent
+### C. Restart-transparent within one server
 
-For a single server that must not lose its replay window on restart, the
-`DiskBackend` already covers it with no new process: the log lives in a data
-directory (`--data-dir`), one append-only file per shard. When a server
-upgrade must additionally not disconnect running workers *and* a second node
-must attach to the same log, point the server at Redis Streams instead:
+A server that must not lose its replay window on restart needs no second
+process: the log lives in a data directory (`--data-dir`), one append-only file
+per shard, and a restart replays it. Workers reconnect and resume from the event
+id they last saw, so the window — not the connection — is what makes the
+upgrade transparent.
 
 ```
-                  ┌────────────────────────────┐
-                  │ loom server  (node A)      │
-                  └──────────────┬─────────────┘
-                                 │  XADD / XRANGE, one stream per shard
-                  ┌──────────────▼─────────────┐
-                  │ loom server  (node B)      │
-                  └──────────────┬─────────────┘
-                                 │
-                  ┌──────────────▼─────────────┐
-                  │ redis (AOF on)             │
-                  │ loom:relay:shard:0 … :7    │
-                  └────────────────────────────┘
+                  ┌────────────────────────────────────┐
+                  │ loom server (systemd unit)         │
+                  │ loom-relay + DiskBackend           │
+                  │ /var/lib/loom/server/shard-0 … 7   │
+                  └───────────────┬────────────────────┘
+                                  │  workers reconnect and replay
+                  ┌───────────────┴────────────────────┐
+                  ▼                                    ▼
+              worker 1                              worker 2
 ```
 
 ```bash
-loom server --redis-url redis://127.0.0.1:6379
+loom server --data-dir /var/lib/loom/server
 ```
 
-Only the [`RelayBackend`] implementation changes: `loom-relay`, the fixed
-`SHARD_COUNT` readers, retention, dedup and every handler above it are
-untouched. The default remains the in-process backend, and `--data-dir`
-and `--redis-url` are mutually exclusive (`LOOM_REDIS_URL` is the environment
-fallback for `--redis-url`).
+Only the [`RelayBackend`] implementation changes between A/B and C: `loom-relay`,
+the fixed `SHARD_COUNT` readers, retention, dedup and every handler above it are
+untouched. Running **two servers** over one log is not a supported shape — see
+the removed `RedisBackend` above.
 
 We deliberately keep the reference design's **fixed shards plus fixed
 readers** model rather than per-scope subscriptions: `SHARD_COUNT` is still a
-constant, every node still runs exactly one reader per shard, and the
+constant, the process still runs exactly one reader per shard, and the
 `shard_for` FNV-1a hash is still the only routing function — so a non-Rust
-node can compute the same shard. Redis only stores what those shards produce.
+node can compute the same shard.
 
 ## UI as a URL client
 

@@ -269,8 +269,10 @@ for _ in 1 2 3; do
   rm -f "$tmp/health.json"
   # The durable backend, not the in-process one: a release is deployed as a
   # service with a data directory, so that is the shape to start. No UI flag is
-  # passed, and LOOM_REDIS_URL is removed so a caller's environment cannot switch
-  # the backend out from under this run, which means to use --data-dir.
+  # passed, and LOOM_REDIS_URL is removed from the environment so a leftover
+  # value from the caller cannot make the server refuse to start: the variable
+  # is a removed tombstone, and starting this release must not depend on the
+  # shell that happens to run the check.
   env -u LOOM_REDIS_URL "$artifact" server \
     --bind "127.0.0.1:$port" --data-dir "$tmp/server" --node-id "release-verification" \
     >"$tmp/server.log" 2>&1 &
