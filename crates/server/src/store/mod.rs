@@ -31,12 +31,14 @@
 
 mod entities;
 mod history;
+mod relay_backend;
 mod relay_log;
 mod schema;
 mod seq;
 mod writer;
 
 pub use history::{StoredHistory, StoredRow};
+pub use relay_backend::StoreBackend;
 pub use seq::SeqAllocator;
 pub use writer::{StoreWriter, WrittenRows};
 

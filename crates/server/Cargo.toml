@@ -32,6 +32,10 @@ turso.workspace = true
 tokio = { workspace = true, features = ["fs", "io-util", "process", "signal"] }
 
 [dev-dependencies]
+# The relay's backend contract suite: the store backend is run over the same
+# scenarios the relay's own backends are, from here, because the implementation
+# lives here.
+loom-relay = { workspace = true, features = ["conformance"] }
 # The automation tests assert that a schedule is read in its zone — `nextRunAt`
 # is 09:00 in Paris, not 09:00 UTC — so they read the instant back the way a
 # client would.
