@@ -16,11 +16,11 @@
 
 ## 结论
 
-- 契约快照：`fa1f44ebe9e5676004b669e48c99b3c7606466b6`，共 **167 条**路由。
+- 契约快照：`fa1f44ebe9e5676004b669e48c99b3c7606466b6`，共 **168 条**路由。
 - 已决策不实现：**18 条**（desktopBrowsers 11 条，skill/CLI skill 7 条）。
-- 当前源码包含 **153 个 `.route` 声明、177 个 HTTP 方法入口**；其中只有 149 个匹配 bb 契约，另有 28 个契约外入口。契约当前没有 plugin/marketplace 路由条目。
-- 有效总数：**149 条**；当前已实现 **149 条**，待实现 **0 条**。
-- 当前有效覆盖率：**149/149（100.0%）**。
+- 当前源码包含 **154 个 `.route` 声明、178 个 HTTP 方法入口**；其中只有 150 个匹配 bb 契约，另有 28 个契约外入口。契约当前没有 plugin/marketplace 路由条目。
+- 有效总数：**150 条**；当前已实现 **150 条**，待实现 **0 条**。
+- 当前有效覆盖率：**150/150（100.0%）**。
 - B0 是现有实现基线；B1-B10 是建议的后续交付批次，每批 14、14、14、14、10、14、14、14、17、13 条，均在 10-20 条范围内。
 
 ## threads.send 判定
@@ -61,7 +61,7 @@ bb UI 用契约格式发起写请求时会 422，而 CI 与一致性测试全绿
 
 | 批次 | 主题 | 路由数 | 依赖 | UI 交付边界 |
 | --- | --- | ---: | --- | --- |
-| B0 | 当前基础覆盖（基线） | 149 | - | 项目/线程基础读写、环境读取和主机列表已存在 |
+| B0 | 当前基础覆盖（基线） | 150 | - | 项目/线程基础读写、环境读取和主机列表已存在 |
 | B1 | 启动、导航与首个 threads 流程 | 14 | B0 | 启动探活、侧栏初始化、项目/线程列表后的线程打开、时间线读取与发送 |
 | B2 | 线程控制与辅助视图 | 14 | B1 | 活动线程的默认执行选项、运行状态、搜索、历史、编辑、停止/重试和压缩 |
 | B3 | 交互、计划与队列发送 | 14 | B1 + B2 | 线程中的交互请求、计划控制和 queued message 的查看/创建/发送 |
@@ -291,6 +291,7 @@ bb UI 用契约格式发起写请求时会 422，而 CI 与一致性测试全绿
 | `threadSections.create` | `POST` | `/api/v1/thread-sections` | 已实现 | `POST /api/v1/thread-sections` | B0 | 契约路径与方法已匹配 |
 | `threadSections.delete` | `DELETE` | `/api/v1/thread-sections` | 已实现 | `DELETE /api/v1/thread-sections` | B0 | 契约路径与方法已匹配 |
 | `threadSections.update` | `PATCH` | `/api/v1/thread-sections` | 已实现 | `PATCH /api/v1/thread-sections` | B0 | 契约路径与方法已匹配 |
+| `threads.historyRefresh` | `POST` | `/api/v1/threads/:id/history/refresh` | 已实现 | `POST /api/v1/threads/{id}/history/refresh` | B0 | 契约路径与方法已匹配 |
 
 ## 复核命令
 
