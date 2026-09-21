@@ -55,23 +55,18 @@ croner = "4.0"
 bytes = "1.6"
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 serde = { version = "1.0", features = ["derive"] }
-# The server's one persistent store: an embedded SQLite, compiled into the
-# binary (`bundled`) so a `FROM scratch` image still needs no runtime library
-# and no second service. SQLite's own file is written with WAL; loom's logical
-# rules — an append-only per-thread sequence, a revision that only moves
-# forward — are the server's, not the database's.
-# The embedded store's engine. turso is SQLite-compatible and its driver is
-# async; the store drives those futures synchronously (`futures-executor`),
-# because every caller — HTTP reads, the store writer thread, tests — is
-# synchronous and turso needs no Tokio runtime to make progress.
+# The server's one persistent store, and the engine is SQLite itself, through
+# its oldest and most used Rust binding. SQLite's own file is written with WAL;
+# loom's logical rules — an append-only per-thread sequence, a revision that
+# only moves forward — are the server's, not the database's.
 #
-# Two build facts, both recorded in docs/sqlite-persistence-plan.md:
-#   * `roaring` is pinned to 0.11.2 in Cargo.lock: 0.11.3+ require rustc 1.90,
-#     and this workspace's MSRV is 1.88. A `cargo update` must keep the pin.
-#   * turso is a pre-release and is not a C-free build: `cc` compiles the SIMD
-#     and AEAD kernels, and `bindgen`/libclang generate the extension ABI.
-turso = { version = "=0.8.0-pre.11", default-features = false }
-futures-executor = "0.3"
+# Every caller of the store is synchronous (an HTTP read, the writer thread, a
+# test), and SQLite's API is too, so nothing sits between them and the file.
+# `bundled` compiles SQLite from source into the binary, which is what keeps the
+# `FROM scratch` image free of a runtime library; `default-features = false`
+# leaves out the browser bindings this workspace never builds, and `cache` keeps
+# one prepared-statement cache per connection.
+rusqlite = { version = "0.40", default-features = false, features = ["bundled", "cache"] }
 # A v1 ACP agent hands over a file's old and new text rather than a patch, and
 # the timeline draws a patch: `similar` is the diff, so loom does not carry a
 # second, hand-rolled implementation of one.

@@ -1575,17 +1575,18 @@ mod tests {
     /// what its run was doing.
     fn drop_stored_runs(dir: &TempDir) {
         let store = crate::store::Store::open(dir.path().join("loom.db")).unwrap();
-        crate::store::block_on(
-            store
-                .connection()
-                .execute("DELETE FROM entity WHERE kind = 'run'", ()),
-        )
-        .unwrap();
+        store
+            .connection()
+            .execute("DELETE FROM entity WHERE kind = 'run'", ())
+            .unwrap();
     }
 
     fn drop_entity_view(dir: &TempDir) {
         let store = crate::store::Store::open(dir.path().join("loom.db")).unwrap();
-        crate::store::block_on(store.connection().execute("DELETE FROM entity", ())).unwrap();
+        store
+            .connection()
+            .execute("DELETE FROM entity", ())
+            .unwrap();
     }
     /// A run whose terminal frame was published is not published again.
     ///

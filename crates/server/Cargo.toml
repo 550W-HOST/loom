@@ -27,8 +27,7 @@ serde_json.workspace = true
 # published". It is pure Rust with no C dependency, so it does not disturb the
 # static musl build.
 sha2 = "0.10"
-futures-executor.workspace = true
-turso.workspace = true
+rusqlite.workspace = true
 tokio = { workspace = true, features = ["fs", "io-util", "process", "signal"] }
 
 [dev-dependencies]

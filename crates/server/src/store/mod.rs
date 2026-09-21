@@ -3,15 +3,14 @@
 //! One database file under the data directory is where the server keeps what
 //! must outlive it. Phase one puts the **conversation** there: the normalized
 //! events an agent replayed, in the order it replayed them, so a thread can be
-//! read after the worker that owns its session has gone away. The relay's log
-//! and the entity snapshot keep their jobs until their own phases move them.
+//! read after the worker that owns its session has gone away. Later phases moved
+//! the entity view and the relay's frames here too.
 //!
-//! The engine is [`turso`], an in-process SQLite-compatible database written in
-//! Rust. Its driver is async; this module drives those futures with
-//! [`futures_executor::block_on`] so the store's own API stays synchronous,
-//! which is what every caller is: an HTTP read, the store's writer thread, a
-//! test. turso needs no Tokio runtime to make progress, and driving it on the
-//! calling thread is the same shape the previous embedded engine had.
+//! The engine is SQLite, compiled into the binary by [`rusqlite`]'s `bundled`
+//! feature: an in-process database with no server to run and no runtime library
+//! to ship. Its API is synchronous, which is what every caller of this module
+//! already is — an HTTP read, the store's writer thread, a test — so nothing
+//! sits between a call and the file.
 //!
 //! Two rules are the server's, not the database's, and both are about identity:
 //!
@@ -42,11 +41,11 @@ pub use relay_backend::StoreBackend;
 pub use seq::SeqAllocator;
 pub use writer::{StoreWriter, WrittenRows};
 
-use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use turso::{Builder, Connection, Row, Value};
+use rusqlite::types::ValueRef;
+use rusqlite::{Connection, Row};
 
 pub use schema::SCHEMA_VERSION;
 
@@ -64,8 +63,8 @@ impl std::fmt::Display for StoreError {
 
 impl std::error::Error for StoreError {}
 
-impl From<turso::Error> for StoreError {
-    fn from(error: turso::Error) -> Self {
+impl From<rusqlite::Error> for StoreError {
+    fn from(error: rusqlite::Error) -> Self {
         Self {
             message: error.to_string(),
         }
@@ -86,18 +85,14 @@ impl StoreError {
 /// exists so a stray reader cannot turn into a hang.
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Drives one turso future to completion on this thread.
-///
-/// turso's IO is its own: the futures make progress without a Tokio runtime, so
-/// this works from an HTTP worker, from the writer thread, and from a test.
-pub(crate) fn block_on<F: Future>(future: F) -> F::Output {
-    futures_executor::block_on(future)
-}
-
 /// The text in a column, or an error naming what was there instead.
 pub(crate) fn column_text(row: &Row, index: usize) -> Result<String, StoreError> {
-    match row.get_value(index)? {
-        Value::Text(text) => Ok(text),
+    match row.get_ref(index)? {
+        ValueRef::Text(bytes) => std::str::from_utf8(bytes)
+            .map(str::to_owned)
+            .map_err(|error| {
+                StoreError::new(format!("column {index} was not UTF-8 text: {error}"))
+            }),
         other => Err(StoreError::new(format!(
             "column {index} was {other:?}, not text"
         ))),
@@ -106,9 +101,13 @@ pub(crate) fn column_text(row: &Row, index: usize) -> Result<String, StoreError>
 
 /// The text in a column, or `None` when it is null.
 pub(crate) fn column_optional_text(row: &Row, index: usize) -> Result<Option<String>, StoreError> {
-    match row.get_value(index)? {
-        Value::Text(text) => Ok(Some(text)),
-        Value::Null => Ok(None),
+    match row.get_ref(index)? {
+        ValueRef::Text(bytes) => std::str::from_utf8(bytes)
+            .map(|text| Some(text.to_owned()))
+            .map_err(|error| {
+                StoreError::new(format!("column {index} was not UTF-8 text: {error}"))
+            }),
+        ValueRef::Null => Ok(None),
         other => Err(StoreError::new(format!(
             "column {index} was {other:?}, not text or null"
         ))),
@@ -117,8 +116,8 @@ pub(crate) fn column_optional_text(row: &Row, index: usize) -> Result<Option<Str
 
 /// The bytes in a column.
 pub(crate) fn column_blob(row: &Row, index: usize) -> Result<Vec<u8>, StoreError> {
-    match row.get_value(index)? {
-        Value::Blob(bytes) => Ok(bytes),
+    match row.get_ref(index)? {
+        ValueRef::Blob(bytes) => Ok(bytes.to_vec()),
         other => Err(StoreError::new(format!(
             "column {index} was {other:?}, not bytes"
         ))),
@@ -127,8 +126,8 @@ pub(crate) fn column_blob(row: &Row, index: usize) -> Result<Vec<u8>, StoreError
 
 /// The integer in a column.
 pub(crate) fn column_integer(row: &Row, index: usize) -> Result<i64, StoreError> {
-    match row.get_value(index)? {
-        Value::Integer(value) => Ok(value),
+    match row.get_ref(index)? {
+        ValueRef::Integer(value) => Ok(value),
         other => Err(StoreError::new(format!(
             "column {index} was {other:?}, not an integer"
         ))),
@@ -137,9 +136,9 @@ pub(crate) fn column_integer(row: &Row, index: usize) -> Result<i64, StoreError>
 
 /// The integer in a column, or `None` when it is null.
 pub(crate) fn column_optional_integer(row: &Row, index: usize) -> Result<Option<i64>, StoreError> {
-    match row.get_value(index)? {
-        Value::Integer(value) => Ok(Some(value)),
-        Value::Null => Ok(None),
+    match row.get_ref(index)? {
+        ValueRef::Integer(value) => Ok(Some(value)),
+        ValueRef::Null => Ok(None),
         other => Err(StoreError::new(format!(
             "column {index} was {other:?}, not an integer or null"
         ))),
@@ -149,9 +148,6 @@ pub(crate) fn column_optional_integer(row: &Row, index: usize) -> Result<Option<
 /// The server's store: one database, opened once, migrated on the way in.
 #[derive(Debug)]
 pub struct Store {
-    /// Kept alive for as long as the connection is: it owns the engine's
-    /// background IO and the file handle behind every connection to it.
-    _database: turso::Database,
     connection: Connection,
     path: PathBuf,
     /// This store's identity, minted when the file is created and kept from then
@@ -167,10 +163,10 @@ const CLEAN_STOP: &str = "clean_stop";
 /// What the last stop left behind: `Some(true)` a finished stop, `Some(false)`
 /// one that did not finish, `None` a file no stop has touched yet.
 fn clean_stop_of(connection: &Connection) -> Result<Option<bool>, StoreError> {
-    let mut rows =
-        block_on(connection.query("SELECT value FROM store_meta WHERE key = ?1", (CLEAN_STOP,)))?;
-    Ok(match block_on(rows.next())? {
-        Some(row) => Some(column_text(&row, 0)? == "1"),
+    let mut statement = connection.prepare("SELECT value FROM store_meta WHERE key = ?1")?;
+    let mut rows = statement.query((CLEAN_STOP,))?;
+    Ok(match rows.next()? {
+        Some(row) => Some(column_text(row, 0)? == "1"),
         None => None,
     })
 }
@@ -178,11 +174,11 @@ fn clean_stop_of(connection: &Connection) -> Result<Option<bool>, StoreError> {
 /// Records that this process is running, so a stop that never finishes is
 /// distinguishable from one that did.
 fn mark_running(connection: &Connection) -> Result<(), StoreError> {
-    block_on(connection.execute(
+    connection.execute(
         "INSERT INTO store_meta (key, value) VALUES (?1, '0')
          ON CONFLICT(key) DO UPDATE SET value = '0'",
         (CLEAN_STOP,),
-    ))?;
+    )?;
     Ok(())
 }
 
@@ -204,13 +200,12 @@ impl Store {
                 path.display()
             ))
         })?;
-        let database = block_on(Builder::new_local(location).build()).map_err(|error| {
+        let connection = Connection::open(location).map_err(|error| {
             StoreError::new(format!(
                 "could not open the store {}: {error}",
                 path.display()
             ))
         })?;
-        let connection = database.connect()?;
         Self::configure(&connection, true)?;
         schema::migrate(&connection)?;
         let instance = instance_of(&connection)?;
@@ -220,7 +215,6 @@ impl Store {
         let unclean_stop = clean_stop_of(&connection)? == Some(false);
         mark_running(&connection)?;
         Ok(Self {
-            _database: database,
             connection,
             path,
             instance,
@@ -230,8 +224,7 @@ impl Store {
 
     /// An in-memory store, for tests that need the schema and not the file.
     pub fn open_in_memory() -> Result<Self, StoreError> {
-        let database = block_on(Builder::new_local(":memory:").build())?;
-        let connection = database.connect()?;
+        let connection = Connection::open_in_memory()?;
         // An in-memory store has no file to write ahead of, and the engine says
         // so by answering `memory`; asking for WAL there is a mistake, not a
         // failure to report.
@@ -240,7 +233,6 @@ impl Store {
         let instance = instance_of(&connection)?;
         mark_running(&connection)?;
         Ok(Self {
-            _database: database,
             connection,
             path: PathBuf::from(":memory:"),
             instance,
@@ -288,10 +280,10 @@ impl Store {
     /// this leaves the file marked as unfinished, which is the conservative
     /// reading and the honest one.
     pub fn mark_clean_stop(&self) -> Result<(), StoreError> {
-        block_on(self.connection.execute(
+        self.connection.execute(
             "UPDATE store_meta SET value = '1' WHERE key = ?1",
             (CLEAN_STOP,),
-        ))?;
+        )?;
         Ok(())
     }
 
@@ -301,11 +293,11 @@ impl Store {
     /// synced already reads as partial, and there is nothing to be behind.
     /// Returns how many were marked.
     pub fn mark_stored_history_behind(&self, reason: &str) -> Result<usize, StoreError> {
-        let marked = block_on(self.connection.execute(
+        let marked = self.connection.execute(
             "UPDATE thread_history SET last_error = ?1 WHERE synced_at_ms IS NOT NULL",
             (reason,),
-        ))?;
-        Ok(marked as usize)
+        )?;
+        Ok(marked)
     }
 
     fn configure(connection: &Connection, wal: bool) -> Result<(), StoreError> {
@@ -316,20 +308,16 @@ impl Store {
         // Setting `journal_mode` answers with the mode it settled on, so the
         // answer is read rather than discarded.
         if wal {
-            let rows = block_on(connection.pragma_update("journal_mode", "WAL"))?;
-            let mode = rows
-                .first()
-                .map(|row| column_text(row, 0))
-                .transpose()?
-                .unwrap_or_default();
+            let mode: String =
+                connection.query_row("PRAGMA journal_mode = WAL", [], |row| row.get(0))?;
             if !mode.eq_ignore_ascii_case("wal") {
                 return Err(StoreError::new(format!(
                     "the store could not be put in WAL mode (it answered {mode:?})"
                 )));
             }
         }
-        block_on(connection.pragma_update("synchronous", "NORMAL"))?;
-        block_on(connection.pragma_update("foreign_keys", "ON"))?;
+        connection.pragma_update(None, "synchronous", "NORMAL")?;
+        connection.pragma_update(None, "foreign_keys", "ON")?;
         connection.busy_timeout(BUSY_TIMEOUT)?;
         Ok(())
     }
@@ -341,15 +329,16 @@ impl Store {
 /// what makes concurrent first opens agree on one value instead of each keeping
 /// the id it tried to write.
 fn instance_of(connection: &Connection) -> Result<String, StoreError> {
-    block_on(connection.execute(
+    connection.execute(
         "INSERT INTO store_meta (key, value) VALUES ('instance', ?1)
          ON CONFLICT(key) DO NOTHING",
         (loom_relay::EventId::new().to_string(),),
-    ))?;
-    let mut rows =
-        block_on(connection.query("SELECT value FROM store_meta WHERE key = 'instance'", ()))?;
-    match block_on(rows.next())? {
-        Some(row) => column_text(&row, 0),
+    )?;
+    let mut statement =
+        connection.prepare("SELECT value FROM store_meta WHERE key = 'instance'")?;
+    let mut rows = statement.query([])?;
+    match rows.next()? {
+        Some(row) => column_text(row, 0),
         None => Err(StoreError::new("the store has no identity row")),
     }
 }
@@ -400,9 +389,11 @@ mod tests {
         {
             let store = Store::open(&path).unwrap();
             assert_eq!(store.schema_version().unwrap(), SCHEMA_VERSION);
-            let mut rows = block_on(store.connection().query("PRAGMA journal_mode", ())).unwrap();
-            let row = block_on(rows.next()).unwrap().expect("a journal mode");
-            assert_eq!(column_text(&row, 0).unwrap(), "wal");
+            let mode: String = store
+                .connection()
+                .query_row("PRAGMA journal_mode", [], |row| row.get(0))
+                .unwrap();
+            assert_eq!(mode, "wal");
             instance = store.instance().to_owned();
         }
         assert!(path.exists(), "the store is a real file on disk");
@@ -436,12 +427,10 @@ mod tests {
         let path = dir.path().join("loom.db");
         {
             let store = Store::open(&path).unwrap();
-            block_on(
-                store
-                    .connection()
-                    .pragma_update("user_version", SCHEMA_VERSION + 1),
-            )
-            .unwrap();
+            store
+                .connection()
+                .pragma_update(None, "user_version", SCHEMA_VERSION + 1)
+                .unwrap();
         }
         let error = Store::open(&path).expect_err("a newer schema is refused");
         assert!(

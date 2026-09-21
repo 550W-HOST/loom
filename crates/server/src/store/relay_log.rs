@@ -18,11 +18,9 @@
 //!   without bound and a reader never sees a hole in the middle.
 
 use bytes::Bytes;
-use turso::params;
+use rusqlite::params;
 
-use super::{
-    block_on, column_blob, column_integer, column_optional_text, column_text, Store, StoreError,
-};
+use super::{column_blob, column_integer, column_optional_text, column_text, Store, StoreError};
 use loom_relay::backend::LogRecord;
 use loom_relay::{EventId, Scope};
 
@@ -38,8 +36,8 @@ impl Store {
         record: &LogRecord,
         max_len: usize,
     ) -> Result<(), StoreError> {
-        let transaction = block_on(self.connection().unchecked_transaction())?;
-        block_on(transaction.execute(
+        let transaction = self.connection().unchecked_transaction()?;
+        transaction.execute(
             "INSERT INTO relay_event
                 (event_id, shard, scope_kind, scope_id, payload, created_at_ms, origin)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
@@ -53,11 +51,11 @@ impl Store {
                 i64::try_from(record.created_at_ms).unwrap_or(i64::MAX),
                 record.origin.clone(),
             ],
-        ))?;
+        )?;
         // Keep the newest `max_len` frames. The subquery answers with the oldest
         // frame that must go, and nothing at all when the shard is within its
         // bound — a comparison against nothing deletes nothing.
-        block_on(transaction.execute(
+        transaction.execute(
             "DELETE FROM relay_event
               WHERE shard = ?1 AND event_id <= (
                   SELECT event_id FROM relay_event
@@ -67,8 +65,8 @@ impl Store {
                 i64::from(shard),
                 i64::try_from(max_len.max(1)).unwrap_or(i64::MAX)
             ],
-        ))?;
-        block_on(transaction.commit())?;
+        )?;
+        transaction.commit()?;
         Ok(())
     }
 
@@ -79,34 +77,34 @@ impl Store {
         after: Option<EventId>,
         limit: usize,
     ) -> Result<Vec<LogRecord>, StoreError> {
-        let mut statement = block_on(self.connection().prepare(
+        let mut statement = self.connection().prepare(
             "SELECT event_id, scope_kind, scope_id, payload, created_at_ms, origin
                FROM relay_event
               WHERE shard = ?1 AND event_id > ?2
               ORDER BY event_id
               LIMIT ?3",
-        ))?;
-        let mut rows = block_on(statement.query(params![
+        )?;
+        let mut rows = statement.query(params![
             i64::from(shard),
             after.map(|id| id.to_string()).unwrap_or_default(),
             i64::try_from(limit).unwrap_or(i64::MAX),
-        ]))?;
+        ])?;
         let mut records = Vec::new();
-        while let Some(row) = block_on(rows.next())? {
-            let event_id = column_text(&row, 0)?;
+        while let Some(row) = rows.next()? {
+            let event_id = column_text(row, 0)?;
             let event_id = event_id.parse::<EventId>().map_err(|error| {
                 StoreError::new(format!("a stored frame id {event_id:?}: {error}"))
             })?;
-            let kind = column_text(&row, 1)?;
-            let id = column_optional_text(&row, 2)?.unwrap_or_default();
+            let kind = column_text(row, 1)?;
+            let id = column_optional_text(row, 2)?.unwrap_or_default();
             let scope = Scope::from_kind_id(&kind, id).ok_or_else(|| {
                 StoreError::new(format!(
                     "a stored frame names an unknown scope kind {kind:?}"
                 ))
             })?;
-            let payload = column_blob(&row, 3)?;
-            let created_at_ms = column_integer(&row, 4)?;
-            let origin = column_text(&row, 5)?;
+            let payload = column_blob(row, 3)?;
+            let created_at_ms = column_integer(row, 4)?;
+            let origin = column_text(row, 5)?;
             records.push(LogRecord {
                 event_id,
                 scope,
@@ -120,24 +118,24 @@ impl Store {
 
     /// Drops a shard's frames older than `before_ms`, returning how many went.
     pub fn trim_relay_events(&self, shard: u8, before_ms: u64) -> Result<u64, StoreError> {
-        let removed = block_on(self.connection().execute(
+        let removed = self.connection().execute(
             "DELETE FROM relay_event WHERE shard = ?1 AND created_at_ms < ?2",
             params![
                 i64::from(shard),
                 i64::try_from(before_ms).unwrap_or(i64::MAX)
             ],
-        ))?;
-        Ok(removed)
+        )?;
+        Ok(u64::try_from(removed).unwrap_or(u64::MAX))
     }
 
     /// How many frames a shard holds.
     pub fn relay_event_count(&self, shard: u8) -> Result<usize, StoreError> {
-        let mut rows = block_on(self.connection().query(
-            "SELECT COUNT(*) FROM relay_event WHERE shard = ?1",
-            params![i64::from(shard)],
-        ))?;
-        let count = match block_on(rows.next())? {
-            Some(row) => column_integer(&row, 0)?,
+        let mut statement = self
+            .connection()
+            .prepare("SELECT COUNT(*) FROM relay_event WHERE shard = ?1")?;
+        let mut rows = statement.query(params![i64::from(shard)])?;
+        let count = match rows.next()? {
+            Some(row) => column_integer(row, 0)?,
             None => 0,
         };
         Ok(usize::try_from(count).unwrap_or(0))
@@ -145,12 +143,12 @@ impl Store {
 
     /// Every shard's frame count, for diagnostics.
     pub fn relay_event_total(&self) -> Result<usize, StoreError> {
-        let mut rows = block_on(
-            self.connection()
-                .query("SELECT COUNT(*) FROM relay_event", ()),
-        )?;
-        let count = match block_on(rows.next())? {
-            Some(row) => column_integer(&row, 0)?,
+        let mut statement = self
+            .connection()
+            .prepare("SELECT COUNT(*) FROM relay_event")?;
+        let mut rows = statement.query([])?;
+        let count = match rows.next()? {
+            Some(row) => column_integer(row, 0)?,
             None => 0,
         };
         Ok(usize::try_from(count).unwrap_or(0))

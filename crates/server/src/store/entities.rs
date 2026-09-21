@@ -21,11 +21,11 @@
 //! singletons — one row each, under a fixed id — because that is what they are.
 
 use loom_domain::{Environment, Host, Interaction, Project, QueuedMessage, Thread, ThreadSection};
+use rusqlite::params;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
-use turso::params;
 
-use super::{block_on, column_text, Store, StoreError};
+use super::{column_text, Store, StoreError};
 use crate::persistence::{DomainSnapshot, SNAPSHOT_VERSION};
 use crate::runs::RunRecord;
 use crate::settings::SettingsSnapshot;
@@ -50,11 +50,11 @@ impl Store {
     /// Replaces the whole entity view, in one transaction.
     pub fn replace_entities(&self, snapshot: &DomainSnapshot) -> Result<(), StoreError> {
         let rows = rows_of(snapshot)?;
-        let transaction = block_on(self.connection().unchecked_transaction())?;
-        block_on(transaction.execute("DELETE FROM entity", ()))?;
-        block_on(transaction.execute("DELETE FROM entity_meta", ()))?;
+        let transaction = self.connection().unchecked_transaction()?;
+        transaction.execute("DELETE FROM entity", ())?;
+        transaction.execute("DELETE FROM entity_meta", ())?;
         for row in &rows {
-            block_on(transaction.execute(
+            transaction.execute(
                 "INSERT INTO entity (kind, id, parent_id, json) VALUES (?1, ?2, ?3, ?4)",
                 params![
                     row.kind,
@@ -62,22 +62,22 @@ impl Store {
                     row.parent.clone(),
                     row.json.clone()
                 ],
-            ))?;
+            )?;
         }
-        block_on(transaction.execute(
+        transaction.execute(
             "INSERT INTO entity_meta (key, value) VALUES (?1, ?2)",
             params![
                 PERSONAL_PROJECT,
                 snapshot.registry.personal_project_id.to_string()
             ],
-        ))?;
+        )?;
         if let Some(watermark) = &snapshot.watermark {
-            block_on(transaction.execute(
+            transaction.execute(
                 "INSERT INTO entity_meta (key, value) VALUES (?1, ?2)",
                 params![WATERMARK, watermark.to_string()],
-            ))?;
+            )?;
         }
-        block_on(transaction.commit())?;
+        transaction.commit()?;
         Ok(())
     }
 
@@ -88,7 +88,7 @@ impl Store {
     /// seen, a status change still owed — are only worth having if they are on
     /// disk before the effect they guard.
     pub fn upsert_run(&self, run: &RunRecord) -> Result<(), StoreError> {
-        block_on(self.connection().execute(
+        self.connection().execute(
             "INSERT INTO entity (kind, id, parent_id, json) VALUES ('run', ?1, ?2, ?3)
              ON CONFLICT(kind, id) DO UPDATE SET parent_id = ?2, json = ?3",
             params![
@@ -96,29 +96,29 @@ impl Store {
                 run.thread_id.to_string(),
                 encode(run)?
             ],
-        ))?;
+        )?;
         Ok(())
     }
 
     /// Forgets a run that is no longer in flight.
     pub fn forget_run(&self, run_id: &loom_domain::RunId) -> Result<(), StoreError> {
-        block_on(self.connection().execute(
+        self.connection().execute(
             "DELETE FROM entity WHERE kind = 'run' AND id = ?1",
             params![run_id.to_string()],
-        ))?;
+        )?;
         Ok(())
     }
 
     /// Every run the store holds, which are the ones that were in flight.
     pub fn runs(&self) -> Result<Vec<RunRecord>, StoreError> {
-        let mut rows = block_on(self.connection().query(
-            "SELECT id, json FROM entity WHERE kind = 'run' ORDER BY id",
-            (),
-        ))?;
+        let mut statement = self
+            .connection()
+            .prepare("SELECT id, json FROM entity WHERE kind = 'run' ORDER BY id")?;
+        let mut rows = statement.query([])?;
         let mut runs = Vec::new();
-        while let Some(row) = block_on(rows.next())? {
-            let id = column_text(&row, 0)?;
-            let json = column_text(&row, 1)?;
+        while let Some(row) = rows.next()? {
+            let id = column_text(row, 0)?;
+            let json = column_text(row, 1)?;
             runs.push(decode::<RunRecord>("run", &id, &json)?);
         }
         Ok(runs)
@@ -130,10 +130,10 @@ impl Store {
     /// should start from the log, the second that a view was taken and held
     /// nothing.
     pub fn entities(&self) -> Result<Option<DomainSnapshot>, StoreError> {
-        let mut rows = block_on(
-            self.connection()
-                .query("SELECT kind, id, json FROM entity ORDER BY kind, id", ()),
-        )?;
+        let mut statement = self
+            .connection()
+            .prepare("SELECT kind, id, json FROM entity ORDER BY kind, id")?;
+        let mut rows = statement.query([])?;
         let mut projects = Vec::new();
         let mut threads = Vec::new();
         let mut hosts = Vec::new();
@@ -145,11 +145,11 @@ impl Store {
         let mut settings = None;
         let mut automations = None;
         let mut rows_seen = 0usize;
-        while let Some(row) = block_on(rows.next())? {
+        while let Some(row) = rows.next()? {
             rows_seen += 1;
-            let kind = column_text(&row, 0)?;
-            let id = column_text(&row, 1)?;
-            let json = column_text(&row, 2)?;
+            let kind = column_text(row, 0)?;
+            let id = column_text(row, 1)?;
+            let json = column_text(row, 2)?;
             match kind.as_str() {
                 "project" => projects.push(decode::<Project>(&kind, &id, &json)?),
                 "thread" => threads.push(decode::<Thread>(&kind, &id, &json)?),
@@ -180,15 +180,17 @@ impl Store {
             return Ok(None);
         }
 
-        let mut meta = block_on(
-            self.connection()
-                .query("SELECT key, value FROM entity_meta", ()),
-        )?;
+        // The entity statement is finished with; the meta read is its own.
+        drop(rows);
+        let mut meta = self
+            .connection()
+            .prepare("SELECT key, value FROM entity_meta")?;
+        let mut meta_rows = meta.query([])?;
         let mut personal_project_id = None;
         let mut watermark = None;
-        while let Some(row) = block_on(meta.next())? {
-            let key = column_text(&row, 0)?;
-            let value = column_text(&row, 1)?;
+        while let Some(row) = meta_rows.next()? {
+            let key = column_text(row, 0)?;
+            let value = column_text(row, 1)?;
             match key.as_str() {
                 PERSONAL_PROJECT => personal_project_id = Some(value),
                 WATERMARK => watermark = Some(value),
@@ -395,11 +397,13 @@ mod tests {
     fn an_unreadable_entity_fails_the_read() {
         let store = Store::open_in_memory().unwrap();
         store.replace_entities(&fixture()).unwrap();
-        crate::store::block_on(store.connection().execute(
-            "UPDATE entity SET json = 'not an entity' WHERE kind = 'thread'",
-            (),
-        ))
-        .unwrap();
+        store
+            .connection()
+            .execute(
+                "UPDATE entity SET json = 'not an entity' WHERE kind = 'thread'",
+                (),
+            )
+            .unwrap();
         let error = store
             .entities()
             .expect_err("an unreadable entity is refused");
@@ -458,12 +462,12 @@ mod tests {
             .clone();
         store.replace_entities(&written).unwrap();
 
-        let mut rows = crate::store::block_on(store.connection().query(
-            "SELECT id FROM entity WHERE kind = 'thread' AND parent_id = ?1",
-            (thread.project_id.to_string(),),
-        ))
-        .unwrap();
-        let row = crate::store::block_on(rows.next()).unwrap().expect("a row");
-        assert_eq!(column_text(&row, 0).unwrap(), thread.id.to_string());
+        let mut statement = store
+            .connection()
+            .prepare("SELECT id FROM entity WHERE kind = 'thread' AND parent_id = ?1")
+            .unwrap();
+        let mut rows = statement.query((thread.project_id.to_string(),)).unwrap();
+        let row = rows.next().unwrap().expect("a row");
+        assert_eq!(column_text(row, 0).unwrap(), thread.id.to_string());
     }
 }

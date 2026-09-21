@@ -334,14 +334,12 @@ mod tests {
     #[test]
     fn a_failed_write_marks_the_thread_and_stays_marked() {
         let store = Arc::new(Mutex::new(Store::open_in_memory().unwrap()));
-        crate::store::block_on(
-            store
-                .lock()
-                .unwrap()
-                .connection()
-                .execute_batch("DROP TABLE thread_history_row;"),
-        )
-        .unwrap();
+        store
+            .lock()
+            .unwrap()
+            .connection()
+            .execute_batch("DROP TABLE thread_history_row;")
+            .unwrap();
         let writer = StoreWriter::spawn(Arc::clone(&store), 8, Arc::new(()));
         let thread_id = ThreadId::mint();
 
@@ -398,14 +396,12 @@ mod tests {
         // Drop the table after one row is stored, so the next write fails.
         assert!(writer.enqueue(&working, 1, source(1), message("kept")));
         assert!(writer.wait_for_writes(1, Duration::from_secs(2)));
-        crate::store::block_on(
-            store
-                .lock()
-                .unwrap()
-                .connection()
-                .execute_batch("DROP TABLE thread_history_row;"),
-        )
-        .unwrap();
+        store
+            .lock()
+            .unwrap()
+            .connection()
+            .execute_batch("DROP TABLE thread_history_row;")
+            .unwrap();
         assert!(writer.enqueue(&failing, 2, source(2), message("dropped")));
 
         let deadline = Instant::now() + Duration::from_secs(2);
