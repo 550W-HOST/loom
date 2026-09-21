@@ -416,7 +416,7 @@ CREATE TABLE IF NOT EXISTS entity_meta (
 
 **1.1 依赖与打开。** 引擎为 **SQLite 本体**，通过 **`rusqlite`**（`0.40`，`default-features = false`，`features = ["bundled", "cache"]`）：进程内、无服务、无运行时库，`bundled` 把 SQLite（当前 3.53.2）从源码编进二进制，`FROM scratch` 镜像仍然只多一个文件。**两条必须一起记住的事实**（2026-09-21 实测）：① `rusqlite` 是 2014 年起的稳定 crate（总下载 1.09 亿，最新 0.40.2），SQLite 本身是这一层里最难测坏的软件；② 它**仍然是 C 构建**——`bundled` 会为目标平台编译 SQLite 的 C 源码，所以 §10 的 musl 交叉发布仍需要目标平台的 C 交叉编译器（与 turso 相同，见下一条的 ⚠️），但**不需要 libclang**。store 的 API 是同步的，与所有调用者一致（HTTP 读、写线程、测试），中间没有 driver、没有 `block_on`、没有 Tokio 运行时要求。新增 `crates/server/src/store/`（`mod.rs` 打开库、`schema.rs` 迁移）。`<server-data-dir>/loom.db`，WAL、`synchronous=NORMAL`、`foreign_keys=ON`、`busy_timeout`，`PRAGMA user_version` 记 schema 版本。打不开/迁移失败 = 启动失败，绝不回退内存。测试：建库幂等、版本表、坏库显式报错。
 
-**⚠️ 这一步会改变发布工具链。** `rusqlite` 的 `bundled` 会为目标平台编译 SQLite 的 C 源码，因此发布机需要**宿主 C 编译器**；交叉到 musl 时还需要目标平台的 C 交叉编译器（x86_64/aarch64 目前都没有装，`.cargo/config.toml` 有注释）。本地实测：`cargo build --release --locked -p loom@0.1.0 --target x86_64-unknown-linux-musl` 与同命令的 aarch64 目标都因缺少 `*-linux-musl-gcc` 失败（`rusqlite` 在 build 阶段直接报 `failed to find tool "aarch64-linux-musl-gcc"`；换 turso 时是它的 `simsimd` 把同一个缺失吞成 warning、到链接阶段才报 `cannot find -lsimsimd`）。同一时期实测**不需要 libclang**（见 §1.1 与 2026-09-21 的引擎记录）。本地只能验证 gnu 目标与 MSRV；musl 两个目标必须由 CI 或装了交叉工具链的机器验证后，才可以说发布路径完好。`release.yml` 这一步尚未做（见文末「尚未做」）。
+**⚠️ 这一步会改变发布工具链（已完成）。** `rusqlite` 的 `bundled` 会为目标平台编译 SQLite 的 C 源码，因此发布机需要**宿主 C 编译器**；交叉到 musl 时还需要目标平台的 C 交叉编译器（与选哪个引擎无关；turso 时期同样缺，只是它的 `simsimd` 把缺失吞成 warning、到链接才报 `cannot find -lsimsimd`）。`release.yml` 的 `build` 任务现在按目标下载 musl.cc 的 musl-cross-make 档案（摘要钉在任务的 matrix 里，`sha256sum --check` 后才解包）、把 `bin/` 追加到 `PATH`——档案里的 `<triple>-gcc` 正是 `cc` crate 要找的名字，所以这就是全部配置，链接方式一行未改（aarch64 仍是 `rust-lld`）。2026-09-21 本地用同一份档案构建了两个目标，并跑过仓库自己的 `scripts/verify-release-binaries.sh`：x86_64 的产物被真正启动、两种角色跑通、内嵌 app 与契约写读都过，aarch64 通过 ELF 检查。细节见 `docs/releasing.md` 的 “The C compiler the build scripts need”。
 
 **1.2 表与迁移（v1）。** `thread_history`（binding、`provider_session_id`、`revision`、`synced_at_ms`、`last_error`）与 `thread_history_row`（`thread_id, seq, source_kind, source_run_id, source_at_ms, event_json`，`seq` 写入时分配、永不重算）。测试：往返、并发分配不重号、同 `(thread_id, seq)` 唯一、删除 thread 同事务清行。
 
@@ -448,6 +448,7 @@ CREATE TABLE IF NOT EXISTS entity_meta (
 
 **尚未做（刻意留在本计划之外）**：
 
-1. `release.yml` 的发布工具链：`rusqlite` 的 `bundled` 需要宿主 C 编译器，musl 目标还需要目标平台的 C 交叉编译器——见 §1.1 的 ⚠️。
-2. 跨机器/多 loom 共用一个 ACP 会话的协调（用户已明确「跨机器续聊继续单独处理」）。
-3. `docs/history-convergence-review.md` 的状态表（该文件由用户维护，未改动）。
+1. 跨机器/多 loom 共用一个 ACP 会话的协调（用户已明确「跨机器续聊继续单独处理」）。
+2. `docs/history-convergence-review.md` 的状态表（该文件由用户维护，未改动）。
+
+**已补上的一项**：`release.yml` 的 musl 发布工具链（目标是给 `rusqlite`/`bundled` 编 SQLite 用的 C 交叉编译器）已在本计划之外单独做完，两个目标的产物都跑过 `scripts/verify-release-binaries.sh`——见 §1.1 的 ⚠️ 与 `docs/releasing.md`。

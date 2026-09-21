@@ -99,9 +99,13 @@ jobs:
       # jobs after this one need all of them.
       fail-fast: false
       matrix:
-        target:
-          - x86_64-unknown-linux-musl
-          - aarch64-unknown-linux-musl
+        include:
+          - target: x86_64-unknown-linux-musl
+            c_toolchain: x86_64-linux-musl-cross
+            c_toolchain_sha256: c5d410d9f82a4f24c549fe5d24f988f85b2679b452413a9f7e5f7b956f2fe7ea
+          - target: aarch64-unknown-linux-musl
+            c_toolchain: aarch64-linux-musl-cross
+            c_toolchain_sha256: c909817856d6ceda86aa510894fa3527eac7989f0ef6e87b5721c58737a06c38
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -123,12 +127,33 @@ jobs:
           rustc --version
           cargo --version
 
-      # No linker is installed for the cross target beyond this line: the
+      # No *linker* is installed for the cross target beyond this line: the
       # aarch64 build links with the `rust-lld` the toolchain already ships, and
       # `.cargo/config.toml` is where that is wired up. Neither `cargo-zigbuild`
       # nor a `cross` container is involved.
       - name: rustup target add ${{ matrix.target }}
         run: rustup target add "${{ matrix.target }}"
+
+      # A C compiler for the target is a different thing from a linker, and the
+      # store's build script needs one: `rusqlite`'s `bundled` feature compiles
+      # SQLite's C source for the target, so without this the build fails with
+      # `failed to find tool "<triple>-gcc"`. musl.cc publishes the output of
+      # musl-cross-make for exactly these triples, each archive pinned by the
+      # digest in the matrix; its `bin/<triple>-gcc` is the name the `cc` crate
+      # looks for, so putting that directory on `PATH` is the whole setup, and
+      # nothing here changes how either artifact links.
+      - name: Install the target's C toolchain
+        env:
+          C_TOOLCHAIN: ${{ matrix.c_toolchain }}
+          C_TOOLCHAIN_SHA256: ${{ matrix.c_toolchain_sha256 }}
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/$C_TOOLCHAIN.tgz"
+          curl --fail --silent --show-error --location \
+            --output "$archive" "https://musl.cc/$C_TOOLCHAIN.tgz"
+          echo "$C_TOOLCHAIN_SHA256  $archive" | sha256sum --check --strict
+          tar --extract --gzip --file "$archive" --directory "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/$C_TOOLCHAIN/bin" >>"$GITHUB_PATH"
 
       - name: Cache cargo registry and target
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2

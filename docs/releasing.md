@@ -73,25 +73,32 @@ linker = "rust-lld"
 ```
 
 `rust-lld` is resolved out of the toolchain's own
-`lib/rustlib/<host>/bin/`, which is why no aarch64 toolchain, no
-`aarch64-linux-musl-gcc`, no `cargo-zigbuild` and no `cross` container appear
-anywhere in this pipeline. The cross toolchain is the toolchain
+`lib/rustlib/<host>/bin/`, which is why no `cargo-zigbuild` and no `cross`
+container appear anywhere in this pipeline: the cross linker is the toolchain
 [`rust-toolchain.toml`](../rust-toolchain.toml) already pins, and both targets
-are built by the same `cargo build --target <triple>` with no per-target flags
-in the workflow.
+are built by the same `cargo build --target <triple>`.
 
-> **Known gap (measured 2026-09-21).** This section is about linking, and the
-> linker is no longer the only thing missing. The server's embedded store is
-> `rusqlite` with `bundled`, which compiles SQLite's C source for the target, so
-> a musl target also needs a C cross-compiler for it. Neither this machine nor
-> the current `release.yml` installs one, and
-> `cargo build --release --locked -p loom@0.1.0 --target <musl triple>` fails
-> for both targets because of it (`x86_64-unknown-linux-musl` and
-> `aarch64-unknown-linux-musl` were both run). The toolchain this needs, and
-> what is deliberately out of scope for now, are recorded in
-> [`sqlite-persistence-plan.md`](sqlite-persistence-plan.md) §1.1 and its
-> 「尚未做」 list. Everything else here — `rust-lld` doing the cross link —
-> still holds.
+## The C compiler the build scripts need
+
+A cross *linker* is not the only cross tool a release build uses. The server's
+embedded store is `rusqlite` with `bundled`, which compiles SQLite's C source
+for the target, so the `cc` crate has to find a C compiler for that target:
+without one the build stops at `failed to find tool "x86_64-linux-musl-gcc"`
+(the table above is about linking, so this is the part it cannot describe —
+both musl targets were run and failed exactly this way before the step existed).
+
+The `build` job's *Install the target's C toolchain* step downloads the
+musl-cross-make archive for its target from [musl.cc](https://musl.cc/),
+verifies it against the digest recorded beside the target in the job's matrix,
+unpacks it under `$RUNNER_TEMP` and appends its `bin/` to `PATH`. That is the
+whole configuration, because the archive's `bin/<triple>-gcc` is the name `cc`
+looks for; the compiler is not the linker and does not change how either
+artifact links, which is why `.cargo/config.toml` still holds exactly one line.
+
+Both targets were built and checked with these archives on 2026-09-21:
+`scripts/verify-release-binaries.sh` ran the x86_64 artifact in both roles and
+watched it serve the embedded app, enroll a worker and answer a contract-shaped
+write, and passed the ELF-only checks for the aarch64 one.
 
 Both results are self-contained, and they are not the same ELF shape. These were
 recorded before the client was compiled in **and** before the two roles became
