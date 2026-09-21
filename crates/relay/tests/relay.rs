@@ -1,18 +1,12 @@
 //! End-to-end behaviour of the relay layer through its public API.
 //!
-//! Every scenario runs over every available backend. The scenarios themselves
-//! live in `loom_relay::backend::conformance`, because the store backend is
-//! built where the store is: this file is the two backends the relay ships, and
+//! The scenarios themselves live in `loom_relay::backend::conformance`, because
+//! the backend that matters in a deployment is built where the store is: this
+//! file runs them over the in-process backend the relay ships, and
 //! `crates/server/tests/relay_store_contract.rs` runs the same suite over the
 //! store.
 
-use bytes::Bytes;
 use loom_relay::backend::conformance;
-use loom_relay::backend::disk::DiskBackend;
-use loom_relay::backend::SharedBackend;
-use loom_relay::{Relay, Scope};
-use std::sync::Arc;
-use tempfile::TempDir;
 
 fn run(scenario: fn(&[conformance::Case])) {
     scenario(&conformance::cases());
@@ -86,44 +80,4 @@ fn an_empty_page_reports_no_more() {
 #[test]
 fn a_closed_relay_refuses_appends_and_flushes_what_it_accepted() {
     run(conformance::a_closed_relay_refuses_appends_and_flushes_what_it_accepted);
-}
-
-/// An unflushed tail — the shape a crash leaves behind — must not corrupt the
-/// records before it.
-#[test]
-fn a_crashed_restart_loses_at_most_the_tail() {
-    let dir = TempDir::new().unwrap();
-    let scope = Scope::Thread("thr_crash".into());
-
-    {
-        let backend: SharedBackend = Arc::new(DiskBackend::open(dir.path(), 1_000).unwrap());
-        let relay = Relay::with_defaults(backend, "node-a").unwrap();
-        for i in 0..4 {
-            relay
-                .publish(scope.clone(), format!("{{\"n\":{i}}}"))
-                .unwrap();
-        }
-        // No explicit flush: relying on the backend's own durability on a
-        // clean drop, then corrupting the tail below.
-    }
-
-    // Simulate a half-written record left by a crash.
-    let path = dir.path().join(format!("shard-{}.log", scope.shard()));
-    {
-        use std::io::Write as _;
-        let mut file = std::fs::OpenOptions::new()
-            .append(true)
-            .open(&path)
-            .unwrap();
-        file.write_all(b"\x4D\x4F\x4F\x4C\x01\x02").unwrap();
-        file.sync_all().unwrap();
-    }
-
-    let backend: SharedBackend = Arc::new(DiskBackend::open(dir.path(), 1_000).unwrap());
-    let relay = Relay::with_defaults(backend, "node-a").unwrap();
-    let replayed = relay.replay_scope(&scope, 100).unwrap();
-    assert_eq!(replayed.len(), 4);
-    for (i, envelope) in replayed.iter().enumerate() {
-        assert_eq!(envelope.payload, Bytes::from(format!("{{\"n\":{i}}}")));
-    }
 }

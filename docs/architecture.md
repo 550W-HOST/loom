@@ -90,15 +90,16 @@ subscriber, a room or a socket.
 
 ### Why the split matters
 
-- **Backends are swappable.** Two are defined, and the trait is the only
-  thing the relay sees:
+- **Backends are swappable.** The trait is the only thing the relay sees:
   - [`backend::memory::MemoryBackend`] — in-process, zero configuration, lost
-    on restart. The server's default.
-  - [`backend::disk::DiskBackend`] — one crash-safe append-only file per
-    shard under a data directory. Still in-process and dependency-free, but
-    the replay window survives a restart.
+    on restart. What a server with no `--data-dir` runs on.
+  - the server's `StoreBackend` — the store's `relay_event` table, beside the
+    conversations and the entity view. What a server with a data directory runs
+    on, and the one that survives a restart.
 
-  Nothing above `RelayBackend` changes between them.
+  Nothing above `RelayBackend` changes between them. The append-only file per
+  shard this used to include is gone, with its backend: one database is the
+  whole durable state.
 
   A third, [`backend::redis::RedisBackend`], put the log in Redis Streams so
   that *several servers* could share it. It was **removed**: sharing a log
@@ -108,13 +109,13 @@ subscriber, a room or a socket.
   not. `--redis-url` and `LOOM_REDIS_URL` are tombstones that fail at startup
   with that reason.
 
-  A backend whose IO is asynchronous reports failures at the call site;
-  `DiskBackend` hands writes to a per-shard thread and therefore latches a
-  failure instead, surfaced through `RelayBackend::backend_error` and reported
-  by `/health` as `backend_error`. Reads keep working in that state, so the
-  field is how an operator learns that durability — not availability — is what
-  broke. The complementary case, a data directory that cannot be written at
-  all, fails the backend at open rather than starting in a degraded mode.
+  A backend that hands work to a writer and returns before the write happens
+  cannot report a failure at the call site it belongs to, so it latches one:
+  `RelayBackend::backend_error`, reported by `/health` as `backend_error`. Reads
+  keep working in that state, so the field is how an operator learns that
+  durability — not availability — is what broke. The store's backend writes
+  synchronously and needs neither, and a store that cannot be opened fails
+  startup rather than starting in a degraded mode.
 - **The relay is testable without sockets,** and the hub is testable without a
   broker.
 - **The dependency direction is enforced.** `loom-relay` does not know

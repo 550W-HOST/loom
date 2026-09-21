@@ -22,7 +22,6 @@ use std::sync::Arc;
 use bytes::Bytes;
 use tempfile::TempDir;
 
-use super::disk::DiskBackend;
 use super::memory::MemoryBackend;
 use super::SharedBackend;
 use crate::dedup::SeenSet;
@@ -53,23 +52,6 @@ impl Backend for Memory {
 
     fn open(&self, _dir: &Path, max_len: usize) -> SharedBackend {
         Arc::new(MemoryBackend::new(max_len))
-    }
-}
-
-/// The append-only file backend.
-pub struct Disk;
-
-impl Backend for Disk {
-    fn name(&self) -> &'static str {
-        "disk"
-    }
-
-    fn durable(&self) -> bool {
-        true
-    }
-
-    fn open(&self, dir: &Path, max_len: usize) -> SharedBackend {
-        Arc::new(DiskBackend::open(dir, max_len).unwrap())
     }
 }
 
@@ -118,7 +100,7 @@ pub fn cases() -> Vec<Case> {
 
 /// A case per built-in backend, plus one per extra backend.
 pub fn cases_with(extra: Vec<Arc<dyn Backend>>) -> Vec<Case> {
-    let mut backends: Vec<Arc<dyn Backend>> = vec![Arc::new(Memory), Arc::new(Disk)];
+    let mut backends: Vec<Arc<dyn Backend>> = vec![Arc::new(Memory)];
     backends.extend(extra);
     backends
         .into_iter()

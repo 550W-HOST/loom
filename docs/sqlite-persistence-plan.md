@@ -332,7 +332,7 @@ CREATE TABLE IF NOT EXISTS entity_meta (
 
 **进展（2026-09-21，阶段二/三收尾之一：`domain.snapshot` 彻底退场）**：既然只考虑干净安装，兼容读取没有存在理由，于是把它删干净：`persistence.rs` 只剩「实体视图的形状」（`DomainSnapshot`/`SNAPSHOT_VERSION`/错误类型），文件路径、magic/CRC/rename-as-commit 的封装、`read_snapshot`/`write_snapshot`/`snapshot_path`/`SNAPSHOT_FILE`、`legacy_snapshot_root` 字段全部消失；`recover()` 只读库（读不出来就退回日志重建），`write_entity_view()` 每次都写库、不再有「没有 data dir 就跳过」的分支（内存库本来就随进程消失）。受影响的测试：原「快照文件被位翻转仍能启动」改成 `a_view_that_was_never_written_is_rebuilt_from_the_log`（清空库里的视图＋断言数据目录里根本没有 `domain.snapshot` 这个文件），另有一个测试断言 HTTP 目录下不再出现任何 `shard-*.log`。文档（architecture/domain-persistence/plan）里的「文件是家」全部改成一个库。全仓库门禁全绿。
 
-**进展（2026-09-21，3.3 完成：服务器改用 store 后端，`shard-*.log` 退场）**：`AppState::build` 现在**先开库、再用 `StoreBackend` 建 relay**（同一个 store 实例同时喂 relay 与实体/会话），常量数据目录 = 一个 `loom.db`。测试 `a_configured_data_directory_switches_to_the_durable_backend` 改为断言「帧在库里有」且「`shard-*.log` **不存在**」。**没有做双层写**：用户已明确「只有干净的新用户、不做任何旧数据适配」，而「两个存储语义一致」这件事由**同一套 14 个契约场景在 store 后端上全绿**证得（比双层写逐帧对比更强）；`DiskBackend` 代码保留在 relay crate 里，作为契约套件里那个「真实持久化后端」的对照实现，服务器不再使用它。全仓库门禁全绿。
+**进展（2026-09-21，3.3 完成：服务器改用 store 后端，`shard-*.log` 退场）**：`AppState::build` 现在**先开库、再用 `StoreBackend` 建 relay**（同一个 store 实例同时喂 relay 与实体/会话），常量数据目录 = 一个 `loom.db`。测试 `a_configured_data_directory_switches_to_the_durable_backend` 改为断言「帧在库里有」且「`shard-*.log` **不存在**」。**没有做双层写**：用户已明确「只有干净的新用户、不做任何旧数据适配」，而「两个存储语义一致」这件事由**同一套 14 个契约场景在 store 后端上全绿**证得（比双层写逐帧对比更强）；`DiskBackend`（按 shard 的追加文件）随后被整体删除：契约套件里那个「真实持久化后端」的角色现在由 store 后端自己承担，保留一份没人用的文件实现只是负担。全仓库门禁全绿。
 
 **进展（2026-09-21，3.2 完成：契约套件可复用 + store 后端通过全部契约）**：把 `crates/relay/tests/relay.rs` 的 14 个后端场景提成 `crates/relay/src/backend/conformance.rs`（relay 侧一个 `conformance` feature，每个场景接受「要跑哪些 case」，`Case` 由 `Backend` trait 提供：name/durable/open）。这个 feature **只对本 crate 的测试构建开启**（dev-dependency 指向自己的技巧），所以普通构建不引入 tempfile/serde_json。relay 自己的 `tests/relay.rs` 变成薄包装（14 个场景 + 保留那个只能在文件上做的「半写尾帧」磁盘专用测试）。新增 `crates/server/src/store/relay_backend.rs`：`StoreBackend` 实现 `RelayBackend`（append/read_after/trim/len，写是**同步**的——一次 publish 对应一次已提交的事务，flush 无事可做，这正是文件后端「写后 flush」的等价物，而边界从文件换成了数据库提交）。`crates/server/tests/relay_store_contract.rs` 用**同一套** 14 个场景逐个跑 store 后端：**14/14 通过**（一测一场景，失败即点名）。
 
@@ -344,12 +344,12 @@ CREATE TABLE IF NOT EXISTS entity_meta (
 
 | 条件 | 证据 |
 | --- | --- |
-| 后端契约套件在库后端全绿 | `crates/server/tests/relay_store_contract.rs`：relay 自带的 14 个场景逐个跑 store 后端，14/14 |
+| 后端契约套件在库后端全绿 | `crates/server/tests/relay_store_contract.rs`：relay 自带的 14 个场景逐个跑 store 后端，14/14（relay 自己那份只跑内存后端） |
 | worker 断线重连补帧通过 | `crates/worker/tests/provider_e2e.rs` 的 `a_dispatch_missed_while_disconnected_is_replayed_on_reconnect` 与 `a_reconnect_recovers_more_dispatches_than_one_replay_page`；客户端侧 `crates/server/tests/ws.rs` 的 `a_reconnecting_client_can_resume_from_a_cursor` |
 | 服务器不再写 `shard-*.log` | `state::tests::a_configured_data_directory_switches_to_the_durable_backend` 断言帧在库里且 shard 文件不存在 |
 | 每-shard 上限仍在 | `store::relay_log` 的 `a_full_shard_drops_its_oldest_frame` |
 
-**阶段三完成。** 服务器只写一个 `loom.db`；`DiskBackend` 代码保留在 relay crate 中，作为契约套件里那个真实持久化后端的对照实现，服务器不再使用它。
+**阶段三完成。** 服务器只写一个 `loom.db`；按 shard 的追加文件实现（`DiskBackend`）已从 relay crate 删除，relay 只保留内存后端，持久化后端在 server 侧。
 
 ## 8. 通用测试清单（每阶段都要有）
 

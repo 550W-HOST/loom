@@ -6,8 +6,8 @@ database and without an external service.
 
 ## The problem
 
-With `DiskBackend` (`--data-dir`), the relay log already survives a restart:
-a reconnecting client can replay the retained window it missed. But
+With a data directory, the relay log already survives a restart: a reconnecting
+client can replay the retained window it missed. But
 `DomainRegistry` and `RunRegistry` were pure in-memory maps, so after a restart
 the server no longer recognised the thread those events were about. The list was
 empty, a message was rejected as "thread not known", and the data was present
@@ -121,7 +121,7 @@ its automation takes the failure through the ordinary retry policy (see
 - thread messages — the registry holds no timeline; the log is where a
   conversation lives and replay returns it byte-identically;
 - run-event history — same reason;
-- the relay log itself — that is `DiskBackend`'s job.
+- the relay log itself — that is the store's `relay_event` table.
 
 So there is no duplicate storage of the log. The relationship is: the log is
 append-only history; the snapshot is the derived, bounded entity view plus its

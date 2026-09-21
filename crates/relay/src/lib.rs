@@ -20,9 +20,9 @@
 //!
 //! The storage behind this is pluggable via [`RelayBackend`]. The default is an
 //! in-process [`backend::memory::MemoryBackend`], which needs no external
-//! service and is enough for a single self-hosted server. [`backend::disk::DiskBackend`]
-//! adds a dependency-free local log so a restart replays the grace window
-//! instead of losing it. Either changes nothing above this line.
+//! service and is enough for a single self-hosted server; the server builds the
+//! durable one over its store, so a restart replays the grace window instead of
+//! losing it. Either changes nothing above this line.
 //!
 //! The log is **not** shared between servers: loom is one server with many
 //! workers, and the layer that would let a second server join it — a durable

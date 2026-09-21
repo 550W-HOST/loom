@@ -318,13 +318,11 @@ async fn a_conversation_outside_the_relay_window_is_loaded_from_the_agent() {
     // --- After the restart: a fresh process reading what that one wrote.
     //
     // The directory is copied rather than reopened in place on purpose. A real
-    // restart is a new process, and the previous one's backend is gone by the
-    // time the next opens the files; here the first state is still alive (the
-    // serving task holds a clone of it), and two `DiskBackend`s over one shard
-    // file is a state no deployment has: the second one's compaction reads the
-    // file the first still has open, which surfaces as a latched
-    // "failed to fill whole buffer" on its next append. Copying is exactly what
-    // the restart means — the bytes the last process flushed — without the
+    // restart is a new process, and the previous one's store is closed by the
+    // time the next opens it; here the first state is still alive (the serving
+    // task holds a clone of it), so reopening in place would put two writers on
+    // one database — a state no deployment has. Copying is exactly what the
+    // restart means: the bytes the last process committed, without the
     // impossible overlap.
     let next_dir = tempfile::TempDir::new().unwrap();
     copy_dir(data_dir.path(), next_dir.path());

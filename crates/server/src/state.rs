@@ -1568,10 +1568,145 @@ mod tests {
     /// store, so a test that wants the log to be the only source empties it.
     /// The file is left where it is — nothing writes it any more, and a start
     /// with no stored view reads a legacy one if a test put it there.
+    /// Removes a store's run rows, leaving the rest of the entity view.
+    ///
+    /// This is what a run the store never knew looks like with the thread's own
+    /// state intact: the thread is still `working` and there is no record of
+    /// what its run was doing.
+    fn drop_stored_runs(dir: &TempDir) {
+        let store = crate::store::Store::open(dir.path().join("loom.db")).unwrap();
+        crate::store::block_on(
+            store
+                .connection()
+                .execute("DELETE FROM entity WHERE kind = 'run'", ()),
+        )
+        .unwrap();
+    }
+
     fn drop_entity_view(dir: &TempDir) {
         let store = crate::store::Store::open(dir.path().join("loom.db")).unwrap();
         crate::store::block_on(store.connection().execute("DELETE FROM entity", ())).unwrap();
     }
+    /// A run whose terminal frame was published is not published again.
+    ///
+    /// The verdict and the frame are both in the store when the process dies
+    /// before the thread's status settles, so recovery finishes the *status*
+    /// and leaves the terminal alone: a run that ended has one terminal event.
+    #[tokio::test]
+    async fn a_committed_terminal_is_not_published_again_during_recovery() {
+        use loom_domain::{EnvironmentKind, MessageRole, RunEvent};
+
+        let dir = TempDir::new().unwrap();
+        let thread_id;
+        let run_id;
+        {
+            let state = AppState::build(durable_config(&dir)).unwrap();
+            let (host, host_event) = state
+                .registry
+                .enroll_host(None, "laptop".into(), now_ms())
+                .unwrap();
+            for event in &host_event {
+                state.publish_domain_event(event).unwrap();
+            }
+            let (environment, environment_event) = state
+                .registry
+                .create_environment(
+                    Some(state.registry.personal_project_id()),
+                    host.id,
+                    EnvironmentKind::Unmanaged,
+                    Some("/srv/loom".into()),
+                    now_ms(),
+                )
+                .unwrap();
+            for event in &environment_event {
+                state.publish_domain_event(event).unwrap();
+            }
+            let (thread, thread_event) = state
+                .registry
+                .create_thread(
+                    Some(state.registry.personal_project_id()),
+                    Some("terminal already committed".into()),
+                    Some(environment.id),
+                    now_ms(),
+                )
+                .unwrap();
+            thread_id = thread.id.clone();
+            state.publish_domain_event(&thread_event).unwrap();
+            for event in state
+                .registry
+                .post_message(&thread_id, MessageRole::User, "hi".into(), now_ms())
+                .unwrap()
+            {
+                state.publish_domain_event(&event).unwrap();
+            }
+            let thread = state.registry.thread(&thread_id).unwrap();
+            let run = match state.dispatch_thread(&thread, "hi") {
+                crate::runs::DispatchOutcome::Dispatched(run) => run,
+                other => panic!("expected a dispatch, got {other:?}"),
+            };
+            run_id = run.run_id.clone();
+
+            // The run path's own order, up to the crash: the start is marked,
+            // the verdict is recorded, the frames are published, and the process
+            // dies before it removes the record or publishes the thread's final
+            // status.
+            state
+                .runs
+                .mark_started(&run.run_id, "provider-1".to_owned());
+            state
+                .runs
+                .mark_verdict(&run.run_id, loom_domain::RunOutcome::Completed);
+            state
+                .publish_domain_event(&DomainEvent::ThreadRunEvent {
+                    run: Box::new(RunEvent::started(
+                        thread.id.clone(),
+                        thread.project_id.clone(),
+                        run.run_id.clone(),
+                        now_ms(),
+                        "provider-1",
+                    )),
+                })
+                .unwrap();
+            state
+                .publish_domain_event(&DomainEvent::ThreadRunEvent {
+                    run: Box::new(RunEvent::completed(
+                        thread.id,
+                        thread.project_id,
+                        run.run_id,
+                        now_ms(),
+                        Some("provider-1".into()),
+                    )),
+                })
+                .unwrap();
+            state.runs.mark_terminal(&run_id);
+            state.shutdown().unwrap();
+        }
+
+        let state = AppState::build(durable_config(&dir)).unwrap();
+        assert_eq!(
+            state.registry.thread(&thread_id).unwrap().status,
+            ThreadStatus::Idle
+        );
+        assert!(state.runs.is_empty());
+        let run_events = state
+            .relay
+            .replay_scope(&Scope::Thread(thread_id.to_string()), 100)
+            .unwrap()
+            .into_iter()
+            .filter_map(|envelope| domain_event_from_envelope(&envelope))
+            .filter_map(|event| match event {
+                DomainEvent::ThreadRunEvent { run } => Some(run),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            run_events.iter().map(|run| run.kind()).collect::<Vec<_>>(),
+            vec!["turn/started", "turn/completed"]
+        );
+        assert!(run_events.iter().all(|run| run.run_id == run_id));
+        state.shutdown().unwrap();
+    }
+
     /// A run whose verdict the store knows but whose terminal frame never
     /// reached the log is finished on recovery — once.
     ///
@@ -1676,79 +1811,53 @@ mod tests {
         state.shutdown().unwrap();
     }
 
-    /// A run the store never knew about is failed rather than guessed at.
+    /// A thread left `working` with no stored run is failed rather than guessed
+    /// at.
     ///
-    /// This is the other side of the same window: with no stored run there is no
-    /// verdict to trust, so the thread is brought out of `working` with a
-    /// failure instead of a terminal nobody recorded.
+    /// This is the other side of the window the verdict closes: with no record
+    /// of the run there is nothing to say how it ended, so the thread is brought
+    /// out of `working` with a failure instead of a terminal nobody recorded.
     #[tokio::test]
     async fn a_working_thread_with_no_stored_run_is_failed_on_recovery() {
-        use loom_domain::{EnvironmentKind, MessageRole, RunEvent};
-
         let dir = TempDir::new().unwrap();
         let thread_id;
         {
             let state = AppState::build(durable_config(&dir)).unwrap();
-            let (host, host_event) = state
-                .registry
-                .enroll_host(None, "laptop".into(), now_ms())
-                .unwrap();
-            for event in &host_event {
-                state.publish_domain_event(event).unwrap();
-            }
-            let (environment, environment_event) = state
-                .registry
-                .create_environment(
-                    Some(state.registry.personal_project_id()),
-                    host.id,
-                    EnvironmentKind::Unmanaged,
-                    Some("/srv/loom".into()),
-                    now_ms(),
-                )
-                .unwrap();
-            for event in &environment_event {
-                state.publish_domain_event(event).unwrap();
-            }
-            let (thread, thread_event) = state
+            let (thread, created) = state
                 .registry
                 .create_thread(
                     Some(state.registry.personal_project_id()),
                     Some("no record".into()),
-                    Some(environment.id),
+                    None,
                     now_ms(),
                 )
                 .unwrap();
             thread_id = thread.id.clone();
-            state.publish_domain_event(&thread_event).unwrap();
+            state.publish_domain_event(&created).unwrap();
+            // Posting a message is what puts a thread into `working`, and it
+            // publishes the status change with it.
             for event in state
                 .registry
-                .post_message(&thread_id, MessageRole::User, "hi".into(), now_ms())
+                .post_message(
+                    &thread_id,
+                    loom_domain::MessageRole::User,
+                    "hi".into(),
+                    now_ms(),
+                )
                 .unwrap()
             {
                 state.publish_domain_event(&event).unwrap();
             }
-            let thread = state.registry.thread(&thread_id).unwrap();
-            let run = match state.dispatch_thread(&thread, "hi") {
-                crate::runs::DispatchOutcome::Dispatched(run) => run,
-                other => panic!("expected a dispatch, got {other:?}"),
-            };
-            state
-                .publish_domain_event(&DomainEvent::ThreadRunEvent {
-                    run: Box::new(RunEvent::started(
-                        thread.id.clone(),
-                        thread.project_id.clone(),
-                        run.run_id.clone(),
-                        now_ms(),
-                        "provider-1",
-                    )),
-                })
-                .unwrap();
+            assert_eq!(
+                state.registry.thread(&thread_id).unwrap().status,
+                ThreadStatus::Working
+            );
             state.shutdown().unwrap();
         }
 
-        // The store loses the run: what is left is a thread still `working`
+        // The run, and only the run, is lost: the thread is still `working`
         // with nothing to say what its run did.
-        drop_entity_view(&dir);
+        drop_stored_runs(&dir);
         let state = AppState::build(durable_config(&dir)).unwrap();
         assert_eq!(
             state.registry.thread(&thread_id).unwrap().status,

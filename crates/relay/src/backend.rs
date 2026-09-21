@@ -3,12 +3,14 @@
 //! A backend stores append-ordered records per shard and can replay and trim
 //! them. Everything above this trait — control plane, connection layer, the
 //! frames themselves — is independent of which backend is in use. That is what
-//! makes "single-process in-memory" and "durable on local disk" a deployment
+//! makes "single-process in-memory" and "durable in the store" a deployment
 //! choice rather than a rewrite.
 //!
-//! Two backends ship here: [`memory::MemoryBackend`] (the zero-configuration
-//! default) and [`disk::DiskBackend`], which keeps the replay window across a
-//! process restart in one crash-safe append-only file per shard.
+//! One backend ships here: [`memory::MemoryBackend`], the zero-configuration
+//! default. The durable one is the server's `StoreBackend`, which keeps the
+//! replay window in the store's database beside the conversations and the entity
+//! view; it lives in the server because the store does. The append-only file per
+//! shard this used to be is gone, and so is its backend.
 //!
 //! A **shared** log — one that several server processes attach to — was tried
 //! as a Redis Streams backend and has been removed. loom is one server with
@@ -16,7 +18,6 @@
 //! store and for run ownership that this codebase does not have, and shipping
 //! the log alone invited a deployment that could not work.
 
-pub mod disk;
 pub mod memory;
 
 /// The backend contract, run by every backend (feature `conformance`).
