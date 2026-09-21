@@ -43,6 +43,8 @@ import {
 } from "./loom-thread-queue";
 import { loomDeleteHost } from "./loom-host-mutations";
 import { loomHostDirectory } from "./loom-host-readers";
+import { loomEnvironmentPaths } from "./loom-environment-readers";
+import { loomProjectPaths } from "./loom-project-readers";
 import {
   loomAddProjectSource,
   loomCreateProject,
@@ -93,6 +95,7 @@ export const sdk = {
     ...compileOnlySdk.environments,
     get: loomGetEnvironment,
     listProviders: loomListEnvironmentProviders,
+    paths: loomEnvironmentPaths,
   },
   hosts: {
     ...compileOnlySdk.hosts,
@@ -104,6 +107,7 @@ export const sdk = {
     create: loomCreateProject,
     defaultExecutionOptions: loomProjectDefaultExecutionOptions,
     delete: loomDeleteProject,
+    paths: loomProjectPaths,
     reorder: loomReorderProject,
     sources: {
       ...compileOnlySdk.projects.sources,

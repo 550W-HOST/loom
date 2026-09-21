@@ -10,12 +10,14 @@ import type {
   DeleteThreadRequest,
   DeleteThreadSectionRequest,
   EnvironmentDiffFileQuery,
+  EnvironmentPathsQuery,
   HostDirectoryListing,
   HostDirectoryQuery,
   ProjectAttachmentContentQuery,
   ProjectBranchesQuery,
   ProjectDefaultExecutionOptionsQuery,
   ProjectFileContentQuery,
+  ProjectPathsQuery,
   ProjectResponse,
   ReorderProjectRequest,
   ReorderQueuedMessageRequest,
@@ -60,6 +62,7 @@ import type {
   ThreadTimelineResponse,
   UiPreferenceResponse,
   UiPreferencesResponse,
+  WorkspacePathListResponse,
   UpdateProjectRequest,
   UpdateProjectSourceRequest,
   UpdateQueuedMessageRequest,
@@ -126,6 +129,10 @@ export const LOOM_API_REQUEST_SPECS = {
     query: {} as EnvironmentDiffFileQuery,
   },
   "environments.get": { source: "none" },
+  "environments.paths": {
+    source: "query",
+    query: {} as EnvironmentPathsQuery,
+  },
   "hosts.createJoinCode": { source: "json", json: {} as Record<string, never> },
   "hosts.delete": { source: "none" },
   "hosts.directory": {
@@ -159,6 +166,10 @@ export const LOOM_API_REQUEST_SPECS = {
   "projects.fileContent": {
     source: "query",
     query: {} as ProjectFileContentQuery,
+  },
+  "projects.paths": {
+    source: "query",
+    query: {} as ProjectPathsQuery,
   },
   "projects.reorder": {
     source: "json",
@@ -305,6 +316,7 @@ export interface LoomApiResponseSpecs {
   "filePreviews.content": unknown;
   "environments.diffFile": { path: string; content: string; contentEncoding: "base64" | "utf8" };
   "environments.get": Environment;
+  "environments.paths": WorkspacePathListResponse;
   "hosts.createJoinCode": CreateHostJoinCodeResponse;
   "hosts.delete": { ok: true };
   "hosts.directory": HostDirectoryListing;
@@ -318,6 +330,7 @@ export interface LoomApiResponseSpecs {
   "projects.delete": { ok: true };
   "projects.deleteSource": { ok: true };
   "projects.fileContent": unknown;
+  "projects.paths": WorkspacePathListResponse;
   "projects.reorder": ProjectResponse[];
   "projects.sidebarBootstrap": SidebarBootstrapResponse;
   "projects.update": ProjectResponse;
