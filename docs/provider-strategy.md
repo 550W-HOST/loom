@@ -162,8 +162,11 @@ an unknown `sessionUpdate` value fails to deserialise. So under v1 the "store
 unknown updates" rule must be implemented at the **raw JSON-RPC layer**
 (`UntypedMessage`), before typed dispatch — not at the `SessionUpdate` level.
 
-**3. `pi-acp` speaks v1, and the ecosystem is on v1.** A client that sends v2
-and refuses the v1 reply cannot talk to it at all.
+**3. The ecosystem is on v1, and `pi-acp` now speaks both.** A client that
+refuses what the agent answers cannot talk to it at all. `pi-acp` `v0.5.0`
+serves v2 natively — v1 and v2 are separate implementations selected in
+`initialize` — while the other agents in scope still speak only v1, which is why
+loom negotiates rather than picking one.
 
 So loom **negotiates**, using the SDK's own connector:
 
@@ -196,9 +199,10 @@ options) and conversion errors. The adapter skips it on the v2 path.
 
 The patchable full objects are the reason v2 is worth the negotiation: repeated
 updates for the same `messageId` are applied as patches, so an event log can
-carry corrections and a consumer converges. That is available to loom once
-`pi-acp` emits it — shipped as W-562 in the `pi-acp` project, behind an
-off-by-default `protocol-v2` feature.
+carry corrections and a consumer converges. `pi-acp` emits them: W-562 shipped
+v2 behind an off-by-default `protocol-v2` feature, and `v0.5.0` **removed that
+feature** — both protocol implementations are now always compiled and one is
+selected per connection in `initialize`.
 
 ## The resulting loom architecture
 

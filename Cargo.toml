@@ -28,14 +28,19 @@ loom-server = { path = "crates/server" }
 # tree matters because type identity is what lets loom hand a `Channel` to
 # `pi_acp::AcpAgent::run_with`.
 agent-client-protocol = { version = "=2.0.0", default-features = false, features = ["unstable_protocol_v2"] }
-# `pi-acp` is not published to crates.io, so it comes from git. It tracks the
-# upstream default branch while loom is in rapid development: `run_with` (the
-# transport injection loom needs) and the v2 support both landed after
-# `v0.4.0`, and the fixes loom depends on keep arriving on `main`. `Cargo.lock`
-# pins the exact commit, so moving it is an explicit `cargo update -p pi-acp`,
-# never a silent one. Move this to a `tag` once a release contains what loom
-# needs.
-pi-acp = { git = "https://github.com/AndPuQing/pi-acp", branch = "main", features = ["protocol-v2"] }
+# `pi-acp` is not published to crates.io, so it comes from git. It is pinned to
+# a release tag rather than the upstream default branch: `v0.5.0` is the first
+# release that carries everything loom needs — `run_with` (the transport
+# injection this crate hands a `Channel` to) and native ACP v2.
+#
+# That release also **removed the `protocol-v2` cargo feature** this manifest
+# used to enable. pi-acp now always compiles both protocol implementations and
+# negotiates one per connection in `initialize`, so there is no feature left to
+# select; asking for it is a compile error, not a silent no-op.
+#
+# `Cargo.lock` still records the exact commit, so moving the pin stays an
+# explicit `cargo update -p pi-acp`, never a silent one.
+pi-acp = { git = "https://github.com/AndPuQing/pi-acp", tag = "v0.5.0" }
 agent-client-protocol-schema = { version = "=1.5.0", default-features = false, features = ["unstable_protocol_v2"] }
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio", "ws", "multipart"] }
 base64 = "0.22"

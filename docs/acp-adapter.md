@@ -315,8 +315,9 @@ restore uses `session/load`.
 ACP v2 remains an unstable draft in the pinned SDK. The adapter keeps its v2
 schema types, message patch handling, terminal lifecycle and capability shape
 behind the ACP boundary so the domain and server only see the existing
-`ProviderEvent` contract. v1 remains supported for the stable ecosystem and
-for agents such as the default Pi path that negotiate v1.
+`ProviderEvent` contract. v1 remains supported for the stable ecosystem: the
+default Pi path negotiates v2 (`pi-acp` `v0.5.0` serves it natively), while
+other agents in scope still answer v1.
 
 ## The session mapping
 

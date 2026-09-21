@@ -797,6 +797,13 @@ done
 /// The unit tests in `crate::acp::sessions` use stubs; this confirms the same
 /// two outcomes against the real adapter — which advertises the capability, so
 /// the important half is that the probe follows it rather than failing closed.
+///
+/// The probe is aimed at an **empty** agent directory. `pi-acp` re-scans every
+/// session file once per page (`LIST_PAGE_SIZE` is 50), so against a real
+/// `~/.pi/agent/sessions` the same probe takes minutes and its duration becomes
+/// a function of how much history the machine running the test happens to hold.
+/// That is not what is under test: an empty directory takes the identical
+/// `Listed` path in milliseconds.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_real_agent_is_probed_for_its_session_capabilities() {
     let Some(agent) = pi_acp_binary() else {
@@ -805,10 +812,18 @@ async fn a_real_agent_is_probed_for_its_session_capabilities() {
     };
     use loom_worker::acp::sessions::{list_sessions, SessionListOutcome};
 
+    let agent_dir = tempfile::tempdir().expect("a temporary pi agent directory");
     let outcome = list_sessions(
         Transport::Stdio {
-            command: agent.to_string_lossy().into_owned(),
-            args: Vec::new(),
+            // `PI_CODING_AGENT_DIR` is the adapter's own override for
+            // `~/.pi/agent`. It is set on the child rather than on this process:
+            // a process-wide value would also steer the sibling tests that need
+            // the real credentials in the developer's `~/.pi/agent`.
+            command: "env".to_owned(),
+            args: vec![
+                format!("PI_CODING_AGENT_DIR={}", agent_dir.path().display()),
+                agent.to_string_lossy().into_owned(),
+            ],
         },
         None,
         Duration::from_secs(30),
@@ -817,8 +832,8 @@ async fn a_real_agent_is_probed_for_its_session_capabilities() {
 
     match outcome {
         // `pi-acp` advertises `session/list`, so a capable agent must land here
-        // rather than on `Unsupported`. What it lists depends on the machine, so
-        // the session count is not asserted.
+        // rather than on `Unsupported`. The agent directory is empty, so the
+        // listing itself is empty; the count is not what is being asserted.
         SessionListOutcome::Listed { capabilities, .. } => {
             assert!(
                 capabilities.list_sessions,

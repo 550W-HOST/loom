@@ -806,8 +806,11 @@ impl UpdateSink {
     }
 
     /// Finishes a load response. The phase remains `Loaded` until the new
-    /// prompt is sent, because pi-acp emits history after the load response is
-    /// queued.
+    /// prompt is sent, because a post-response replay is suppressed rather than
+    /// mixed into the new run. `pi-acp` publishes its history *before* the
+    /// load/resume response (see `history.rs`), so for it nothing arrives in
+    /// this window at all; an agent that replays afterwards still cannot leak
+    /// into the run that is about to start.
     async fn finish_load(&self, session_id: &str) {
         let mut state = self.state.lock().await;
         let loaded = matches!(

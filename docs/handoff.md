@@ -353,8 +353,8 @@ B10 does.
 | --- | --- |
 | One protocol or several? | **ACP only.** Pi is not special-cased at the client. |
 | How is Pi reached? | **`pi-acp` embedded as a library**, over `Channel::duplex()`. |
-| ACP version | **v1 currently.** The pinned `pi-acp` default and loom adapter use v1; v2 negotiation is a follow-up. |
-| Resume entry point | The next run carries the stored provider session id and uses `session/load` under v1. |
+| ACP version | **Negotiated: v2 first, v1 fallback.** loom offers both through the SDK's protocol connector, which starts v2 and restarts on v1 for an agent that answers v1. `pi-acp` v0.5.0 serves v2 natively, so the Pi path is v2. |
+| Resume entry point | The next run carries the stored provider session id and resumes it: `session/resume` under v2, `session/load` under v1. |
 | Unsupported capability | **Reported, never worked around.** |
 | Unmapped update type | An unmapped v1 update is ignored by the typed schema and logged by the adapter; no synthetic event is emitted. |
 
@@ -428,6 +428,38 @@ Gotchas found:
 - The loom project is `5b8f4567-2a2e-4c20-8cd4-1c59689684f8`; the pi-acp project
   is `166a0b99-aab5-415a-a1d0-00bf22052804`
 - multica squash-merges agent branches into `main`; `git fetch --prune` after
+
+## pi-acp upgraded to `v0.5.0` (2026-09-21)
+
+The pin moved from `branch = "main"` @`2f13a18` to `tag = "v0.5.0"` @`5adb199`,
+and the manifest's `features = ["protocol-v2"]` was deleted: that release
+**removed the feature** and now always compiles both protocol implementations,
+selecting one per connection in `initialize`.
+
+Measured on this checkout: `cargo check --workspace --locked` clean;
+`cargo test --workspace --locked` **1053 passed / 0 failed**; `real_pi`'s three
+`#[ignore]`d tests pass against the embedded adapter, which negotiates **native
+ACP v2** — `LOOM_ACP_TRACE=1` prints `negotiated ACP v2`, and the frames carry
+v2 `messageId`s. The v2 shapes were checked field by field against `render.rs`:
+nothing loom needs is dropped, and the bash terminal still travels in
+`_meta.terminal_output` / `_meta.terminal_exit`. (`pi-acp`'s own comment at
+`session.rs:336-343` claiming it moved to `terminal_update` is stale — the
+renderer streams `_meta`, and loom reads it correctly.)
+
+Two traps found on the way:
+
+- **The ACP real-agent tests are not pinned to the adapter they think they
+  test.** `pi_acp_binary()` prefers `../pi-acp/target/release/pi-acp`, which
+  reports `v0.1.0`; the sibling's debug binary reports `v0.4.0`. Those suites
+  only exercise the pinned version when `PI_ACP_BIN` names a fresh build.
+- **`session/list` against a real `~/.pi/agent/sessions` is slow by
+  construction.** `pi-acp` re-runs its full session scan once per page
+  (`LIST_PAGE_SIZE` = 50); with 305 files / 132 MB that is seven scans, which
+  measured ~111 s against a 30 s probe budget. The capability probe now points
+  the adapter at an empty agent directory (`PI_CODING_AGENT_DIR`), so it takes
+  the identical `Listed` path in ~0.03 s. The upstream inefficiency is **not
+  fixed**; note also that `list_sessions` has no production caller yet, so only
+  tests reach it.
 
 ## Immediate next steps
 
