@@ -2,6 +2,24 @@
 
 状态：设计交接，尚未实施。本文优先于旧文档中“relay log 保存完整对话”的假设。
 
+> **后续状态（2026-09-21 注）。** 本文是一次交接的**当时快照**，其中若干结论在
+> `docs/sqlite-persistence-plan.md` 的阶段一至阶段三落地后已经改变。读本文时请以
+> 这些更正为准，正文保留原样以记录当时的判断：
+>
+> - **relay 的按 shard 追加文件后端（`DiskBackend`）与其 `shard-*.log` 已删除**，
+>   帧改存库里的 `relay_event` 表；本文提到该后端的段落（“真 agent + 重启”用例、
+>   shutdown 不 flush 日志）只是当时的事实，不是现在的事实。现在写入是同步的、
+>   提交即持久，`shutdown()` 会在最后排空并落库。
+> - **`domain.snapshot` 文件已删除**，实体视图、run 记录、设置、自动化都在库里。
+> - **游标身份已收敛为持久的 `historyRevision`**：本文末段“`cacheInstance` 应当删除”
+>   已经做了，请求/响应都不再带 `cacheInstance`；行号跨重启继续，因此不再需要
+>   “另一次 server 运行”这个维度。
+> - **`unavailable` 现在会自动退避重试（30 秒）**，并且已有显式刷新入口
+>   （`POST /api/v1/threads/{id}/history/refresh` 与线程菜单项）。“刻意留下的两处”
+>   中这一条已闭环。
+> - **基线替换不再丢弃 loom 自有的行**：`replace_replayed` 只替换 `replayed` 行，
+>   并按角色与内容顺序与 loom 自己记的消息去重（见 sqlite 计划 §4.4）。
+
 ## 1. 已确认的产品决定
 
 - 会话历史以 ACP agent 保存的 session 为准。
@@ -325,7 +343,7 @@ ACP 缺失的历史时间允许为未知，不能把加载时刻冒充消息发�
 
 真实 pi-acp 的加载路径由 `crates/worker/tests/real_pi.rs::real_pi_replays_a_conversation_to_a_history_load` 覆盖（`#[ignore]`，需 `pi` 与模型凭据，本机实测通过：两轮真实对话后用独立连接 `load_history`，两轮 prompt 顺序正确、第二轮答案依赖第一轮）。CI 不跑它，因为它要凭据。
 
-**「真 agent + 重启」的合并用例刻意不做。** 曾写过 `provider_e2e.rs` 版本（两轮真实对话 → 挤出窗口 → 重启 → 加载），但同进程内"重启"会让两个 `DiskBackend` 同时持有同一批 `shard-*.log`：旧 `AppState` 仍被 router/axum task 与 run 定时任务持有，其 writer 线程在 compaction 重写文件，新 backend 读到半写状态并以 `failed to fill whole buffer` latch 成 sticky error。真实重启是新进程，不存在这个竞态，所以这是测试工装的产物而非产品缺陷。结论：重启路径由 `crates/server/tests/history.rs` 的 stub 端到端覆盖（真 server、真 worker socket、真 `host.load_history`/`history_report` 帧），真 agent 的回放由上面的 `real_pi` 测试覆盖；两者合起来是同一条路径。
+**「真 agent + 重启」的合并用例刻意不做。**（注：`DiskBackend` 与 `shard-*.log` 其后已删除，帧改存库；下面描述的是当时的测试工装问题，结论——用 stub 端到端 + `real_pi` 两条覆盖重启路径——仍然成立。）曾写过 `provider_e2e.rs` 版本（两轮真实对话 → 挤出窗口 → 重启 → 加载），但同进程内"重启"会让两个 `DiskBackend` 同时持有同一批 `shard-*.log`：旧 `AppState` 仍被 router/axum task 与 run 定时任务持有，其 writer 线程在 compaction 重写文件，新 backend 读到半写状态并以 `failed to fill whole buffer` latch 成 sticky error。真实重启是新进程，不存在这个竞态，所以这是测试工装的产物而非产品缺陷。结论：重启路径由 `crates/server/tests/history.rs` 的 stub 端到端覆盖（真 server、真 worker socket、真 `host.load_history`/`history_report` 帧），真 agent 的回放由上面的 `real_pi` 测试覆盖；两者合起来是同一条路径。
 
 ### 补做的两处
 
@@ -339,5 +357,5 @@ ACP 缺失的历史时间允许为未知，不能把加载时刻冒充消息发�
 ### 刻意留下的两处
 
 - **`unavailable` 不自动重试。** 读取可用性时，`unavailable` 只返回原因，重试被定义为显式动作（§6 的触发集里有"用户显式刷新"），而显式刷新入口尚未实现。因此在 `unavailable` 之后，客户端只能靠再次触发缓存缺失（重启、binding 变化、淘汰后重载）恢复。若要闭环，需要给 `threads.timeline` 增加刷新语义并在契约里体现。当前的选择是为了避免"session 已删除"这类失败在每次轮询时都去开一次 ACP 连接。
-- **`AppState::shutdown()` 不 flush relay 日志。** 日志落盘依赖 `DiskBackend::Drop`（Stop + join），进程正常退出会走到，但同进程内 shutdown 后立刻重开同一目录不会。这解释了既有测试 `state::tests::a_log_without_a_snapshot_rebuilds_without_panicking` 的偶发红（shutdown → 同目录重建时读到未落盘的尾记录）。`DiskBackend::flush()` 已存在但无生产调用点；要收口就是给 `RelayBackend` 加 `flush` 并在 `shutdown()` 调用。本次按"不做真机重启用例"的决定未改，属独立的小修。
+- **`AppState::shutdown()` 不 flush relay 日志。**（注：这条已随阶段三闭环——`shutdown()` 顺序里现在有「排空 store writer」这一步，relay 帧走库、提交即持久；`DiskBackend` 已删除。以下是当时的事实。）日志落盘依赖 `DiskBackend::Drop`（Stop + join），进程正常退出会走到，但同进程内 shutdown 后立刻重开同一目录不会。这解释了既有测试 `state::tests::a_log_without_a_snapshot_rebuilds_without_panicking` 的偶发红（shutdown → 同目录重建时读到未落盘的尾记录）。`DiskBackend::flush()` 已存在但无生产调用点；要收口就是给 `RelayBackend` 加 `flush` 并在 `shutdown()` 调用。本次按"不做真机重启用例"的决定未改，属独立的小修。
 - **基线替换会丢弃 loom 自有的行。** 覆盖层里的 provider 错误、恢复诊断等行来自 relay 日志中的 `ThreadRunEvent`，ACP 回放里没有它们；基线安装后这些行不再出现在 timeline 上。恢复期诊断因此可能"闪现后消失"。若要在替换后保留它们，需要把 loom 自有的运行行作为独立来源与缓存基线合并——这是显示层面的改进，不影响会话内容本身。
