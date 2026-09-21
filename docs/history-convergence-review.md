@@ -30,7 +30,7 @@
 | relay shutdown | `14d4b1f` 增加关闭、flush 及错误传播 | 已不属于“尚未调用 flush”，不重复发起同一修复 | `DiskBackend`/`shard-*.log` 已删除，帧同步写库；`AppState::shutdown` 排空写队列并在最后记 clean stop，flush 失败会让 shutdown 失败 |
 | generation | 缓存每次构造从 1 开始；客户端新增“响应 generation 更小则丢弃” | server 重启后新响应可能一直被当成旧响应；必须修复身份语义 | `cacheInstance`+`generation` 已删除，改为持久的 `historyRevision`（schema v2、契约字段、客户端比较规则），"重启后新响应被当旧响应"不再存在 |
 | 分页请求 | 响应带 generation，请求仍只带旧 sequence/anchor | server 会先用旧游标过滤新基线；客户端看到新 generation 时，收到的可能已是错误切片 | 请求现在带 `historyRevision`；服务端不再把 revision 不匹配的请求当作位置，客户端按 revision 不同即重置 |
-| 不可用状态 | 没有完整的用户显式重试入口 | 临时故障不能只能靠重启或 LRU 淘汰恢复 | 失败后 30 秒退避自动重试，另有 `POST /api/v1/threads/{id}/history/refresh` 与线程菜单的「Read history from the agent」 |
+| 不可用状态 | 没有完整的用户显式重试入口 | 临时故障不能只能靠重启或 LRU 淘汰恢复 | 失败后 30 秒退避自动重试，另有 `POST /api/v1/threads/{id}/history/refresh` 与线程菜单的 `Refresh history` |
 | 旧 binding | 缺 host 的已知 session 仍可能走新建路径 | 先阻止静默换 session，再补明确的恢复/绑定动作 | 缺 host 的绑定读作“无绑定”（`HistoryUnavailable::NoBinding`），加载被拒并给出原因；端到端用例断言加载不重新绑定 session |
 | worker 历史加载 | `start_history_load` 直接派生独立任务；server 的部分读取分支避开活动 run | 不能把读取前的检查当作 worker session 互斥，检查后新 run 仍可能到达 | 检查与加载声明现在同在 dispatch 取用的 lifecycle 锁下（`crates/server/src/history.rs`），堵掉了“检查后新 run 到达”；加载仍是有界并发（`Busy` 拒绝而不排队），run 在飞时读方拿到 overlay 与 `RunInFlight`。加载跑起来后仍有新 run 的可能，因此落库前的水位线比较会丢弃已过期的基线（`a_baseline_the_thread_outgrew_is_dropped_instead_of_installed`） |
 

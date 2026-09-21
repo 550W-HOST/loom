@@ -390,7 +390,7 @@ export function ThreadActionsProvider({
         onError: (error) => {
           showMutationErrorToast({
             error,
-            fallbackMessage: "Failed to ask for the conversation again",
+            fallbackMessage: "Failed to refresh history",
           });
         },
       });

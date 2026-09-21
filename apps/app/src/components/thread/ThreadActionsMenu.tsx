@@ -272,7 +272,7 @@ function ThreadActionsMenuItems({
           refreshHistory(thread);
         }}
       >
-        Read history from the agent
+        Refresh history
       </ActionMenuItem>
       <ActionMenuItem
         surface={surface}

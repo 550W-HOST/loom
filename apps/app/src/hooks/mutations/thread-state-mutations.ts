@@ -403,7 +403,7 @@ export function useRefreshThreadHistory() {
 
   return useMutation({
     meta: {
-      errorMessage: "Failed to ask the agent for the conversation again.",
+      errorMessage: "Failed to refresh history.",
       showErrorToast: false,
     },
     mutationFn: (threadId: string) =>
