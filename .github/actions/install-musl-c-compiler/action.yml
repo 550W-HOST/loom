@@ -1,0 +1,62 @@
+# The C compiler a musl release build needs, installed for the job that wants it.
+#
+# The store is `rusqlite` with `bundled`, so a build for a musl target compiles
+# SQLite's C source for that target, and the `cc` crate has to find a compiler:
+# without one the build stops at `failed to find tool "<triple>-gcc"`. This is a
+# different tool from the cross *linker* — `--target
+# aarch64-unknown-linux-musl` still links with the `rust-lld` that
+# `.cargo/config.toml` names.
+#
+# Each target is built on a runner of its own architecture (`ubuntu-24.04` for
+# x86_64, `ubuntu-24.04-arm` for aarch64), so this is Ubuntu's `musl-tools`
+# rather than a cross toolchain: no third-party binaries enter the build, and
+# `musl-gcc` targets the machine it runs on. It used to download musl.cc's
+# cross archives, which cannot work here at all — musl.cc blocks GitHub Actions
+# wholesale, and the runners could not connect.
+#
+# That is why this is an action rather than a step in one workflow: `release.yml`
+# and `ci.yml` both build the musl targets, and pointing `cc` at the compiler
+# should not be written twice.
+name: Install the target's musl C compiler
+description: Install musl-tools for the target's architecture and point `cc` at it.
+
+inputs:
+  target:
+    description: The musl target triple the compiler must produce code for.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    # `musl-tools` depends on `musl-dev`, which is where the headers SQLite
+    # compiles against come from.
+    - name: apt-get install musl-tools
+      shell: bash
+      run: |
+        set -euo pipefail
+        sudo apt-get update
+        sudo apt-get install --yes --no-install-recommends musl-tools
+        musl-gcc --version | head -1
+
+    # `cc` looks for `<prefix>-gcc` by default and `musl-tools` installs a
+    # compiler named for nothing in particular, so the one variable each target
+    # honours is set explicitly. It applies to every later step in the job.
+    - name: Point the target's C builds at musl-gcc
+      shell: bash
+      env:
+        TARGET: ${{ inputs.target }}
+      run: |
+        set -euo pipefail
+        case "$TARGET" in
+          x86_64-unknown-linux-musl)
+            variable=CC_x86_64_unknown_linux_musl
+            ;;
+          aarch64-unknown-linux-musl)
+            variable=CC_aarch64_unknown_linux_musl
+            ;;
+          *)
+            echo "no musl C compiler is configured for $TARGET" >&2
+            exit 1
+            ;;
+        esac
+        echo "$variable=musl-gcc" >>"$GITHUB_ENV"

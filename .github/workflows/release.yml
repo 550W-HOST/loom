@@ -90,7 +90,11 @@ jobs:
 
   build:
     name: ${{ matrix.target }}
-    runs-on: ubuntu-24.04
+    # Each target is built on a runner of its own architecture, so the C
+    # compiler is Ubuntu's native `musl-gcc` rather than a cross toolchain and
+    # the artifact is verified by running it where it was built. arm64 runners
+    # are free for public repositories, and this one is public.
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     needs: ui
     strategy:
@@ -99,9 +103,11 @@ jobs:
       # jobs after this one need all of them.
       fail-fast: false
       matrix:
-        target:
-          - x86_64-unknown-linux-musl
-          - aarch64-unknown-linux-musl
+        include:
+          - target: x86_64-unknown-linux-musl
+            runner: ubuntu-24.04
+          - target: aarch64-unknown-linux-musl
+            runner: ubuntu-24.04-arm
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -133,11 +139,11 @@ jobs:
       # A C compiler for the target is a different thing from a linker, and the
       # store's build script needs one: `rusqlite`'s `bundled` feature compiles
       # SQLite's C source for the target, so without this the build fails with
-      # `failed to find tool "<triple>-gcc"`. The action holds the archive and
-      # digest per target, and `ci.yml` builds the same targets with it, so the
-      # two workflows cannot disagree about what to install.
-      - name: Install the target's C toolchain
-        uses: ./.github/actions/install-musl-c-toolchain
+      # `failed to find tool "<triple>-gcc"`. The action is Ubuntu's `musl-tools`
+      # for the runner's own architecture, and `ci.yml` builds the same targets
+      # with it, so the two workflows cannot disagree about what to install.
+      - name: Install the target's C compiler
+        uses: ./.github/actions/install-musl-c-compiler
         with:
           target: ${{ matrix.target }}
 
@@ -155,29 +161,19 @@ jobs:
       - name: cargo build --release --locked -p loom --target ${{ matrix.target }}
         run: cargo build --release --locked -p loom --target "${{ matrix.target }}"
 
-      # The x86_64 artifact is started in both roles, `/health` answered, the app
-      # it serves out of the binary checked (entry document, its asset, a client
+      # Both artifacts are started in both roles, `/health` answered, the app it
+      # serves out of the binary checked (entry document, its asset, a client
       # route fallen back to it, an unknown API path answered as a JSON 404), the
       # artifact the server hosts checked against the bytes that were built, a
       # project created and a worker enrolled against it. `GITHUB_SHA` is the
-      # commit the build stamped, so a mismatch fails here.
-      - name: Verify the x86_64 binary end to end
-        if: matrix.target == 'x86_64-unknown-linux-musl'
+      # commit the build stamped, so a mismatch fails here. This is why each
+      # target is built on its own architecture: an aarch64 binary has to run to
+      # be verified, and an emulator would put a second implementation into the
+      # release path.
+      - name: Verify the binary end to end
         run: |
           scripts/verify-release-binaries.sh "target/${{ matrix.target }}/release" \
             --expect-commit "$GITHUB_SHA" --expect-target "${{ matrix.target }}"
-
-      # The same script without execution: an aarch64 binary needs an arm64
-      # machine or a qemu binfmt registration this runner does not have, and
-      # adding an emulator would put a second, slower implementation into the
-      # release path. Everything a foreign machine can still check is checked —
-      # the ELF machine, the absence of a loader and of shared libraries, and
-      # the commit the build stamped into the file.
-      - name: Verify the aarch64 binary is a self-contained aarch64 artifact
-        if: matrix.target == 'aarch64-unknown-linux-musl'
-        run: |
-          scripts/verify-release-binaries.sh "target/${{ matrix.target }}/release" \
-            --elf-only --expect-commit "$GITHUB_SHA" --expect-target "${{ matrix.target }}"
 
       - name: Package this target
         run: scripts/package-release.sh "${{ matrix.target }}"

@@ -31,7 +31,7 @@ record of the runs that produced them, not of today's job set.
 | `checks` | `fmt + clippy + test` | `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace` |
 | `api-coverage` | `API coverage document is current` | `node scripts/check-api-coverage.mjs` re-reads the contract and the source routes and refuses a stale row, or an implemented JSON-body route with no `validate_request*` assertion |
 | `msrv` | `MSRV` | the workspace still compiles on the `rust-version` floor in the manifests |
-| `release-targets` | `musl release build (<triple>)` | the release build for both musl targets: the release profile, a C compiler for the target (the store's `bundled` SQLite is compiled from source), and `scripts/verify-release-binaries.sh` on the artifact — the x86_64 one is run in both roles, the aarch64 one is checked as an ELF. This is the build whose failure would otherwise only appear when a tag is pushed |
+| `release-targets` | `musl release build (<triple>)` | the release build for both musl targets, each on a runner of its own architecture (`ubuntu-24.04`, `ubuntu-24.04-arm`): the release profile, Ubuntu's native `musl-gcc` for the store's `bundled` SQLite, and `scripts/verify-release-binaries.sh` on the artifact — started in both roles, the embedded app served, a worker enrolled, a contract-shaped write answered. This is the build whose failure would otherwise only appear when a tag is pushed |
 | `contract` | `bb contract is reproducible` | re-exporting bb's contract yields the committed `contracts/bb` byte for byte |
 | `ui` | `UI typecheck, tests and bundle` | `pnpm install --frozen-lockfile`, `pnpm run typecheck`, `pnpm run test`, `pnpm --filter @bb/app run build` builds the bundle every Rust job below compiles into the server and uploads it as the `ui-dist` artifact, and `pnpm run check:bundle` holds that build to the committed budget |
 | `e2e` | `Browser acceptance` | the Playwright suite in `e2e/` drives the real thing — the binary serving the app it was built with, a worker on the same machine running an ACP stub — in a desktop and a mobile viewport: bootstrap, an unreachable server, a thread that answers and survives a reload, a permission request that blocks the turn until it is answered (allow and deny), automations running and reporting, and a machine going offline and coming back |
@@ -69,11 +69,12 @@ inside the repository.
 
 The one job that needs a second toolchain is `release-targets`. A musl target
 compiles the store's `bundled` SQLite from source, so the job installs a C
-cross-compiler for its target before building — a different tool from the cross
-linker, which is still `rust-lld` for aarch64.
-[`.github/actions/install-musl-c-toolchain`](../.github/actions/install-musl-c-toolchain/action.yml)
-holds the archive and the digest per target, so `release.yml` and `ci.yml`
-install the same compiler from the same bytes.
+compiler for it — a different tool from the linker, which is still `rust-lld`
+for aarch64. Each target runs on a runner of its own architecture, so that
+compiler is Ubuntu's own `musl-tools` and nothing is downloaded from a third
+party; that is also what lets the job run the aarch64 artifact instead of only
+inspecting it. [`install-musl-c-compiler`](../.github/actions/install-musl-c-compiler/action.yml)
+is the action that does it, shared with `release.yml`.
 
 The channel in that file is `stable`, which is the repository's existing choice,
 and CI follows it rather than second-guessing it: a new stable release is

@@ -9,9 +9,13 @@
 # because the linker it reached for was the host's, not the target's. Rust
 # ships the linker this needs: `rust-lld` resolves inside the toolchain's own
 # `lib/rustlib/<host>/bin/`, so the cross toolchain is the one
-# `rust-toolchain.toml` already pins — no `aarch64-linux-musl-gcc`, no
-# `cargo-zigbuild`, no `cross` container, and no second version to keep in step
-# with the host toolchain.
+# `rust-toolchain.toml` already pins — no `cargo-zigbuild`, no `cross`
+# container, and no second version to keep in step with the host toolchain.
+#
+# The C compiler the store's `bundled` SQLite is built with is a separate
+# question from this line, and is answered by the machine doing the build: the
+# release and CI jobs use Ubuntu's native `musl-tools`
+# (`docs/releasing.md#the-c-compiler-the-build-scripts-need`).
 #
 # The x86_64 target is deliberately absent: there the host `cc` is already a
 # linker for the target, which is the recipe measured end to end in

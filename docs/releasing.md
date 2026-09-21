@@ -58,51 +58,60 @@ surprise. Catching it here keeps that failure off the tag. The budget check is
 the same ratchet CI applies ([`ci.md`](ci.md#the-bundle-budget)), repeated here
 because a release is the one build nobody gets to re-run before it is used.
 
-## Targets, and how aarch64 links
+## Targets, and how each one is built
 
-| Target | Linker | Why |
-| --- | --- | --- |
-| `x86_64-unknown-linux-musl` | the host `cc` | a linker for the target already exists on the machine doing the build; this is the recipe measured through to a running server |
-| `aarch64-unknown-linux-musl` | `rust-lld` | the host's `ld` is not an aarch64 linker: without this, the build fails with `/usr/bin/ld: unrecognized option '--fix-cortex-a53-843419'` |
+Each target is built on a runner of its own architecture — `ubuntu-24.04` for
+`x86_64-unknown-linux-musl`, `ubuntu-24.04-arm` for `aarch64-unknown-linux-musl`
+(arm64 runners are free for public repositories, and this one is public). That
+is what makes the whole pipeline native: the C compiler is Ubuntu's own
+`musl-tools`, no cross toolchain is downloaded, and each artifact is verified by
+running it on the machine that built it.
 
-The cross configuration is one line in [`.cargo/config.toml`](../.cargo/config.toml):
+The one line of cross configuration that remains is in
+[`.cargo/config.toml`](../.cargo/config.toml):
 
 ```toml
 [target.aarch64-unknown-linux-musl]
 linker = "rust-lld"
 ```
 
-`rust-lld` is resolved out of the toolchain's own
-`lib/rustlib/<host>/bin/`, which is why no `cargo-zigbuild` and no `cross`
-container appear anywhere in this pipeline: the cross linker is the toolchain
+| Target | Linker | Why |
+| --- | --- | --- |
+| `x86_64-unknown-linux-musl` | the host `cc` | a linker for the target already exists on the machine doing the build; this is the recipe measured through to a running server |
+| `aarch64-unknown-linux-musl` | `rust-lld` | it is what makes this target cross-linkable at all — from an x86_64 machine the host's `ld` is not an aarch64 linker, and the build fails with `/usr/bin/ld: unrecognized option '--fix-cortex-a53-843419'` |
+
+`rust-lld` is resolved out of the toolchain's own `lib/rustlib/<host>/bin/`,
+which is why no `cargo-zigbuild` and no `cross` container appear anywhere in
+this pipeline: the linker is the toolchain
 [`rust-toolchain.toml`](../rust-toolchain.toml) already pins, and both targets
 are built by the same `cargo build --target <triple>`.
 
 ## The C compiler the build scripts need
 
-A cross *linker* is not the only cross tool a release build uses. The server's
-embedded store is `rusqlite` with `bundled`, which compiles SQLite's C source
-for the target, so the `cc` crate has to find a C compiler for that target:
-without one the build stops at `failed to find tool "x86_64-linux-musl-gcc"`
-(the table above is about linking, so this is the part it cannot describe —
-both musl targets were run and failed exactly this way before the step existed).
+A linker is not the only C tool a release build uses. The server's embedded
+store is `rusqlite` with `bundled`, which compiles SQLite's C source for the
+target, so the `cc` crate has to find a C compiler for it: without one the build
+stops at `failed to find tool "x86_64-linux-musl-gcc"`.
 
-The `build` job's *Install the target's C toolchain* step downloads the
-musl-cross-make archive for its target from [musl.cc](https://musl.cc/),
-verifies it against the digest
-[`.github/actions/install-musl-c-toolchain`](../.github/actions/install-musl-c-toolchain/action.yml)
-records for that target, unpacks it under `$RUNNER_TEMP` and appends its `bin/`
-to `PATH`. That is the whole configuration, because the archive's
-`bin/<triple>-gcc` is the name `cc` looks for; the compiler is not the linker
-and does not change how either artifact links, which is why `.cargo/config.toml`
-still holds exactly one line. The action is shared with `ci.yml`'s
-`release-targets` job, which builds the same two targets on every push, so
-neither the archive nor the digest can drift between the two workflows.
+The `build` job's *Install the target's C compiler* step —
+[`install-musl-c-compiler`](../.github/actions/install-musl-c-compiler/action.yml),
+shared with `ci.yml`'s `release-targets` job — installs Ubuntu's `musl-tools`
+and points the target's `cc` at the `musl-gcc` it provides. A few facts about it
+are worth keeping:
 
-Both targets were built and checked with these archives on 2026-09-21:
-`scripts/verify-release-binaries.sh` ran the x86_64 artifact in both roles and
-watched it serve the embedded app, enroll a worker and answer a contract-shaped
-write, and passed the ELF-only checks for the aarch64 one.
+* **It is the native compiler, not a cross one.** `musl-gcc` targets the
+  architecture it runs on, which is why each target gets its own runner. The
+  compiler still is not the linker: `.cargo/config.toml` names that, and for
+  aarch64 it is still `rust-lld`.
+* **musl.cc is not an option.** The first version of this step downloaded
+  musl.cc's musl-cross-make archives; both jobs failed with
+  `curl: (28) Failed to connect to musl.cc port 443`, because musl.cc blocks
+  GitHub Actions wholesale. Nothing in this repository downloads a toolchain
+  from a third party now.
+* **Verified by running.** Both targets were built and passed
+  `scripts/verify-release-binaries.sh` on 2026-09-21 — both roles started, the
+  embedded app served, a worker enrolled, a contract-shaped write answered —
+  which the aarch64 leg could not do while it was built on an x86_64 runner.
 
 Both results are self-contained, and they are not the same ELF shape. These were
 recorded before the client was compiled in **and** before the two roles became
@@ -260,13 +269,14 @@ The two routes also have a shape guard in
 here: the script runs only on a `v*` tag, so a response shape that stopped
 matching what it parses would stay invisible until a release.
 
-The aarch64 binary cannot be executed on an x86_64 runner, so it is verified with
-`--elf-only`: the same script, checking everything a foreign machine can — the
-ELF is a 64-bit ARM aarch64 object, it has no interpreter and no `NEEDED`
-library, and the tag's commit is stamped in the file. Running it under qemu
-would be the alternative, and it would put a second, slower implementation of
-execution into the release path for a check the x86_64 run already makes on the
-same source.
+Both artifacts are executed where they run: each target's job is on a runner of
+its own architecture, so the aarch64 binary gets the same end-to-end check as
+the x86_64 one. `--elf-only` remains for the case a single machine cannot cover —
+a maintainer holding an artifact for a machine they are not on — and it checks
+everything a foreign machine can: the ELF is a 64-bit ARM aarch64 object, it has
+no interpreter and no `NEEDED` library, and the commit is stamped in the file.
+Running it under qemu would be the alternative, and it would put a second,
+slower implementation of execution into the release path.
 
 **When you download one**, on the machine that will run it:
 
@@ -294,11 +304,19 @@ pnpm run typecheck && pnpm run test
 pnpm --filter @bb/app run build
 pnpm run check:bundle
 
-# 2. the one binary for both targets, into target/<triple>/release
-cargo build --release --locked -p loom --target x86_64-unknown-linux-musl
-cargo build --release --locked -p loom --target aarch64-unknown-linux-musl
+# 2. the one binary for both targets, into target/<triple>/release.
+#    The C compiler each build script needs is the native one: `apt-get install
+#    musl-tools`, then CC_<target with underscores>=musl-gcc. The pipeline runs
+#    each target on a runner of its own architecture for exactly this reason.
+sudo apt-get install --yes musl-tools
+CC_aarch64_unknown_linux_musl=musl-gcc \
+  cargo build --release --locked -p loom --target aarch64-unknown-linux-musl
+CC_x86_64_unknown_linux_musl=musl-gcc \
+  cargo build --release --locked -p loom --target x86_64-unknown-linux-musl
 
-# 3. run the one this machine can run; check the other is what it claims
+# 3. run each artifact where it can run. On one machine that is the matching
+#    target; for the other, `--elf-only` checks everything a foreign machine
+#    can — the ELF machine, no loader, no shared libraries, the stamped commit.
 scripts/verify-release-binaries.sh target/x86_64-unknown-linux-musl/release \
   --expect-commit "$(git rev-parse HEAD)" --expect-target x86_64-unknown-linux-musl
 scripts/verify-release-binaries.sh target/aarch64-unknown-linux-musl/release --elf-only \
@@ -381,7 +399,10 @@ The bundle row measured the reference client's esbuild step and its
 committed-bytes check; the job now runs the app's Vite build and its budget
 check, which is not what those 5.3 s measured. The two `cargo build` rows
 measured the whole workspace before the build narrowed to the one binary
-(`-p loom`); everything else in the table is unchanged work.
+(`-p loom`); everything else in the table is unchanged work. The `--elf-only`
+row is what one workstation can do for the target it is not on: each job in the
+pipeline now builds on its own architecture, so both verify legs execute their
+artifact there.
 
 | | |
 | --- | --- |

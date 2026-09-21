@@ -69,7 +69,11 @@ jobs:
   # targets here as well — a change that breaks one can leave the other fine.
   release-targets:
     name: musl release build (${{ matrix.target }})
-    runs-on: ubuntu-24.04
+    # Each target is built on a runner of its own architecture, so the C
+    # compiler is Ubuntu's native `musl-gcc` rather than a cross toolchain and
+    # the artifact can be run where it was built. arm64 runners are free for
+    # public repositories, and this one is public.
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     # Same reason as `checks`: the app is a compile-time input to the binary.
     needs: ui
@@ -77,9 +81,11 @@ jobs:
       # Both targets are wanted even if one fails: the failing log is the point.
       fail-fast: false
       matrix:
-        target:
-          - x86_64-unknown-linux-musl
-          - aarch64-unknown-linux-musl
+        include:
+          - target: x86_64-unknown-linux-musl
+            runner: ubuntu-24.04
+          - target: aarch64-unknown-linux-musl
+            runner: ubuntu-24.04-arm
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -101,10 +107,10 @@ jobs:
         run: rustup target add "${{ matrix.target }}"
 
       # The C compiler the target's C code compiles with — not the linker, which
-      # is `rust-lld` for aarch64 via `.cargo/config.toml`. The action keeps the
-      # archive and digest this shares with `release.yml`.
-      - name: Install the target's C toolchain
-        uses: ./.github/actions/install-musl-c-toolchain
+      # is `rust-lld` for aarch64 via `.cargo/config.toml`. The action is shared
+      # with `release.yml`, so the two workflows point `cc` at the same thing.
+      - name: Install the target's C compiler
+        uses: ./.github/actions/install-musl-c-compiler
         with:
           target: ${{ matrix.target }}
 
@@ -121,20 +127,13 @@ jobs:
       - name: cargo build --release --locked -p loom --target ${{ matrix.target }}
         run: cargo build --release --locked -p loom --target "${{ matrix.target }}"
 
-      # The x86_64 artifact runs here, so a musl build that links but cannot
-      # start is caught before a tag. The aarch64 one is checked as an ELF this
-      # runner cannot execute; `release.yml` explains why.
-      - name: Verify the x86_64 binary end to end
-        if: matrix.target == 'x86_64-unknown-linux-musl'
+      # Both artifacts are started in both roles here, so a musl build that links
+      # but cannot run is caught before a tag rather than at one. That is the
+      # reason the aarch64 leg is on an arm64 runner.
+      - name: Verify the binary end to end
         run: |
           scripts/verify-release-binaries.sh "target/${{ matrix.target }}/release" \
             --expect-commit "$GITHUB_SHA" --expect-target "${{ matrix.target }}"
-
-      - name: Verify the aarch64 binary is a self-contained aarch64 artifact
-        if: matrix.target == 'aarch64-unknown-linux-musl'
-        run: |
-          scripts/verify-release-binaries.sh "target/${{ matrix.target }}/release" \
-            --elf-only --expect-commit "$GITHUB_SHA" --expect-target "${{ matrix.target }}"
 
   # The coverage document claims which contract routes loom implements, and
   # — since W-554 — that an implemented JSON-body route has a request-side
