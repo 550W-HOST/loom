@@ -254,6 +254,14 @@ async fn a_restarted_local_worker_keeps_one_host_identity() {
     })
     .await;
     let first_worker = children_of(server.pid)[0];
+    // The host list answers "connected" as soon as the worker enrols, and the
+    // file read here is written after that: reading it straight away asked the
+    // worker to have finished within however long enrolment took. Wait for the
+    // id instead, which is what the test is actually about.
+    wait_for("the worker to persist its host id", || {
+        read_host_id(&server_data).is_some()
+    })
+    .await;
     let host_id = read_host_id(&server_data).expect("the worker persisted its host id");
 
     send_signal(first_worker, "KILL");
