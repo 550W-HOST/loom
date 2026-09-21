@@ -89,11 +89,15 @@ both musl targets were run and failed exactly this way before the step existed).
 
 The `build` job's *Install the target's C toolchain* step downloads the
 musl-cross-make archive for its target from [musl.cc](https://musl.cc/),
-verifies it against the digest recorded beside the target in the job's matrix,
-unpacks it under `$RUNNER_TEMP` and appends its `bin/` to `PATH`. That is the
-whole configuration, because the archive's `bin/<triple>-gcc` is the name `cc`
-looks for; the compiler is not the linker and does not change how either
-artifact links, which is why `.cargo/config.toml` still holds exactly one line.
+verifies it against the digest
+[`.github/actions/install-musl-c-toolchain`](../.github/actions/install-musl-c-toolchain/action.yml)
+records for that target, unpacks it under `$RUNNER_TEMP` and appends its `bin/`
+to `PATH`. That is the whole configuration, because the archive's
+`bin/<triple>-gcc` is the name `cc` looks for; the compiler is not the linker
+and does not change how either artifact links, which is why `.cargo/config.toml`
+still holds exactly one line. The action is shared with `ci.yml`'s
+`release-targets` job, which builds the same two targets on every push, so
+neither the archive nor the digest can drift between the two workflows.
 
 Both targets were built and checked with these archives on 2026-09-21:
 `scripts/verify-release-binaries.sh` ran the x86_64 artifact in both roles and

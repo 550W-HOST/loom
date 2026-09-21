@@ -62,6 +62,80 @@ jobs:
       - name: cargo test --workspace
         run: cargo test --workspace --locked
 
+  # The release build is a different build from the one `checks` runs: musl
+  # targets, the release profile, and a C compiler for the target, because the
+  # store's `bundled` SQLite is compiled from source. It is also the one build
+  # whose failure nobody would see until a tag was pushed, so it runs on both
+  # targets here as well — a change that breaks one can leave the other fine.
+  release-targets:
+    name: musl release build (${{ matrix.target }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    # Same reason as `checks`: the app is a compile-time input to the binary.
+    needs: ui
+    strategy:
+      # Both targets are wanted even if one fails: the failing log is the point.
+      fail-fast: false
+      matrix:
+        target:
+          - x86_64-unknown-linux-musl
+          - aarch64-unknown-linux-musl
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Download the app bundle
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: ui-dist
+          path: apps/app/dist
+
+      - name: Install the toolchain pinned by rust-toolchain.toml
+        run: |
+          rustup toolchain install
+          rustup show active-toolchain
+          rustc --version
+          cargo --version
+
+      - name: rustup target add ${{ matrix.target }}
+        run: rustup target add "${{ matrix.target }}"
+
+      # The C compiler the target's C code compiles with — not the linker, which
+      # is `rust-lld` for aarch64 via `.cargo/config.toml`. The action keeps the
+      # archive and digest this shares with `release.yml`.
+      - name: Install the target's C toolchain
+        uses: ./.github/actions/install-musl-c-toolchain
+        with:
+          target: ${{ matrix.target }}
+
+      # The same key `release.yml` uses: both build the same profile for the
+      # same triple, so a cache written by one is usable by the other.
+      - name: Cache cargo registry and target
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          prefix-key: release-${{ matrix.target }}
+
+      # `-p loom` is the whole artifact: one package, one file in
+      # `target/<triple>/release`, with the server library the app is compiled
+      # into and the worker library as its dependencies.
+      - name: cargo build --release --locked -p loom --target ${{ matrix.target }}
+        run: cargo build --release --locked -p loom --target "${{ matrix.target }}"
+
+      # The x86_64 artifact runs here, so a musl build that links but cannot
+      # start is caught before a tag. The aarch64 one is checked as an ELF this
+      # runner cannot execute; `release.yml` explains why.
+      - name: Verify the x86_64 binary end to end
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: |
+          scripts/verify-release-binaries.sh "target/${{ matrix.target }}/release" \
+            --expect-commit "$GITHUB_SHA" --expect-target "${{ matrix.target }}"
+
+      - name: Verify the aarch64 binary is a self-contained aarch64 artifact
+        if: matrix.target == 'aarch64-unknown-linux-musl'
+        run: |
+          scripts/verify-release-binaries.sh "target/${{ matrix.target }}/release" \
+            --elf-only --expect-commit "$GITHUB_SHA" --expect-target "${{ matrix.target }}"
+
   # The coverage document claims which contract routes loom implements, and
   # — since W-554 — that an implemented JSON-body route has a request-side
   # conformance assertion. That claim is a script, not a review habit: run it
