@@ -4142,21 +4142,62 @@ fn replayed_copies_loom_already_recorded(
     }
 
     // What loom recorded itself, in the order it recorded it, per role.
+    //
+    // The two roles are read from different rows on purpose. A user message is
+    // one loom wrote down itself: a run also echoes the prompt as its own frame,
+    // and counting that echo would let a single prompt pair twice. The
+    // assistant's answer is the run's frames — and it is folded from the
+    // **deltas**, because the ACP translator completes a message with empty text
+    // by design (the deltas already carried it, and restating it would duplicate
+    // the content in the log). Reading only completions therefore recorded the
+    // empty string, which no replayed answer can equal, so the replay's copy was
+    // never recognized as a copy and opened a second row.
+    // What loom recorded itself, in the order it recorded it, per role.
+    //
+    // The two roles are read from different rows on purpose. A user message is
+    // one loom wrote down itself: a run also echoes the prompt as its own frame,
+    // and counting that echo would let a single prompt pair twice. The
+    // assistant's answer is the run's frames — and it is folded from the
+    // **deltas**, because the ACP translator completes a message with empty text
+    // by design (the deltas already carried it, and restating it would duplicate
+    // the content in the log). Reading only completions therefore recorded the
+    // empty string, which no replayed answer can equal, so the replay's copy was
+    // never recognized as a copy and opened a second row.
     let mut recorded_user: VecDeque<String> = VecDeque::new();
     let mut recorded_assistant: VecDeque<String> = VecDeque::new();
+    let mut recorded_slots: HashMap<String, usize> = HashMap::new();
     for row in &view.rows {
-        if !matches!(row.source, RowSource::Message { .. }) {
+        if matches!(row.source, RowSource::Replayed) {
             continue;
         }
         match &row.event {
             ProviderEvent::ItemStarted {
                 item: ThreadEventItem::UserMessage { content, .. },
                 ..
-            } => recorded_user.push_back(user_text(content)),
+            } if matches!(row.source, RowSource::Message { .. }) => {
+                recorded_user.push_back(user_text(content));
+            }
+            ProviderEvent::ItemAgentMessageDelta { item_id, delta, .. } => {
+                let slot = *recorded_slots.entry(item_id.clone()).or_insert_with(|| {
+                    recorded_assistant.push_back(String::new());
+                    recorded_assistant.len() - 1
+                });
+                recorded_assistant[slot].push_str(delta);
+            }
             ProviderEvent::ItemCompleted {
-                item: ThreadEventItem::AgentMessage { text, .. },
+                item: ThreadEventItem::AgentMessage { id, text, .. },
                 ..
-            } => recorded_assistant.push_back(text.clone()),
+            } => {
+                let slot = *recorded_slots.entry(id.clone()).or_insert_with(|| {
+                    recorded_assistant.push_back(String::new());
+                    recorded_assistant.len() - 1
+                });
+                // A completion supplies text only for a producer that sent no
+                // deltas; loom's own never does.
+                if recorded_assistant[slot].is_empty() {
+                    recorded_assistant[slot].push_str(text);
+                }
+            }
             _ => {}
         }
     }
@@ -4434,6 +4475,76 @@ mod restored_timeline_tests {
             .find(|row| row["kind"] == "conversation")
             .expect("a row");
         assert!(first["startedAt"].is_number(), "{first}");
+    }
+
+    /// A live answer is a **run's** frames, and that is what a replay of the same
+    /// turn repeats.
+    ///
+    /// The run records the answer as deltas and completes it with empty text, so
+    /// a pairing that read only completions found nothing to match: the replayed
+    /// answer was kept as a second row and the conversation showed the reply
+    /// twice. The replay here has the shape the ACP adapter gives it — one
+    /// anonymous chunk per message, so a fresh synthetic id — which is what makes
+    /// identity useless and the text the only thing to pair on.
+    #[test]
+    fn a_replayed_copy_of_a_run_answer_does_not_open_a_second_row() {
+        let thread_id = ThreadId::mint();
+        let run_id = loom_domain::RunId::mint();
+        let run_row = |at_ms: u64| RowSource::Run {
+            run_id: run_id.clone(),
+            at_ms,
+        };
+        let rows = cached_timeline_rows(
+            &thread_id,
+            &view_of(vec![
+                (
+                    RowSource::Message {
+                        at_ms: 1_700_000_000_000,
+                    },
+                    user_message("msg_loom_1", "how many?"),
+                ),
+                (
+                    run_row(1_700_000_000_001),
+                    assistant_delta("assistant-1", "sixty"),
+                ),
+                (
+                    run_row(1_700_000_000_002),
+                    assistant_delta("assistant-1", "."),
+                ),
+                // Loom's own completion carries no text: the deltas said it.
+                (
+                    run_row(1_700_000_000_003),
+                    assistant_completed("assistant-1", ""),
+                ),
+                // The same turn again, as the agent replayed it.
+                (
+                    RowSource::Replayed,
+                    user_message("restored-user-1", "how many?"),
+                ),
+                (
+                    RowSource::Replayed,
+                    assistant_delta("assistant-v2-pi-synthetic-7", "sixty."),
+                ),
+            ]),
+        )
+        .rows;
+
+        let conversation: Vec<(&str, &str)> = rows
+            .iter()
+            .filter(|row| row["kind"] == "conversation")
+            .map(|row| (row["role"].as_str().unwrap(), row["text"].as_str().unwrap()))
+            .collect();
+        assert_eq!(
+            conversation,
+            [("user", "how many?"), ("assistant", "sixty.")],
+            "the answer a run recorded is not repeated by the replay of that turn"
+        );
+        // And the survivor is the run's row: only it can name the turn.
+        let answer = rows
+            .iter()
+            .find(|row| row["role"] == "assistant")
+            .expect("an answer row");
+        assert_eq!(answer["turnId"], json!(run_id.to_string()), "{answer}");
     }
 
     /// The property that keeps a run action off a row that belongs to no run.
