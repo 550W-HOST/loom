@@ -461,6 +461,27 @@ Two traps found on the way:
   fixed**; note also that `list_sessions` has no production caller yet, so only
   tests reach it.
 
+## pi-acp upgraded to `v0.5.1` (2026-09-22)
+
+`v0.5.0` shipped a regression with its native v2 bash renderer. A bash call is
+opened by the streamed `toolcall_start`, which carries the tool's name and not
+yet its arguments, so the opening frame can only name the call `"bash"`; the
+command arrives one frame later on `tool_execution_start`. `bash_v2_frames`
+named the call on `first` alone, so that later frame sent status and `_meta`
+only and the command never reached the client — every bash row in the timeline
+showed `bash` with its command gone. v1 had the same regression against its
+pre-native-split shape, which re-stated `kind`/`title` on every update.
+
+`v0.5.1` (`pi-acp` `081fb63`, `ccf1b43c`) states the name on every frame: v2's
+patch semantics make that the intended mechanism (an omitted field leaves the
+previous value, a concrete one replaces it). loom needed no code change — it
+already applies every `tool_call_update`, so the corrected `title`/`rawInput`
+now rebuild the `CommandExecution` with its command. The fix's own evidence is
+pi-acp's `v2_bash_call_is_named_with_its_command_after_the_streamed_open`.
+
+Measured on this checkout: `cargo check --workspace --locked` clean;
+`cargo test -p loom-worker --lib acp --locked` **68 passed**.
+
 ## Immediate next steps
 
 1. **Start migration step 1 (ACP adapter boundary)** — unblocked. The
