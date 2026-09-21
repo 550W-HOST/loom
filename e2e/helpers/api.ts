@@ -8,11 +8,44 @@ import { stackState } from "./stack.js";
  * history it is actually about spends its budget on the wrong surface; the
  * clicks a user cares about are the ones the test then goes on to make.
  */
+/**
+ * The personal scope's id.
+ *
+ * It is a scope rather than a listed project — `GET /api/v1/projects` carries
+ * only the projects a user created, and the sidebar bootstrap carries this one
+ * beside them — so it is read from the bootstrap, which is where a client gets
+ * it too.
+ */
 export async function personalProject(request: APIRequestContext): Promise<string> {
-  const response = await request.get(`${stackState().baseURL}/api/v1/projects`);
+  const response = await request.get(`${stackState().baseURL}/api/v1/sidebar-bootstrap`);
   expect(response.ok()).toBeTruthy();
-  const projects = (await response.json()) as { id: string }[];
-  return projects[0]!.id;
+  const body = (await response.json()) as { personalProject: { id: string } };
+  return body.personalProject.id;
+}
+
+/** The one host the stack's daemon enrolled, for a source that has to name one. */
+export async function connectedHost(request: APIRequestContext): Promise<string> {
+  const response = await request.get(`${stackState().baseURL}/api/v1/hosts`);
+  expect(response.ok()).toBeTruthy();
+  const hosts = (await response.json()) as { id: string; status: string }[];
+  const connected = hosts.find((host) => host.status === "connected");
+  expect(connected, `no connected host among ${JSON.stringify(hosts)}`).toBeTruthy();
+  return connected!.id;
+}
+
+/** Creates a project at an existing directory on that host, and returns its id. */
+export async function createProject(
+  request: APIRequestContext,
+  options: { name: string; hostId: string; path: string },
+): Promise<string> {
+  const response = await request.post(`${stackState().baseURL}/api/v1/projects`, {
+    data: {
+      name: options.name,
+      source: { type: "local_path", hostId: options.hostId, path: options.path },
+    },
+  });
+  expect(response.status()).toBe(201);
+  return ((await response.json()) as { id: string }).id;
 }
 
 export interface CreatedAutomation {

@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { composer } from "../helpers/composer.js";
 import { stackState } from "../helpers/stack.js";
 
 /**
@@ -15,9 +16,9 @@ test.describe("a thread", () => {
   test("is created, answers, and survives a reload", async ({ page }) => {
     await page.goto("/");
 
-    const composer = page.getByRole("textbox", { name: /ask anything/i });
-    await composer.click();
-    await composer.fill("hello from the acceptance suite");
+    const box = await composer(page);
+    await box.click();
+    await box.fill("hello from the acceptance suite");
     await page.getByRole("button", { name: /submit/i }).click();
 
     // The app creates the thread (and, on a machine with a daemon, its

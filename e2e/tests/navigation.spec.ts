@@ -1,4 +1,8 @@
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { expect, test } from "@playwright/test";
+import { connectedHost, createProject } from "../helpers/api.js";
 
 /**
  * The shell as a user navigates it.
@@ -130,7 +134,7 @@ test.describe("the settings shell", () => {
     }
   });
 
-  test("lists the resources this machine actually has", async ({ page }) => {
+  test("lists the resources this machine actually has", async ({ page, request }) => {
     // The provider loom runs: a first-class ACP provider, not a plugin.
     await page.goto("/settings/providers");
     await expect(page.getByRole("main").getByText(/^pi$/i).first()).toBeVisible();
@@ -141,8 +145,15 @@ test.describe("the settings shell", () => {
       page.getByRole("main").getByText("e2e", { exact: true }).first(),
     ).toBeVisible();
 
-    // The personal project every fresh install has.
+    // A project this machine has: created over the API at a directory that
+    // exists, then listed by the settings page. The personal scope is not a
+    // list entry — the sidebar bootstrap carries it beside the projects, and
+    // `GET /api/v1/projects` carries only what a user created — so it is
+    // deliberately not what this asserts.
+    const name = `acceptance project ${Date.now()}`;
+    const path = mkdtempSync(join(tmpdir(), "loom-e2e-project-"));
+    await createProject(request, { name, hostId: await connectedHost(request), path });
     await page.goto("/settings/projects");
-    await expect(page.getByRole("main").getByText("Personal").first()).toBeVisible();
+    await expect(page.getByRole("main").getByText(name).first()).toBeVisible();
   });
 });

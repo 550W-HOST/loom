@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { composer } from "../helpers/composer.js";
 import { stackState } from "../helpers/stack.js";
 
 /**
@@ -14,8 +15,12 @@ test.describe("bootstrap", () => {
     const response = await page.goto("/");
     expect(response?.status()).toBe(200);
 
-    // The composer is the one anchor every viewport has.
-    await expect(page.getByRole("textbox", { name: /ask anything/i })).toBeVisible();
+    // A stack with no projects of its own opens on the welcome view and one
+    // with projects opens on the composer; both are the shell, and both are
+    // behind this helper. What this test wants is the anchor every viewport
+    // then has — the composer itself, which the suite shares with every spec
+    // that types into it.
+    await composer(page);
 
     // The sidebar is a drawer on a phone and a column on a desktop; on the
     // phone the shell has to be able to open it before anything in it counts.

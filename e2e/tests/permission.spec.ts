@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { expect, test, type APIRequestContext, type Locator, type Page } from "@playwright/test";
+import { composer } from "../helpers/composer.js";
 import { stackState } from "../helpers/stack.js";
 
 const decisionPath = () => `${stackState().provider}.decision`;
@@ -32,9 +33,9 @@ async function expandBanner(banner: Locator): Promise<void> {
 
 async function askForPermission(page: Page, prompt: string) {
   await page.goto("/");
-  const composer = page.getByRole("textbox", { name: /ask anything/i });
-  await composer.click();
-  await composer.fill(prompt);
+  const box = await composer(page);
+  await box.click();
+  await box.fill(prompt);
   await page.getByRole("button", { name: /submit/i }).click();
 
   await expect(page).toHaveURL(/\/threads\/thr_/, { timeout: 30_000 });
