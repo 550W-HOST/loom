@@ -338,7 +338,7 @@ CREATE TABLE IF NOT EXISTS entity_meta (
 
 **进展（2026-09-21，3.1 完成）**：schema v4 增 `relay_event(event_id TEXT PK, shard, scope_kind, scope_id, payload BLOB, created_at_ms, origin)`，索引 `(shard, event_id)` 与 `(shard, created_at_ms)`。`Store` 提供 `append_relay_event(shard, record, max_len)`（**插入与按上限裁剪同一个事务**，超限删最旧；子查询在未超限时返回空，所以不会误删）、`read_relay_events(shard, after, limit)`（`event_id > cursor ORDER BY event_id`，与内存/磁盘后端**同一套语义**：游标在读取里而不是由调用方过滤，所以「同一毫秒的超大突发」不会卡住读者）、`trim_relay_events`、`relay_event_count`/`relay_event_total`。测试 5 个：往返逐字段相等（含 BLOB 载荷与 origin）、突发大于一页仍逐页推进不重不漏、满 shard 删最旧且顺序不变、按时间裁剪只删更旧的、六种 scope 全部往返。
 
-**3.2/3.3 的做法（下一步）**：把 `crates/relay/tests/relay.rs` 那套后端契约提成可复用套件（relay 侧一个非默认 feature 暴露的 `conformance` 模块），这样 `crates/server` 能用同一个 `RelayBackend` 实现跑**同一套**场景，而不是抄一份；store 后端实现落在 `crates/server/src/store/relay_backend.rs`（relay 不能依赖 store，所以实现只能在 server 侧）。先做同步实现跑通契约（每次 append 一次 `block_on`），量化每次 publish 的代价，再决定是否加「单写线程 + 读取时合并未落盘尾巴」（与阶段一 overlay 同构）。之后才是双层写、恢复改读库、删 `shard-*.log`。
+**3.2/3.3 的做法（下一步）**：把 `crates/relay/tests/relay.rs` 那套后端契约提成可复用套件（relay 侧一个非默认 feature 暴露的 `conformance` 模块），这样 `crates/server` 能用同一个 `RelayBackend` 实现跑**同一套**场景，而不是抄一份；store 后端实现落在 `crates/server/src/store/relay_backend.rs`（relay 不能依赖 store，所以实现只能在 server 侧）。先做同步实现跑通契约（每次 append 一次同步提交），量化每次 publish 的代价，再决定是否加「单写线程 + 读取时合并未落盘尾巴」（与阶段一 overlay 同构）。之后才是双层写、恢复改读库、删 `shard-*.log`。
 
 ### 7.1 阶段三退场条件：现状与证据（2026-09-21）
 
@@ -406,7 +406,7 @@ CREATE TABLE IF NOT EXISTS entity_meta (
 
 **4.4 的去重已实现并有测试**：`replayed_copies_loom_already_recorded` 按角色、按顺序把 replay 里的消息与 loom 自己记的 `message` 行配对（assistant 的正文取 delta 累加后的整段，而不是单帧文本），配上的**整条消息的所有帧**都不再投影，loom 那条留下（它有真实时间）；replay 独有的是保留的。测试：`a_replayed_copy_of_a_recorded_message_does_not_open_a_second_row`（单元）+ `crates/server/tests/history.rs` 的重启端到端（4 行、顺序、两类行各自的时间语义）。
 
-**同批完成：数据库引擎换成 turso**（见 §1.1 的三条事实：pre-release、`roaring` 钉 0.11.2、仍需 C 编译器 + libclang）。全仓库 `cargo test --workspace --locked`、`clippy -D warnings`、`cargo +1.88 check --workspace --all-targets --locked` 全绿。
+**同批完成：数据库引擎先换成 turso，实测后又换回 `rusqlite`（`bundled`）**。当天先按 turso 落地（当时记下的三条事实：pre-release、`roaring` 钉 0.11.2、仍需 C 编译器 + libclang），随后逐条实测两者，结论是 **libclang 那条不成立**：turso 的 `bindgen` 只是声明却从不运行的 build-dependency（`turso_sdk_kit/build.rs` 在非 Windows 上直接 return，构建产物里没有 `bindings.rs`），`clang-sys` 打开的是 `runtime` 特性，`LIBCLANG_PATH=/nonexistent cargo check -p loom-server --locked` 通过。而 turso 的代价都是实测到的：一个 2025-07 才发布、`0.8.0-pre.11` 仍是 pre-release 的引擎（crates.io 总下载 94.6 万，对比 `rusqlite` 1.09 亿）；`roaring` 被迫钉在 0.11.2（MSRV 1.88）；约 90 处 `block_on` 与 async 驱动；单进程独占（服务端开着时 `sqlite3` 连只读打开都被 `database is locked` 拒绝，turso 的 COMPAT 也明说不支持 SQLite/turso 混用的多进程场景）；以及 `cargo build -p loom --locked` 因为 `turso_core` 的 `cfg(loom)` 目标依赖把 `loom 0.7.2` 带进 `Cargo.lock` 而变成歧义，CI 与发布脚本里的该命令直接失败。文件格式与 SQL 都是 SQLite 的，双向实测可读写（turso 写出的 `loom.db` 用内置 SQLite 3.53.2 打开：`journal_mode=wal`、`user_version=4`、`integrity_check=ok`、六张表可读可写；SQLite 写过后 turso 重启照常服务），所以换回是机械操作：SQL 一行未改，只删掉 `block_on` 层、列取值小工具和 turso/`futures-executor` 两个依赖。全仓库 `cargo test --workspace --locked`、`clippy -D warnings`、`cargo +1.88 check --workspace --all-targets --locked` 全绿。
 
 **进展（2026-09-21，1.4a）**：编号归属已改到发布缝。`Store` schema 升到 v2，新增 `store_meta` 记 instance id（随文件mint、重启不变，客户端 cursor 的 instance 不再随进程变）；`append_row(thread, seq, …)` / `replace_replayed(thread, binding, first_seq, …)` 改为由调用方给号，库里只把 `next_seq` 单向前推（`MAX(next_seq, seq+1)`），重复号被主键拒绝；新增 `store::SeqAllocator`（启动时从 `thread_next_seq` 播种），`AppState` 持有它，`cache_live_event` 只 reserve 一次号，同一号同时进内存 overlay 和写队列。测试：重复号被拒、编号跨重开继续（`the_numbering_survives_a_reopen`）、instance 跨重开不变、不同 store 不同 instance。
 
@@ -414,9 +414,9 @@ CREATE TABLE IF NOT EXISTS entity_meta (
 
 **进展（2026-09-21）**：1.1 已落地（`220301a`：`rusqlite` bundled + `Store::open` 迁移/拒绝语义，MSRV 1.88 已验证）；1.2 已落地（`0ab49ca`：`store::history` 类型化读写 + `AppState` 开库，文件库/内存库同一条代码路径）。1.2 的两处实现选择：`seq` 来自线程自己的 `next_seq` 计数列（不是 `MAX(seq)`，否则重建删行后号码会复用）；`AppState.store` 在任何服务器上都存在，没有"跳过持久化"的分支。
 
-**1.1 依赖与打开。** 引擎为 **turso**（`=0.8.0-pre.11`，`default-features = false`）：进程内、SQLite 兼容、Rust 实现，替换原先的 `rusqlite`（`bundled` C 版）。turso 的驱动是 async，store 用 `futures-executor::block_on` 在调用线程上驱动它，对外 API 保持同步（HTTP 读、写线程、测试都是同步调用；turso 不需要 Tokio 运行时即可推进，已实测四种上下文）。**三个必须一起记住的事实**（2026-09-21 实测）：① turso 是 pre-release，不是 1.0；② `roaring` 在 `Cargo.lock` 中钉在 `0.11.2`（0.11.3+ 要求 rustc 1.90，本仓库 MSRV 1.88），`cargo update` 必须保留该钉；③ turso **不是无 C 构建**——`cc` 会编译 SIMD/AEAD 内核，`bindgen`/libclang 生成扩展 ABI，因此 §10 的 musl 发布要求从「只需 musl C 编译器」变成「musl C 编译器 + 构建机 libclang」。新增 `crates/server/src/store/`（`mod.rs` 打开库、`schema.rs` 迁移）。`<server-data-dir>/loom.db`，WAL、`synchronous=NORMAL`、`foreign_keys=ON`、`busy_timeout`，`PRAGMA user_version` 记 schema 版本。打不开/迁移失败 = 启动失败，绝不回退内存。测试：建库幂等、版本表、坏库显式报错。
+**1.1 依赖与打开。** 引擎为 **SQLite 本体**，通过 **`rusqlite`**（`0.40`，`default-features = false`，`features = ["bundled", "cache"]`）：进程内、无服务、无运行时库，`bundled` 把 SQLite（当前 3.53.2）从源码编进二进制，`FROM scratch` 镜像仍然只多一个文件。**两条必须一起记住的事实**（2026-09-21 实测）：① `rusqlite` 是 2014 年起的稳定 crate（总下载 1.09 亿，最新 0.40.2），SQLite 本身是这一层里最难测坏的软件；② 它**仍然是 C 构建**——`bundled` 会为目标平台编译 SQLite 的 C 源码，所以 §10 的 musl 交叉发布仍需要目标平台的 C 交叉编译器（与 turso 相同，见下一条的 ⚠️），但**不需要 libclang**。store 的 API 是同步的，与所有调用者一致（HTTP 读、写线程、测试），中间没有 driver、没有 `block_on`、没有 Tokio 运行时要求。新增 `crates/server/src/store/`（`mod.rs` 打开库、`schema.rs` 迁移）。`<server-data-dir>/loom.db`，WAL、`synchronous=NORMAL`、`foreign_keys=ON`、`busy_timeout`，`PRAGMA user_version` 记 schema 版本。打不开/迁移失败 = 启动失败，绝不回退内存。测试：建库幂等、版本表、坏库显式报错。
 
-**⚠️ 这一步会改变发布工具链。**（2026-09-21 更新：引擎已换成 turso，本节最初的 `rusqlite bundled` 说法作废，但「发布路径需要新工具链」的结论仍然成立，而且更重。）turso 编译期会：用 `cc` 编译 SIMD/AEAD 内核，并用 `bindgen`/`libclang` 生成扩展 ABI。因此发布机需要**宿主 C 编译器 + libclang**；交叉到 musl 时还需要目标平台的 C 交叉编译器（x86_64/aarch64 目前都没有装，`.cargo/config.toml` 有注释）。本地只能验证 gnu 目标与 MSRV；musl 两个目标必须由 CI 或装了交叉工具链的机器验证后，才可以说发布路径完好。`release.yml` 这一步尚未做（见文末「尚未做」）。
+**⚠️ 这一步会改变发布工具链。** `rusqlite` 的 `bundled` 会为目标平台编译 SQLite 的 C 源码，因此发布机需要**宿主 C 编译器**；交叉到 musl 时还需要目标平台的 C 交叉编译器（x86_64/aarch64 目前都没有装，`.cargo/config.toml` 有注释）。本地实测：`cargo build --release --locked -p loom@0.1.0 --target x86_64-unknown-linux-musl` 与同命令的 aarch64 目标都因缺少 `*-linux-musl-gcc` 失败（`rusqlite` 在 build 阶段直接报 `failed to find tool "aarch64-linux-musl-gcc"`；换 turso 时是它的 `simsimd` 把同一个缺失吞成 warning、到链接阶段才报 `cannot find -lsimsimd`）。同一时期实测**不需要 libclang**（见 §1.1 与 2026-09-21 的引擎记录）。本地只能验证 gnu 目标与 MSRV；musl 两个目标必须由 CI 或装了交叉工具链的机器验证后，才可以说发布路径完好。`release.yml` 这一步尚未做（见文末「尚未做」）。
 
 **1.2 表与迁移（v1）。** `thread_history`（binding、`provider_session_id`、`revision`、`synced_at_ms`、`last_error`）与 `thread_history_row`（`thread_id, seq, source_kind, source_run_id, source_at_ms, event_json`，`seq` 写入时分配、永不重算）。测试：往返、并发分配不重号、同 `(thread_id, seq)` 唯一、删除 thread 同事务清行。
 
@@ -444,11 +444,10 @@ CREATE TABLE IF NOT EXISTS entity_meta (
 - **阶段二**：实体/设置/自动化/run 进库（一实体一行、整视图一个事务、run 变更即写），`domain.snapshot` 文件**读写路径整体删除**。
 - **阶段三**：relay 帧进库（`relay_event`，按上限自裁剪）、后端契约套件在库后端 14/14、服务器改用库后端、`shard-*.log` 不再写、run 恢复改读库（判决先于终帧落库，日志扫描彻底删除）。
 
-现在服务器只写一个 `<data-dir>/loom.db`：会话行、实体视图、relay 帧、run 记录全在其中。没配 `--data-dir` 时用内存库，语义一致、随进程消失。
+现在服务器只写一个 `<data-dir>/loom.db`：会话行、实体视图、relay 帧、run 记录全在其中。没配 `--data-dir` 时用默认目录 `$HOME/.loom/server`；内存库只有测试用，服务器上没有这条路径。
 
 **尚未做（刻意留在本计划之外）**：
 
-1. `release.yml` 的发布工具链（turso 的 `cc` + libclang，以及 musl 目标的交叉 C 编译器）——见 §1.1 的 ⚠️。
+1. `release.yml` 的发布工具链：`rusqlite` 的 `bundled` 需要宿主 C 编译器，musl 目标还需要目标平台的 C 交叉编译器——见 §1.1 的 ⚠️。
 2. 跨机器/多 loom 共用一个 ACP 会话的协调（用户已明确「跨机器续聊继续单独处理」）。
 3. `docs/history-convergence-review.md` 的状态表（该文件由用户维护，未改动）。
-4. `roaring` 的版本钉必须随 `Cargo.lock` 一起保留（MSRV 1.88）。

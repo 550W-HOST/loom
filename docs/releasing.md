@@ -80,6 +80,19 @@ anywhere in this pipeline. The cross toolchain is the toolchain
 are built by the same `cargo build --target <triple>` with no per-target flags
 in the workflow.
 
+> **Known gap (measured 2026-09-21).** This section is about linking, and the
+> linker is no longer the only thing missing. The server's embedded store is
+> `rusqlite` with `bundled`, which compiles SQLite's C source for the target, so
+> a musl target also needs a C cross-compiler for it. Neither this machine nor
+> the current `release.yml` installs one, and
+> `cargo build --release --locked -p loom@0.1.0 --target <musl triple>` fails
+> for both targets because of it (`x86_64-unknown-linux-musl` and
+> `aarch64-unknown-linux-musl` were both run). The toolchain this needs, and
+> what is deliberately out of scope for now, are recorded in
+> [`sqlite-persistence-plan.md`](sqlite-persistence-plan.md) §1.1 and its
+> 「尚未做」 list. Everything else here — `rust-lld` doing the cross link —
+> still holds.
+
 Both results are self-contained, and they are not the same ELF shape. These were
 recorded before the client was compiled in **and** before the two roles became
 one file: `loom-server` and `loom-worker` were separate artifacts then, so the
