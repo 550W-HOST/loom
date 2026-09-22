@@ -495,6 +495,7 @@ mod tests {
             run_id: RunId::mint(),
             timeout: Duration::from_secs(30),
             permission_timeout: Duration::from_secs(30),
+            settle_timeout: crate::DEFAULT_SETTLE_TIMEOUT,
             permission_ceiling: HostPermissionMode::Full,
             provider_session_id: None,
             model: None,

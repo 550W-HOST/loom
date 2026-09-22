@@ -44,6 +44,7 @@ pub async fn run(args: WorkerArgs) -> Result<(), Box<dyn std::error::Error>> {
     let mut config = WorkerConfig::new(&options.server_url, &options.name);
     config.heartbeat_interval = options.heartbeat_interval;
     config.run_timeout = options.run_timeout;
+    config.settle_timeout = options.settle_timeout;
     config.permission_timeout = options.permission_timeout;
     if let Some(root) = &options.workspace_root {
         config.environment_root = root.clone();
@@ -208,6 +209,7 @@ struct Options {
     host_id: Option<HostId>,
     heartbeat_interval: Duration,
     run_timeout: Duration,
+    settle_timeout: Duration,
     permission_timeout: Duration,
     provider: Option<ProviderSpec>,
     join_code: Option<String>,
@@ -226,6 +228,7 @@ impl Options {
             host_id,
             heartbeat_ms,
             run_timeout_ms,
+            settle_timeout_ms,
             permission_timeout_ms,
             state,
             provider_cmd,
@@ -247,6 +250,9 @@ impl Options {
         let run_timeout = run_timeout_ms
             .map(Duration::from_millis)
             .unwrap_or(crate::DEFAULT_RUN_TIMEOUT);
+        let settle_timeout = settle_timeout_ms
+            .map(Duration::from_millis)
+            .unwrap_or(crate::DEFAULT_SETTLE_TIMEOUT);
         let permission_timeout = permission_timeout_ms
             .map(Duration::from_millis)
             .unwrap_or(crate::DEFAULT_PERMISSION_TIMEOUT);
@@ -270,6 +276,7 @@ impl Options {
             host_id,
             heartbeat_interval,
             run_timeout,
+            settle_timeout,
             permission_timeout,
             provider,
             join_code: join_code.filter(|value| !value.trim().is_empty()),
@@ -328,6 +335,23 @@ mod tests {
                 .join_code
                 .as_deref(),
             Some("loom-code")
+        );
+    }
+
+    #[test]
+    fn the_settle_budget_defaults_and_the_flag_overrides_it() {
+        assert_eq!(
+            options(&["--server-url", "http://x:1"]).settle_timeout,
+            crate::DEFAULT_SETTLE_TIMEOUT
+        );
+        assert_eq!(
+            options(&["--server-url", "http://x:1", "--settle-timeout-ms", "1500"]).settle_timeout,
+            Duration::from_millis(1_500)
+        );
+        // 0 is a deliberate "no fallback", not a missing value.
+        assert_eq!(
+            options(&["--server-url", "http://x:1", "--settle-timeout-ms", "0"]).settle_timeout,
+            Duration::ZERO
         );
     }
 

@@ -105,7 +105,9 @@ pub async fn load_history(
                     ));
                 }
                 replay(
-                    embedded_agent_factory(command),
+                    // No turn runs here, so there is nothing for the settle
+                    // fallback to bound.
+                    embedded_agent_factory(command, std::time::Duration::ZERO),
                     cwd,
                     thread_id,
                     session_id,

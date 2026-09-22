@@ -56,6 +56,7 @@ fn run(cwd: &str, prompt: &str, provider_session_id: Option<&str>) -> ProviderRu
         // If the agent asks for permission the test has no UI, so the request
         // must settle as cancelled rather than block the turn to its deadline.
         permission_timeout: Duration::from_secs(15),
+        settle_timeout: loom_worker::DEFAULT_SETTLE_TIMEOUT,
         permission_ceiling: loom_domain::HostPermissionMode::Full,
         provider_session_id: provider_session_id.map(str::to_owned),
         model: None,

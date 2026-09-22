@@ -46,6 +46,14 @@ pub struct WorkerArgs {
     #[arg(long, value_name = "MS")]
     pub run_timeout_ms: Option<u64>,
 
+    /// Give up on an accepted turn that has said nothing at all for this long.
+    /// This is the embedded pi-acp's own settle fallback: it bounds silence,
+    /// not the turn, so a long command or a long answer is not silence (a tool
+    /// the agent is running holds it off). 0 leaves --run-timeout-ms as the
+    /// only bound. [default: 600000]
+    #[arg(long, value_name = "MS")]
+    pub settle_timeout_ms: Option<u64>,
+
     /// Cancel an agent's permission request that no client answered by then. A
     /// cancellation is never an approval. [default: 300000]
     #[arg(long, value_name = "MS")]

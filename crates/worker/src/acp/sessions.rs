@@ -222,7 +222,13 @@ pub async fn list_sessions(
                          request supplies {args:?}"
                     ));
                 }
-                probe(embedded_agent_factory(command), cwd).await
+                // No turn runs here, so there is nothing for the settle
+                // fallback to bound.
+                probe(
+                    embedded_agent_factory(command, std::time::Duration::ZERO),
+                    cwd,
+                )
+                .await
             }
         }
     };

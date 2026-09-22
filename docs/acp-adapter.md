@@ -49,6 +49,21 @@ run record, relay, projection and UI — is unchanged.
   plane's (`crates/server/src/runs.rs`).
 - **Permission policy.** The adapter asks; *who decides* is a client concern.
 
+### The embedded adapter's settle budget
+
+One deadline does belong to the adapter: `pi-acp` linked into the worker fails a
+prompt it accepted and never saw settled, so a request cannot hang forever. That
+budget bounds **silence**, not the turn — every event the agent sends re-arms
+it, and a tool the agent is running holds it off, so a long build, a long
+download or a long streamed answer is never mistaken for a stuck agent. A prompt
+that never got going (an extension slash command that never enters the agent
+loop) is still failed with `settleTimeout`.
+
+loom states the value in `WorkerConfig::settle_timeout` (default 10 minutes,
+`--settle-timeout-ms`; `0` disables it) instead of inheriting the adapter's own
+default, because the in-process path never reads `PI_ACP_SETTLE_TIMEOUT_SECS`.
+It is deliberately separate from `--run-timeout-ms`, which bounds the whole run.
+
 ## The event mapping
 
 `ProviderEvent` is bb's 35-type contract (`crates/domain/src/provider_event.rs`).

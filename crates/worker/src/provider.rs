@@ -40,6 +40,15 @@ pub struct ProviderRun {
     /// question deserves. Cancellation is the outcome, never an approval — see
     /// `crate::acp::permission`.
     pub permission_timeout: Duration,
+    /// How long an accepted turn may be *silent* before the embedded `pi-acp`
+    /// gives up on it through its own settle fallback.
+    ///
+    /// Distinct from [`ProviderRun::timeout`], which bounds the whole turn:
+    /// this one bounds silence. Every event the agent sends re-arms it, and a
+    /// tool the agent is running holds it off, so a long build, a long download
+    /// or a long streamed answer is never mistaken for a stuck agent. `0`
+    /// disables it and leaves `timeout` as the only bound.
+    pub settle_timeout: Duration,
     /// The host's maximum permission policy for this run.
     pub permission_ceiling: HostPermissionMode,
     /// The agent's identifier for this thread's conversation, when a previous
@@ -64,6 +73,7 @@ impl ProviderRun {
         spec: ProviderSpec,
         timeout: Duration,
         permission_timeout: Duration,
+        settle_timeout: Duration,
     ) -> Self {
         Self {
             spec,
@@ -74,6 +84,7 @@ impl ProviderRun {
             run_id: dispatch.run_id.clone(),
             timeout,
             permission_timeout,
+            settle_timeout,
             permission_ceiling: dispatch.permission_ceiling,
             provider_session_id: dispatch.provider_session_id.clone(),
             model: dispatch.model.clone(),

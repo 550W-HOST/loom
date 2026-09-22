@@ -111,6 +111,7 @@ async fn a_real_turn_reports_its_thinking() {
         run_id: loom_domain::RunId::mint(),
         timeout: TURN_BUDGET,
         permission_timeout: Duration::from_secs(15),
+        settle_timeout: loom_worker::DEFAULT_SETTLE_TIMEOUT,
         permission_ceiling: loom_domain::HostPermissionMode::Full,
         provider_session_id: None,
         reasoning_level: Some(ReasoningLevel::from(
@@ -218,6 +219,7 @@ async fn each_discovered_agent_reports_what_it_thinks() {
             run_id: loom_domain::RunId::mint(),
             timeout: TURN_BUDGET,
             permission_timeout: Duration::from_secs(15),
+            settle_timeout: loom_worker::DEFAULT_SETTLE_TIMEOUT,
             permission_ceiling: loom_domain::HostPermissionMode::Full,
             provider_session_id: None,
             model: None,

@@ -204,7 +204,7 @@ pub async fn drive(
                 .await
             }
             Transport::EmbeddedPi { command, args } => {
-                serve_embedded(&sink, &cwd, command, args).await
+                serve_embedded(&sink, &cwd, command, args, run.settle_timeout).await
             }
         }
     };
@@ -425,17 +425,35 @@ impl ConnectTo<Client> for EmbeddedAgentTransport {
     }
 }
 
+/// The embedded adapter's settle budget, in the whole seconds `pi-acp` takes.
+///
+/// `0` disables the fallback. Any other sub-second budget rounds *up* to one
+/// second rather than truncating to `0`, which would disable it instead of
+/// shortening it.
+fn settle_timeout_secs(settle_timeout: std::time::Duration) -> u64 {
+    if settle_timeout.is_zero() {
+        0
+    } else {
+        settle_timeout.as_millis().div_ceil(1_000) as u64
+    }
+}
+
 /// Builds a fresh embedded agent connection for each protocol negotiation
 /// attempt. The connector may need a new connection when it falls back from
 /// v2 to v1, so the adapter and its channel must be created per factory call.
 pub(super) fn embedded_agent_factory(
     command: String,
+    settle_timeout: std::time::Duration,
 ) -> impl FnMut() -> EmbeddedAgentTransport + Send + 'static {
     move || {
         let mut config = pi_acp::config::Config::default();
         if !command.is_empty() {
             config.pi_command = command.clone();
         }
+        // The adapter's own settle fallback. `Config::default()` does not read
+        // `PI_ACP_SETTLE_TIMEOUT_SECS`, so this is where loom decides the value
+        // it runs with; see `WorkerConfig::settle_timeout`.
+        config.settle_timeout_secs = settle_timeout_secs(settle_timeout);
         let agent = Arc::new(pi_acp::agent::AcpAgent::new(config));
         let (adapter_side, client_side) = agent_client_protocol::Channel::duplex();
         let task = tokio::spawn(async move {
@@ -465,6 +483,7 @@ async fn serve_embedded(
     cwd: &str,
     command: String,
     args: Vec<String>,
+    settle_timeout: std::time::Duration,
 ) -> Result<(), String> {
     // `pi-acp` takes a *program*, not a command line: its resolver decides
     // between a path, a PATH lookup and a Windows batch wrapper, and appends
@@ -477,7 +496,7 @@ async fn serve_embedded(
              supplies {args:?}; use the acp_stdio launch kind to pass a command line"
         ));
     }
-    serve(embedded_agent_factory(command), sink, cwd).await
+    serve(embedded_agent_factory(command, settle_timeout), sink, cwd).await
 }
 
 /// The construction/load phase controls which agent notifications can be
@@ -1435,6 +1454,19 @@ pub fn spawn(
 mod tests {
     use super::*;
 
+    /// The adapter takes whole seconds, so a sub-second budget must round up
+    /// rather than truncate to `0` — which would disable the fallback instead
+    /// of shortening it.
+    #[test]
+    fn settle_budget_rounds_up_to_whole_seconds() {
+        assert_eq!(settle_timeout_secs(Duration::ZERO), 0);
+        assert_eq!(settle_timeout_secs(Duration::from_millis(1)), 1);
+        assert_eq!(settle_timeout_secs(Duration::from_millis(999)), 1);
+        assert_eq!(settle_timeout_secs(Duration::from_millis(1_000)), 1);
+        assert_eq!(settle_timeout_secs(Duration::from_millis(1_001)), 2);
+        assert_eq!(settle_timeout_secs(Duration::from_secs(600)), 600);
+    }
+
     fn select(config_id: &str, current: &str, values: &[&str]) -> v2::SessionConfigOption {
         v2::SessionConfigOption::select(
             config_id,
@@ -1701,6 +1733,7 @@ mod tests {
             run_id: loom_domain::RunId::mint(),
             timeout: Duration::from_secs(10),
             permission_timeout: Duration::from_secs(5),
+            settle_timeout: crate::DEFAULT_SETTLE_TIMEOUT,
             permission_ceiling: loom_domain::HostPermissionMode::Full,
             provider_session_id: None,
             model: None,

@@ -89,6 +89,18 @@ pub const DEFAULT_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(15);
 /// How long a provider run may take before the worker kills it, by default.
 pub const DEFAULT_RUN_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 
+/// How long an accepted turn may stay *silent*, by default, before the
+/// embedded `pi-acp` gives up on it through its own settle fallback.
+///
+/// This is not [`DEFAULT_RUN_TIMEOUT`] and must not be confused with it: it
+/// bounds silence, not the turn, so a long tool or a long streamed answer is
+/// never mistaken for a stuck agent. loom states the value instead of leaving
+/// it to `pi_acp::Config::default()` because the embedded path never reads
+/// `PI_ACP_SETTLE_TIMEOUT_SECS`, so this is where the value it runs with is
+/// decided (`--settle-timeout-ms` overrides it).
+pub const DEFAULT_SETTLE_TIMEOUT: Duration =
+    Duration::from_secs(pi_acp::config::DEFAULT_SETTLE_TIMEOUT_SECS);
+
 /// How many dispatch ids the worker remembers to suppress redelivery.
 pub const DISPATCH_DEDUP_CAPACITY: usize = 512;
 
@@ -268,6 +280,9 @@ pub struct WorkerConfig {
     pub discovered: Option<Vec<ProviderSpec>>,
     /// How long one provider run may take before it is killed.
     pub run_timeout: Duration,
+    /// How long an accepted turn may stay silent before the embedded `pi-acp`'s
+    /// settle fallback gives up on it. See [`DEFAULT_SETTLE_TIMEOUT`].
+    pub settle_timeout: Duration,
     /// How long an agent's permission request waits for a user before it is
     /// cancelled. See [`DEFAULT_PERMISSION_TIMEOUT`].
     pub permission_timeout: Duration,
@@ -330,6 +345,7 @@ impl WorkerConfig {
             provider: None,
             discovered: None,
             run_timeout: DEFAULT_RUN_TIMEOUT,
+            settle_timeout: DEFAULT_SETTLE_TIMEOUT,
             permission_timeout: DEFAULT_PERMISSION_TIMEOUT,
             environment_root: default_environment_root(),
             data_dir: default_data_dir(),
@@ -1222,6 +1238,7 @@ impl Worker {
             spec,
             self.config.run_timeout,
             self.config.permission_timeout,
+            self.config.settle_timeout,
         );
         // ACP is the only provider protocol. Pi uses the embedded adapter;
         // native agents use the same client over their stdio transport. The

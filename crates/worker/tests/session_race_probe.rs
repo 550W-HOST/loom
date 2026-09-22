@@ -68,6 +68,7 @@ fn run(cwd: &str, prompt: &str, provider_session_id: Option<&str>) -> ProviderRu
         run_id: loom_domain::RunId::mint(),
         timeout: TURN_BUDGET,
         permission_timeout: Duration::from_secs(15),
+        settle_timeout: loom_worker::DEFAULT_SETTLE_TIMEOUT,
         permission_ceiling: loom_domain::HostPermissionMode::Full,
         provider_session_id: provider_session_id.map(str::to_owned),
         model: None,
