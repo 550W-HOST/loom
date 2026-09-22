@@ -19,8 +19,17 @@ use loom_domain::HostId;
 pub const DEFAULT_BIND: &str = "127.0.0.1:38886";
 /// The default node identity stamped on every envelope this node produces.
 pub const DEFAULT_NODE_ID: &str = "loom-node";
-/// The default display name of the machine's local worker.
+/// The fallback display name if the platform does not expose a host name.
 pub const DEFAULT_LOCAL_WORKER_NAME: &str = "loom-local";
+
+/// Resolve the local worker's default display name from the machine it runs on.
+pub fn default_local_worker_name() -> String {
+    hostname::get()
+        .ok()
+        .map(|name| name.to_string_lossy().trim().to_owned())
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| DEFAULT_LOCAL_WORKER_NAME.to_owned())
+}
 
 /// `loom server` — the control plane.
 #[derive(Debug, Clone, Parser)]
@@ -84,10 +93,33 @@ pub struct ServerArgs {
     pub local_worker: bool,
 
     /// Display name of the local worker in the host list.
-    #[arg(long, value_name = "NAME", default_value = DEFAULT_LOCAL_WORKER_NAME)]
+    #[arg(
+        long,
+        value_name = "NAME",
+        default_value_t = crate::cli::default_local_worker_name()
+    )]
     pub local_worker_name: String,
 
     /// URL the local worker dials. Unset derives it from --bind.
     #[arg(long, value_name = "URL")]
     pub local_worker_url: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[test]
+    fn an_omitted_local_worker_name_uses_the_machine_hostname() {
+        let args = ServerArgs::try_parse_from(["loom"]).expect("server arguments parse");
+        assert_eq!(args.local_worker_name, default_local_worker_name());
+    }
+
+    #[test]
+    fn an_explicit_local_worker_name_is_preserved() {
+        let args = ServerArgs::try_parse_from(["loom", "--local-worker-name", "local-test"])
+            .expect("server arguments parse");
+        assert_eq!(args.local_worker_name, "local-test");
+    }
 }

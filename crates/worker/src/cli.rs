@@ -12,8 +12,17 @@ use std::path::PathBuf;
 use clap::Parser;
 use loom_domain::HostId;
 
-/// The default display name of a worker that does not name itself.
+/// The fallback display name if the platform does not expose a host name.
 pub const DEFAULT_NAME: &str = "loom-worker";
+
+/// Resolve the worker's default display name from the machine it runs on.
+pub fn default_name() -> String {
+    hostname::get()
+        .ok()
+        .map(|name| name.to_string_lossy().trim().to_owned())
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| DEFAULT_NAME.to_owned())
+}
 
 /// `loom worker` — the execution plane on one machine.
 #[derive(Debug, Clone, Parser)]

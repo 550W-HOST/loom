@@ -55,6 +55,11 @@ base64 = "0.22"
 # `--help` is the surface and a unit's ExecStart is the one place a deployment
 # is written down.
 clap = { version = "4.6", features = ["derive", "env"] }
+# The host name is the default worker identity in both the standalone worker
+# and the server's --local-worker path. The crate uses the platform API rather
+# than relying on a HOSTNAME environment variable, which is not guaranteed by
+# service managers or on Windows.
+hostname = "0.4"
 # Scheduling: `croner` parses and evaluates the cron expression, `chrono-tz`
 # supplies the timezone database it reads the expression in. The database is
 # compiled into the binary, which is what lets the `FROM scratch` server image

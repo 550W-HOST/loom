@@ -272,7 +272,7 @@ impl Options {
 
         Ok(Self {
             server_url,
-            name: name.unwrap_or_else(|| crate::cli::DEFAULT_NAME.into()),
+            name: name.unwrap_or_else(crate::cli::default_name),
             host_id,
             heartbeat_interval,
             run_timeout,
@@ -318,6 +318,24 @@ mod tests {
         argv.extend(args.iter().map(|arg| (*arg).to_owned()));
         let parsed = WorkerArgs::try_parse_from(argv).expect("the worker command line parses");
         Options::from_args(parsed).expect("the options are consistent")
+    }
+
+    #[test]
+    fn an_omitted_name_uses_the_machine_hostname() {
+        let expected = hostname::get()
+            .ok()
+            .map(|name| name.to_string_lossy().trim().to_owned())
+            .filter(|name| !name.is_empty())
+            .unwrap_or_else(|| crate::cli::DEFAULT_NAME.to_owned());
+        assert_eq!(options(&["--server-url", "http://x:1"]).name, expected);
+    }
+
+    #[test]
+    fn an_explicit_name_still_wins_over_the_hostname() {
+        assert_eq!(
+            options(&["--server-url", "http://x:1", "--name", "builder-1"]).name,
+            "builder-1"
+        );
     }
 
     #[test]
