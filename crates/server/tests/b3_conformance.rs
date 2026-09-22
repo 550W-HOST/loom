@@ -25,7 +25,7 @@ use std::time::Duration;
 use loom_contract::shared;
 use loom_domain::{
     EnvironmentKind, InteractionKind, InteractionOrigin, InteractionPayload, MessageRole,
-    Resolution,
+    NewQueuedMessage, Resolution,
 };
 use loom_server::http::router;
 use loom_server::state::{AppConfig, AppState};
@@ -772,6 +772,51 @@ async fn a_scheduled_send_is_queued_with_a_time_reason() {
         ))
         .await;
     assert_eq!(listed.body.as_array().unwrap().len(), 1, "{}", listed.body);
+
+    fixture.state.shutdown().unwrap();
+}
+
+#[tokio::test]
+async fn a_due_message_cannot_bypass_an_earlier_scheduled_message() {
+    let fixture = fixture().await;
+    let now = loom_relay::now_ms();
+    let thread_id = fixture.thread_id();
+
+    for (text, send_at) in [
+        ("scheduled first", Some(now + 60_000)),
+        ("due second", None),
+    ] {
+        fixture
+            .state
+            .registry
+            .create_queued_message(
+                NewQueuedMessage {
+                    thread_id: thread_id.clone(),
+                    sender_thread_id: None,
+                    initiator: loom_domain::QueuedMessageInitiator::User,
+                    text: text.into(),
+                    model: None,
+                    reasoning_level: None,
+                    permission_mode: None,
+                    service_tier: loom_domain::ServiceTier::Default,
+                    group_with_next: false,
+                    send_at,
+                    payload: loom_domain::QueuedMessagePayload::Inline,
+                },
+                now,
+            )
+            .unwrap();
+    }
+
+    // The second row is due, but FIFO means the future first row blocks it.
+    assert_eq!(fixture.state.drain_due_queued_messages(), 0);
+    let rows = fixture.state.registry.queued_messages_for(Some(&thread_id));
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0].text, "scheduled first");
+    assert_eq!(rows[1].text, "due second");
+    assert!(rows
+        .iter()
+        .all(|message| { message.status == loom_domain::QueuedMessageStatus::Queued }));
 
     fixture.state.shutdown().unwrap();
 }

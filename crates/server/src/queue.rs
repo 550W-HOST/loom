@@ -29,9 +29,7 @@
 //! would sit there until a human pressed send, which is not what the client
 //! that queued it asked for.
 
-use loom_domain::{
-    DomainEvent, MessageRole, QueuedMessage, QueuedMessageStatus, ThreadId, ThreadStatus,
-};
+use loom_domain::{DomainEvent, MessageRole, QueuedMessage, QueuedMessageStatus, ThreadId};
 use loom_relay::now_ms;
 
 use crate::state::AppState;
@@ -226,31 +224,29 @@ impl AppState {
         sent
     }
 
-    /// Delivers every due message for every thread, for the reconciler.
+    /// Delivers the head of every thread queue that has a due message.
     ///
-    /// The reconciler is the backstop for the two cases a state change cannot
-    /// cover: a message whose `sendAt` arrived while nothing else happened, and
-    /// a message left queued by a crash between the run's terminal event and
-    /// the drain.
+    /// The grouping by thread is intentional. Looking at all rows globally and
+    /// attempting each due row would let a later message bypass an earlier
+    /// scheduled one in the same thread. `drain_thread_queue` owns the
+    /// per-thread FIFO check, so the clock sweep uses it as well as the
+    /// terminal-run path.
     pub fn drain_due_queued_messages(&self) -> usize {
         let now = now_ms();
-        let mut sent = 0;
+        let mut thread_ids = Vec::new();
         for message in self.registry.queued_messages() {
-            if message.status != QueuedMessageStatus::Queued || !message.is_due(now) {
+            if message.status != QueuedMessageStatus::Queued
+                || !message.is_due(now)
+                || thread_ids.contains(&message.thread_id)
+            {
                 continue;
             }
-            let Some(thread) = self.registry.thread(&message.thread_id) else {
-                continue;
-            };
-            // Only an idle thread is worth attempting: a busy one would block
-            // every message after it and the attempt publishes nothing.
-            if thread.status != ThreadStatus::Idle {
-                continue;
-            }
-            if let DeliveryOutcome::Sent(_) = self.deliver_queued_message(&message.id, false, now) {
-                sent += 1;
-            }
+            thread_ids.push(message.thread_id);
         }
-        sent
+
+        thread_ids
+            .into_iter()
+            .map(|thread_id| self.drain_thread_queue(&thread_id))
+            .sum()
     }
 }

@@ -549,10 +549,10 @@ function EmbeddedThreadChatWithComposer({
       void sendQueuedMessageById({
         guard: "exists",
         messageId: queuedMessageId,
-        mode: isProvisioning ? "steer" : "auto",
+        mode: "steer",
       });
     },
-    [isProvisioning, sendQueuedMessageById],
+    [sendQueuedMessageById],
   );
   const hasPromptDraftInput = currentPromptDraftInput.length > 0;
   const canSubmitModifierShortcut = canSubmitFollowUpShortcut({

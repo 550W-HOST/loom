@@ -965,10 +965,10 @@ export function ThreadDetailPromptArea({
       void sendQueuedMessageById({
         guard: "exists",
         messageId,
-        mode: shouldSteerWhenReady ? "steer" : "auto",
+        mode: "steer",
       });
     },
-    [sendQueuedMessageById, shouldSteerWhenReady],
+    [sendQueuedMessageById],
   );
 
   const bottomFocusEndKey = `${composerFocusRequestNonce}:${bottomPluginFocusNonce}`;

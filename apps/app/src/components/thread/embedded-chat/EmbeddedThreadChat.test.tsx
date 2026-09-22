@@ -567,6 +567,26 @@ describe("EmbeddedThreadChat", () => {
     });
   });
 
+  it("sends a queued row immediately while the thread is active", async () => {
+    mocks.threadRuntimeDisplayStatus = "active";
+    mocks.queuedMessages = [{ id: "q1" }];
+    renderEmbeddedChat();
+
+    const queue = screen.getByTestId("embedded-chat-queued-messages");
+    expect(queue.dataset.sendAction).toBe("send-now");
+    fireEvent.click(
+      screen.getByRole("button", { name: "Send queued message" }),
+    );
+
+    await vi.waitFor(() => {
+      expect(mocks.sendQueuedMessageMutateAsync).toHaveBeenCalledWith({
+        id: "thr_child",
+        mode: "steer",
+        queuedMessageId: "q1",
+      });
+    });
+  });
+
   it("shows a pending approval in place of the composer", () => {
     mocks.pendingInteractions = [
       { id: "int_1", createdAt: 1, payload: { kind: "approval" } },
