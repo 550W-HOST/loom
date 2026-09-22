@@ -416,13 +416,9 @@ impl ConnectTo<Agent> for V2HistoryClient {
             )
             .on_receive_request(
                 async move |_request: v2::RequestPermissionRequest, responder, _cx| {
-                    let refused =
-                        v1::RequestPermissionResponse::new(v1::RequestPermissionOutcome::Cancelled);
-                    let response = v2::conversion::try_v1_to_v2(refused).map_err(|error| {
-                        Error::internal_error()
-                            .data(format!("could not convert the refusal to v2: {error}"))
-                    })?;
-                    responder.respond(response)
+                    responder.respond(v2::RequestPermissionResponse::new(
+                        v2::RequestPermissionOutcome::Cancelled,
+                    ))
                 },
                 on_receive_request!(),
             )

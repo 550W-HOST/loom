@@ -36,15 +36,16 @@
 //! mode, because a permission the client never granted must never look granted.
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    Arc,
+};
 use std::time::Duration;
 
-use agent_client_protocol::schema::v1::{
-    PermissionOptionKind, RequestPermissionOutcome, RequestPermissionRequest,
-    RequestPermissionResponse, SelectedPermissionOutcome,
-};
+use agent_client_protocol::schema::{v1, v2};
 use loom_domain::{HostPermissionMode, InteractionKind, InteractionPayload};
 use loom_provider_protocol::{InteractionAnswer, InteractionRequest, PermissionDecision};
+use serde_json::{json, Value};
 use tokio::sync::{mpsc, oneshot, Mutex};
 
 use crate::provider::ProviderRun;
@@ -57,6 +58,62 @@ use crate::provider::ProviderRun;
 /// tighter one for the question itself.
 pub const DEFAULT_PERMISSION_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 
+/// The permission choice categories the control plane understands.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PermissionChoiceKind {
+    AllowOnce,
+    AllowAlways,
+    RejectOnce,
+    RejectAlways,
+    Other,
+}
+
+/// A permission option without an ACP version in its type.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct NormalizedPermissionOption {
+    id: String,
+    name: String,
+    kind: PermissionChoiceKind,
+}
+
+/// The subject of a permission prompt, normalized only at the worker boundary.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum PermissionSubject {
+    ToolCall {
+        item_id: String,
+        tool: String,
+        title: Option<String>,
+        raw_input: Option<Value>,
+        raw_output: Option<Value>,
+    },
+    Command {
+        item_id: String,
+        command: String,
+        cwd: String,
+        terminal_id: Option<String>,
+    },
+    Other {
+        type_name: String,
+        raw: Value,
+    },
+    None,
+}
+
+/// A permission request in the worker's own model.
+///
+/// v1 and v2 are parsed into this shape independently. The broker below only
+/// waits for the control-plane answer; it never needs to know which ACP schema
+/// carried the prompt.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PermissionPrompt {
+    session_id: String,
+    request_id: String,
+    title: String,
+    description: Option<String>,
+    subject: PermissionSubject,
+    options: Vec<NormalizedPermissionOption>,
+}
+
 /// A permission request waiting for its answer.
 #[derive(Clone)]
 pub struct PermissionBroker {
@@ -67,6 +124,8 @@ pub struct PermissionBroker {
     outbound: mpsc::Sender<InteractionRequest>,
     pending: PermissionRegistry,
     timeout: Duration,
+    /// Fallback ids for v2 permission subjects without a tool-call id.
+    request_sequence: Arc<AtomicU64>,
 }
 
 /// The requests a worker is holding open, shared with the socket loop.
@@ -212,6 +271,127 @@ impl PermissionRegistry {
     }
 }
 
+fn permission_option_v1(option: v1::PermissionOption) -> NormalizedPermissionOption {
+    NormalizedPermissionOption {
+        id: option.option_id.0.to_string(),
+        name: option.name,
+        kind: match option.kind {
+            v1::PermissionOptionKind::AllowOnce => PermissionChoiceKind::AllowOnce,
+            v1::PermissionOptionKind::AllowAlways => PermissionChoiceKind::AllowAlways,
+            v1::PermissionOptionKind::RejectOnce => PermissionChoiceKind::RejectOnce,
+            v1::PermissionOptionKind::RejectAlways => PermissionChoiceKind::RejectAlways,
+            _ => PermissionChoiceKind::Other,
+        },
+    }
+}
+
+fn permission_option_v2(option: v2::PermissionOption) -> NormalizedPermissionOption {
+    NormalizedPermissionOption {
+        id: option.option_id.0.to_string(),
+        name: option.name,
+        kind: match option.kind {
+            v2::PermissionOptionKind::AllowOnce => PermissionChoiceKind::AllowOnce,
+            v2::PermissionOptionKind::AllowAlways => PermissionChoiceKind::AllowAlways,
+            v2::PermissionOptionKind::RejectOnce => PermissionChoiceKind::RejectOnce,
+            v2::PermissionOptionKind::RejectAlways => PermissionChoiceKind::RejectAlways,
+            _ => PermissionChoiceKind::Other,
+        },
+    }
+}
+
+impl PermissionPrompt {
+    /// Parses the v1 request without routing it through the v2 schema.
+    fn from_v1(request: v1::RequestPermissionRequest) -> Self {
+        let session_id = request.session_id.0.to_string();
+        let tool_call = request.tool_call;
+        let item_id = tool_call.tool_call_id.0.to_string();
+        let title = tool_call
+            .fields
+            .title
+            .clone()
+            .unwrap_or_else(|| "permission requested".to_owned());
+        let subject = PermissionSubject::ToolCall {
+            item_id: item_id.clone(),
+            tool: tool_call
+                .fields
+                .kind
+                .map(tool_kind_name_v1)
+                .unwrap_or("other")
+                .to_owned(),
+            title: tool_call.fields.title.clone(),
+            raw_input: tool_call.fields.raw_input.clone(),
+            raw_output: tool_call.fields.raw_output.clone(),
+        };
+        Self {
+            request_id: format!("{session_id}:{item_id}"),
+            session_id,
+            title,
+            description: None,
+            subject,
+            options: request
+                .options
+                .into_iter()
+                .map(permission_option_v1)
+                .collect(),
+        }
+    }
+
+    /// Parses the v2 request while retaining v2-only subjects and description.
+    fn from_v2(request: v2::RequestPermissionRequest, request_id: String) -> Self {
+        let session_id = request.session_id.0.to_string();
+        let title = request.title.clone();
+        let description = request.description.clone();
+        let subject = match request.subject {
+            Some(v2::RequestPermissionSubject::ToolCall(subject)) => {
+                let tool_call = subject.tool_call;
+                PermissionSubject::ToolCall {
+                    item_id: tool_call.tool_call_id.0.to_string(),
+                    tool: tool_call
+                        .kind
+                        .value()
+                        .map(tool_kind_name_v2)
+                        .unwrap_or("other")
+                        .to_owned(),
+                    title: tool_call.title.value().cloned(),
+                    raw_input: tool_call.raw_input.value().cloned(),
+                    raw_output: tool_call.raw_output.value().cloned(),
+                }
+            }
+            Some(v2::RequestPermissionSubject::Command(subject)) => PermissionSubject::Command {
+                item_id: subject
+                    .tool_call_id
+                    .as_ref()
+                    .map(ToString::to_string)
+                    .unwrap_or_else(|| request_id.clone()),
+                command: subject.command,
+                cwd: subject.cwd.0.to_string_lossy().into_owned(),
+                terminal_id: subject.terminal_id.map(|id| id.to_string()),
+            },
+            Some(v2::RequestPermissionSubject::Other(subject)) => PermissionSubject::Other {
+                type_name: subject.type_.clone(),
+                raw: serde_json::to_value(subject).unwrap_or(Value::Null),
+            },
+            Some(subject) => PermissionSubject::Other {
+                type_name: "unknown".to_owned(),
+                raw: serde_json::to_value(subject).unwrap_or(Value::Null),
+            },
+            None => PermissionSubject::None,
+        };
+        Self {
+            session_id,
+            request_id,
+            title,
+            description,
+            subject,
+            options: request
+                .options
+                .into_iter()
+                .map(permission_option_v2)
+                .collect(),
+        }
+    }
+}
+
 impl PermissionBroker {
     /// Builds a broker for one run.
     pub fn new(
@@ -225,36 +405,53 @@ impl PermissionBroker {
             outbound,
             pending,
             timeout,
+            request_sequence: Arc::new(AtomicU64::new(0)),
         }
     }
 
-    /// Answers one ACP permission request with the *user's* decision.
-    ///
-    /// Blocks the ACP connection's dispatch loop until the answer arrives, the
-    /// control plane refuses the request, or [`PermissionBroker::timeout`]
-    /// passes. That is deliberate: the agent is itself blocked on this request,
-    /// so no further ACP traffic is expected while it is open, and holding the
-    /// loop preserves the ordering between the question and the updates around
-    /// it.
-    pub async fn ask(&self, request: RequestPermissionRequest) -> RequestPermissionResponse {
-        let request_id = self.request_id(&request);
+    /// Handles a native ACP v1 permission request.
+    pub async fn ask_v1(
+        &self,
+        request: v1::RequestPermissionRequest,
+    ) -> v1::RequestPermissionResponse {
+        let prompt = PermissionPrompt::from_v1(request);
+        let answer = self.ask_prompt(prompt.clone()).await;
+        permission_response_v1(answer, &prompt, self.run.permission_ceiling)
+    }
+
+    /// Handles a native ACP v2 permission request.
+    pub async fn ask_v2(
+        &self,
+        request: v2::RequestPermissionRequest,
+    ) -> v2::RequestPermissionResponse {
+        let request_id = self.request_id_v2(&request);
+        let prompt = PermissionPrompt::from_v2(request, request_id);
+        let answer = self.ask_prompt(prompt.clone()).await;
+        permission_response_v2(answer, &prompt, self.run.permission_ceiling)
+    }
+
+    /// Test compatibility for the existing v1-only broker tests. Production
+    /// callbacks use the explicitly versioned methods above.
+    #[cfg(test)]
+    async fn ask(&self, request: v1::RequestPermissionRequest) -> v1::RequestPermissionResponse {
+        self.ask_v1(request).await
+    }
+
+    /// Holds one version-neutral prompt open until the control plane answers it.
+    async fn ask_prompt(&self, prompt: PermissionPrompt) -> InteractionAnswer {
         let (tx, rx) = oneshot::channel();
         if !self
             .pending
-            .insert(request_id.clone(), self.run.run_id.clone(), tx)
+            .insert(prompt.request_id.clone(), self.run.run_id.clone(), tx)
             .await
         {
-            // A duplicate request id inside one run: ACP's tool call ids are
-            // unique, so this means a retried request the broker is already
-            // holding. Cancelling is the honest answer rather than answering
-            // either copy with the other's decision.
-            return cancelled();
+            return InteractionAnswer::Cancelled {
+                reason: "duplicate permission request id".to_owned(),
+            };
         }
-        // The insertion is undone when this future is dropped — a run timeout,
-        // for instance — so a stale waiter cannot be answered later.
         let _guard = PendingGuard {
             registry: self.pending.clone(),
-            request_id: request_id.clone(),
+            request_id: prompt.request_id.clone(),
         };
 
         let frame = InteractionRequest {
@@ -262,46 +459,50 @@ impl PermissionBroker {
             run_id: self.run.run_id.clone(),
             thread_id: self.run.thread_id.clone(),
             project_id: self.run.project_id.clone(),
-            request_id: request_id.clone(),
-            // The ACP session is the agent's own identity for the conversation,
-            // which is exactly what a client correlates the question with the
-            // `providerThreadId` on the run events around it.
-            provider_thread_id: Some(request.session_id.0.to_string()),
+            request_id: prompt.request_id.clone(),
+            provider_thread_id: Some(prompt.session_id.clone()),
             kind: InteractionKind::Approval,
-            payload: InteractionPayload::new(InteractionKind::Approval, approval_payload(&request)),
+            payload: InteractionPayload::new(InteractionKind::Approval, approval_payload(&prompt)),
             expires_at_ms: None,
         };
         if self.outbound.send(frame).await.is_err() {
-            // The socket loop is gone, so nothing can answer. Cancel rather
-            // than block, and never assume approval.
-            return cancelled();
+            return InteractionAnswer::Cancelled {
+                reason: "the worker connection closed".to_owned(),
+            };
         }
 
         match tokio::time::timeout(self.timeout, rx).await {
-            Ok(Ok(answer)) => answer_to_response(answer, &request, self.run.permission_ceiling),
-            // The waiter was dropped — the refusal path is a hand-off like any
-            // answer, so a refused request arrives at the arm above with
-            // `InteractionAnswer::Cancelled`. Either way there is no answer to
-            // wait for.
-            Ok(Err(_)) => cancelled(),
-            // Nobody answered in time. The agent must be unblocked, and the
-            // only truthful answer is "not granted".
-            Err(_) => cancelled(),
+            Ok(Ok(answer)) => answer,
+            Ok(Err(_)) => InteractionAnswer::Cancelled {
+                reason: "the permission waiter was dropped".to_owned(),
+            },
+            Err(_) => InteractionAnswer::Cancelled {
+                reason: "the permission request timed out".to_owned(),
+            },
         }
     }
 
-    /// The worker's identity for one ACP request.
-    ///
-    /// ACP identifies a tool call by `toolCallId`, which is unique within a
-    /// session, and a session is one run, so the pair `(session, tool call)` is
-    /// unique within the run the control plane scopes the dedup key by. The
-    /// session id is included so a request is traceable in a log without a
-    /// lookup.
-    fn request_id(&self, request: &RequestPermissionRequest) -> String {
-        format!(
-            "{}:{}",
-            request.session_id.0, request.tool_call.tool_call_id.0
-        )
+    /// v2 command and extension subjects do not always have a tool-call id.
+    fn request_id_v2(&self, request: &v2::RequestPermissionRequest) -> String {
+        let session_id = request.session_id.0.to_string();
+        let subject_id = match request.subject.as_ref() {
+            Some(v2::RequestPermissionSubject::ToolCall(subject)) => {
+                Some(subject.tool_call.tool_call_id.0.to_string())
+            }
+            Some(v2::RequestPermissionSubject::Command(subject)) => subject
+                .tool_call_id
+                .as_ref()
+                .map(ToString::to_string)
+                .or_else(|| subject.terminal_id.as_ref().map(ToString::to_string)),
+            Some(v2::RequestPermissionSubject::Other(_)) | None => None,
+            Some(_) => None,
+        };
+        subject_id
+            .map(|subject_id| format!("{session_id}:{subject_id}"))
+            .unwrap_or_else(|| {
+                let sequence = self.request_sequence.fetch_add(1, Ordering::Relaxed);
+                format!("{session_id}:permission-{sequence}")
+            })
     }
 }
 
@@ -326,73 +527,101 @@ impl Drop for PendingGuard {
     }
 }
 
-/// The contract's approval payload for an ACP permission request.
-///
-/// The subject is the tool call the agent is asking about, as
-/// [`loom_domain::InteractionKind::Approval`]'s `tool_use` branch requires. The
-/// available decisions are the contract's three words, which every ACP option
-/// set can be answered with: an allowing option satisfies an `allow`, a
-/// rejecting one a `deny`, and an option set with neither leaves only `deny`.
-fn approval_payload(request: &RequestPermissionRequest) -> serde_json::Value {
-    let title = request
-        .tool_call
-        .fields
-        .title
-        .clone()
-        .unwrap_or_else(|| "permission requested".to_owned());
-    let mut decisions = Vec::new();
-    if request
-        .options
-        .iter()
-        .any(|option| matches!(option.kind, PermissionOptionKind::AllowOnce))
-    {
-        decisions.push("allow_once");
-    }
-    if request
-        .options
-        .iter()
-        .any(|option| matches!(option.kind, PermissionOptionKind::AllowAlways))
-    {
-        decisions.push("allow_for_session");
-    }
-    // A refusal is always representable — a rejecting option if the agent
-    // offered one, `Cancelled` otherwise — so `deny` is always offered. The
-    // opposite is not true: a request whose options all reject has no `allow`.
-    decisions.push("deny");
-    serde_json::json!({
-        "kind": "approval",
-        "subject": {
+/// Builds the contract approval payload from the version-neutral prompt.
+fn approval_payload(prompt: &PermissionPrompt) -> Value {
+    let decisions = {
+        let mut decisions = Vec::new();
+        if prompt
+            .options
+            .iter()
+            .any(|option| option.kind == PermissionChoiceKind::AllowOnce)
+        {
+            decisions.push("allow_once");
+        }
+        if prompt
+            .options
+            .iter()
+            .any(|option| option.kind == PermissionChoiceKind::AllowAlways)
+        {
+            decisions.push("allow_for_session");
+        }
+        // A refusal is always representable — a rejecting option if the agent
+        // offered one, `Cancelled` otherwise — so `deny` is always offered.
+        decisions.push("deny");
+        decisions
+    };
+
+    let subject = match &prompt.subject {
+        PermissionSubject::ToolCall {
+            item_id,
+            tool,
+            title,
+            ..
+        } => {
+            let label = title.as_deref().unwrap_or(&prompt.title);
+            json!({
+                "kind": "tool_use",
+                "itemId": item_id,
+                "tool": tool,
+                "presentation": {
+                    "label": { "pending": label, "completed": label },
+                    "icon": { "glyph": "Lock" },
+                },
+            })
+        }
+        PermissionSubject::Command {
+            item_id,
+            command,
+            cwd,
+            ..
+        } => json!({
+            "kind": "command",
+            "itemId": item_id,
+            "command": command,
+            "cwd": cwd,
+            "actions": [{ "type": "unknown", "command": command }],
+            "sessionGrant": null,
+        }),
+        // The contract has no open-ended approval subject. Keep the request
+        // generic rather than pretending an unknown v2 subject was a command;
+        // the raw subject remains preserved in PermissionPrompt until this
+        // product projection is replaced by a richer contract variant.
+        PermissionSubject::Other { .. } | PermissionSubject::None => json!({
             "kind": "tool_use",
-            "itemId": request.tool_call.tool_call_id.0.to_string(),
-            "tool": request
-                .tool_call
-                .fields
-                .kind
-                .map(tool_kind_name)
-                .unwrap_or("other"),
+            "itemId": prompt.request_id,
+            "tool": "other",
             "presentation": {
-                "label": { "pending": title, "completed": title },
+                "label": { "pending": prompt.title, "completed": prompt.title },
                 "icon": { "glyph": "Lock" },
             },
-        },
-        // The contract requires `reason`; the agent's own title is the closest
-        // true thing to it, and the tool call's title is already what a client
-        // displays. No reason is fabricated when the agent gave none.
-        "reason": request
-            .tool_call
-            .fields
-            .raw_input
-            .as_ref()
-            .and_then(|input| input.get("title"))
-            .and_then(serde_json::Value::as_str)
-            .or(request.tool_call.fields.title.as_deref()),
+        }),
+    };
+
+    let reason = prompt
+        .description
+        .clone()
+        .or_else(|| match &prompt.subject {
+            PermissionSubject::ToolCall {
+                raw_input, title, ..
+            } => raw_input
+                .as_ref()
+                .and_then(|input| input.get("title"))
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+                .or_else(|| title.clone()),
+            _ => Some(prompt.title.clone()),
+        });
+    json!({
+        "kind": "approval",
+        "subject": subject,
+        "reason": reason,
         "availableDecisions": decisions,
     })
 }
 
 /// A tool kind as the adapter's stable lower-case name.
-fn tool_kind_name(kind: agent_client_protocol_schema::v1::ToolKind) -> &'static str {
-    use agent_client_protocol_schema::v1::ToolKind;
+fn tool_kind_name_v1(kind: v1::ToolKind) -> &'static str {
+    use v1::ToolKind;
     match kind {
         ToolKind::Read => "read",
         ToolKind::Edit => "edit",
@@ -408,79 +637,90 @@ fn tool_kind_name(kind: agent_client_protocol_schema::v1::ToolKind) -> &'static 
     }
 }
 
-/// The ACP response for a decision the client made.
-///
-/// An `allow` picks the agent's own option with matching scope. A once-decision
-/// never widens to session scope; a session decision prefers `AllowAlways` and
-/// falls back to `AllowOnce` only when the agent did not expose a durable
-/// option. The host permission ceiling may explicitly downgrade session scope
-/// before this mapping. A `deny` picks a rejecting option; when the agent
-/// offered none, `Cancelled` is the only truthful reply, because "there was a
-/// rejecting option and the user picked it" and "the request was withdrawn"
-/// are not the same fact and ACP has no third word.
-fn answer_to_response(
+fn tool_kind_name_v2(kind: &v2::ToolKind) -> &'static str {
+    use v2::ToolKind;
+    match kind {
+        ToolKind::Read => "read",
+        ToolKind::Edit => "edit",
+        ToolKind::Delete => "delete",
+        ToolKind::Move => "move",
+        ToolKind::Search => "search",
+        ToolKind::Execute => "execute",
+        ToolKind::Think => "think",
+        ToolKind::Fetch => "fetch",
+        ToolKind::SwitchMode => "switch_mode",
+        ToolKind::Other | ToolKind::Unknown(_) => "other",
+        _ => "other",
+    }
+}
+
+/// Selects the agent's option id for a control-plane decision.
+fn selected_option_id(
     answer: InteractionAnswer,
-    request: &RequestPermissionRequest,
+    prompt: &PermissionPrompt,
     ceiling: HostPermissionMode,
-) -> RequestPermissionResponse {
-    match answer {
-        InteractionAnswer::Decision { decision } => {
-            let decision = if decision == PermissionDecision::AllowForSession
-                && ceiling != HostPermissionMode::Full
-            {
-                PermissionDecision::AllowOnce
-            } else {
-                decision
-            };
-            let wanted: &[PermissionOptionKind] = match decision {
-                PermissionDecision::AllowOnce => &[PermissionOptionKind::AllowOnce],
-                PermissionDecision::AllowForSession => &[
-                    PermissionOptionKind::AllowAlways,
-                    PermissionOptionKind::AllowOnce,
-                ],
-                PermissionDecision::Deny => &[
-                    PermissionOptionKind::RejectOnce,
-                    PermissionOptionKind::RejectAlways,
-                ],
-            };
-            match pick(request, wanted) {
-                Some(option_id) => selected(option_id),
-                None => cancelled(),
-            }
-        }
-        // The option id is the agent's own. Trusting it verbatim is the point:
-        // re-deriving it from the option's kind would pick the wrong option
-        // when several options allow the same thing, which is exactly what a
-        // multi-choice permission request looks like.
-        InteractionAnswer::Cancelled { .. } => cancelled(),
+) -> Option<String> {
+    let InteractionAnswer::Decision { decision } = answer else {
+        return None;
+    };
+    let decision =
+        if decision == PermissionDecision::AllowForSession && ceiling != HostPermissionMode::Full {
+            PermissionDecision::AllowOnce
+        } else {
+            decision
+        };
+    let wanted: &[PermissionChoiceKind] = match decision {
+        PermissionDecision::AllowOnce => &[PermissionChoiceKind::AllowOnce],
+        PermissionDecision::AllowForSession => &[
+            PermissionChoiceKind::AllowAlways,
+            PermissionChoiceKind::AllowOnce,
+        ],
+        PermissionDecision::Deny => &[
+            PermissionChoiceKind::RejectOnce,
+            PermissionChoiceKind::RejectAlways,
+        ],
+    };
+    wanted.iter().find_map(|kind| {
+        prompt
+            .options
+            .iter()
+            .find(|option| option.kind == *kind)
+            .map(|option| option.id.clone())
+    })
+}
+
+fn permission_response_v1(
+    answer: InteractionAnswer,
+    prompt: &PermissionPrompt,
+    ceiling: HostPermissionMode,
+) -> v1::RequestPermissionResponse {
+    match selected_option_id(answer, prompt, ceiling) {
+        Some(option_id) => v1::RequestPermissionResponse::new(
+            v1::RequestPermissionOutcome::Selected(v1::SelectedPermissionOutcome::new(option_id)),
+        ),
+        None => v1::RequestPermissionResponse::new(v1::RequestPermissionOutcome::Cancelled),
     }
 }
 
-/// The first option whose kind is in `wanted`, by the agent's own ordering.
-fn pick(request: &RequestPermissionRequest, wanted: &[PermissionOptionKind]) -> Option<String> {
-    for kind in wanted {
-        if let Some(option) = request.options.iter().find(|option| option.kind == *kind) {
-            return Some(option.option_id.0.to_string());
-        }
+fn permission_response_v2(
+    answer: InteractionAnswer,
+    prompt: &PermissionPrompt,
+    ceiling: HostPermissionMode,
+) -> v2::RequestPermissionResponse {
+    match selected_option_id(answer, prompt, ceiling) {
+        Some(option_id) => v2::RequestPermissionResponse::new(
+            v2::RequestPermissionOutcome::Selected(v2::SelectedPermissionOutcome::new(option_id)),
+        ),
+        None => v2::RequestPermissionResponse::new(v2::RequestPermissionOutcome::Cancelled),
     }
-    None
-}
-
-fn selected(option_id: String) -> RequestPermissionResponse {
-    RequestPermissionResponse::new(RequestPermissionOutcome::Selected(
-        SelectedPermissionOutcome::new(option_id),
-    ))
-}
-
-fn cancelled() -> RequestPermissionResponse {
-    RequestPermissionResponse::new(RequestPermissionOutcome::Cancelled)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use agent_client_protocol_schema::v1::{
-        PermissionOption, SessionId, ToolCallId, ToolCallUpdate, ToolCallUpdateFields,
+        PermissionOption, PermissionOptionKind, RequestPermissionOutcome, RequestPermissionRequest,
+        SelectedPermissionOutcome, SessionId, ToolCallId, ToolCallUpdate, ToolCallUpdateFields,
     };
     use loom_domain::{HostId, ProjectId, RunId, ThreadId};
     use loom_provider_protocol::ProviderSpec;
@@ -528,7 +768,61 @@ mod tests {
         (broker, rx)
     }
 
-    /// The control plane can refuse to record a question, and then nothing will
+    #[tokio::test]
+    async fn a_v2_command_permission_stays_native_and_keeps_its_description() {
+        let (broker, mut outbound) = broker(Duration::from_secs(5));
+        let pending = broker.pending.clone();
+        let request = v2::RequestPermissionRequest::new(
+            "sess-v2",
+            "Run the command",
+            vec![
+                v2::PermissionOption::new(
+                    "allow-once",
+                    "Allow once",
+                    v2::PermissionOptionKind::AllowOnce,
+                ),
+                v2::PermissionOption::new("deny", "Deny", v2::PermissionOptionKind::RejectOnce),
+            ],
+        )
+        .description("The agent needs to run a build")
+        .subject(v2::RequestPermissionSubject::from(
+            v2::CommandPermissionSubject::new("cargo test", "/workspace").tool_call_id("call-v2"),
+        ));
+        let handle = tokio::spawn(async move { broker.ask_v2(request).await });
+
+        let frame = outbound.recv().await.expect("the v2 question travels up");
+        assert_eq!(frame.request_id, "sess-v2:call-v2");
+        assert_eq!(
+            frame.payload.body["reason"],
+            "The agent needs to run a build"
+        );
+        assert_eq!(frame.payload.body["subject"]["kind"], "command");
+        assert_eq!(frame.payload.body["subject"]["command"], "cargo test");
+        assert_eq!(frame.payload.body["subject"]["cwd"], "/workspace");
+        assert_eq!(
+            frame.payload.body["subject"]["actions"][0]["type"],
+            "unknown"
+        );
+
+        assert!(
+            pending
+                .resolve(
+                    &frame.request_id,
+                    InteractionAnswer::Decision {
+                        decision: PermissionDecision::AllowOnce,
+                    },
+                )
+                .await
+        );
+        let response = handle.await.unwrap();
+        assert_eq!(
+            response.outcome,
+            v2::RequestPermissionOutcome::Selected(v2::SelectedPermissionOutcome::new(
+                "allow-once"
+            ))
+        );
+    }
+
     /// ever answer it. The agent must be told that immediately: the timeout is
     /// for a human who has not got round to clicking, not for a question that
     /// never reached anyone.

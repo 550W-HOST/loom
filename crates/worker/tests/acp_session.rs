@@ -296,6 +296,50 @@ async fn a_resume_loads_the_same_acp_session() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_v1_session_applies_model_then_reasoning_choices() {
+    let tmp = tempfile::tempdir().unwrap();
+    let workspace = tmp.path().join("workspace");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let agent = write_v1_config_agent(tmp.path());
+    let mut run = run_with_agent(
+        &workspace.to_string_lossy(),
+        &agent,
+        loom_domain::ThreadId::mint(),
+        None,
+    );
+    run.model = Some("omp/model".to_owned());
+    run.reasoning_level = Some(loom_domain::ReasoningLevel::from("high"));
+
+    let events = drive_with_agent(run, agent.clone()).await;
+    let marker = PathBuf::from(format!("{}.config", agent.display()));
+    let requests = std::fs::read_to_string(marker).expect("the agent recorded config setters");
+    let config_ids = requests
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .map(|request| request["params"]["configId"].as_str().unwrap().to_owned())
+        .collect::<Vec<_>>();
+
+    assert_eq!(config_ids, vec!["model", "thinking"]);
+    assert_eq!(
+        events.iter().filter(|event| event.is_terminal()).count(),
+        1,
+        "configuring a v1 session still produces one terminal event: {events:#?}"
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter_map(|event| match &event.event.body {
+                loom_domain::ProviderEvent::ItemAgentMessageDelta { delta, .. } => {
+                    Some(delta.as_str())
+                }
+                _ => None,
+            })
+            .collect::<String>(),
+        "configured"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_v2_agent_resumes_without_replay_and_completes_once() {
     let tmp = tempfile::tempdir().unwrap();
     let workspace = tmp.path().join("workspace");
@@ -871,6 +915,39 @@ async fn a_real_agent_is_probed_for_its_session_capabilities() {
             panic!("the real adapter must be reachable: {error}");
         }
     }
+}
+
+/// A deterministic ACP v1 agent that publishes omp-shaped config options and
+/// records every config setter request before answering the prompt.
+fn write_v1_config_agent(dir: &std::path::Path) -> PathBuf {
+    let script = r##"#!/bin/sh
+session_id=config-session
+options='[{"id":"model","name":"Model","category":"model","type":"select","currentValue":"omp/model","options":[{"value":"omp/model","name":"OMP model"},{"value":"omp/other","name":"Other model"}]},{"id":"thinking","name":"Thinking","category":"thought_level","type":"select","currentValue":"off","options":[{"value":"off","name":"Off"},{"value":"high","name":"High"}]}]'
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([^,]*\),"method":.*/\1/p')
+  method=$(printf '%s' "$line" | sed -n 's/.*"method":"\([^"]*\)".*/\1/p')
+  case "$method" in
+    initialize)
+      printf '%s\n' '{"jsonrpc":"2.0","id":'"$id"',"result":{"protocolVersion":1,"agentCapabilities":{"loadSession":true}}}'
+      ;;
+    session/new)
+      printf '%s\n' '{"jsonrpc":"2.0","id":'"$id"',"result":{"sessionId":"'"$session_id"'","configOptions":'"$options"'}}'
+      ;;
+    session/set_config_option)
+      printf '%s\n' "$line" >> "$0.config"
+      printf '%s\n' '{"jsonrpc":"2.0","id":'"$id"',"result":{"configOptions":'"$options"'}}'
+      ;;
+    session/prompt)
+      printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"'"$session_id"'","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"configured"}}}}'
+      printf '%s\n' '{"jsonrpc":"2.0","id":'"$id"',"result":{"stopReason":"end_turn"}}'
+      ;;
+    session/cancel)
+      printf '%s\n' '{"jsonrpc":"2.0","id":'"$id"',"result":{}}'
+      ;;
+  esac
+done
+"##;
+    write_agent_script(dir, "v1-config-agent.sh", script)
 }
 
 /// Writes an executable agent script.

@@ -32,7 +32,7 @@ use agent_client_protocol::schema::v1::{
     PromptRequest, RequestPermissionRequest, SessionId, SessionNotification, SessionUpdate,
     TextContent,
 };
-use agent_client_protocol::schema::{v2, ProtocolVersion};
+use agent_client_protocol::schema::{v1, v2, ProtocolVersion};
 use agent_client_protocol::{
     on_receive_notification, on_receive_request, Agent, Client, ConnectTo, ConnectionTo, Error,
 };
@@ -363,7 +363,7 @@ impl ConnectTo<Agent> for V1Client {
             )
             .on_receive_request(
                 async move |request: RequestPermissionRequest, responder, _cx| {
-                    let response = permissions.ask(request).await;
+                    let response = permissions.ask_v1(request).await;
                     let _ = responder.respond(response);
                     Ok(())
                 },
@@ -400,17 +400,7 @@ impl ConnectTo<Agent> for V2Client {
             )
             .on_receive_request(
                 async move |request: v2::RequestPermissionRequest, responder, _cx| {
-                    let request = v2::conversion::try_v2_to_v1(request).map_err(|error| {
-                        Error::invalid_params().data(format!(
-                            "could not convert ACP v2 permission request: {error}"
-                        ))
-                    })?;
-                    let response = permissions.ask(request).await;
-                    let response = v2::conversion::try_v1_to_v2(response).map_err(|error| {
-                        Error::internal_error().data(format!(
-                            "could not convert ACP permission response to v2: {error}"
-                        ))
-                    })?;
+                    let response = permissions.ask_v2(request).await;
                     responder.respond(response)
                 },
                 on_receive_request!(),
@@ -738,12 +728,10 @@ struct UpdateSink {
     steer_in_flight: Arc<std::sync::atomic::AtomicBool>,
 }
 
-/// The ACP session config option ids for the model and the reasoning level.
+/// The ACP config option ids loom prefers for model and reasoning choices.
 ///
-/// ACP leaves the ids to the agent; these are the two pi advertises. An agent
-/// that names them differently simply gets no choice applied, because every
-/// lookup here reads the agent's own reply rather than assuming the option
-/// exists.
+/// ACP leaves the ids to the agent. v2 Pi uses `thought_level`; v1 agents may
+/// choose another id and are matched by the option's semantic category.
 pub(crate) const MODEL_CONFIG_ID: &str = "model";
 pub(crate) const THOUGHT_LEVEL_CONFIG_ID: &str = "thought_level";
 
@@ -762,6 +750,26 @@ async fn set_config_option(
         session_id.to_owned(),
         v2::SessionConfigId::new(config_id),
         v2::SessionConfigOptionValue::id(value.to_owned()),
+    );
+    let response = connection.send_request(request).block_task().await?;
+    Ok(response.config_options)
+}
+
+/// Ask a v1 agent to set one session config option.
+///
+/// v1's value-id form intentionally serializes without the v2 `type: "id"`
+/// discriminator. The option id is supplied by the agent's own response, so
+/// this also supports agents such as omp whose thought-level id is `thinking`.
+async fn set_config_option_v1(
+    connection: &ConnectionTo<Agent>,
+    session_id: &str,
+    config_id: &str,
+    value: &str,
+) -> Result<Vec<v1::SessionConfigOption>, Error> {
+    let request = v1::SetSessionConfigOptionRequest::new(
+        v1::SessionId::new(session_id.to_owned()),
+        v1::SessionConfigId::new(config_id),
+        v1::SessionConfigOptionValue::value_id(value.to_owned()),
     );
     let response = connection.send_request(request).block_task().await?;
     Ok(response.config_options)
@@ -813,6 +821,70 @@ fn select_state(
             .map(|candidate| candidate.value.0.to_string())
             .collect(),
     ))
+}
+
+/// The current value and selectable values of a v1 option, along with the
+/// option's actual id. The preferred id is tried first; the category handles
+/// agents that choose a provider-specific id such as omp's `thinking`.
+fn select_state_v1(
+    options: &[v1::SessionConfigOption],
+    preferred_id: &str,
+    category: v1::SessionConfigOptionCategory,
+) -> Option<(String, String, Vec<String>)> {
+    let option = options
+        .iter()
+        .find(|option| {
+            option.id.0.as_ref() == preferred_id
+                && matches!(&option.kind, v1::SessionConfigKind::Select(_))
+        })
+        .or_else(|| {
+            options.iter().find(|option| {
+                option.category.as_ref() == Some(&category)
+                    && matches!(&option.kind, v1::SessionConfigKind::Select(_))
+            })
+        })?;
+    let v1::SessionConfigKind::Select(select) = &option.kind else {
+        return None;
+    };
+    let values = match &select.options {
+        v1::SessionConfigSelectOptions::Ungrouped(values) => values,
+        v1::SessionConfigSelectOptions::Grouped(groups) => {
+            return Some((
+                option.id.0.to_string(),
+                select.current_value.0.to_string(),
+                groups
+                    .iter()
+                    .flat_map(|group| group.options.iter())
+                    .map(|value| value.value.0.to_string())
+                    .collect(),
+            ));
+        }
+        _ => return None,
+    };
+    Some((
+        option.id.0.to_string(),
+        select.current_value.0.to_string(),
+        values
+            .iter()
+            .map(|value| value.value.0.to_string())
+            .collect(),
+    ))
+}
+
+/// Finds a v1 reasoning value and returns the option id needed to set it.
+fn thought_level_value_v1(
+    options: &[v1::SessionConfigOption],
+    level: &ReasoningLevel,
+) -> Option<(String, String)> {
+    let (config_id, _, values) = select_state_v1(
+        options,
+        THOUGHT_LEVEL_CONFIG_ID,
+        v1::SessionConfigOptionCategory::ThoughtLevel,
+    )?;
+    values
+        .into_iter()
+        .find(|value| value == level.as_str())
+        .map(|value| (config_id, value))
 }
 
 /// Waits for the next steer for this run.
@@ -1101,12 +1173,18 @@ impl UpdateSink {
         let session_id = match &self.run.provider_session_id {
             Some(existing) => {
                 self.begin_load(existing.clone()).await;
-                connection
+                let loaded = connection
                     .send_request(LoadSessionRequest::new(existing.clone(), cwd))
                     .block_task()
                     .await?;
                 self.finish_load(existing).await;
                 self.on_session_known(existing).await;
+                let options = loaded.config_options.unwrap_or_default();
+                let (options, choice_events) = self
+                    .apply_config_choices_v1(connection, existing, options)
+                    .await;
+                self.report_all(choice_events).await;
+                self.report_catalog_v1(&options).await;
                 existing.clone()
             }
             None => {
@@ -1116,6 +1194,12 @@ impl UpdateSink {
                     .await?;
                 let session_id = created.session_id.0.to_string();
                 self.on_session_known(&session_id).await;
+                let options = created.config_options.unwrap_or_default();
+                let (options, choice_events) = self
+                    .apply_config_choices_v1(connection, &session_id, options)
+                    .await;
+                self.report_all(choice_events).await;
+                self.report_catalog_v1(&options).await;
                 session_id
             }
         };
@@ -1279,6 +1363,94 @@ impl UpdateSink {
         (options, events)
     }
 
+    /// Apply the client's model and reasoning choices to an ACP v1 session.
+    ///
+    /// v1 returns an optional config list and lets the agent choose option ids.
+    /// The model is applied first because changing it may replace the reasoning
+    /// ladder; both the lookup and the setter therefore use the freshest reply.
+    async fn apply_config_choices_v1(
+        &self,
+        connection: &ConnectionTo<Agent>,
+        session_id: &str,
+        mut options: Vec<v1::SessionConfigOption>,
+    ) -> (Vec<v1::SessionConfigOption>, Translated) {
+        let mut events: Translated = Vec::new();
+        let provider_thread_id = self.provider_thread_id().await;
+
+        if let Some(model) = self.run.model.as_deref() {
+            if let Some((config_id, held, _)) = select_state_v1(
+                &options,
+                MODEL_CONFIG_ID,
+                v1::SessionConfigOptionCategory::Model,
+            ) {
+                match set_config_option_v1(connection, session_id, &config_id, model).await {
+                    Ok(updated) => options = updated,
+                    Err(error) => {
+                        eprintln!(
+                            "loom-worker: the v1 agent did not accept model `{model}`: {error}"
+                        );
+                        events.push(ProviderEvent::ProviderModelFallback {
+                            provider_thread_id: provider_thread_id.clone(),
+                            original_model: model.to_owned(),
+                            fallback_model: held.clone(),
+                            reason: ModelFallbackReason::Refusal,
+                            message: format!(
+                                "The agent did not accept `{model}` for this session, so this turn \
+                                 ran on `{held}`."
+                            ),
+                        });
+                    }
+                }
+            }
+        }
+
+        let Some(level) = self.run.reasoning_level.as_ref() else {
+            return (options, events);
+        };
+        let Some((config_id, value)) = thought_level_value_v1(&options, level) else {
+            if let Some((_, current, offered)) = select_state_v1(
+                &options,
+                THOUGHT_LEVEL_CONFIG_ID,
+                v1::SessionConfigOptionCategory::ThoughtLevel,
+            ) {
+                events.push(ProviderEvent::ProviderWarning {
+                    provider_thread_id: provider_thread_id.clone(),
+                    category: ProviderWarningCategory::Config,
+                    summary: Some(format!(
+                        "This model does not offer the reasoning level `{}`",
+                        level.as_str()
+                    )),
+                    details: Some(format!(
+                        "The turn ran at the agent's own default `{current}`. The model offers: \
+                         {}.",
+                        offered.join(", ")
+                    )),
+                });
+            }
+            return (options, events);
+        };
+        match set_config_option_v1(connection, session_id, &config_id, &value).await {
+            Ok(updated) => options = updated,
+            Err(error) => {
+                eprintln!(
+                    "loom-worker: the v1 agent did not accept reasoning level `{value}`: {error}"
+                );
+                events.push(ProviderEvent::ProviderWarning {
+                    provider_thread_id,
+                    category: ProviderWarningCategory::Config,
+                    summary: Some(format!(
+                        "The agent did not accept the reasoning level `{}`",
+                        level.as_str()
+                    )),
+                    details: Some(format!(
+                        "The turn ran at whatever level the session already held: {error}"
+                    )),
+                });
+            }
+        }
+        (options, events)
+    }
+
     /// The provider thread id this session reports against.
     ///
     /// Read through the translator rather than guessed, because the agent's own
@@ -1305,6 +1477,22 @@ impl UpdateSink {
                 host_id: self.run.host_id.clone(),
                 // The agent that served this session: a machine may run
                 // several, and the server keys catalogues by the pair.
+                provider_id: self.run.spec.name.clone(),
+                catalog,
+            })
+            .await;
+    }
+
+    /// Reports a v1 session's config options as the host's catalogue.
+    async fn report_catalog_v1(&self, options: &[v1::SessionConfigOption]) {
+        let catalog = super::catalog::catalog_from_v1_options(options);
+        if catalog.is_empty() {
+            return;
+        }
+        let _ = self
+            .catalogs
+            .send(ProviderCatalogReport {
+                host_id: self.run.host_id.clone(),
                 provider_id: self.run.spec.name.clone(),
                 catalog,
             })
@@ -1906,7 +2094,59 @@ mod tests {
         );
     }
 
-    // --- steering a running turn -------------------------------------------
+    /// ACP v1's category identifies reasoning even when the agent chooses a
+    /// different option id, and the returned id is the one the setter must use.
+    #[test]
+    fn a_v1_reasoning_option_uses_the_agents_actual_id() {
+        let options = vec![v1::SessionConfigOption::select(
+            "thinking",
+            "Thinking",
+            "max",
+            vec![
+                v1::SessionConfigSelectOption::new("off", "Off"),
+                v1::SessionConfigSelectOption::new("max", "Max"),
+            ],
+        )
+        .category(v1::SessionConfigOptionCategory::ThoughtLevel)];
+
+        assert_eq!(
+            select_state_v1(
+                &options,
+                THOUGHT_LEVEL_CONFIG_ID,
+                v1::SessionConfigOptionCategory::ThoughtLevel,
+            ),
+            Some((
+                "thinking".to_owned(),
+                "max".to_owned(),
+                vec!["off".to_owned(), "max".to_owned()]
+            ))
+        );
+        assert_eq!(
+            thought_level_value_v1(&options, &ReasoningLevel::from("max")),
+            Some(("thinking".to_owned(), "max".to_owned()))
+        );
+    }
+
+    /// v1 value ids deliberately omit v2's explicit `type: "id"` marker.
+    #[test]
+    fn a_v1_config_request_has_the_v1_wire_shape() {
+        let request = v1::SetSessionConfigOptionRequest::new(
+            "session",
+            "thinking",
+            v1::SessionConfigOptionValue::value_id("high"),
+        );
+        let json = serde_json::to_value(request).unwrap();
+
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "sessionId": "session",
+                "configId": "thinking",
+                "value": "high"
+            })
+        );
+        assert!(json.get("type").is_none());
+    }
 
     use std::time::Duration;
 

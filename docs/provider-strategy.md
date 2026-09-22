@@ -384,20 +384,20 @@ reports what it found. Installing an agent *is* the provisioning step, and
 uninstalling one removes it on the next enrollment.
 
 Presence is necessary but not sufficient. Each candidate is then probed with a
-real ACP session — `initialize`, `session/new`, and on v2 the config options it
-publishes — and only an agent that answers is reported. A binary that shares a
-name with a known agent, an agent that is installed but broken, and a bridge
-package that was never installed are all simply absent from the list instead of
-offered and failing at the first user turn.
+real ACP session — `initialize`, `session/new`, and the config options it
+publishes when available — and only an agent that answers is reported. A binary
+that shares a name with a known agent, an agent that is installed but broken,
+and a bridge package that was never installed are all simply absent from the list
+instead of offered and failing at the first user turn.
 
-The probe negotiates both protocol versions, because a v1 agent is a working
-agent: it has no config options to publish, so it is admitted with an empty
-catalogue rather than turned away for answering the version it supports. That is
-also why admission cannot be *the catalogue read*: the native agents in the field
-— OMP, Hermes, OpenCode — speak v1, and requiring v2 config options to prove
-liveness would have excluded exactly the agents this path exists to find. Pi
-does negotiate v2, which is what still gives it a real model ladder at
-enrollment rather than an empty catalogue.
+The probe negotiates both protocol versions. Both versions may publish config
+options, so the worker reads a v1 model selector when an agent supplies one;
+an agent without a model selector is still admitted with an empty catalogue.
+That is also why admission cannot be *the catalogue read*: a successful ACP
+session is the liveness proof, while catalogue data is an optional dividend.
+The native agents in the field — OMP, Hermes, OpenCode — speak v1, and their
+v1 capabilities must not be mistaken for a failed handshake. Pi does negotiate
+v2, which is what still gives it a real model ladder at enrollment.
 
 Answers are reported as they arrive rather than in one batch at the end, so a
 single agent that never completes its handshake — one waiting on a login, or a

@@ -268,11 +268,16 @@ Two frames, in opposite directions, over different transports, and there is
 | request | `ClientCommand::InteractionRequest` up the worker's socket | the worker cannot record a durable entity; the control plane can |
 | answer | `InteractionResolutionFrame` through the relay to `host:{id}` | the answering client need not be the worker's peer, and a resolution published while the worker was reconnecting must replay |
 
-Mapping:
+Mapping is version-native at the ACP edge: v1 and v2 requests are parsed by
+separate adapters, then both use the same worker permission broker and the same
+control-plane interaction contract.
 
 | ACP | loom |
 | --- | --- |
-| `RequestPermissionRequest.tool_call` | `InteractionPayload.subject` (`tool_use`) |
+| v1 `RequestPermissionRequest.tool_call` | `InteractionPayload.subject` (`tool_use`) |
+| v2 `RequestPermissionSubject::ToolCall` | `InteractionPayload.subject` (`tool_use`) |
+| v2 `RequestPermissionSubject::Command` | `InteractionPayload.subject` (`command`) |
+| v2 extension/unknown subject | generic `tool_use` projection; raw v2 subject stays in the worker prompt model |
 | `options: Vec<PermissionOption>` | `availableDecisions`, derived from option kinds |
 | `PermissionOptionKind::AllowOnce` | `allow_once` |
 | `PermissionOptionKind::AllowAlways` | `allow_for_session` |

@@ -7,12 +7,11 @@
 //!
 //! There are two ways in, and they answer the same question at different
 //! moments. [`catalog_from_options`] reads the options a live session already
-//! holds, so every turn keeps the catalogue honest for free. [`read_catalog`]
-//! opens a throwaway session purely to ask, which is what lets a fresh install
-//! show real models before any run has happened — and, because it is a real
-//! handshake, what decides whether an agent discovered on `PATH` is offered at
-//! all. A v1 agent has no config options to publish, so it passes the handshake
-//! with an empty catalogue rather than being turned away.
+//! holds, so every turn keeps the catalogue honest for free. [`catalog_from_v1_options`]
+//! does the same for ACP v1's equivalent response shape. Both probe paths open
+//! a throwaway session purely to ask, which is what lets a fresh install show
+//! real models before any run has happened — and, because it is a real
+//! handshake, what decides whether an agent discovered on `PATH` is offered.
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -79,6 +78,126 @@ fn select_option<'a>(
         v2::SessionConfigKind::Select(select) => Some(select),
         _ => None,
     }
+}
+
+/// The agent's v1 catalogue, read from the config options it published.
+///
+/// ACP v1 uses `id` where v2 uses `config_id`, and agents are free to choose
+/// the id of an option. The semantic category is therefore the fallback for
+/// agents such as omp, which calls its thought-level option `thinking`.
+pub fn catalog_from_v1_options(options: &[v1::SessionConfigOption]) -> ProviderCatalog {
+    let Some(model_option) = select_option_v1(
+        options,
+        MODEL_CONFIG_ID,
+        v1::SessionConfigOptionCategory::Model,
+    ) else {
+        return ProviderCatalog::default();
+    };
+    let session_ladder: Vec<CatalogThinkingLevel> = select_option_v1(
+        options,
+        THOUGHT_LEVEL_CONFIG_ID,
+        v1::SessionConfigOptionCategory::ThoughtLevel,
+    )
+    .map(|select| {
+        values_v1(select)
+            .into_iter()
+            .map(level_from_v1_value)
+            .collect()
+    })
+    .unwrap_or_default();
+
+    ProviderCatalog {
+        current_model: Some(model_option.current_value.0.to_string()),
+        models: values_v1(model_option)
+            .into_iter()
+            .map(|value| {
+                let is_current = value.value.0.as_ref() == model_option.current_value.0.as_ref();
+                let (thinking_levels, default_thinking_level) = match ladder_meta_v1(value) {
+                    Some(stated) => stated,
+                    None if is_current => (session_ladder.clone(), None),
+                    None => (Vec::new(), None),
+                };
+                CatalogModel {
+                    id: value.value.0.to_string(),
+                    name: value.name.clone(),
+                    thinking_levels,
+                    default_thinking_level,
+                }
+            })
+            .collect(),
+    }
+}
+
+/// The v1 select option with the preferred id, or the matching semantic
+/// category when the agent chose a different id.
+fn select_option_v1<'a>(
+    options: &'a [v1::SessionConfigOption],
+    preferred_id: &str,
+    category: v1::SessionConfigOptionCategory,
+) -> Option<&'a v1::SessionConfigSelect> {
+    let option = options
+        .iter()
+        .find(|option| {
+            option.id.0.as_ref() == preferred_id
+                && matches!(&option.kind, v1::SessionConfigKind::Select(_))
+        })
+        .or_else(|| {
+            options.iter().find(|option| {
+                option.category.as_ref() == Some(&category)
+                    && matches!(&option.kind, v1::SessionConfigKind::Select(_))
+            })
+        })?;
+    match &option.kind {
+        v1::SessionConfigKind::Select(select) => Some(select),
+        _ => None,
+    }
+}
+
+/// A v1 selector's values, whether the agent grouped them or not.
+fn values_v1(select: &v1::SessionConfigSelect) -> Vec<&v1::SessionConfigSelectOption> {
+    match &select.options {
+        v1::SessionConfigSelectOptions::Ungrouped(values) => values.iter().collect(),
+        v1::SessionConfigSelectOptions::Grouped(groups) => groups
+            .iter()
+            .flat_map(|group| group.options.iter())
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// A v1 level as the agent described it on a selector option.
+fn level_from_v1_value(value: &v1::SessionConfigSelectOption) -> CatalogThinkingLevel {
+    CatalogThinkingLevel {
+        id: value.value.0.to_string(),
+        name: value.name.clone(),
+        description: value.description.clone(),
+    }
+}
+
+/// The ladder an ACP v1 agent attached to one model value.
+fn ladder_meta_v1(
+    value: &v1::SessionConfigSelectOption,
+) -> Option<(Vec<CatalogThinkingLevel>, Option<String>)> {
+    let meta = value.meta.as_ref()?;
+    let levels = meta.get(THINKING_LEVELS_META)?.as_array()?;
+    let levels = levels
+        .iter()
+        .filter_map(|level| {
+            Some(CatalogThinkingLevel {
+                id: level.get("id")?.as_str()?.to_owned(),
+                name: level.get("name")?.as_str()?.to_owned(),
+                description: level
+                    .get("description")
+                    .and_then(|description| description.as_str())
+                    .map(str::to_owned),
+            })
+        })
+        .collect();
+    let default = meta
+        .get(DEFAULT_THINKING_LEVEL_META)
+        .and_then(|level| level.as_str())
+        .map(str::to_owned);
+    Some((levels, default))
 }
 
 /// A selector's values, whether the agent grouped them or not.
@@ -151,9 +270,8 @@ pub enum CatalogProbeOutcome {
 /// run has happened yet — already show the agent's real models.
 ///
 /// A successful read is also the handshake an agent discovered on `PATH` must
-/// complete before the worker offers it. Under v1 there are no config options,
-/// so success carries an empty catalogue: the agent is admitted, with no model
-/// list to show yet.
+/// complete before the worker offers it. An agent that does not publish a model
+/// selector still passes the handshake with an empty catalogue.
 ///
 /// `cwd` is the directory the probe session is opened in. It is not part of the
 /// answer, but the agent needs a workspace it can use.
@@ -212,9 +330,9 @@ pub async fn read_catalog(
 /// Runs the initialize-and-open conversation against a connected agent.
 ///
 /// The handshake is the point and the catalogue is the dividend: both versions
-/// are registered, because a v1 agent is a working agent. It simply has no
-/// config options to publish, so its session yields an empty catalogue while
-/// still proving the agent answers — which is what admission is decided on.
+/// are registered, and either may publish config options. An agent that does
+/// not publish a model selector still yields an empty catalogue while proving
+/// it answers — which is what admission is decided on.
 async fn probe<C, F>(agent_factory: F, cwd: String) -> Result<ProviderCatalog, String>
 where
     C: ConnectTo<Client>,
@@ -267,8 +385,9 @@ impl CatalogProbeState {
 
 /// The v1 half of the probe.
 ///
-/// v1 has no config options, so there is no catalogue to read: opening a session
-/// is the whole answer, and the empty catalogue it records is the honest one.
+/// v1 agents may publish config options just like v2 agents. When they do, the
+/// probe reads the model selector into the catalogue; when they do not, opening
+/// a session still proves the agent is usable and the catalogue stays empty.
 /// Registering this client is what lets an agent that only speaks v1 — Pi
 /// itself, under a v1 negotiation — be admitted rather than rejected for
 /// answering the version it actually supports.
@@ -306,14 +425,16 @@ impl ConnectTo<Agent> for V1CatalogClient {
                          catalogue probe",
                     ));
                 }
-                // The probe's session is throwaway; dropping the connection at
-                // the end of this block is what ends it. The session id is not
-                // kept because nothing here resumes it.
-                let _created = connection
+                let created = connection
                     .send_request(v1::NewSessionRequest::new(cwd))
                     .block_task()
                     .await?;
-                state.set(ProviderCatalog::default());
+                let catalog =
+                    catalog_from_v1_options(created.config_options.as_deref().unwrap_or_default());
+                // The probe's session is throwaway; dropping the connection at
+                // the end of this block is what ends it. The session id is not
+                // kept because nothing here resumes it.
+                state.set(catalog);
                 Ok(())
             })
             .await
@@ -498,6 +619,65 @@ mod tests {
     fn an_agent_without_models_has_an_empty_catalogue() {
         assert_eq!(
             catalog_from_options(&[level_option(&[("off", "Off")])]),
+            ProviderCatalog::default()
+        );
+    }
+
+    /// ACP v1 agents may call the thought-level option something other than
+    /// `thought_level`; the category is the stable lookup key.
+    #[test]
+    fn a_v1_catalogue_uses_the_semantic_thought_level_category() {
+        let options = vec![
+            v1::SessionConfigOption::select(
+                "model",
+                "Model",
+                "omp/model",
+                vec![
+                    v1::SessionConfigSelectOption::new("omp/model", "OMP model"),
+                    v1::SessionConfigSelectOption::new("omp/other", "Other model"),
+                ],
+            )
+            .category(v1::SessionConfigOptionCategory::Model),
+            v1::SessionConfigOption::select(
+                "thinking",
+                "Thinking",
+                "high",
+                vec![
+                    v1::SessionConfigSelectOption::new("off", "Off"),
+                    v1::SessionConfigSelectOption::new("high", "High"),
+                ],
+            )
+            .category(v1::SessionConfigOptionCategory::ThoughtLevel),
+        ];
+
+        let catalog = catalog_from_v1_options(&options);
+
+        assert_eq!(catalog.current_model.as_deref(), Some("omp/model"));
+        assert_eq!(catalog.models.len(), 2);
+        assert_eq!(
+            catalog.models[0]
+                .thinking_levels
+                .iter()
+                .map(|level| level.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["off", "high"]
+        );
+        assert!(catalog.models[1].thinking_levels.is_empty());
+    }
+
+    /// A v1 agent without a model selector remains a valid probe result, but
+    /// has no catalogue to publish.
+    #[test]
+    fn a_v1_agent_without_models_has_an_empty_catalogue() {
+        let options = vec![v1::SessionConfigOption::select(
+            "thinking",
+            "Thinking",
+            "off",
+            vec![v1::SessionConfigSelectOption::new("off", "Off")],
+        )];
+
+        assert_eq!(
+            catalog_from_v1_options(&options),
             ProviderCatalog::default()
         );
     }
