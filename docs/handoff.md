@@ -482,6 +482,32 @@ pi-acp's `v2_bash_call_is_named_with_its_command_after_the_streamed_open`.
 Measured on this checkout: `cargo check --workspace --locked` clean;
 `cargo test -p loom-worker --lib acp --locked` **68 passed**.
 
+## pi-acp upgraded to `v0.5.2` (2026-09-22)
+
+`v0.5.0`'s settle fallback was a wall clock from prompt acceptance that nothing
+refreshed, so any turn that outlived `PI_ACP_SETTLE_TIMEOUT_SECS` (600 s) was
+failed with `settleTimeout` — a long bash build died at ten minutes even while
+pi was streaming its output. loom's own bounds are 30 minutes
+(`DEFAULT_RUN_TIMEOUT`, and the server's `run_timeout`), so the adapter's nested
+deadline fired first and reported a different error for a healthy run.
+
+`v0.5.2` (`pi-acp` `9544ac3`, `dcd83668`) bounds *silence* instead: every event
+pi sends re-arms the deadline, and a tool that has started and not ended holds
+it off, so only a prompt that never gets going is failed — the risk #84 case the
+fallback was built for.
+
+loom now states the budget instead of inheriting it.
+`WorkerConfig::settle_timeout` (`--settle-timeout-ms`, default
+`DEFAULT_SETTLE_TIMEOUT`, `0` disables) reaches the embedded factory, because the
+in-process path builds `pi_acp::Config::default()`, which hardcodes 600 s and
+never reads `PI_ACP_SETTLE_TIMEOUT_SECS`. The catalogue, session-list and history
+paths pass `0`: they run no turn.
+
+Measured on this checkout: `cargo check --workspace --locked` clean;
+`cargo clippy --workspace --all-targets --locked -- -D warnings` clean;
+`cargo test -p loom-worker --lib --locked` 136 passed; `cargo test -p loom-worker
+--test acp_session --locked` 13 passed.
+
 ## Immediate next steps
 
 1. **Start migration step 1 (ACP adapter boundary)** — unblocked. The

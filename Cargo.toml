@@ -31,10 +31,12 @@ agent-client-protocol = { version = "=2.0.0", default-features = false, features
 # `pi-acp` is not published to crates.io, so it comes from git. It is pinned to
 # a release tag rather than the upstream default branch: `v0.5.0` was the first
 # release that carries everything loom needs — `run_with` (the transport
-# injection this crate hands a `Channel` to) and native ACP v2. `v0.5.1` adds
+# injection this crate hands a `Channel` to) and native ACP v2. `v0.5.1` added
 # the bash-call naming fix: a call opened by the streamed `toolcall_start` is now
 # named by every following frame, so the command replaces the placeholder
-# `"bash"` instead of never being sent.
+# `"bash"` instead of never being sent. `v0.5.2` makes the adapter's settle
+# fallback bound *silence* rather than the turn, so a long command or a long
+# streamed answer is no longer failed while it is still working.
 #
 # That release also **removed the `protocol-v2` cargo feature** this manifest
 # used to enable. pi-acp now always compiles both protocol implementations and
@@ -43,7 +45,7 @@ agent-client-protocol = { version = "=2.0.0", default-features = false, features
 #
 # `Cargo.lock` still records the exact commit, so moving the pin stays an
 # explicit `cargo update -p pi-acp`, never a silent one.
-pi-acp = { git = "https://github.com/AndPuQing/pi-acp", tag = "v0.5.1" }
+pi-acp = { git = "https://github.com/AndPuQing/pi-acp", tag = "v0.5.2" }
 agent-client-protocol-schema = { version = "=1.5.0", default-features = false, features = ["unstable_protocol_v2"] }
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio", "ws", "multipart"] }
 base64 = "0.22"

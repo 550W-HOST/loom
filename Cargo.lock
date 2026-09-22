@@ -1583,8 +1583,8 @@ dependencies = [
 
 [[package]]
 name = "pi-acp"
-version = "0.5.1"
-source = "git+https://github.com/AndPuQing/pi-acp?tag=v0.5.1#ccf1b43c87884d68b8858f113f7ff88107644da4"
+version = "0.5.2"
+source = "git+https://github.com/AndPuQing/pi-acp?tag=v0.5.2#dcd83668345a53008d7d44cb06373423b685aeca"
 dependencies = [
  "agent-client-protocol",
  "agent-client-protocol-schema",
