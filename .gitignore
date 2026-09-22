@@ -23,6 +23,7 @@ apps/app/bundle-stats.json
 *.log
 .DS_Store
 .bb-dev/
+.scratch/
 
 # Playwright acceptance: reports, traces and the stack's own logs are run
 # output, never sources.
