@@ -33,6 +33,7 @@ export default defineConfig({
       "src/components/thread/pending-interactions/ThreadPendingInteractionBanner.test.tsx",
       "src/components/thread/pending-interactions/ThreadPendingInteractionBanner.shortcuts.test.tsx",
       "src/components/thread/timeline/GeneratedConversationMessage.test.ts",
+      "src/components/thread/timeline/TimelineReasoning.test.tsx",
       "src/components/thread/timeline/streaming-markdown-split.test.ts",
       "src/components/thread/timeline/timeline-auto-expand.test.ts",
     ],

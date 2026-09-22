@@ -1241,7 +1241,10 @@ function TimelineExpandableBody({
     case "system":
       if (row.systemKind === "operation" && row.operationKind === "reasoning") {
         return row.detail ? (
-          <TimelineReasoningDetail text={row.detail} />
+          <TimelineReasoningDetail
+            text={row.detail}
+            streaming={row.status === "pending"}
+          />
         ) : null;
       }
       return row.detail ? (

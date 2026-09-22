@@ -36,7 +36,9 @@ export function TimelineWorkingIndicator({
             action: null,
             plain: resolvedLabel,
           }}
-          renderBody={() => <TimelineReasoningDetail text={details ?? ""} />}
+          renderBody={() => (
+            <TimelineReasoningDetail text={details ?? ""} streaming />
+          )}
         />
       </div>
     );

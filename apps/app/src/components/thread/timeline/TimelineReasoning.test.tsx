@@ -55,9 +55,10 @@ function Fixture({
                       systemKind: "operation",
                       operationKind: "reasoning",
                       reasoningId,
+                      detail: text,
                       completedAt: 13_000,
                     }
-                  : thought,
+                  : { ...thought, detail: text },
               ]}
               threadRuntimeDisplayStatus="idle"
               workspaceRootPath={undefined}
@@ -106,6 +107,33 @@ describe("reasoning disclosure lifecycle", () => {
       ).toBe("false");
     },
   );
+
+  it("renders reasoning details as Markdown", () => {
+    const { container } = render(
+      <Fixture
+        phase="completed"
+        text={"**Confirming successful cargo tests**\n\n- server\n- worker"}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /Thought.*12s/ }));
+
+    expect(container.querySelector("strong")?.textContent).toBe(
+      "Confirming successful cargo tests",
+    );
+    expect(container.querySelector("ul")).not.toBeNull();
+    expect(container.textContent).not.toContain("**Confirming");
+  });
+
+  it("keeps incomplete Markdown renderable while reasoning streams", () => {
+    const { container } = render(
+      <Fixture phase="live" text="**Confirming successful cargo tests" />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Thinking…" }));
+
+    expect(container.querySelector("strong")?.textContent).toBe(
+      "Confirming successful cargo tests",
+    );
+  });
 
   it("does not inherit expansion for the next thought and omits the icon before text arrives", () => {
     const { container, rerender } = render(<Fixture phase="live" text="" />);
