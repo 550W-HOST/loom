@@ -35,6 +35,7 @@ pub mod b9;
 pub mod build_info;
 pub mod catalogs;
 pub mod cli;
+pub mod commands;
 pub mod domain_state;
 pub mod environments;
 pub mod file_previews;
@@ -97,10 +98,13 @@ pub use transport::ChannelTransport;
 /// Protocol version reported by `/api/v1/version` and negotiated by workers.
 ///
 /// Version 3 separates the public bb `/ws` protocol from the worker
-/// `/internal/ws` protocol and introduces the worker `hello` handshake. Server
-/// and worker must upgrade together (or use the existing worker self-update
-/// path).
-pub const PROTOCOL_VERSION: u32 = 3;
+/// `/internal/ws` protocol and introduces the worker `hello` handshake.
+/// Version 4 adds the worker's command advertisement (`CommandsReport`): a new
+/// frame in the worker→server direction, which is a wire change, so an older
+/// server cannot parse it and the version is what makes an older worker upgrade
+/// before it sends one. Server and worker must upgrade together (or use the
+/// existing worker self-update path).
+pub const PROTOCOL_VERSION: u32 = 4;
 
 /// Explicit transport negotiation token for the public bb realtime protocol.
 ///

@@ -618,15 +618,30 @@ rather than overwriting: a copy must never lose a file the user still had.
 ### `projects.commands` is a host RPC with a projected result
 
 A prompt-command list is a property of the workspace on disk — project prompts
-live under `<cwd>/.pi/prompts` — so this is a `HostRpcOperation::ListCommands`
-against the project's source. The discovery itself is `pi-acp`'s
-(`load_slash_commands` plus the built-in command list), so loom does not
-maintain a second, drifting notion of where a slash command lives. The worker
-answers raw rows and the control plane projects them into bb's
-`projectCommandSchema`: a file command is `origin: project`, a built-in is
-`origin: builtin`, and `source` is always `command`. The contract's `provider`
-parameter is required, and a value naming a provider this server does not run is
-a `400` rather than a silently different answer.
+live under `<cwd>/.pi/prompts`, user prompts under the agent's own directory —
+so this is a `HostRpcOperation::ListCommands` against the project's source. The
+discovery itself is `pi-acp`'s (`load_slash_commands` plus the built-in command
+list), so loom does not maintain a second, drifting notion of where a slash
+command lives. The worker answers raw rows and the control plane projects them
+into bb's `projectCommandSchema`: a file command's `origin` is read from the
+`(user)`/`(project)` label `pi-acp` puts on it, a built-in is `origin: builtin`
+with its declared description and argument hint, and `source` is `command`
+unless the name is a skill. The contract's `provider` parameter is required,
+and a value naming a provider this server does not run is a `400` rather than a
+silently different answer.
+
+A live session's advertisement is merged over the scan. Every ACP session
+advertises its command list right after `session/new` or `session/load`;
+`AvailableCommandsUpdate` carries no timeline fact, so the worker reports it on
+its own frame (`ProviderCommandsReport`) keyed by `(host, provider, cwd)`, and
+the server keeps the latest list per workspace in memory. The merge is
+**additive**: the scan's row wins for a name it already answered (it is the one
+with an `origin` and an `argumentHint`), and a name only the advertisement knows
+is attributed by what its name says — `skill:<name>` becomes
+`source: skill, origin: user`, anything else the agent advertises beyond the
+scan becomes the agent's own (`origin: builtin`). A workspace no session has
+run in yet answers from the scan alone, and an advertisement is only as fresh
+as the last session in that workspace.
 
 ### `projects.reorder` needed a real project order
 

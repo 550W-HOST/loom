@@ -66,8 +66,8 @@ use loom_domain::{HostId, RunId};
 use loom_provider_protocol::{
     EnvironmentProvision, EnvironmentProvisionOutcome, EnvironmentProvisionReport, HistoryPart,
     HistoryReport, HostFileRequest, HostRpcOperation, HostRpcReport, HostRpcRequest,
-    InteractionRequest, InteractionResolutionFrame, ProviderCatalogReport, ProviderLaunch,
-    ProviderSpec, RunDispatch, RunSteer,
+    InteractionRequest, InteractionResolutionFrame, ProviderCatalogReport, ProviderCommandsReport,
+    ProviderLaunch, ProviderSpec, RunDispatch, RunSteer,
 };
 use loom_relay::dedup::SeenSet;
 use loom_relay::{EventId, Scope};
@@ -87,17 +87,38 @@ type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 pub const DEFAULT_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(15);
 
 /// How long a provider run may take before the worker kills it, by default.
+///
+/// This bounds the run's **silence**, not the turn: every event the run reports
+/// re-arms it, and an item that started and has not completed holds it off, so
+/// a long build, a long download, a forked child agent or a long streamed
+/// answer is never mistaken for a stuck agent. See
+/// [`DEFAULT_RUN_CEILING`] for the bound that a still-talking run eventually
+/// hits.
 pub const DEFAULT_RUN_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+
+/// How long a provider run may take *in total*, however active it is, before
+/// the worker kills it.
+///
+/// This is the last-resort bound rather than the normal one. A run that keeps
+/// reporting is not stuck, so [`DEFAULT_RUN_TIMEOUT`] cannot end it; only an
+/// agent that wedged with a tool call still open reaches this ceiling. It is
+/// deliberately much longer than any real turn so that it never decides the
+/// fate of healthy work.
+pub const DEFAULT_RUN_CEILING: Duration = Duration::from_secs(6 * 60 * 60);
 
 /// How long an accepted turn may stay *silent*, by default, before the
 /// embedded `pi-acp` gives up on it through its own settle fallback.
 ///
-/// This is not [`DEFAULT_RUN_TIMEOUT`] and must not be confused with it: it
-/// bounds silence, not the turn, so a long tool or a long streamed answer is
-/// never mistaken for a stuck agent. loom states the value instead of leaving
-/// it to `pi_acp::Config::default()` because the embedded path never reads
-/// `PI_ACP_SETTLE_TIMEOUT_SECS`, so this is where the value it runs with is
-/// decided (`--settle-timeout-ms` overrides it).
+/// The adapter's own copy of the rule [`DEFAULT_RUN_TIMEOUT`] applies from the
+/// worker's side: it bounds silence, not the turn, so a long tool or a long
+/// streamed answer is never mistaken for a stuck agent. The two differ in who
+/// owns the timer — the adapter fails a prompt that never got going, the worker
+/// fails a run that stopped reporting — and in what they can see: the adapter
+/// holds the bound off for a tool it knows is open, the worker for an item it
+/// has seen start without a completion. loom states the value instead of
+/// leaving it to `pi_acp::Config::default()` because the embedded path never
+/// reads `PI_ACP_SETTLE_TIMEOUT_SECS`, so this is where the value it runs with
+/// is decided (`--settle-timeout-ms` overrides it).
 pub const DEFAULT_SETTLE_TIMEOUT: Duration =
     Duration::from_secs(pi_acp::config::DEFAULT_SETTLE_TIMEOUT_SECS);
 
@@ -278,8 +299,14 @@ pub struct WorkerConfig {
     /// wants the provider list to be a property of the test rather than of the
     /// machine running it. See [`WorkerConfig::without_discovery`].
     pub discovered: Option<Vec<ProviderSpec>>,
-    /// How long one provider run may take before it is killed.
+    /// How long one provider run may stay *silent* before it is killed.
+    ///
+    /// See [`DEFAULT_RUN_TIMEOUT`].
     pub run_timeout: Duration,
+    /// How long one provider run may take in total, however active it is.
+    ///
+    /// See [`DEFAULT_RUN_CEILING`].
+    pub run_ceiling: Duration,
     /// How long an accepted turn may stay silent before the embedded `pi-acp`'s
     /// settle fallback gives up on it. See [`DEFAULT_SETTLE_TIMEOUT`].
     pub settle_timeout: Duration,
@@ -345,6 +372,7 @@ impl WorkerConfig {
             provider: None,
             discovered: None,
             run_timeout: DEFAULT_RUN_TIMEOUT,
+            run_ceiling: DEFAULT_RUN_CEILING,
             settle_timeout: DEFAULT_SETTLE_TIMEOUT,
             permission_timeout: DEFAULT_PERMISSION_TIMEOUT,
             environment_root: default_environment_root(),
@@ -470,6 +498,12 @@ pub struct Worker {
     /// reads the catalogue out of the config options it already holds.
     catalog_reports: mpsc::Receiver<ProviderCatalogReport>,
     catalog_reports_tx: mpsc::Sender<ProviderCatalogReport>,
+    /// Command lists advertised by ACP sessions, waiting to be forwarded.
+    ///
+    /// A command list is a fact about a workspace and an agent, not about a
+    /// run, so it has its own channel rather than riding a run report.
+    command_reports: mpsc::Receiver<ProviderCommandsReport>,
+    command_reports_tx: mpsc::Sender<ProviderCommandsReport>,
     /// The verified agent list waiting to be forwarded to the server.
     ///
     /// One per probe that answered, each the complete set verified so far, so a
@@ -547,6 +581,7 @@ impl Worker {
                 ensure_compatible_protocol(protocol_version)?;
                 let (reports_tx, reports) = mpsc::channel(REPORT_CHANNEL_CAPACITY);
                 let (catalog_reports_tx, catalog_reports) = mpsc::channel(REPORT_CHANNEL_CAPACITY);
+                let (command_reports_tx, command_reports) = mpsc::channel(REPORT_CHANNEL_CAPACITY);
                 let (provider_lists_tx, provider_lists) = mpsc::channel(1);
                 let (interactions_tx, interactions) = mpsc::channel(REPORT_CHANNEL_CAPACITY);
                 let (env_reports_tx, env_reports) = mpsc::channel(REPORT_CHANNEL_CAPACITY);
@@ -578,6 +613,8 @@ impl Worker {
                     reports_tx,
                     catalog_reports,
                     catalog_reports_tx,
+                    command_reports,
+                    command_reports_tx,
                     provider_lists,
                     provider_lists_tx,
                     interactions,
@@ -844,6 +881,10 @@ impl Worker {
                 report = self.catalog_reports.recv() => {
                     let Some(report) = report else { continue };
                     self.send(&ClientCommand::CatalogReport { report }).await?;
+                }
+                report = self.command_reports.recv() => {
+                    let Some(report) = report else { continue };
+                    self.send(&ClientCommand::CommandsReport { report }).await?;
                 }
                 providers = self.provider_lists.recv() => {
                     let Some(providers) = providers else { continue };
@@ -1237,6 +1278,7 @@ impl Worker {
             &dispatch,
             spec,
             self.config.run_timeout,
+            self.config.run_ceiling,
             self.config.permission_timeout,
             self.config.settle_timeout,
         );
@@ -1257,6 +1299,7 @@ impl Worker {
                     transport,
                     self.reports_tx.clone(),
                     self.catalog_reports_tx.clone(),
+                    self.command_reports_tx.clone(),
                     permissions,
                     interactions,
                     steers,
@@ -1272,6 +1315,7 @@ impl Worker {
                     transport,
                     self.reports_tx.clone(),
                     self.catalog_reports_tx.clone(),
+                    self.command_reports_tx.clone(),
                     permissions,
                     interactions,
                     steers,

@@ -132,12 +132,23 @@ pub struct AppConfig {
     /// a single-machine deployment to prefer that machine while its worker is
     /// attached.
     pub local_host_id: Option<HostId>,
-    /// How long a dispatched run may stay in flight before the server reaps it.
+    /// How long a dispatched run may stay *silent* before the server reaps it.
     ///
     /// This is the backstop for a worker that is connected but wedged. The
     /// execution plane enforces its own provider timeout; this one exists so a
-    /// silent worker cannot leave a thread `working` forever.
+    /// silent worker cannot leave a thread `working` forever. It is measured
+    /// from the run's last report, not from its dispatch, and a run with an
+    /// item reported started and not completed holds it off — see
+    /// [`crate::runs::RunRecord::refresh_deadline`].
     pub run_timeout: Duration,
+    /// How long a dispatched run may take *in total* before the server reaps
+    /// it, however active it is.
+    ///
+    /// The last-resort bound, matching the worker's own ceiling: only a worker
+    /// wedged with a tool call still open reaches it, because a still-reporting
+    /// run keeps pushing the silence deadline out. Set it above
+    /// [`AppConfig::run_timeout`]; `Duration::ZERO` removes it.
+    pub run_ceiling: Duration,
     /// How long a host may go without a heartbeat before it is considered gone
     /// and its in-flight runs are failed.
     ///
@@ -199,6 +210,11 @@ impl Default for AppConfig {
             pump: PumpConfig::default(),
             local_host_id: None,
             run_timeout: Duration::from_secs(30 * 60),
+            // Six hours: far above any real turn, so it only decides the fate of
+            // a worker that wedged with a tool call open. It must stay at least
+            // the worker's own ceiling, or the server would reap the runs the
+            // worker is still willing to nurse.
+            run_ceiling: Duration::from_secs(6 * 60 * 60),
             host_stale_after: Duration::from_secs(60),
             reconcile_interval: Duration::from_secs(5),
             schedule_interval: Duration::from_secs(10),
@@ -319,10 +335,14 @@ pub struct AppState {
     /// Kept per host because it is a fact about the agent on that machine, not
     /// about the control plane's own configuration. See [`crate::catalogs`].
     pub catalogs: Arc<crate::catalogs::CatalogRegistry>,
+    /// The prompt commands each workspace's most recent ACP session
+    /// advertised. See [`crate::commands`].
+    pub commands: Arc<crate::commands::CommandRegistry>,
     /// The control plane's terminal session index.
     pub terminals: Arc<crate::terminals::TerminalSessions>,
     local_host_id: Option<HostId>,
     run_timeout_ms: u64,
+    run_ceiling_ms: u64,
     host_stale_after_ms: u64,
     /// The agents the operator listed for the control plane itself.
     ///
@@ -522,9 +542,11 @@ impl AppState {
             history_waits: Arc::new(crate::history::HistoryWaits::new()),
             terminal: Arc::new(crate::terminals::TerminalBroker::new()),
             catalogs: Arc::new(crate::catalogs::CatalogRegistry::new()),
+            commands: Arc::new(crate::commands::CommandRegistry::new()),
             terminals: Arc::new(crate::terminals::TerminalSessions::new()),
             local_host_id: config.local_host_id,
             run_timeout_ms: config.run_timeout.as_millis().min(u128::from(u64::MAX)) as u64,
+            run_ceiling_ms: config.run_ceiling.as_millis().min(u128::from(u64::MAX)) as u64,
             host_stale_after_ms: config
                 .host_stale_after
                 .as_millis()
@@ -660,9 +682,14 @@ impl AppState {
         });
     }
 
-    /// How long a run may stay in flight before it is reaped.
+    /// How long a run may stay silent before it is reaped.
     pub(crate) fn run_timeout_ms(&self) -> u64 {
         self.run_timeout_ms
+    }
+
+    /// How long a run may take in total before it is reaped.
+    pub(crate) fn run_ceiling_ms(&self) -> u64 {
+        self.run_ceiling_ms
     }
 
     /// How long a host may go quiet before its runs are reaped.
@@ -1139,6 +1166,8 @@ impl AppState {
                         cwd: String::new(),
                         started_at_ms: now,
                         deadline_ms: now,
+                        last_event_ms: None,
+                        open_items: 0,
                         turn_started: false,
                         provider_thread_id: None,
                         provider_id: None,
@@ -1969,6 +1998,8 @@ mod tests {
             cwd: "/srv/project".to_owned(),
             started_at_ms: 10,
             deadline_ms: 20,
+            last_event_ms: None,
+            open_items: 0,
             turn_started: false,
             provider_thread_id: None,
             provider_id: None,

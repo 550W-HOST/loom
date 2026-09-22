@@ -867,6 +867,33 @@ impl ThreadEventItem {
         }
     }
 
+    /// Whether this item is work the agent is *running*, as opposed to a
+    /// message, a plan or a reasoning block.
+    ///
+    /// A bound measured on silence treats a call that started and has not
+    /// finished as work rather than a stall — the rule `pi-acp` applies to its
+    /// own settle fallback, and the one that keeps a long build, a long download
+    /// or a forked child agent from being mistaken for a wedged one. Only these
+    /// variants count: the rest have no completion in the contract (a user
+    /// message's `item/started` is its whole lifecycle), so counting one would
+    /// hold the bound off for the remainder of the run.
+    pub fn is_running_call(&self) -> bool {
+        matches!(
+            self,
+            ThreadEventItem::CommandExecution { .. }
+                | ThreadEventItem::FileChange { .. }
+                | ThreadEventItem::WebSearch { .. }
+                | ThreadEventItem::WebFetch { .. }
+                | ThreadEventItem::ImageView { .. }
+                | ThreadEventItem::ImageGeneration { .. }
+                | ThreadEventItem::FileRead { .. }
+                | ThreadEventItem::Search { .. }
+                | ThreadEventItem::ToolCall { .. }
+                | ThreadEventItem::BackgroundTask { .. }
+                | ThreadEventItem::Delegation { .. }
+        )
+    }
+
     /// The item id.
     pub fn id(&self) -> &str {
         match self {

@@ -61,7 +61,29 @@ pub struct RunRecord {
     /// When the dispatch was published.
     pub started_at_ms: u64,
     /// When the run must be terminal, or the server reaps it.
+    ///
+    /// Recomputed by [`RunRecord::refresh_deadline`] as the run reports; it is
+    /// not the dispatch-time instant it used to be.
     pub deadline_ms: u64,
+    /// When this run last reported anything, or `None` before its first event.
+    ///
+    /// The silence deadline is measured from here rather than from the
+    /// dispatch, so a run that keeps reporting is not mistaken for a wedged
+    /// worker. See [`RunRecord::refresh_deadline`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_event_ms: Option<u64>,
+    /// Items the run reported started and has not reported completed.
+    ///
+    /// While one is open the run is *working* rather than stuck — the same rule
+    /// the worker's own watchdog and the embedded adapter apply — so the
+    /// silence deadline is held off and only the ceiling can reap it. This is
+    /// what lets a forked child agent run for hours without the server
+    /// declaring the thread dead. Only work counts
+    /// ([`ThreadEventItem::is_running_call`](loom_domain::ThreadEventItem::is_running_call)):
+    /// a message's `item/started` is its whole lifecycle, so counting one would
+    /// disable the silence bound for the rest of the run.
+    #[serde(default)]
+    pub open_items: u32,
     /// Whether a contract `turn/started` event has been published.
     ///
     /// A worker can disappear before it reports its first event. The server
@@ -109,6 +131,34 @@ pub struct RunRecord {
     /// so a failed append leaves the thread in `working` and can be retried.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending_status_event: Option<PendingStatusChange>,
+}
+
+impl RunRecord {
+    /// Recomputes the instant the server must reap this run.
+    ///
+    /// The bound is on silence, not on the turn: `idle_ms` counts from the
+    /// run's last report (its dispatch, before one), and an item reported
+    /// started and not completed holds it off. That is the rule the worker's
+    /// own watchdog and the embedded adapter apply, so a long build, a long
+    /// download or a delegated child agent is never mistaken for a wedged
+    /// worker. `ceiling_ms` applies regardless of activity and is therefore the
+    /// only bound a run with an item stuck open reaches. `0` removes either
+    /// bound.
+    pub fn refresh_deadline(&mut self, idle_ms: u64, ceiling_ms: u64) {
+        let ceiling_at = (ceiling_ms != 0).then(|| self.started_at_ms.saturating_add(ceiling_ms));
+        let idle_at = (idle_ms != 0 && self.open_items == 0).then(|| {
+            self.last_event_ms
+                .unwrap_or(self.started_at_ms)
+                .saturating_add(idle_ms)
+        });
+        self.deadline_ms = match (idle_at, ceiling_at) {
+            (Some(idle), Some(ceiling)) => idle.min(ceiling),
+            (Some(idle), None) => idle,
+            (None, Some(ceiling)) => ceiling,
+            // Neither bound is configured, so no sweep may expire this run.
+            (None, None) => u64::MAX,
+        };
+    }
 }
 
 /// The durable data needed to retry one terminal thread-status append.
@@ -311,6 +361,43 @@ impl RunRegistry {
         };
         self.announce(&changed);
         true
+    }
+
+    /// Records one reported event against the run's deadline.
+    ///
+    /// Deliberately does not notify the [`RunSink`]: a provider frame is not a
+    /// durable fact about the run's lifecycle, and a chatty turn reports
+    /// thousands of them (a long tool streams tens of thousands), so writing
+    /// the record per frame would trade an in-memory read for disk traffic on
+    /// every token. The refreshed deadline reaches the store with the next real
+    /// lifecycle change, and a restart fails in-flight runs anyway
+    /// (`fail_run_after_restart`), so a stale persisted deadline can never reap
+    /// a live run.
+    pub fn observe_event(
+        &self,
+        run_id: &RunId,
+        event: &RunEvent,
+        now: u64,
+        idle_ms: u64,
+        ceiling_ms: u64,
+    ) {
+        let mut state = self.lock();
+        let Some(record) = state.records.get_mut(run_id) else {
+            return;
+        };
+        record.last_event_ms = Some(now);
+        match &event.event.body {
+            ProviderEvent::ItemStarted { item, .. } if item.is_running_call() => {
+                record.open_items = record.open_items.saturating_add(1);
+            }
+            // A completion for any item closes what its start opened; the count
+            // saturates, so a completion the run never opened cannot underflow.
+            ProviderEvent::ItemCompleted { .. } => {
+                record.open_items = record.open_items.saturating_sub(1);
+            }
+            _ => {}
+        }
+        record.refresh_deadline(idle_ms, ceiling_ms);
     }
 
     /// Records that a provider error has been published for a run.
@@ -657,7 +744,11 @@ impl AppState {
             host_id: host.id.clone(),
             cwd: workspace.clone(),
             started_at_ms: now,
-            deadline_ms: now.saturating_add(self.run_timeout_ms()),
+            // Filled in by `refresh_deadline` below, which is also what every
+            // later report refreshes.
+            deadline_ms: now,
+            last_event_ms: None,
+            open_items: 0,
             turn_started: false,
             provider_thread_id: None,
             provider_id: None,
@@ -667,6 +758,7 @@ impl AppState {
             terminal_outcome: None,
             pending_status_event: None,
         };
+        record.refresh_deadline(self.run_timeout_ms(), self.run_ceiling_ms());
         // The dispatched spec carries the working directory, and the agent is
         // The dispatched spec carries the working directory, and the agent is
         // the one the thread's client chose. A thread that never chose one —
@@ -897,6 +989,13 @@ impl AppState {
                 FinishRunResult::PublishFailed(error) => ReportOutcome::PublishFailed { error },
             };
         } else {
+            self.runs.observe_event(
+                &run_id,
+                &event,
+                now,
+                self.run_timeout_ms(),
+                self.run_ceiling_ms(),
+            );
             let event_kind = event.kind();
             if event_kind == "turn/started" {
                 // A duplicate start is harmless but must not create a second
@@ -1509,6 +1608,8 @@ impl AppState {
             cwd: String::new(),
             started_at_ms: now,
             deadline_ms: now,
+            last_event_ms: None,
+            open_items: 0,
             turn_started: false,
             provider_thread_id: None,
             provider_id: None,
@@ -1597,6 +1698,8 @@ mod tests {
             cwd: "/srv/project".to_owned(),
             started_at_ms: 10,
             deadline_ms: 20,
+            last_event_ms: None,
+            open_items: 0,
             turn_started: false,
             provider_thread_id: None,
             provider_id: None,
@@ -1798,6 +1901,8 @@ mod tests {
             cwd: "/srv/project-a".into(),
             started_at_ms: 1,
             deadline_ms: 10,
+            last_event_ms: None,
+            open_items: 0,
             turn_started: false,
             provider_thread_id: None,
             provider_id: None,
@@ -1814,6 +1919,136 @@ mod tests {
         assert_eq!(registry.expired(10), vec![record.clone()]);
         assert_eq!(registry.remove(&record.run_id), Some(record));
         assert!(registry.is_empty());
+    }
+
+    /// A record for the deadline tests: nothing reported yet, no item open.
+    fn deadline_record() -> RunRecord {
+        RunRecord {
+            run_id: RunId::mint(),
+            thread_id: ThreadId::mint(),
+            project_id: ProjectId::mint(),
+            host_id: HostId::mint(),
+            cwd: "/srv/project-a".into(),
+            started_at_ms: 10_000,
+            deadline_ms: 10_000,
+            last_event_ms: None,
+            open_items: 0,
+            turn_started: false,
+            provider_thread_id: None,
+            provider_id: None,
+            provider_error_reported: false,
+            failure_reason: None,
+            terminal_published: false,
+            terminal_outcome: None,
+            pending_status_event: None,
+        }
+    }
+
+    fn tool_item(id: &str) -> loom_domain::ThreadEventItem {
+        loom_domain::ThreadEventItem::ToolCall {
+            id: id.to_owned(),
+            server: None,
+            tool: "fork".to_owned(),
+            arguments: None,
+            status: loom_domain::ItemStatus::Pending,
+            result: None,
+            error: None,
+            duration_ms: None,
+            presentation: None,
+            parent_tool_call_id: None,
+        }
+    }
+
+    fn run_event(record: &RunRecord, body: ProviderEvent) -> RunEvent {
+        RunEvent::new(
+            record.thread_id.clone(),
+            record.project_id.clone(),
+            record.run_id.clone(),
+            record.started_at_ms,
+            body,
+        )
+    }
+
+    /// The server's bound is on silence, and an open item holds it off.
+    ///
+    /// The regression: the deadline was a wall clock from the dispatch, so a
+    /// run whose worker was healthy and mid-tool was reaped — the server version
+    /// of the worker's own bug. An item that started and has not completed is
+    /// work, so only the ceiling is left.
+    #[test]
+    fn an_open_item_holds_the_servers_silence_deadline_off() {
+        let idle = 1_000;
+        let ceiling = 60_000;
+        let mut record = deadline_record();
+
+        // Nothing reported yet: the silence bound counts from the dispatch.
+        record.refresh_deadline(idle, ceiling);
+        assert_eq!(record.deadline_ms, 11_000);
+
+        // A report moves it out.
+        record.last_event_ms = Some(15_000);
+        record.refresh_deadline(idle, ceiling);
+        assert_eq!(record.deadline_ms, 16_000);
+
+        // An item that started holds the silence bound off entirely.
+        record.open_items = 1;
+        record.refresh_deadline(idle, ceiling);
+        assert_eq!(record.deadline_ms, 70_000);
+
+        // Its completion gives the silence bound back, from the latest report.
+        record.open_items = 0;
+        record.last_event_ms = Some(20_000);
+        record.refresh_deadline(idle, ceiling);
+        assert_eq!(record.deadline_ms, 21_000);
+    }
+
+    /// `0` removes a bound rather than making it immediate.
+    #[test]
+    fn a_removed_bound_leaves_no_deadline() {
+        let mut record = deadline_record();
+        record.refresh_deadline(0, 0);
+        assert_eq!(record.deadline_ms, u64::MAX);
+
+        // With an item open and no ceiling, only nothing bounds the run.
+        record.open_items = 1;
+        record.refresh_deadline(1_000, 0);
+        assert_eq!(record.deadline_ms, u64::MAX);
+    }
+
+    /// A reported event re-arms the deadline and moves the item count.
+    #[test]
+    fn observing_a_report_re_arms_the_deadline() {
+        let registry = RunRegistry::new();
+        let record = deadline_record();
+        registry.insert(record.clone());
+
+        let opened = run_event(
+            &record,
+            ProviderEvent::ItemStarted {
+                item: tool_item("tool-1"),
+                provider_thread_id: "session".into(),
+            },
+        );
+        registry.observe_event(&record.run_id, &opened, 5_000, 1_000, 60_000);
+        let observed = registry.get(&record.run_id).expect("the run is registered");
+        assert_eq!(observed.last_event_ms, Some(5_000));
+        assert_eq!(observed.open_items, 1);
+        assert_eq!(
+            observed.deadline_ms, 70_000,
+            "an open item leaves only the ceiling"
+        );
+
+        let finished = run_event(
+            &record,
+            ProviderEvent::ItemCompleted {
+                item: tool_item("tool-1"),
+                provider_thread_id: "session".into(),
+            },
+        );
+        registry.observe_event(&record.run_id, &finished, 6_000, 1_000, 60_000);
+        let observed = registry.get(&record.run_id).expect("the run is registered");
+        assert_eq!(observed.open_items, 0);
+        assert_eq!(observed.deadline_ms, 7_000);
     }
 
     #[tokio::test]

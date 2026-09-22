@@ -28,9 +28,21 @@ pub struct ProviderRun {
     pub project_id: loom_domain::ProjectId,
     /// The run's identity.
     pub run_id: loom_domain::RunId,
-    /// Worker-side deadline. On expiry the ACP session is terminated and the
-    /// run is reported as timed out.
+    /// How long the run may stay *silent* before the worker kills it.
+    ///
+    /// The bound is on silence, not on the turn: every event the run reports
+    /// re-arms it, and an item that started and has not completed holds it off,
+    /// so a long tool is never mistaken for a wedged agent — the same rule the
+    /// embedded adapter's own settle fallback uses. `0` removes it and leaves
+    /// [`ProviderRun::ceiling`] as the only bound.
     pub timeout: Duration,
+    /// How long the run may take in total, however active it is.
+    ///
+    /// The last-resort bound. A run that keeps reporting is not stuck, so this
+    /// is the only thing that ends an agent wedged with a tool call still open —
+    /// the case [`ProviderRun::timeout`] deliberately holds off for. `0`
+    /// removes it.
+    pub ceiling: Duration,
     /// How long an agent's permission request waits for a user before it is
     /// cancelled.
     ///
@@ -43,11 +55,12 @@ pub struct ProviderRun {
     /// How long an accepted turn may be *silent* before the embedded `pi-acp`
     /// gives up on it through its own settle fallback.
     ///
-    /// Distinct from [`ProviderRun::timeout`], which bounds the whole turn:
-    /// this one bounds silence. Every event the agent sends re-arms it, and a
-    /// tool the agent is running holds it off, so a long build, a long download
-    /// or a long streamed answer is never mistaken for a stuck agent. `0`
-    /// disables it and leaves `timeout` as the only bound.
+    /// Distinct from [`ProviderRun::timeout`], which bounds the run's silence
+    /// from the worker's side: this one is the adapter's own fallback and only
+    /// runs when `pi-acp` is embedded. Every event the agent sends re-arms it,
+    /// and a tool the agent is running holds it off, so a long build, a long
+    /// download or a long streamed answer is never mistaken for a stuck agent.
+    /// `0` disables it and leaves `timeout` as the only bound.
     pub settle_timeout: Duration,
     /// The host's maximum permission policy for this run.
     pub permission_ceiling: HostPermissionMode,
@@ -72,6 +85,7 @@ impl ProviderRun {
         dispatch: &RunDispatch,
         spec: ProviderSpec,
         timeout: Duration,
+        ceiling: Duration,
         permission_timeout: Duration,
         settle_timeout: Duration,
     ) -> Self {
@@ -83,6 +97,7 @@ impl ProviderRun {
             project_id: dispatch.project_id.clone(),
             run_id: dispatch.run_id.clone(),
             timeout,
+            ceiling,
             permission_timeout,
             settle_timeout,
             permission_ceiling: dispatch.permission_ceiling,

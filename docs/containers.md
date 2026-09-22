@@ -69,7 +69,7 @@ curl -s http://127.0.0.1:38886/health
 ```
 
 ```
-{"status":"ok","protocol_version":1,"node_id":"loom-server","uptime_ms":42,"readers":8,"retained_events":0}
+{"status":"ok","protocol_version":4,"node_id":"loom-server","uptime_ms":42,"readers":8,"retained_events":0}
 ```
 
 That is the all-in-one shape: one server, one worker on the same machine, each

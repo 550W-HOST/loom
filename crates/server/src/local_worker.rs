@@ -48,6 +48,16 @@ pub struct LocalWorkerConfig {
     /// File the enrolled host id is persisted in. `None` uses the worker's own
     /// default beside its data directory.
     pub state_path: Option<PathBuf>,
+    /// The child's silence budget for one provider run, when the server chose
+    /// one. `None` leaves the worker's own default in place.
+    ///
+    /// The server reaps a run the worker is still nursing if its own ceiling is
+    /// the lower of the two, so a server that was given budgets hands the same
+    /// values to the child it starts rather than letting the two drift.
+    pub run_timeout_ms: Option<u64>,
+    /// The child's total budget for one provider run, when the server chose
+    /// one. `None` leaves the worker's own default in place.
+    pub run_ceiling_ms: Option<u64>,
 }
 
 /// The URL a co-located worker dials for a given `--bind`.
@@ -196,23 +206,46 @@ async fn supervise(
 fn spawn_worker(program: &Path, config: &LocalWorkerConfig) -> std::io::Result<Child> {
     let mut command = Command::new(program);
     command
-        .arg("worker")
-        .arg("--server-url")
-        .arg(&config.server_url)
-        .arg("--name")
-        .arg(&config.name)
+        .args(worker_argv(config))
         .stdin(Stdio::null())
         // A server killed hard still takes its worker with it as far as the
         // kernel can arrange: this covers the graceful path, and the systemd
         // unit's `KillMode=control-group` covers the rest.
         .kill_on_drop(true);
+    command.spawn()
+}
+
+/// The child's arguments, minus the program name.
+///
+/// Everything the child needs is a flag. The run budgets ride along when the
+/// server was given them: the two processes measure the same run, and a child
+/// left on a longer ceiling than its server would be killed by the server's
+/// reaper instead of its own watchdog.
+fn worker_argv(config: &LocalWorkerConfig) -> Vec<std::ffi::OsString> {
+    let mut args: Vec<std::ffi::OsString> = vec![
+        "worker".into(),
+        "--server-url".into(),
+        config.server_url.clone().into(),
+        "--name".into(),
+        config.name.clone().into(),
+    ];
     if let Some(path) = &config.state_path {
-        command.arg("--state").arg(path);
+        args.push("--state".into());
+        args.push(path.clone().into());
     }
     if let Some(directory) = &config.data_dir {
-        command.arg("--data-dir").arg(directory);
+        args.push("--data-dir".into());
+        args.push(directory.clone().into());
     }
-    command.spawn()
+    if let Some(ms) = config.run_timeout_ms {
+        args.push("--run-timeout-ms".into());
+        args.push(ms.to_string().into());
+    }
+    if let Some(ms) = config.run_ceiling_ms {
+        args.push("--run-ceiling-ms".into());
+        args.push(ms.to_string().into());
+    }
+    args
 }
 
 #[cfg(test)]
@@ -259,5 +292,46 @@ mod tests {
     fn the_sibling_worker_name_sits_beside_this_executable() {
         let sibling = worker_sibling(Path::new("/usr/local/bin/loom")).unwrap();
         assert_eq!(sibling, PathBuf::from("/usr/local/bin/loom-worker"));
+    }
+
+    fn config() -> LocalWorkerConfig {
+        LocalWorkerConfig {
+            server_url: "http://127.0.0.1:38886".into(),
+            name: "local".into(),
+            data_dir: None,
+            state_path: None,
+            run_timeout_ms: None,
+            run_ceiling_ms: None,
+        }
+    }
+
+    fn value_of<'a>(argv: &'a [std::ffi::OsString], flag: &str) -> Option<&'a str> {
+        argv.iter()
+            .position(|arg| arg == flag)
+            .and_then(|index| argv.get(index + 1))
+            .and_then(|value| value.to_str())
+    }
+
+    /// The child only hears about the run budgets the server was given.
+    #[test]
+    fn the_child_inherits_the_servers_run_budgets() {
+        let plain = worker_argv(&config());
+        assert_eq!(value_of(&plain, "--run-timeout-ms"), None);
+        assert_eq!(value_of(&plain, "--run-ceiling-ms"), None);
+
+        let bounded = LocalWorkerConfig {
+            run_timeout_ms: Some(1_500),
+            run_ceiling_ms: Some(9_000),
+            ..config()
+        };
+        let argv = worker_argv(&bounded);
+        assert_eq!(value_of(&argv, "--run-timeout-ms"), Some("1500"));
+        assert_eq!(value_of(&argv, "--run-ceiling-ms"), Some("9000"));
+        // The budgets are additive: the rest of the command line is unchanged.
+        assert_eq!(
+            value_of(&argv, "--server-url"),
+            Some("http://127.0.0.1:38886")
+        );
+        assert_eq!(value_of(&argv, "--name"), Some("local"));
     }
 }

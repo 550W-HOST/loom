@@ -125,6 +125,21 @@ is outside the contract event so the inner payload still validates against
 host (`host_stale`) and a cancellation (`cancelled`) stay distinguishable even
 though the contract folds them into `status`
 
+## Side reports: models and commands
+
+Two facts a session reports are not run events and wait for no run:
+
+| Frame | Scope | Why it is not an event |
+| --- | --- | --- |
+| `CatalogReport` | `(host, provider)` | the agent's model list belongs to the machine, not to a conversation |
+| `CommandsReport` | `(host, provider, cwd)` | the session's command menu is an affordance, and prompt files make it workspace-specific |
+
+Both travel from the worker's socket loop as their own frame, are validated
+against the host the connection enrolled as, and are kept in memory on the
+server (`catalogs.rs`, `commands.rs`). The command list is merged into
+`projects.commands` as an additive overlay over the workspace scan; see
+[`contract.md`](contract.md).
+
 ## Joining a turn: the steer frame
 
 A user can type while the agent is working, and that input belongs to the turn
@@ -242,18 +257,23 @@ thread stayed `working` forever. The contract makes that unrepresentable by
 giving the terminal state **two independent owners**:
 
 1. **The worker** guarantees it per ACP connection. The ACP driver maps a
-   terminal prompt result, a transport exit or a timeout to exactly one
+   terminal prompt result, a transport exit or a budget expiry to exactly one
    `turn/completed`. The completion signal is taken from **whichever arrives
    first**: v1 reports `stop_reason` on the `session/prompt` response, v2 reports
    it in a `state_update: idle` notification (there is no stop reason on a v2
    response), and the response closes the turn when the notification never
    comes. That last case is not hypothetical — pi-acp drops the idle update when
    its outbound connector dies on a single unconvertible update, which is how a
-   real turn used to sit until the run timeout (W-623).
+   real turn used to sit until the run timeout (W-623). The worker's own budget
+   is on the run's **silence** and is held off by an item that started without
+   completing, so expiring it means the agent stopped saying anything, never
+   that it was merely slow; see `docs/acp-adapter.md`.
 2. **The server** guarantees it per run. `AppState::reconcile_runs` reaps a run
    whose deadline passed (`timed_out`) and every run on a host that stopped
    heartbeating (`host_stale`). It does not trust the execution plane to report
    its own death, because that is exactly what a dead execution plane cannot do.
+   Its deadline is recomputed on every report the run makes, so it too measures
+   silence rather than the length of the turn.
 
 The thread transition is idempotent: a terminal event for a run already reaped
 is dropped, and a second status change is not produced.
@@ -312,9 +332,12 @@ curl 'localhost:38886/api/v1/environments'
 ```
 
 An operator can override the provider executable on a machine with
-`--provider-cmd` / `--provider-args`, cap a run with
-`--run-timeout-ms`, and choose the managed-workspace root with
-`--workspace-root`. The override never changes the workspace.
+`--provider-cmd` / `--provider-args`, cap a run's *silence* with
+`--run-timeout-ms` and its total length with `--run-ceiling-ms`, and choose the
+managed-workspace root with `--workspace-root`. The override never changes the
+workspace. `loom server` takes the same two run budgets — it is the side that
+reaps a run whose worker went quiet — and `--local-worker` hands them to the
+child it starts, so one pair of flags describes both ends.
 
 When a run behaves oddly — text arrives but the turn never closes, or an
 expected frame is missing — `LOOM_ACP_TRACE=1` makes the worker print what the

@@ -426,6 +426,8 @@ mod tests {
             cwd: "/srv/project".to_owned(),
             started_at_ms: 10,
             deadline_ms: 20,
+            last_event_ms: None,
+            open_items: 0,
             turn_started: true,
             provider_thread_id: Some("acp-session-1".to_owned()),
             provider_id: Some("pi".to_owned()),

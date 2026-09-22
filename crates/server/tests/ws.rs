@@ -644,6 +644,78 @@ async fn a_worker_enrolls_over_the_socket_and_a_lost_socket_detaches_it() {
     state.shutdown().unwrap();
 }
 
+/// A command list is a fact about one workspace on one host.
+///
+/// The frame carries its own `(host, provider, cwd)`, so the server stores it
+/// under that address and a workspace no session has run in is simply absent
+/// rather than answered from another one's list. Speaking for a machine this
+/// connection did not enroll as is refused, the same rule every host-scoped
+/// frame follows.
+#[tokio::test]
+async fn a_command_report_is_recorded_for_its_own_workspace() {
+    let (addr, state) = spawn_server().await;
+
+    let mut worker = Client::connect(&addr).await;
+    worker
+        .send(json!({ "type": "enroll_host", "name": "laptop" }))
+        .await;
+    let enrolled = worker.recv().await;
+    assert_eq!(enrolled["type"], "host_enrolled");
+    let host_id = enrolled["host"]["id"].as_str().unwrap().to_string();
+
+    worker
+        .send(json!({
+            "type": "commands_report",
+            "report": {
+                "host_id": host_id,
+                "provider_id": "pi",
+                "cwd": "/srv/project",
+                "commands": [
+                    { "name": "review", "description": "Review the diff" },
+                    {
+                        "name": "skill:search",
+                        "description": "Search the repo",
+                        "argument_hint": "[query]"
+                    }
+                ]
+            }
+        }))
+        .await;
+
+    // A report produces no answer, so the next frame on this socket is the
+    // rejection of the stranger below; seeing it proves the accepted report was
+    // applied first.
+    let stranger = loom_domain::HostId::mint();
+    worker
+        .send(json!({
+            "type": "commands_report",
+            "report": {
+                "host_id": stranger,
+                "provider_id": "pi",
+                "cwd": "/srv/project",
+                "commands": []
+            }
+        }))
+        .await;
+    assert_eq!(worker.recv().await["type"], "error");
+
+    let host = host_id.parse::<loom_domain::HostId>().unwrap();
+    let recorded = state
+        .commands
+        .get(&host, "pi", "/srv/project")
+        .expect("the accepted report was recorded");
+    assert_eq!(recorded.len(), 2);
+    assert_eq!(recorded[0].name, "review");
+    assert_eq!(recorded[1].name, "skill:search");
+    assert_eq!(recorded[1].argument_hint.as_deref(), Some("[query]"));
+    assert!(
+        state.commands.get(&host, "pi", "/srv/other").is_none(),
+        "a workspace no session reported must not inherit another's list"
+    );
+
+    state.shutdown().unwrap();
+}
+
 /// Minimal HTTP GET, so the test suite needs no HTTP client dependency.
 async fn http_json(addr: &str, path: &str) -> Value {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};

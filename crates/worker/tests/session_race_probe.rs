@@ -67,6 +67,7 @@ fn run(cwd: &str, prompt: &str, provider_session_id: Option<&str>) -> ProviderRu
         project_id: loom_domain::ProjectId::mint(),
         run_id: loom_domain::RunId::mint(),
         timeout: TURN_BUDGET,
+        ceiling: loom_worker::DEFAULT_RUN_CEILING,
         permission_timeout: Duration::from_secs(15),
         settle_timeout: loom_worker::DEFAULT_SETTLE_TIMEOUT,
         permission_ceiling: loom_domain::HostPermissionMode::Full,
@@ -81,6 +82,7 @@ async fn drive_one(run: ProviderRun) -> Vec<loom_domain::RunEvent> {
     let (interactions, mut requests) =
         mpsc::channel::<loom_provider_protocol::InteractionRequest>(8);
     let (catalogs, _catalog_reports) = mpsc::channel(8);
+    let (commands, _command_reports) = mpsc::channel(8);
     let transport = Transport::EmbeddedPi {
         command: run.spec.command.clone(),
         args: Vec::new(),
@@ -92,6 +94,7 @@ async fn drive_one(run: ProviderRun) -> Vec<loom_domain::RunEvent> {
             transport,
             &tx,
             &catalogs,
+            &commands,
             PermissionRegistry::new(),
             interactions,
             &loom_worker::steer::SteerRegistry::new(),

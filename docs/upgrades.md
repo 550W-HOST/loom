@@ -35,8 +35,8 @@ an in-process swap — and this page is how that is used rather than fought.
 Two version fields exist, and only one of them is a compatibility gate:
 
 - **`protocol_version`** — the internal worker wire contract on `/internal/ws`
-  and for `RunDispatch`/`ProviderReport`. Currently `3`
-  (`crates/server/src/lib.rs`, bumped for the public/internal WebSocket split).
+  and for `RunDispatch`/`ProviderReport`. Currently `4`
+  (`crates/server/src/lib.rs`, bumped for the worker's command advertisement).
   **This is the worker compatibility gate.**
 - **`loom-bb-realtime-v1`** — the explicit public `/ws` subprotocol. Its message
   shapes are validated against `contracts/bb/client-ws.json`; it is not selected
@@ -48,7 +48,7 @@ Two version fields exist, and only one of them is a compatibility gate:
 
 ```bash
 curl -s http://127.0.0.1:38886/api/v1/version
-# {"version":"0.1.0","protocol_version":3}
+# {"version":"0.1.0","protocol_version":4}
 ```
 
 The server sends `protocol_version` in the first `hello` frame on
@@ -144,7 +144,7 @@ failure:
   deployed v2 worker                    server (protocol 3)
     │                                         │
     │── dial /ws (no subprotocol) ──────────▶│
-    │◀─ legacy welcome {protocol_version:3} ─│
+    │◀─ legacy welcome {protocol_version:4} ─│
     │◀─ close ───────────────────────────────│
     │                                         │
     │  ensure_compatible_protocol(3)
@@ -165,7 +165,7 @@ failure:
   systemd starts the v3 binary ───────────────┘
     │
     │── dial /internal/ws ──────────────────▶│
-    │◀─ hello {protocol_version:3} ──────────│
+    │◀─ hello {protocol_version:4} ──────────│
     │  match → enroll → subscribe → replay from the persisted cursor
     ▼
 ```

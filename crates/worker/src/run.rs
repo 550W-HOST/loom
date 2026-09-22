@@ -44,6 +44,7 @@ pub async fn run(args: WorkerArgs) -> Result<(), Box<dyn std::error::Error>> {
     let mut config = WorkerConfig::new(&options.server_url, &options.name);
     config.heartbeat_interval = options.heartbeat_interval;
     config.run_timeout = options.run_timeout;
+    config.run_ceiling = options.run_ceiling;
     config.settle_timeout = options.settle_timeout;
     config.permission_timeout = options.permission_timeout;
     if let Some(root) = &options.workspace_root {
@@ -209,6 +210,7 @@ struct Options {
     host_id: Option<HostId>,
     heartbeat_interval: Duration,
     run_timeout: Duration,
+    run_ceiling: Duration,
     settle_timeout: Duration,
     permission_timeout: Duration,
     provider: Option<ProviderSpec>,
@@ -228,6 +230,7 @@ impl Options {
             host_id,
             heartbeat_ms,
             run_timeout_ms,
+            run_ceiling_ms,
             settle_timeout_ms,
             permission_timeout_ms,
             state,
@@ -250,6 +253,9 @@ impl Options {
         let run_timeout = run_timeout_ms
             .map(Duration::from_millis)
             .unwrap_or(crate::DEFAULT_RUN_TIMEOUT);
+        let run_ceiling = run_ceiling_ms
+            .map(Duration::from_millis)
+            .unwrap_or(crate::DEFAULT_RUN_CEILING);
         let settle_timeout = settle_timeout_ms
             .map(Duration::from_millis)
             .unwrap_or(crate::DEFAULT_SETTLE_TIMEOUT);
@@ -276,6 +282,7 @@ impl Options {
             host_id,
             heartbeat_interval,
             run_timeout,
+            run_ceiling,
             settle_timeout,
             permission_timeout,
             provider,
@@ -371,6 +378,36 @@ mod tests {
             options(&["--server-url", "http://x:1", "--settle-timeout-ms", "0"]).settle_timeout,
             Duration::ZERO
         );
+    }
+
+    #[test]
+    fn the_run_budgets_default_and_the_flags_override_them() {
+        let defaults = options(&["--server-url", "http://x:1"]);
+        assert_eq!(defaults.run_timeout, crate::DEFAULT_RUN_TIMEOUT);
+        assert_eq!(defaults.run_ceiling, crate::DEFAULT_RUN_CEILING);
+
+        let overridden = options(&[
+            "--server-url",
+            "http://x:1",
+            "--run-timeout-ms",
+            "1500",
+            "--run-ceiling-ms",
+            "9000",
+        ]);
+        assert_eq!(overridden.run_timeout, Duration::from_millis(1_500));
+        assert_eq!(overridden.run_ceiling, Duration::from_millis(9_000));
+
+        // 0 is a deliberate "no bound", not a missing value.
+        let unbounded = options(&[
+            "--server-url",
+            "http://x:1",
+            "--run-timeout-ms",
+            "0",
+            "--run-ceiling-ms",
+            "0",
+        ]);
+        assert_eq!(unbounded.run_timeout, Duration::ZERO);
+        assert_eq!(unbounded.run_ceiling, Duration::ZERO);
     }
 
     #[test]

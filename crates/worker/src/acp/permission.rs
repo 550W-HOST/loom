@@ -494,6 +494,7 @@ mod tests {
             project_id: ProjectId::mint(),
             run_id: RunId::mint(),
             timeout: Duration::from_secs(30),
+            ceiling: crate::DEFAULT_RUN_CEILING,
             permission_timeout: Duration::from_secs(30),
             settle_timeout: crate::DEFAULT_SETTLE_TIMEOUT,
             permission_ceiling: HostPermissionMode::Full,

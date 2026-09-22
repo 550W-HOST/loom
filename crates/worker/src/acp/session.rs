@@ -25,7 +25,7 @@
 
 use std::sync::Arc;
 
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 
 use agent_client_protocol::schema::v1::{
     CancelNotification, ContentBlock, InitializeRequest, LoadSessionRequest, NewSessionRequest,
@@ -40,7 +40,9 @@ use loom_domain::{
     ModelFallbackReason, ProviderErrorCategory, ProviderEvent, ProviderWarningCategory,
     ReasoningLevel, RunEvent,
 };
-use loom_provider_protocol::{InteractionRequest, ProviderCatalogReport, ProviderReport};
+use loom_provider_protocol::{
+    InteractionRequest, ProviderCatalogReport, ProviderCommandsReport, ProviderReport,
+};
 use tokio::sync::mpsc;
 
 use super::permission::{PermissionBroker, PermissionRegistry};
@@ -130,11 +132,13 @@ macro_rules! acp_trace {
 /// one was sent this returns `Ok(())`, so the caller's fallback cannot
 /// double-report. The task wrapper below turns any returned failure into the
 /// same terminal event.
+#[allow(clippy::too_many_arguments)]
 pub async fn drive(
     run: &ProviderRun,
     transport: Transport,
     reports: &mpsc::Sender<ProviderReport>,
     catalogs: &mpsc::Sender<ProviderCatalogReport>,
+    commands: &mpsc::Sender<ProviderCommandsReport>,
     permissions: PermissionRegistry,
     interactions: mpsc::Sender<InteractionRequest>,
     steers: &crate::steer::SteerRegistry,
@@ -159,8 +163,13 @@ pub async fn drive(
     // ends, which is what makes a later steer a harmless no-op.
     let steer_rx = steers.register(run.run_id.clone()).await;
 
+    // The run's budgets are measured against what it reports; the sink is the
+    // only place that sees every event, so the two share this.
+    let liveness = Arc::new(RunLiveness::new());
+
     let sink = UpdateSink {
         run: run.clone(),
+        liveness: liveness.clone(),
         state: Arc::new(tokio::sync::Mutex::new(UpdateState {
             translator: AcpTranslator::new(RunContext {
                 thread_id: run.thread_id.clone(),
@@ -174,6 +183,7 @@ pub async fn drive(
         })),
         reports: reports.clone(),
         catalogs: catalogs.clone(),
+        commands: commands.clone(),
         report_lock: Arc::new(tokio::sync::Mutex::new(())),
         terminal_sent: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         completion_notify: Arc::new(tokio::sync::Notify::new()),
@@ -208,18 +218,46 @@ pub async fn drive(
             }
         }
     };
-    let outcome = match tokio::time::timeout(run.timeout, operation).await {
-        Ok(outcome) => outcome,
-        Err(_) => {
-            let result = sink
-                .terminal_timeout(format!(
-                    "ACP agent did not settle within {}ms",
-                    run.timeout.as_millis()
-                ))
-                .await;
+    // The run is bounded by its own reporting rather than by the clock alone:
+    // see `RunLiveness`. `timeout_at` borrows the operation so a moving
+    // deadline re-arms the wait instead of restarting the turn.
+    tokio::pin!(operation);
+    let started = tokio::time::Instant::now();
+    let mut expired: Option<RunBudget> = None;
+    let outcome = loop {
+        let Some((deadline, _)) = liveness.deadline(started, run.timeout, run.ceiling) else {
+            // Both bounds were removed (`0`), so nothing but the operation
+            // itself ends the run.
+            break operation.await;
+        };
+        match tokio::time::timeout_at(deadline, &mut operation).await {
+            Ok(outcome) => break outcome,
+            Err(_) => {
+                // A deadline can move while it is being waited on: a report
+                // re-arms the silence bound, and a finished item re-arms it
+                // from the completion. Only a deadline still in the past ends
+                // the run.
+                if let Some((again, budget)) = liveness.deadline(started, run.timeout, run.ceiling)
+                {
+                    if again <= tokio::time::Instant::now() {
+                        expired = Some(budget);
+                        break Ok(());
+                    }
+                }
+            }
+        }
+    };
+    let outcome = match expired {
+        Some(budget) => {
+            let budget_value = match budget {
+                RunBudget::Timeout => run.timeout,
+                RunBudget::Ceiling => run.ceiling,
+            };
+            let result = sink.terminal_timeout(budget.reason(budget_value)).await;
             steers.forget(&run.run_id).await;
             return result;
         }
+        None => outcome,
     };
     steers.forget(&run.run_id).await;
 
@@ -536,10 +574,124 @@ struct UpdateState {
     pending_load_usage_v2: Option<v2::SessionUpdate>,
 }
 
+/// Which bound ended a run.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RunBudget {
+    /// The run stopped reporting for its silence budget.
+    Timeout,
+    /// The run spent its total budget, however active it was.
+    Ceiling,
+}
+
+impl RunBudget {
+    /// The message the terminal event carries.
+    ///
+    /// It names the budget that fired rather than reusing the adapter's own
+    /// "did not settle" wording. The two are different timers with different
+    /// values, and a client told "did not settle within 1800000ms" while the
+    /// adapter's settle fallback is 600000ms cannot tell which one ended the
+    /// turn.
+    fn reason(self, budget: std::time::Duration) -> String {
+        match self {
+            RunBudget::Timeout => format!(
+                "the agent produced no events for {}ms, so loom ended the run",
+                budget.as_millis()
+            ),
+            RunBudget::Ceiling => {
+                format!("the run exceeded its {}ms ceiling", budget.as_millis())
+            }
+        }
+    }
+}
+
+/// What a run's budgets are measured against.
+///
+/// The rule is the one the embedded adapter applies to its own settle fallback:
+/// a run that is still reporting is not stuck, and a *call* that started without
+/// completing is work rather than silence. A tool call that runs for an hour
+/// therefore holds [`ProviderRun::timeout`] off, and only
+/// [`ProviderRun::ceiling`] can end it. Without this the worker's wall clock
+/// would kill exactly the turns the adapter was fixed to protect — a long
+/// build, a long download, a delegated child agent.
+#[derive(Debug)]
+struct RunLiveness {
+    state: std::sync::Mutex<RunLivenessState>,
+}
+
+#[derive(Debug)]
+struct RunLivenessState {
+    /// When the run last reported anything.
+    last_event: tokio::time::Instant,
+    /// Calls that have started and have not completed, by item id.
+    ///
+    /// Only work counts — see
+    /// [`ThreadEventItem::is_running_call`](loom_domain::ThreadEventItem::is_running_call):
+    /// a message has no completion in the contract, so counting one would hold
+    /// the silence bound off for the rest of the run.
+    ///
+    /// A set rather than a count, so a duplicated `item/started` or a
+    /// completion for an item the run never opened cannot drift the bound.
+    open_items: HashSet<String>,
+}
+
+impl RunLiveness {
+    /// Starts the clock at construction, which is when the run's driver began.
+    fn new() -> Self {
+        Self {
+            state: std::sync::Mutex::new(RunLivenessState {
+                last_event: tokio::time::Instant::now(),
+                open_items: HashSet::new(),
+            }),
+        }
+    }
+
+    /// Records one reported event against the budgets.
+    fn observe(&self, event: &ProviderEvent) {
+        let mut state = self.state.lock().expect("run liveness mutex");
+        state.last_event = tokio::time::Instant::now();
+        match event {
+            ProviderEvent::ItemStarted { item, .. } if item.is_running_call() => {
+                state.open_items.insert(item.id().to_owned());
+            }
+            ProviderEvent::ItemCompleted { item, .. } => {
+                state.open_items.remove(item.id());
+            }
+            _ => {}
+        }
+    }
+
+    /// The instant the run must be terminal by, and the budget that decided it.
+    ///
+    /// `None` means neither bound is in force, which `0` selects for either.
+    fn deadline(
+        &self,
+        started: tokio::time::Instant,
+        timeout: std::time::Duration,
+        ceiling: std::time::Duration,
+    ) -> Option<(tokio::time::Instant, RunBudget)> {
+        let state = self.state.lock().expect("run liveness mutex");
+        let ceiling_at = (!ceiling.is_zero()).then(|| started + ceiling);
+        let idle_at =
+            (!timeout.is_zero() && state.open_items.is_empty()).then(|| state.last_event + timeout);
+        match (idle_at, ceiling_at) {
+            (Some(idle), Some(ceiling)) => Some(if ceiling <= idle {
+                (ceiling, RunBudget::Ceiling)
+            } else {
+                (idle, RunBudget::Timeout)
+            }),
+            (Some(idle), None) => Some((idle, RunBudget::Timeout)),
+            (None, Some(ceiling)) => Some((ceiling, RunBudget::Ceiling)),
+            (None, None) => None,
+        }
+    }
+}
+
 /// What is shared between the client callbacks and the conversation driver.
 #[derive(Clone)]
 struct UpdateSink {
     run: ProviderRun,
+    /// What the run's own budgets are measured against. See [`RunLiveness`].
+    liveness: Arc<RunLiveness>,
     state: Arc<tokio::sync::Mutex<UpdateState>>,
     reports: mpsc::Sender<ProviderReport>,
     /// Where the catalogue read from this session's config options is reported.
@@ -548,6 +700,12 @@ struct UpdateSink {
     /// run, so it travels on its own channel to the socket loop instead of
     /// being folded into a run event.
     catalogs: mpsc::Sender<ProviderCatalogReport>,
+    /// Where the commands read from this session's advertisement are reported.
+    ///
+    /// A command list is a fact about the workspace and the agent rather than
+    /// about this run, so it travels on its own channel to the socket loop
+    /// instead of being folded into a run event.
+    commands: mpsc::Sender<ProviderCommandsReport>,
     /// Preserves report order across the notification callback and the
     /// conversation future. In particular, identity must be sent before any
     /// update released from construction.
@@ -753,6 +911,7 @@ impl UpdateSink {
             }
             state.translator.on_session_update(&notification.update)
         };
+        self.report_commands().await;
         self.report_all(events).await;
     }
 
@@ -797,6 +956,7 @@ impl UpdateSink {
             }
             state.translator.on_v2_session_update(&notification.update)
         };
+        self.report_commands().await;
         if self
             .steer_in_flight
             .load(std::sync::atomic::Ordering::SeqCst)
@@ -897,6 +1057,7 @@ impl UpdateSink {
                 }
             };
             self.report_all_locked(events, None).await;
+            self.report_commands().await;
         }
         if let Some(update) = load_usage {
             let events = {
@@ -1150,6 +1311,34 @@ impl UpdateSink {
             .await;
     }
 
+    /// Reports the commands the session advertised, once, after the update
+    /// that carried them was translated.
+    ///
+    /// ACP's `AvailableCommandsUpdate` translates to no event — the contract
+    /// has no command-list fact — so the list leaves on its own channel. The
+    /// session's working directory is part of the report because prompt files
+    /// are read from it: the same agent in another workspace has a different
+    /// list.
+    async fn report_commands(&self) {
+        let commands = {
+            let mut state = self.state.lock().await;
+            state.translator.take_advertised_commands()
+        };
+        let Some(commands) = commands else { return };
+        let Some(cwd) = self.run.spec.cwd.clone() else {
+            return;
+        };
+        let _ = self
+            .commands
+            .send(ProviderCommandsReport {
+                host_id: self.run.host_id.clone(),
+                provider_id: self.run.spec.name.clone(),
+                cwd,
+                commands,
+            })
+            .await;
+    }
+
     /// Initialize, open or resume a v2 session, send the prompt, and wait for
     /// the protocol's `state_update: idle` notification. The v2 resume request
     /// intentionally omits `replayFrom`: loom's timeline already owns the
@@ -1330,13 +1519,20 @@ impl UpdateSink {
         Ok(())
     }
 
-    /// Ends the run with a timeout, unless it already ended.
+    /// Ends the run with a budget expiry, unless it already ended.
+    ///
+    /// The category is `BudgetExceeded`, not `ConnectionFailed`: a run that
+    /// spent its budget had a working connection, and a client that treats a
+    /// connection failure specially would do the wrong thing with this. bb's
+    /// category set has no dedicated timeout value, and this is the one whose
+    /// contract meaning — "a budget was exceeded" — is exactly the case; the
+    /// message names which budget and when.
     async fn terminal_timeout(&self, message: String) -> Result<(), String> {
         let events = {
             let mut state = self.state.lock().await;
             state
                 .translator
-                .on_failure(message, ProviderErrorCategory::ConnectionFailed)
+                .on_failure(message, ProviderErrorCategory::BudgetExceeded)
         };
         self.report_all_with_outcome(events, Some(loom_domain::RunOutcome::TimedOut))
             .await;
@@ -1370,6 +1566,7 @@ impl UpdateSink {
                 body.kind(),
                 body.is_terminal()
             );
+            self.liveness.observe(&body);
             if self.terminal_sent.load(Ordering::SeqCst) {
                 // A terminal event already ended this run; anything after it
                 // would be reported against a finished run.
@@ -1415,11 +1612,13 @@ impl UpdateSink {
 ///
 /// a dispatch cannot be left without a verdict. This is the only provider task
 /// wrapper; the former direct-Pi driver no longer exists.
+#[allow(clippy::too_many_arguments)]
 pub fn spawn(
     run: ProviderRun,
     transport: Transport,
     reports: mpsc::Sender<ProviderReport>,
     catalogs: mpsc::Sender<ProviderCatalogReport>,
+    commands: mpsc::Sender<ProviderCommandsReport>,
     permissions: PermissionRegistry,
     interactions: mpsc::Sender<InteractionRequest>,
     steers: crate::steer::SteerRegistry,
@@ -1430,6 +1629,7 @@ pub fn spawn(
             transport,
             &reports,
             &catalogs,
+            &commands,
             permissions,
             interactions,
             &steers,
@@ -1465,6 +1665,143 @@ mod tests {
         assert_eq!(settle_timeout_secs(Duration::from_millis(1_000)), 1);
         assert_eq!(settle_timeout_secs(Duration::from_millis(1_001)), 2);
         assert_eq!(settle_timeout_secs(Duration::from_secs(600)), 600);
+    }
+
+    /// A tool call, which is what a run's silence bound is held off for.
+    fn tool_item(id: &str) -> loom_domain::ThreadEventItem {
+        loom_domain::ThreadEventItem::ToolCall {
+            id: id.to_owned(),
+            server: None,
+            tool: "fork".to_owned(),
+            arguments: None,
+            status: loom_domain::ItemStatus::Pending,
+            result: None,
+            error: None,
+            duration_ms: None,
+            presentation: None,
+            parent_tool_call_id: None,
+        }
+    }
+
+    /// A call that started and has not completed.
+    fn open_item(id: &str) -> ProviderEvent {
+        ProviderEvent::ItemStarted {
+            item: tool_item(id),
+            provider_thread_id: "session".to_owned(),
+        }
+    }
+
+    /// The completion of a call [`open_item`] opened.
+    fn completed_item(id: &str) -> ProviderEvent {
+        ProviderEvent::ItemCompleted {
+            item: tool_item(id),
+            provider_thread_id: "session".to_owned(),
+        }
+    }
+
+    /// A tool call that is still running is work, not silence.
+    ///
+    /// This is the rule that keeps a forked child agent — one item held open for
+    /// half an hour — from being killed by the run's own wall clock. Only the
+    /// ceiling can end it.
+    #[test]
+    fn an_open_item_holds_the_silence_budget_off() {
+        let liveness = RunLiveness::new();
+        let started = tokio::time::Instant::now();
+        let idle = Duration::from_secs(30);
+        let ceiling = Duration::from_secs(600);
+
+        liveness.observe(&open_item("tool-1"));
+        let (deadline, budget) = liveness
+            .deadline(started, idle, ceiling)
+            .expect("the ceiling is still a bound");
+        assert_eq!(budget, RunBudget::Ceiling);
+        assert_eq!(deadline, started + ceiling);
+    }
+
+    /// A finished item hands the silence budget back, from the completion.
+    #[test]
+    fn a_finished_item_gives_the_silence_budget_back() {
+        let liveness = RunLiveness::new();
+        let started = tokio::time::Instant::now();
+        let idle = Duration::from_secs(30);
+        let ceiling = Duration::from_secs(600);
+
+        liveness.observe(&open_item("tool-1"));
+        liveness.observe(&completed_item("tool-1"));
+        let (deadline, budget) = liveness.deadline(started, idle, ceiling).expect("a bound");
+        assert_eq!(budget, RunBudget::Timeout);
+        assert!(
+            deadline >= started + idle,
+            "the silence bound must count from the completion: {deadline:?}"
+        );
+    }
+
+    /// A message is not a call, however long it stays "open".
+    ///
+    /// A user or agent message has no completion in the contract — its
+    /// `item/started` is its whole lifecycle — so counting one would hold the
+    /// silence bound off for the rest of the run and leave only the ceiling.
+    #[test]
+    fn a_message_does_not_hold_the_silence_budget_off() {
+        let liveness = RunLiveness::new();
+        let started = tokio::time::Instant::now();
+        let idle = Duration::from_secs(30);
+        let ceiling = Duration::from_secs(600);
+
+        liveness.observe(&ProviderEvent::ItemStarted {
+            item: loom_domain::ThreadEventItem::UserMessage {
+                id: "user-1".to_owned(),
+                content: Vec::new(),
+                client_request_id: None,
+                parent_tool_call_id: None,
+            },
+            provider_thread_id: "session".to_owned(),
+        });
+        let (_, budget) = liveness.deadline(started, idle, ceiling).expect("a bound");
+        assert_eq!(
+            budget,
+            RunBudget::Timeout,
+            "a message must not disable the silence bound"
+        );
+    }
+
+    /// `0` removes a bound rather than making it immediate.
+    #[test]
+    fn a_zero_budget_is_removed() {
+        let liveness = RunLiveness::new();
+        let started = tokio::time::Instant::now();
+
+        // No silence bound: only the ceiling.
+        let (_, budget) = liveness
+            .deadline(started, Duration::ZERO, Duration::from_secs(600))
+            .expect("the ceiling is still a bound");
+        assert_eq!(budget, RunBudget::Ceiling);
+
+        // An open item and no ceiling: nothing bounds the run.
+        liveness.observe(&open_item("tool-1"));
+        assert_eq!(
+            liveness.deadline(started, Duration::from_secs(30), Duration::ZERO),
+            None
+        );
+
+        // Neither bound is configured.
+        assert_eq!(
+            liveness.deadline(started, Duration::ZERO, Duration::ZERO),
+            None
+        );
+    }
+
+    /// The reason says which budget fired, not that the agent "did not settle".
+    #[test]
+    fn the_reason_names_the_budget_that_fired() {
+        let silence = RunBudget::Timeout.reason(Duration::from_millis(1_500));
+        assert!(silence.contains("no events for 1500ms"), "{silence}");
+        assert!(!silence.contains("settle"), "{silence}");
+        assert!(!silence.contains("connection"), "{silence}");
+
+        let ceiling = RunBudget::Ceiling.reason(Duration::from_secs(6 * 60 * 60));
+        assert!(ceiling.contains("21600000ms ceiling"), "{ceiling}");
     }
 
     fn select(config_id: &str, current: &str, values: &[&str]) -> v2::SessionConfigOption {
@@ -1682,11 +2019,13 @@ mod tests {
         steers: &crate::steer::SteerRegistry,
         reports: mpsc::Sender<ProviderReport>,
         catalogs: mpsc::Sender<ProviderCatalogReport>,
+        commands: mpsc::Sender<ProviderCommandsReport>,
     ) -> UpdateSink {
         let (interactions, _interaction_requests) = mpsc::channel(8);
         let steer_rx = steers.register(run.run_id.clone()).await;
         UpdateSink {
             run: run.clone(),
+            liveness: Arc::new(RunLiveness::new()),
             state: Arc::new(tokio::sync::Mutex::new(UpdateState {
                 translator: AcpTranslator::new(RunContext {
                     thread_id: run.thread_id.clone(),
@@ -1700,6 +2039,7 @@ mod tests {
             })),
             reports,
             catalogs,
+            commands,
             report_lock: Arc::new(tokio::sync::Mutex::new(())),
             terminal_sent: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             completion_notify: Arc::new(tokio::sync::Notify::new()),
@@ -1732,6 +2072,7 @@ mod tests {
             project_id: loom_domain::ProjectId::mint(),
             run_id: loom_domain::RunId::mint(),
             timeout: Duration::from_secs(10),
+            ceiling: crate::DEFAULT_RUN_CEILING,
             permission_timeout: Duration::from_secs(5),
             settle_timeout: crate::DEFAULT_SETTLE_TIMEOUT,
             permission_ceiling: loom_domain::HostPermissionMode::Full,
@@ -1743,7 +2084,8 @@ mod tests {
         let steers = crate::steer::SteerRegistry::new();
         let (reports_tx, mut reports_rx) = mpsc::channel(64);
         let (catalogs_tx, _catalog_reports) = mpsc::channel(64);
-        let sink = sink_for(&run, &cwd, &steers, reports_tx, catalogs_tx).await;
+        let (commands_tx, _command_reports) = mpsc::channel(64);
+        let sink = sink_for(&run, &cwd, &steers, reports_tx, catalogs_tx, commands_tx).await;
 
         let agent = SteerableAgent::new();
         let drive_sink = sink.clone();

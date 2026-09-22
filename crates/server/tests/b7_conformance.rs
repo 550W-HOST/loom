@@ -28,7 +28,7 @@ use loom_domain::{EnvironmentKind, HostId, ProjectKind};
 use loom_provider_protocol::{
     project_attachments_root, HostFileContent, HostFileEncoding, HostFileEntry, HostFileFailure,
     HostFileOperation, HostFileOutcome, HostFileReport, HostPathKind, HostRpcOperation,
-    HostRpcOutcome, HostRpcReport,
+    HostRpcOutcome, HostRpcReport, ProviderCommand,
 };
 use loom_server::http::router;
 use loom_server::state::{AppConfig, AppState};
@@ -899,6 +899,7 @@ async fn project_commands_asks_the_host_and_projects_its_rows() {
             "commands": [
                 { "name": "compact", "origin": "builtin", "description": "Compact", "argumentHint": null },
                 { "name": "review", "origin": "project", "description": "Review the diff", "argumentHint": "[range]" },
+                { "name": "handoff", "origin": "user", "description": "Hand off the session", "argumentHint": null },
             ]
         }),
     });
@@ -916,6 +917,9 @@ async fn project_commands_asks_the_host_and_projects_its_rows() {
     assert_eq!(response.body["commands"][0]["source"], "command");
     assert_eq!(response.body["commands"][1]["origin"], "project");
     assert_eq!(response.body["commands"][1]["argumentHint"], "[range]");
+    // The contract has three origins and the worker now produces all of them;
+    // the projection must not collapse a user prompt into a project one.
+    assert_eq!(response.body["commands"][2]["origin"], "user");
 
     match fixture.next_rpc_request().await {
         HostRpcOperation::ListCommands { cwd } => assert_eq!(cwd, WORKSPACE),
@@ -935,6 +939,79 @@ async fn project_commands_asks_the_host_and_projects_its_rows() {
         ))
         .await;
     assert_status_and_error(&other, 400, "invalid_request");
+}
+
+/// A live session's advertisement is merged over the workspace scan: it can
+/// name commands the scan cannot see, while the scan supplies the origin and
+/// hint ACP's advertisement does not carry.
+#[tokio::test]
+async fn project_commands_merges_the_live_advertisement_over_the_scan() {
+    let mut fixture = fixture().await;
+    fixture.answer_rpc(HostRpcOutcome::Result {
+        result: json!({
+            "commands": [
+                { "name": "compact", "origin": "builtin", "description": "Compact", "argumentHint": null },
+                { "name": "review", "origin": "project", "description": "Review the diff", "argumentHint": "[range]" },
+            ]
+        }),
+    });
+    // A session in this workspace advertised its own list. `review` is already
+    // answered by the scan and keeps the scan's row; `skill:search` and a
+    // package prompt exist only in the advertisement.
+    fixture.state.commands.record(
+        &fixture.host_id,
+        &fixture.provider,
+        WORKSPACE,
+        vec![
+            ProviderCommand {
+                name: "review".into(),
+                description: "Review the diff (live)".into(),
+                argument_hint: Some("[live range]".into()),
+            },
+            ProviderCommand {
+                name: "skill:search".into(),
+                description: "Web search".into(),
+                argument_hint: None,
+            },
+            ProviderCommand {
+                name: "package-prompt".into(),
+                description: "Shipped by a package".into(),
+                argument_hint: None,
+            },
+        ],
+    );
+
+    let provider = fixture.provider.clone();
+    let response = fixture
+        .get(&format!(
+            "/api/v1/projects/{}/commands?provider={provider}",
+            fixture.project_id
+        ))
+        .await;
+    assert_eq!(response.status, 200);
+    assert_response("projects.commands", response.status, &response.body);
+    let commands = response.body["commands"].as_array().unwrap();
+    let row = |name: &str| {
+        commands
+            .iter()
+            .find(|row| row["name"] == name)
+            .unwrap_or_else(|| panic!("no {name} row: {commands:#?}"))
+    };
+    // The scan's row wins for a name it already answered.
+    assert_eq!(row("review")["origin"], "project");
+    assert_eq!(row("review")["argumentHint"], "[range]");
+    // A skill is attributed by its name and the contract's `skill` source.
+    assert_eq!(row("skill:search")["source"], "skill");
+    assert_eq!(row("skill:search")["origin"], "user");
+    // Anything else the agent advertises beyond the scan is the agent's own.
+    assert_eq!(row("package-prompt")["source"], "command");
+    assert_eq!(row("package-prompt")["origin"], "builtin");
+    assert_eq!(row("package-prompt")["description"], "Shipped by a package");
+
+    match fixture.next_rpc_request().await {
+        HostRpcOperation::ListCommands { cwd } => assert_eq!(cwd, WORKSPACE),
+        other => panic!("expected a command listing, got {other:?}"),
+    }
 }
 
 #[tokio::test]

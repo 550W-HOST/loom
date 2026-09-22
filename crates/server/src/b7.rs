@@ -77,7 +77,7 @@ use axum::response::{IntoResponse, Response};
 use axum::Json;
 use loom_domain::{Environment, MessageRole, Project, ProjectId, ProjectSourceId, ThreadSectionId};
 use loom_provider_protocol::{
-    project_attachments_root, HostFileContent, HostFileOperation, HostFileOutcome,
+    project_attachments_root, HostFileContent, HostFileOperation, HostFileOutcome, ProviderCommand,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -858,6 +858,13 @@ pub async fn project_file_content(
 /// against the project's source. The `provider` parameter is required by the
 /// contract; loom runs one provider, so a value naming a different one is a
 /// `400` rather than a silently different answer.
+///
+/// When a live session in this workspace has advertised its own list, that list
+/// is merged over the scan: it can name commands the scan cannot see (package
+/// prompt templates, agent skills), while the scan supplies the origin and hint
+/// ACP's advertisement does not carry. The merge is additive — a name the
+/// workspace scan already answered keeps its row — and the scan remains the
+/// base answer for a workspace no session has run in yet.
 pub async fn project_commands(
     State(state): State<AppState>,
     AxumPath(raw_project_id): AxumPath<String>,
@@ -887,6 +894,13 @@ pub async fn project_commands(
         Ok(workspace) => workspace,
         Err(response) => return response,
     };
+    // The advertisement from this workspace's most recent session, when there
+    // is one. It is looked up before the host RPC because the RPC is the slow
+    // half and the live list is the half that can name commands the scan
+    // cannot.
+    let live_commands = state
+        .commands
+        .get(&workspace.host_id, &query.provider, &workspace.path);
     let outcome = match state
         .request_host_rpc(
             &workspace.host_id,
@@ -919,7 +933,7 @@ pub async fn project_commands(
     };
     match outcome {
         loom_provider_protocol::HostRpcOutcome::Result { result } => {
-            match project_commands_projection(result) {
+            match project_commands_projection(result, live_commands.as_deref()) {
                 Ok(body) => Json(body).into_response(),
                 Err(response) => response,
             }
@@ -937,7 +951,10 @@ pub async fn project_commands(
 /// `additionalProperties: false` with four required fields, and a host that
 /// answered something else would otherwise produce a response the client cannot
 /// parse.
-fn project_commands_projection(result: Value) -> Result<Value, Response> {
+fn project_commands_projection(
+    result: Value,
+    live: Option<&[ProviderCommand]>,
+) -> Result<Value, Response> {
     let commands = result
         .get("commands")
         .and_then(Value::as_array)
@@ -969,7 +986,40 @@ fn project_commands_projection(result: Value) -> Result<Value, Response> {
             "argumentHint": command.get("argumentHint").cloned().unwrap_or(Value::Null),
         }));
     }
+    if let Some(live) = live {
+        append_live_commands(&mut projected, live);
+    }
     Ok(json!({ "commands": projected }))
+}
+
+/// Adds the commands a live session advertised that the workspace scan did not
+/// report.
+///
+/// ACP's `AvailableCommand` is a name, a description and an input hint, and no
+/// origin — the protocol has no notion of where a command came from. A row only
+/// the advertisement knows is therefore attributed by its name: pi registers
+/// skills as `skill:<name>`, and anything else an agent advertises beyond the
+/// workspace scan is the agent's own, which the contract calls `builtin`. A row
+/// the scan already reported keeps the scan's origin and hint, which is why
+/// this merges instead of replacing.
+fn append_live_commands(projected: &mut Vec<Value>, live: &[ProviderCommand]) {
+    let mut known: std::collections::HashSet<String> = projected
+        .iter()
+        .filter_map(|row| row.get("name").and_then(Value::as_str).map(str::to_owned))
+        .collect();
+    for command in live {
+        if !known.insert(command.name.clone()) {
+            continue;
+        }
+        let skill = command.name.starts_with("skill:");
+        projected.push(json!({
+            "name": command.name,
+            "source": if skill { "skill" } else { "command" },
+            "origin": if skill { "user" } else { "builtin" },
+            "description": command.description,
+            "argumentHint": command.argument_hint,
+        }));
+    }
 }
 
 /* ------------------------------------------------------------------ */

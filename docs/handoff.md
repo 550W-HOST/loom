@@ -508,6 +508,107 @@ Measured on this checkout: `cargo check --workspace --locked` clean;
 `cargo test -p loom-worker --lib --locked` 136 passed; `cargo test -p loom-worker
 --test acp_session --locked` 13 passed.
 
+## The run budget bounds silence, not the turn (2026-09-22)
+
+A session died with `ACP agent did not settle within 1800000ms` while it was
+demonstrably alive. The timeline (`thread_history_row` for
+`thr_01M33T9XHH384D1XDEH5ZMB1PV`) showed what happened: the pi agent had called
+the **`pi-fork` extension's `fork` tool** — a child `pi` process running a
+reconnaissance task — and that one call produced **39858
+`item/toolCall/progress` frames**, streaming from 06:42:34 to 07:11:48. The
+worker's wall clock ended the run at 1800 s anyway, 16 seconds after the last
+frame.
+
+The `v0.5.2` upgrade above had already made the *adapter's* settle budget
+activity-aware; the worker's own `run_timeout` had not, so the same class of bug
+was still reachable one layer up — and it fired. What changed:
+
+- `ProviderRun::timeout` (`--run-timeout-ms`, default 30 min) now bounds the
+  run's **silence**. Every report re-arms it, and a *running call* that started
+  without completing holds it off (`RunLiveness` in
+  `crates/worker/src/acp/session.rs`), so a thirty-minute tool, build or forked
+  child agent cannot trip it. Only work counts
+  (`ThreadEventItem::is_running_call`): a message has no completion in the
+  contract, so counting one would hold the bound off for the rest of the run.
+- `ProviderRun::ceiling` (`--run-ceiling-ms`, default 6 h) is the last-resort
+  bound that applies regardless of activity — the only one an agent wedged with
+  a tool call open reaches. `0` removes either bound.
+- The control plane repeats the same arithmetic in
+  `RunRecord::refresh_deadline` / `RunRegistry::observe_event`: its deadline is
+  recomputed from the run's last report and its open calls on every report, so
+  the server's backstop no longer reaps a run the worker is still nursing.
+  `AppConfig::run_ceiling` mirrors the worker's flag and must not be set below
+  it.
+- A budget expiry says which budget fired — `the agent produced no events for
+  1800000ms…` or `the run exceeded its 21600000ms ceiling` — and is categorized
+  `budget-exceeded` rather than `connection-failed`, which had claimed the
+  connection failed while nothing was wrong with it. (bb's category set has no
+  timeout value and `contracts/bb` is exported from bb, so `budget-exceeded` —
+  contractually "a budget was exceeded" — is the one that fits without
+  diverging.)
+
+Frame handling in the same pass, because the frames *were* there and said
+nothing: a v2 tool frame's progress is the frame's **content**, not the call's
+restated `title` (reading the title is what turned the fork's stream into 39858
+identical `"fork"` rows), and a frame repeating the last line is dropped — on
+both the v1 and v2 paths. The fork's real progress (the child's own last
+activities, which `pi-fork` streams as content) now reaches the timeline.
+
+`loom server` takes the same two budgets (`--run-timeout-ms`,
+`--run-ceiling-ms`) and `--local-worker` passes them to the child it starts, so a
+single pair of flags describes both ends of one bound; unset leaves each side's
+default in place.
+
+Measured on this checkout: `cargo fmt --all -- --check` clean;
+`cargo clippy --workspace --all-targets --locked -- -D warnings` clean;
+`cargo test -p loom-worker --lib --locked` **153 passed**;
+`cargo test -p loom-server --lib --tests --locked` 385 + integrations passed.
+Three tests that drive the **real `pi`** fail on this machine because it has no
+model credentials (`pi process exited (code=1)`, "No API key found for the
+selected model"): `acp_session::a_real_agent_drives_a_run_to_exactly_one_terminal_event`,
+`acp_session::the_thread_is_identified_before_any_update_about_it`, and
+`acp_dispatch::an_acp_dispatch_runs_through_a_real_worker`. The failure cannot be
+the watchdog: it is a transport error raised during session construction, and
+the runs last under a second against a 60-second budget. A probe of the same
+path printed `pi process exited (code=1) … pi-acp does not restart pi
+automatically`, and `pi --mode json -p …` standalone prints "No API key found
+for the selected model" here. CI skips these anyway (no sibling `pi-acp`).
+
+## The agent's command list reaches the composer (2026-09-22)
+
+`/` in the composer reads `projects.commands`, which was answered by a workspace
+scan of `pi-acp`'s prompt files plus its built-in list. That missed everything
+the agent advertises for itself — package prompt templates, skills — and mangled
+the rest: every file command was labelled `origin: project`, and a built-in's
+argument hint was dropped.
+
+The scan is now faithful and the advertisement is merged over it:
+
+- A file command's `origin` comes from the `(user)`/`(project)` label `pi-acp`
+  puts on the description, a built-in keeps its declared description and
+  `argumentHint`, a project prompt shadows a user prompt of the same name, and a
+  prompt file shadows a built-in (`command_rows` in
+  `crates/worker/src/workspace.rs`).
+- `AvailableCommandsUpdate` carries no timeline fact, so the worker keeps it out
+  of the event stream and reports it on its own frame
+  (`ProviderCommandsReport` → `CommandsReport`) keyed by `(host, provider, cwd)`;
+  `crates/server/src/commands.rs` holds the latest list per workspace in memory
+  and `b7.rs` merges it **additively** over the scan — the scan's row wins for a
+  name it already answered (it is the one with an origin and a hint),
+  `skill:<name>` is attributed `source: skill, origin: user`, and anything else
+  the agent advertises beyond the scan is its own (`origin: builtin`).
+- **`PROTOCOL_VERSION` moves to `4`.** The new frame is a wire change, so an
+  older server cannot parse it and the version is what makes an older worker
+  upgrade before sending one. The docs that named `3` were updated with it
+  (`upgrades.md`, `deployment-verification.md`, `process-model.md`,
+  `containers.md`).
+
+Verified on this checkout: `cargo fmt --all -- --check` clean; `cargo clippy
+--workspace --all-targets --locked -- -D warnings` clean; the full Rust suite
+plus the app's `typecheck` and 502 vitest tests. The new frame's ownership rule
+has its own test in `crates/server/tests/ws.rs`, and the merge its own in
+`crates/server/tests/b7_conformance.rs`.
+
 ## Immediate next steps
 
 1. **Start migration step 1 (ACP adapter boundary)** — unblocked. The

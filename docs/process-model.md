@@ -92,7 +92,7 @@ browser's bb-compatible realtime protocol remains exclusively on `GET /ws`:
 {"type":"replay","scope":{"kind":"host","id":"host_…"},"since":"01M…"}
 
 // server -> worker
-{"type":"hello","protocol_version":3}
+{"type":"hello","protocol_version":4}
 {"type":"host_enrolled","host":{"id":"host_01M…","status":"connected",…},"event_id":"01M…"}
 {"type":"host_heartbeat_ack","host_id":"host_01M…","last_seen_at_ms":1}
 {"type":"host_disconnected","host_id":"host_01M…"}

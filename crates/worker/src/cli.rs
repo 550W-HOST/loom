@@ -51,9 +51,22 @@ pub struct WorkerArgs {
     #[arg(long, value_name = "MS")]
     pub heartbeat_ms: Option<u64>,
 
-    /// Kill a provider run that has not settled by then. [default: 1800000]
+    /// Kill a provider run that has said nothing for this long. This bounds
+    /// silence, not the turn: every event the run reports re-arms it, and an
+    /// item that started without completing (a running tool) holds it off, so a
+    /// long build, a long answer or a forked child agent is never mistaken for a
+    /// stuck one. 0 leaves --run-ceiling-ms as the only bound.
+    /// [default: 1800000]
     #[arg(long, value_name = "MS")]
     pub run_timeout_ms: Option<u64>,
+
+    /// Kill a provider run that has taken this long in total, however active it
+    /// is. The last-resort bound for an agent wedged with a tool call still
+    /// open, which --run-timeout-ms deliberately holds off for; it is set far
+    /// above any real turn so it never decides the fate of healthy work. 0
+    /// removes it. [default: 21600000]
+    #[arg(long, value_name = "MS")]
+    pub run_ceiling_ms: Option<u64>,
 
     /// Give up on an accepted turn that has said nothing at all for this long.
     /// This is the embedded pi-acp's own settle fallback: it bounds silence,

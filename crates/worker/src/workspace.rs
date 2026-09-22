@@ -5,11 +5,12 @@
 //! operation on that machine. Every command is bounded and every path is
 //! checked again here because the server cannot see host-local symlinks.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 
+use agent_client_protocol::schema::v1::{AvailableCommand, AvailableCommandInput};
 use base64::Engine;
 use loom_provider_protocol::{
     HostRpcOperation, HostRpcOutcome, HostRpcReport, HostRpcRequest, WorkspaceDiffFileSide,
@@ -1816,42 +1817,23 @@ const MAX_LISTED_COMMANDS: usize = 500;
 /// second, drifting notion of where a slash command lives. The worker answers
 /// plain rows; the control plane projects them into bb's contract shape.
 ///
-/// The project directories are scanned first so a project's command shadows a
-/// user command of the same name, which is what a per-repository prompt file is
-/// for.
+/// `pi-acp` loads the user prompt directory first and the project directory
+/// second, so "the last row for a name wins" makes a project prompt shadow a
+/// user prompt of the same name. A prompt file also shadows a built-in of the
+/// same name: the workspace's own answer is the more specific one.
+///
+/// A file row's `origin` is read from the `(source)` label `pi-acp` puts on the
+/// description — `(user)`/`(user:sub)` or `(project)`/`(project:sub)` — so the
+/// contract's `user`, `project` and `builtin` origins are all reachable.
+/// `argumentHint` comes from a built-in's declared input; a prompt file's
+/// `argument-hint` frontmatter is not exposed through `pi-acp`'s file loader,
+/// so it is reported as absent rather than parsed a second time here.
 async fn list_commands(cwd: &str) -> Result<Value, Failure> {
     let cwd = PathBuf::from(cwd);
     let commands = tokio::task::spawn_blocking(move || {
         let file_commands = pi_acp::commands::load_slash_commands(&cwd);
-        let mut names: Vec<String> = file_commands
-            .iter()
-            .map(|command| command.name.clone())
-            .collect();
-        names.extend(
-            pi_acp::commands::builtin_available_commands()
-                .into_iter()
-                .map(|command| command.name),
-        );
-        names.sort();
-        names.dedup();
-        names.truncate(MAX_LISTED_COMMANDS);
-        let rows = names
-            .into_iter()
-            .map(|name| {
-                let file = file_commands.iter().find(|command| command.name == name);
-                json!({
-                    "name": name,
-                    // A project prompt is `origin: project`; a built-in is the
-                    // agent's own, which the contract calls `builtin`. loom has
-                    // no user-level prompt directory of its own, so nothing is
-                    // ever reported as `user`.
-                    "origin": if file.is_some() { "project" } else { "builtin" },
-                    "description": file.map(|command| command.description.clone()),
-                    "argumentHint": Value::Null,
-                })
-            })
-            .collect::<Vec<_>>();
-        rows
+        let builtins = pi_acp::commands::builtin_available_commands();
+        command_rows(&file_commands, builtins)
     })
     .await
     .map_err(|error| {
@@ -1861,6 +1843,64 @@ async fn list_commands(cwd: &str) -> Result<Value, Failure> {
         )
     })?;
     Ok(json!({ "commands": commands }))
+}
+
+/// Projects `pi-acp`'s two command sources into the rows the control plane
+/// validates, shadowing by name in insert order.
+///
+/// `BTreeMap` rather than a `sort` + `dedup` over names because the row for a
+/// shadowed command carries its *own* origin and hint: resolving the metadata
+/// after de-duplicating by name is what lost the user/project distinction in
+/// the first place.
+fn command_rows(
+    file_commands: &[pi_acp::commands::FileSlashCommand],
+    builtins: Vec<AvailableCommand>,
+) -> Vec<Value> {
+    let mut by_name: BTreeMap<String, Value> = BTreeMap::new();
+    for command in file_commands {
+        by_name.insert(
+            command.name.clone(),
+            json!({
+                "name": command.name,
+                "origin": file_command_origin(&command.source),
+                "description": command.description,
+                "argumentHint": Value::Null,
+            }),
+        );
+    }
+    for command in builtins {
+        // Inserted only when no prompt file answered for the name.
+        by_name.entry(command.name.clone()).or_insert_with(|| {
+            json!({
+                "name": command.name,
+                "origin": "builtin",
+                "description": command.description,
+                "argumentHint": builtin_argument_hint(&command),
+            })
+        });
+    }
+    let mut rows: Vec<Value> = by_name.into_values().collect();
+    rows.truncate(MAX_LISTED_COMMANDS);
+    rows
+}
+
+/// A file command's origin, read from the `(source)` label `pi-acp` appends.
+fn file_command_origin(source: &str) -> &'static str {
+    if source.starts_with("(user") {
+        "user"
+    } else {
+        // `(project)` and `(project:sub)` are the project's own prompts, and
+        // anything unrecognized is treated as the workspace's too.
+        "project"
+    }
+}
+
+/// The hint a built-in declares for its input, when it declares one.
+fn builtin_argument_hint(command: &AvailableCommand) -> Value {
+    match &command.input {
+        Some(AvailableCommandInput::Unstructured(input)) => json!(input.hint),
+        _ => Value::Null,
+    }
 }
 
 #[cfg(test)]
@@ -1899,5 +1939,92 @@ mod tests {
         let value = diff_file_value(&entry);
         assert_eq!(value["changeKind"], "renamed");
         assert_eq!(value["previousPath"], "old.rs");
+    }
+
+    fn file_command(name: &str, source: &str) -> pi_acp::commands::FileSlashCommand {
+        pi_acp::commands::FileSlashCommand {
+            name: name.into(),
+            description: format!("{name} {source}"),
+            content: String::new(),
+            source: source.into(),
+        }
+    }
+
+    fn row<'a>(rows: &'a [Value], name: &str) -> &'a Value {
+        rows.iter()
+            .find(|row| row["name"] == name)
+            .unwrap_or_else(|| panic!("no row named {name}: {rows:#?}"))
+    }
+
+    #[test]
+    fn command_rows_keep_the_user_and_project_origins_apart() {
+        let files = vec![
+            file_command("review", "(user)"),
+            file_command("deploy", "(project)"),
+            file_command("audit", "(project:frontend)"),
+        ];
+        let rows = command_rows(&files, Vec::new());
+
+        assert_eq!(row(&rows, "review")["origin"], "user");
+        assert_eq!(row(&rows, "deploy")["origin"], "project");
+        // A nested project directory is still the project's own prompt.
+        assert_eq!(row(&rows, "audit")["origin"], "project");
+        // The contract's third origin is reachable only through a built-in.
+        assert!(rows.iter().all(|row| row["origin"] != "builtin"));
+    }
+
+    #[test]
+    fn a_project_prompt_shadows_a_user_prompt_of_the_same_name() {
+        let files = vec![
+            file_command("review", "(user)"),
+            file_command("review", "(project)"),
+        ];
+        let rows = command_rows(&files, Vec::new());
+
+        assert_eq!(rows.len(), 1, "one row per name: {rows:#?}");
+        assert_eq!(rows[0]["origin"], "project");
+    }
+
+    #[test]
+    fn a_prompt_file_shadows_a_builtin_of_the_same_name() {
+        let files = vec![file_command("compact", "(project)")];
+        let rows = command_rows(&files, pi_acp::commands::builtin_available_commands());
+
+        let compact = row(&rows, "compact");
+        assert_eq!(compact["origin"], "project");
+        // The file row, not the built-in's hint, answers for the name.
+        assert!(compact["argumentHint"].is_null());
+    }
+
+    #[test]
+    fn a_builtin_carries_its_description_and_declared_argument_hint() {
+        let rows = command_rows(&[], pi_acp::commands::builtin_available_commands());
+
+        let compact = row(&rows, "compact");
+        assert_eq!(compact["origin"], "builtin");
+        assert_eq!(
+            compact["description"],
+            "Manually compact the session context"
+        );
+        assert_eq!(compact["argumentHint"], "optional custom instructions");
+
+        // A built-in that declares no input reports no hint rather than an
+        // invented one.
+        let session = row(&rows, "session");
+        assert!(session["argumentHint"].is_null(), "{session:#?}");
+    }
+
+    #[test]
+    fn command_rows_are_named_in_a_stable_order() {
+        let files = vec![
+            file_command("zebra", "(user)"),
+            file_command("alpha", "(project)"),
+        ];
+        let rows = command_rows(&files, Vec::new());
+        let names: Vec<_> = rows
+            .iter()
+            .map(|row| row["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(names, ["alpha", "zebra"]);
     }
 }

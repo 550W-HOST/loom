@@ -8,7 +8,8 @@
 use bytes::Bytes;
 use loom_domain::{DomainEvent, EnvironmentId, Host, RunId};
 use loom_provider_protocol::{
-    EnvironmentProvisionReport, HostRpcReport, ProviderCatalogReport, ProviderReport,
+    EnvironmentProvisionReport, HostRpcReport, ProviderCatalogReport, ProviderCommandsReport,
+    ProviderReport,
 };
 use loom_relay::envelope::Envelope;
 use loom_relay::event_id::EventId;
@@ -447,6 +448,15 @@ pub enum WorkerClientMessage {
     /// refreshed from any session the worker opens.
     CatalogReport {
         report: ProviderCatalogReport,
+    },
+    /// The commands one ACP session advertised for its workspace.
+    ///
+    /// Workspace-scoped rather than run-scoped: prompt files are read from the
+    /// session's working directory, so the server keys the list by
+    /// `(host, provider, cwd)` and uses it to answer `projects.commands` until
+    /// a newer session replaces it.
+    CommandsReport {
+        report: ProviderCommandsReport,
     },
     /// The agents this host found installed, as its own probes verified them.
     ///

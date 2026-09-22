@@ -421,6 +421,43 @@ pub struct ProviderCatalogReport {
     pub catalog: ProviderCatalog,
 }
 
+/// One slash command an ACP agent advertised for a session.
+///
+/// ACP's `AvailableCommand` is a name, a description and an optional input
+/// hint, and nothing else: the protocol has no notion of where a command came
+/// from, so no origin or source is claimed here. The control plane attributes a
+/// command when it projects it into bb's contract.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderCommand {
+    /// The command without its leading slash, as the agent advertises it.
+    pub name: String,
+    /// What the agent says the command does.
+    pub description: String,
+    /// The input the command expects, when the agent declares one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub argument_hint: Option<String>,
+}
+
+/// A worker's report of the commands one ACP session advertised.
+///
+/// Unlike a catalogue this is not a fact about the machine alone: prompt files
+/// are read from the session's working directory, so a name that is available
+/// in one workspace may not exist in another. The server keys it by
+/// `(host, provider, cwd)` for that reason. It is also not a timeline event —
+/// the bb contract has no command-list fact — so it travels on its own frame
+/// rather than through the run's event log.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderCommandsReport {
+    /// The host whose agent advertised the list.
+    pub host_id: HostId,
+    /// The provider that agent serves, as [`ProviderSpec::name`] spells it.
+    pub provider_id: String,
+    /// The session's working directory: the address the list is valid for.
+    pub cwd: String,
+    /// The commands the session advertised, in the agent's own order.
+    pub commands: Vec<ProviderCommand>,
+}
+
 // ---------------------------------------------------------------------------
 // Host file access
 // ---------------------------------------------------------------------------

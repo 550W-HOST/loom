@@ -288,12 +288,19 @@ async fn listing_commands_reports_the_projects_and_the_agents_own() {
         review["description"]
     );
     // The agent's own headless commands are always available, and are reported
-    // as built-ins rather than as files the project provides.
+    // as built-ins rather than as files the project provides. Their declared
+    // description and argument hint travel with them, because the menu renders
+    // both and a null here is a missing affordance in the client.
     let compact = commands
         .iter()
         .find(|command| command["name"] == "compact")
         .expect("a built-in command was not listed");
     assert_eq!(compact["origin"], "builtin");
+    assert_eq!(
+        compact["description"],
+        "Manually compact the session context"
+    );
+    assert_eq!(compact["argumentHint"], "optional custom instructions");
     // Names are unique: a project prompt and a built-in of the same name would
     // otherwise appear twice.
     let mut names = commands

@@ -19,7 +19,7 @@
 //! {"type":"host_disconnect","host_id":"host_..."}
 //!
 //! // server -> worker
-//! {"type":"hello","protocol_version":3}
+//! {"type":"hello","protocol_version":4}
 //! {"type":"host_enrolled","host":{...},"event_id":"01M..."}
 //! {"type":"host_heartbeat_ack","host_id":"host_...","last_seen_at_ms":1}
 //! {"type":"host_disconnected","host_id":"host_..."}
@@ -529,6 +529,26 @@ async fn handle_command(
             state
                 .catalogs
                 .record(&host_id, &report.provider_id, report.catalog);
+            None
+        }
+        ClientCommand::CommandsReport { report } => {
+            // A command list is scoped to the workspace it was read from, so
+            // the same ownership rule as every host-scoped frame applies: one
+            // host cannot describe another's workspace.
+            let Some(host_id) = enrolled_host.clone() else {
+                return Some(ServerMessage::Error {
+                    message: "command reports require an enrolled host".into(),
+                });
+            };
+            if host_id != report.host_id {
+                return Some(ServerMessage::Error {
+                    message: "report names a different host than this connection enrolled as"
+                        .into(),
+                });
+            }
+            state
+                .commands
+                .record(&host_id, &report.provider_id, &report.cwd, report.commands);
             None
         }
         ClientCommand::InteractionRequest { request } => {

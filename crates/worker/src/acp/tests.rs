@@ -695,6 +695,64 @@ fn non_timeline_updates_produce_no_events() {
             "{update:?} states no timeline fact, so it emits nothing"
         );
     }
+    // The empty advertisement is still a fact the client can use — it replaces
+    // whatever list was recorded before — so it is kept for reporting even
+    // though it produced no events.
+    assert!(t.take_advertised_commands().is_some());
+}
+
+/// A command menu is not a timeline fact, but it is also not something the
+/// client can derive on its own: the advertisement is captured for out-of-band
+/// reporting rather than translated into an event.
+#[test]
+fn an_advertised_command_list_is_captured_not_emitted() {
+    use agent_client_protocol_schema::v1::{
+        AvailableCommand, AvailableCommandInput, AvailableCommandsUpdate, UnstructuredCommandInput,
+    };
+    let mut t = translator();
+    let update = SessionUpdate::AvailableCommandsUpdate(AvailableCommandsUpdate::new(vec![
+        AvailableCommand::new("review", "Review the diff").input(
+            AvailableCommandInput::Unstructured(UnstructuredCommandInput::new("the range")),
+        ),
+        AvailableCommand::new("compact", "Compact the session"),
+    ]));
+
+    assert!(
+        t.on_session_update(&update).is_empty(),
+        "the command menu states no timeline fact"
+    );
+    let commands = t
+        .take_advertised_commands()
+        .expect("the advertised list was not captured");
+    assert_eq!(commands.len(), 2);
+    assert_eq!(commands[0].name, "review");
+    assert_eq!(commands[0].description, "Review the diff");
+    assert_eq!(commands[0].argument_hint.as_deref(), Some("the range"));
+    assert_eq!(commands[1].name, "compact");
+    assert_eq!(commands[1].argument_hint, None);
+    // Taking is once: one advertisement becomes one report, not a repeat.
+    assert!(t.take_advertised_commands().is_none());
+}
+
+/// The v2 spelling of the same update, whose input variant is `Text` rather
+/// than `Unstructured`; both must reach the same protocol shape.
+#[test]
+fn a_v2_advertised_command_list_keeps_its_hint() {
+    use agent_client_protocol_schema::v2;
+    let mut t = translator();
+    let update =
+        v2::SessionUpdate::AvailableCommandsUpdate(v2::AvailableCommandsUpdate::new(vec![
+            v2::AvailableCommand::new("review", "Review the diff").input(
+                v2::AvailableCommandInput::Text(v2::TextCommandInput::new("the range")),
+            ),
+        ]));
+
+    assert!(t.on_v2_session_update(&update).is_empty());
+    let commands = t
+        .take_advertised_commands()
+        .expect("the advertised list was not captured");
+    assert_eq!(commands[0].name, "review");
+    assert_eq!(commands[0].argument_hint.as_deref(), Some("the range"));
 }
 
 #[test]
@@ -972,6 +1030,87 @@ fn a_v2_title_on_another_kind_stays_a_tool() {
             ..
         })
     ));
+}
+
+/// The progress lines a translation reported.
+fn progress_messages(events: &[ProviderEvent]) -> Vec<String> {
+    events
+        .iter()
+        .filter_map(|event| match event {
+            ProviderEvent::ItemToolCallProgress { message, .. } => message.clone(),
+            _ => None,
+        })
+        .collect()
+}
+
+/// A v2 tool frame with the given streamed content and no other change.
+fn v2_frame(content: Option<&str>) -> v2::ToolCallUpdate {
+    let mut frame = v2::ToolCallUpdate::new("tool-1")
+        .title("fork")
+        .kind(v2::ToolKind::Other)
+        .status(v2::ToolCallStatus::InProgress);
+    if let Some(text) = content {
+        frame = frame.content(vec![v2::ToolCallContent::Content(Box::new(
+            v2::Content::new(v2::ContentBlock::Text(v2::TextContent::new(
+                text.to_string(),
+            ))),
+        ))]);
+    }
+    frame
+}
+
+/// A running tool's own output is its progress.
+///
+/// pi-acp streams the call's output into `content` and restates its *name* in
+/// `title` on every frame, so reading the title made a thirty-minute forked
+/// child agent 39858 timeline rows all reading `"fork"` — the frame stream was
+/// there, but nothing said what it was doing.
+#[test]
+fn a_v2_tool_frame_reports_its_content_not_its_name() {
+    let mut t = translator();
+    t.on_v2_session_update(&v2::SessionUpdate::ToolCallUpdate(
+        v2::ToolCallUpdate::new("tool-1")
+            .title("fork")
+            .kind(v2::ToolKind::Other),
+    ));
+
+    let events = t.on_v2_session_update(&v2::SessionUpdate::ToolCallUpdate(v2_frame(Some(
+        "bash: cargo test -p loom-worker",
+    ))));
+    assert_eq!(
+        progress_messages(&events),
+        vec!["bash: cargo test -p loom-worker".to_string()]
+    );
+}
+
+/// A frame that repeats the last progress line is not news.
+///
+/// The adapter states the call's name on every frame by design and an agent
+/// streams one frame per line of its own output; without this a single tool
+/// call fills the thread's history.
+#[test]
+fn a_repeated_v2_tool_frame_reports_progress_once() {
+    let mut t = translator();
+    // The opening frame has no content yet, so the name is the fallback.
+    let opened = t.on_v2_session_update(&v2::SessionUpdate::ToolCallUpdate(v2_frame(None)));
+    assert_eq!(progress_messages(&opened), vec!["fork".to_string()]);
+
+    // The same line again, now as content, is the same news.
+    let repeated =
+        t.on_v2_session_update(&v2::SessionUpdate::ToolCallUpdate(v2_frame(Some("fork"))));
+    assert!(
+        repeated.is_empty(),
+        "a repeated frame must not add a row, got {repeated:?}"
+    );
+
+    // A line that moved is progress again.
+    let moved = t.on_v2_session_update(&v2::SessionUpdate::ToolCallUpdate(v2_frame(Some(
+        "read: crates/worker/src/acp/mod.rs",
+    ))));
+    assert_eq!(
+        progress_messages(&moved),
+        vec!["read: crates/worker/src/acp/mod.rs".to_string()]
+    );
 }
 
 /// The generic tool call a v2 update opened: its name and its result.

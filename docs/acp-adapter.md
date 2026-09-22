@@ -62,7 +62,31 @@ loop) is still failed with `settleTimeout`.
 loom states the value in `WorkerConfig::settle_timeout` (default 10 minutes,
 `--settle-timeout-ms`; `0` disables it) instead of inheriting the adapter's own
 default, because the in-process path never reads `PI_ACP_SETTLE_TIMEOUT_SECS`.
-It is deliberately separate from `--run-timeout-ms`, which bounds the whole run.
+
+### The worker's own run budgets
+
+The worker applies the same rule one layer out, because the adapter's budget only
+exists on the embedded path and only bounds a prompt the adapter is *listening*
+to. `ProviderRun::timeout` (`--run-timeout-ms`, default 30 minutes) is the run's
+silence budget: every reported event re-arms it and an item that started without
+completing holds it off, so a long tool — a build, a download, a forked child
+agent that runs for half an hour — never trips it. A run that *is* ended this way
+says so: the terminal error names the budget that fired
+(`the agent produced no events for 1800000ms…`) and its category is
+`budget-exceeded`, not `connection-failed`. `ProviderRun::ceiling`
+(`--run-ceiling-ms`, default six hours) is the last-resort bound that applies
+regardless of activity, and it is the only thing that ends an agent wedged with a
+tool call still open. `0` removes either bound.
+
+The control plane repeats the same arithmetic in `RunRecord::refresh_deadline`,
+recomputing the deadline from the run's last report and its open items on every
+report it applies. It has to: its deadline is the backstop for a *worker* that
+went quiet, and a wall clock there would reap runs the worker is still nursing.
+The two configurations must be kept consistent: `loom server` takes the same
+pair as `--run-timeout-ms` and `--run-ceiling-ms`, and `--local-worker` passes
+them to the child it starts, so one set of flags describes both ends of a single
+bound. A server ceiling below the worker's would still reap a run the worker is
+willing to nurse.
 
 ## The event mapping
 
@@ -84,7 +108,26 @@ must not invent detail.
 | `SessionInfoUpdate` | `ThreadNameUpdated` when titled | |
 | `CurrentModeUpdate` | *none* | v2 has no equivalent; see below |
 | `ConfigOptionUpdate` | *none* | informational; logged not published |
-| `AvailableCommandsUpdate` | *none* | UI affordance, no timeline fact |
+| `AvailableCommandsUpdate` | *none* | no timeline fact; reported out-of-band — see below |
+
+### The command list is reported, not logged
+
+`AvailableCommandsUpdate` is the agent's command menu: the slash commands the
+session will accept. It is not work, so no contract event can carry it, but it
+is also not something the client can derive on its own — a package prompt or a
+`skill:` command never appears in the workspace scan. The translator therefore
+captures the list instead of dropping it
+(`AcpTranslator::take_advertised_commands`) and the session reports it on the
+**commands channel**, a side report modelled on the model catalogue
+(`ProviderCommandsReport` in `loom-provider-protocol`).
+
+The report is keyed by `(host, provider, cwd)` because prompt files are read
+from the session's working directory. `projects.commands` merges it over the
+workspace scan: the scan supplies the `origin` and `argumentHint` that ACP's
+`AvailableCommand` does not carry, and a name only the advertisement knows is
+attributed by its name (`skill:<name>` is `source: skill`, anything else is the
+agent's own, `origin: builtin`). A row the scan already answered keeps the
+scan's row, so the merge is additive rather than a replacement.
 
 ### Turn lifecycle
 

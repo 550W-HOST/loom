@@ -16,6 +16,7 @@
 //! line itself is [`crate::cli`].
 
 use std::path::PathBuf;
+use std::time::Duration;
 
 use crate::cli::ServerArgs;
 use crate::http::router;
@@ -34,6 +35,8 @@ pub async fn run(args: ServerArgs) -> Result<(), Box<dyn std::error::Error>> {
         local_worker,
         local_worker_name,
         local_worker_url,
+        run_timeout_ms,
+        run_ceiling_ms,
     } = args;
 
     // The server is persistent by default: `--data-dir` chooses the directory,
@@ -65,12 +68,14 @@ pub async fn run(args: ServerArgs) -> Result<(), Box<dyn std::error::Error>> {
             name: local_worker_name.clone(),
             state_path: worker_data_dir.as_ref().map(|dir| dir.join("host-id")),
             data_dir: worker_data_dir,
+            run_timeout_ms,
+            run_ceiling_ms,
         })
     } else {
         None
     };
 
-    let config = AppConfig {
+    let mut config = AppConfig {
         node_id: node_id.clone(),
         backend_path,
         local_host_id: local_host_id.clone(),
@@ -78,6 +83,15 @@ pub async fn run(args: ServerArgs) -> Result<(), Box<dyn std::error::Error>> {
         artifact_dir,
         ..AppConfig::default()
     };
+    // Unset leaves the default in place, which is the same value a worker that
+    // was told nothing runs with. The two are one bound seen from two sides:
+    // the worker ends the run, the server only reaps one that stopped reporting.
+    if let Some(ms) = run_timeout_ms {
+        config.run_timeout = Duration::from_millis(ms);
+    }
+    if let Some(ms) = run_ceiling_ms {
+        config.run_ceiling = Duration::from_millis(ms);
+    }
     let state = AppState::build(config)?;
     let app = router(state.clone());
 

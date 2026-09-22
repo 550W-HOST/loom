@@ -36,6 +36,7 @@ async fn drive_one(
     let (tx, mut rx) = mpsc::channel(256);
     let (interactions, requests) = mpsc::channel::<loom_provider_protocol::InteractionRequest>(8);
     let (catalogs, mut catalog_reports) = mpsc::channel(8);
+    let (commands, _command_reports) = mpsc::channel(8);
     let collector = tokio::spawn(async move {
         let mut seen: Vec<String> = Vec::new();
         let mut requests = requests;
@@ -50,6 +51,7 @@ async fn drive_one(
             transport,
             &tx,
             &catalogs,
+            &commands,
             PermissionRegistry::new(),
             interactions,
             &loom_worker::steer::SteerRegistry::new(),
@@ -110,6 +112,7 @@ async fn a_real_turn_reports_its_thinking() {
         project_id: loom_domain::ProjectId::mint(),
         run_id: loom_domain::RunId::mint(),
         timeout: TURN_BUDGET,
+        ceiling: loom_worker::DEFAULT_RUN_CEILING,
         permission_timeout: Duration::from_secs(15),
         settle_timeout: loom_worker::DEFAULT_SETTLE_TIMEOUT,
         permission_ceiling: loom_domain::HostPermissionMode::Full,
@@ -218,6 +221,7 @@ async fn each_discovered_agent_reports_what_it_thinks() {
             project_id: loom_domain::ProjectId::mint(),
             run_id: loom_domain::RunId::mint(),
             timeout: TURN_BUDGET,
+            ceiling: loom_worker::DEFAULT_RUN_CEILING,
             permission_timeout: Duration::from_secs(15),
             settle_timeout: loom_worker::DEFAULT_SETTLE_TIMEOUT,
             permission_ceiling: loom_domain::HostPermissionMode::Full,

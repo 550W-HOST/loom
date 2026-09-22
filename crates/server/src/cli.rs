@@ -103,6 +103,22 @@ pub struct ServerArgs {
     /// URL the local worker dials. Unset derives it from --bind.
     #[arg(long, value_name = "URL")]
     pub local_worker_url: Option<String>,
+
+    /// Reap a dispatched run that has said nothing for this long.
+    ///
+    /// This is the control plane's half of the worker's `--run-timeout-ms`: it
+    /// bounds silence, not the turn. It must not be shorter than the worker's
+    /// own bound, or this side reaps runs the worker is still nursing;
+    /// `--local-worker` passes these values to the child so the two cannot
+    /// drift. 0 removes the bound. [default: 1800000]
+    #[arg(long, value_name = "MS")]
+    pub run_timeout_ms: Option<u64>,
+
+    /// Reap a dispatched run that has taken this long in total, however active
+    /// it is. Keep it at least the worker's own `--run-ceiling-ms`, for the same
+    /// reason. 0 removes the bound. [default: 21600000]
+    #[arg(long, value_name = "MS")]
+    pub run_ceiling_ms: Option<u64>,
 }
 
 #[cfg(test)]
@@ -121,5 +137,24 @@ mod tests {
         let args = ServerArgs::try_parse_from(["loom", "--local-worker-name", "local-test"])
             .expect("server arguments parse");
         assert_eq!(args.local_worker_name, "local-test");
+    }
+
+    /// Unset means "the worker's own default", not "the smallest value".
+    #[test]
+    fn the_run_budgets_are_only_set_when_the_operator_chooses_them() {
+        let args = ServerArgs::try_parse_from(["loom"]).expect("server arguments parse");
+        assert_eq!(args.run_timeout_ms, None);
+        assert_eq!(args.run_ceiling_ms, None);
+
+        let args = ServerArgs::try_parse_from([
+            "loom",
+            "--run-timeout-ms",
+            "1500",
+            "--run-ceiling-ms",
+            "9000",
+        ])
+        .expect("server arguments parse");
+        assert_eq!(args.run_timeout_ms, Some(1_500));
+        assert_eq!(args.run_ceiling_ms, Some(9_000));
     }
 }

@@ -55,6 +55,7 @@ fn run(cwd: &str) -> ProviderRun {
         project_id: loom_domain::ProjectId::mint(),
         run_id: loom_domain::RunId::mint(),
         timeout: Duration::from_secs(30),
+        ceiling: loom_worker::DEFAULT_RUN_CEILING,
         permission_timeout: Duration::from_secs(5),
         settle_timeout: loom_worker::DEFAULT_SETTLE_TIMEOUT,
         permission_ceiling: loom_domain::HostPermissionMode::Full,
@@ -74,12 +75,14 @@ async fn drive_with_agent(run: ProviderRun, agent: PathBuf) -> Vec<loom_domain::
 
     let (interactions, _requests) = mpsc::channel(8);
     let (catalogs, _catalog_reports) = mpsc::channel(8);
+    let (commands, _command_reports) = mpsc::channel(8);
     let handle = tokio::spawn(async move {
         let _ = drive(
             &run,
             transport,
             &tx,
             &catalogs,
+            &commands,
             PermissionRegistry::new(),
             interactions,
             &loom_worker::steer::SteerRegistry::new(),
@@ -208,6 +211,7 @@ fn run_with_agent(
         project_id: loom_domain::ProjectId::mint(),
         run_id: loom_domain::RunId::mint(),
         timeout: Duration::from_secs(30),
+        ceiling: loom_worker::DEFAULT_RUN_CEILING,
         permission_timeout: Duration::from_secs(5),
         settle_timeout: loom_worker::DEFAULT_SETTLE_TIMEOUT,
         permission_ceiling: loom_domain::HostPermissionMode::Full,
@@ -410,11 +414,13 @@ async fn a_missing_agent_ends_the_run_rather_than_hanging_it() {
     let run = run(&cwd.to_string_lossy());
     let (interactions, _requests) = mpsc::channel(8);
     let (catalogs, _catalog_reports) = mpsc::channel(8);
+    let (commands, _command_reports) = mpsc::channel(8);
     let _ = drive(
         &run,
         transport,
         &tx,
         &catalogs,
+        &commands,
         PermissionRegistry::new(),
         interactions,
         &loom_worker::steer::SteerRegistry::new(),
@@ -449,11 +455,13 @@ async fn a_dispatch_without_a_working_directory_is_refused() {
     };
     let (interactions, _requests) = mpsc::channel(8);
     let (catalogs, _catalog_reports) = mpsc::channel(8);
+    let (commands, _command_reports) = mpsc::channel(8);
     let result = drive(
         &run,
         transport,
         &tx,
         &catalogs,
+        &commands,
         PermissionRegistry::new(),
         interactions,
         &loom_worker::steer::SteerRegistry::new(),
@@ -604,11 +612,13 @@ async fn a_workspace_that_does_not_exist_is_refused() {
     };
     let (interactions, _requests) = mpsc::channel(8);
     let (catalogs, _catalog_reports) = mpsc::channel(8);
+    let (commands, _command_reports) = mpsc::channel(8);
     let result = drive(
         &run,
         transport,
         &tx,
         &catalogs,
+        &commands,
         PermissionRegistry::new(),
         interactions,
         &loom_worker::steer::SteerRegistry::new(),
@@ -659,11 +669,13 @@ async fn a_resume_in_a_missing_workspace_fails_and_names_the_path() {
     };
     let (interactions, _requests) = mpsc::channel(8);
     let (catalogs, _catalog_reports) = mpsc::channel(8);
+    let (commands, _command_reports) = mpsc::channel(8);
     let result = drive(
         &run,
         transport,
         &tx,
         &catalogs,
+        &commands,
         PermissionRegistry::new(),
         interactions,
         &loom_worker::steer::SteerRegistry::new(),
@@ -724,11 +736,13 @@ async fn a_resume_against_an_agent_without_load_session_fails() {
     );
     let (interactions, _requests) = mpsc::channel(8);
     let (catalogs, _catalog_reports) = mpsc::channel(8);
+    let (commands, _command_reports) = mpsc::channel(8);
     let _ = drive(
         &run,
         transport,
         &tx,
         &catalogs,
+        &commands,
         PermissionRegistry::new(),
         interactions,
         &loom_worker::steer::SteerRegistry::new(),
@@ -857,4 +871,158 @@ async fn a_real_agent_is_probed_for_its_session_capabilities() {
             panic!("the real adapter must be reachable: {error}");
         }
     }
+}
+
+/// Writes an executable agent script.
+fn write_agent_script(dir: &std::path::Path, name: &str, script: &str) -> PathBuf {
+    let path = dir.join(name);
+    std::fs::write(&path, script).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    path
+}
+
+/// A minimal ACP v1 agent that opens a tool call, holds it open for
+/// `hold_seconds`, and then completes it.
+///
+/// This is the frame shape a forked child agent produces: one item that stays
+/// in progress for a long time, with nothing else reported while it works.
+fn write_hold_open_tool_agent(dir: &std::path::Path, hold_seconds: &str) -> PathBuf {
+    let script = r#"#!/bin/sh
+session_id=hold-open-session
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([^,]*\),"method":.*/\1/p')
+  method=$(printf '%s' "$line" | sed -n 's/.*"method":"\([^"]*\)".*/\1/p')
+  case "$method" in
+    initialize)
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":1,"agentCapabilities":{}}}\n' "$id"
+      ;;
+    session/new)
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"sessionId":"%s"}}\n' "$id" "$session_id"
+      ;;
+    session/prompt)
+      printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"%s","update":{"sessionUpdate":"tool_call","toolCallId":"call-hold","title":"fork","kind":"other","status":"in_progress"}}}\n' "$session_id"
+      sleep HOLD_SECONDS
+      printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"%s","update":{"sessionUpdate":"tool_call_update","toolCallId":"call-hold","status":"completed"}}}\n' "$session_id"
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"end_turn"}}\n' "$id"
+      ;;
+    session/cancel)
+      printf '{"jsonrpc":"2.0","id":%s,"result":{}}\n' "$id"
+      ;;
+  esac
+done
+"#
+    .replace("HOLD_SECONDS", hold_seconds);
+    write_agent_script(dir, "hold-open-tool-agent.sh", &script)
+}
+
+/// A minimal ACP v1 agent that accepts the prompt and then says nothing.
+fn write_silent_agent(dir: &std::path::Path) -> PathBuf {
+    let script = r#"#!/bin/sh
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([^,]*\),"method":.*/\1/p')
+  method=$(printf '%s' "$line" | sed -n 's/.*"method":"\([^"]*\)".*/\1/p')
+  case "$method" in
+    initialize)
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":1,"agentCapabilities":{}}}\n' "$id"
+      ;;
+    session/new)
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"sessionId":"silent-session"}}\n' "$id"
+      ;;
+    session/prompt)
+      sleep 30
+      ;;
+    session/cancel)
+      printf '{"jsonrpc":"2.0","id":%s,"result":{}}\n' "$id"
+      ;;
+  esac
+done
+"#;
+    write_agent_script(dir, "silent-agent.sh", script)
+}
+
+/// An open tool call outlives the run's silence budget.
+///
+/// The regression this pins: the run's bound was a wall clock from its
+/// dispatch, so a forked child agent that ran for thirty minutes was killed
+/// mid-tool with `ACP agent did not settle within 1800000ms` — even though the
+/// agent had reported progress seconds earlier. An item that has started and
+/// not completed is work, not silence, and only the ceiling may end it.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_open_item_outlives_the_silence_budget() {
+    let dir = tempfile::tempdir().unwrap();
+    let workspace = dir.path().join("workspace");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let agent = write_hold_open_tool_agent(dir.path(), "1.2");
+    let mut run = run_with_agent(
+        &workspace.to_string_lossy(),
+        &agent,
+        loom_domain::ThreadId::mint(),
+        None,
+    );
+    // A budget the open tool call blows through eight times over.
+    run.timeout = Duration::from_millis(150);
+    run.ceiling = Duration::from_secs(30);
+
+    let events = drive_with_agent(run, agent).await;
+    let outcome = terminal(&events).and_then(|event| event.outcome);
+    assert_eq!(
+        outcome,
+        Some(RunOutcome::Completed),
+        "an open tool call must hold the silence budget off, got {outcome:?}"
+    );
+}
+
+/// A run that answers the prompt and then says nothing is still ended, and the
+/// reason says which budget fired.
+///
+/// It must not reuse the adapter's "did not settle" wording (a different timer,
+/// with a different value) or claim the connection failed: a client that treats
+/// a connection failure specially would do the wrong thing with a budget
+/// expiry.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_silent_run_is_ended_with_its_budget_in_the_reason() {
+    let dir = tempfile::tempdir().unwrap();
+    let workspace = dir.path().join("workspace");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let agent = write_silent_agent(dir.path());
+    let mut run = run_with_agent(
+        &workspace.to_string_lossy(),
+        &agent,
+        loom_domain::ThreadId::mint(),
+        None,
+    );
+    run.timeout = Duration::from_millis(150);
+    run.ceiling = Duration::from_secs(30);
+
+    let events = drive_with_agent(run, agent).await;
+    let ended = terminal(&events).expect("the run ends");
+    assert_eq!(ended.outcome, Some(RunOutcome::TimedOut));
+
+    let (message, category) = events
+        .iter()
+        .find_map(|event| match &event.event.body {
+            loom_domain::ProviderEvent::ProviderError {
+                message,
+                error_info,
+                ..
+            } => Some((
+                message.clone(),
+                error_info.as_ref().map(|info| info.category),
+            )),
+            _ => None,
+        })
+        .expect("the run reports a provider error");
+    assert!(
+        message.contains("no events for 150ms"),
+        "the reason must name the silence budget, got {message:?}"
+    );
+    assert_eq!(
+        category,
+        Some(loom_domain::ProviderErrorCategory::BudgetExceeded),
+        "a budget expiry is not a connection failure"
+    );
 }

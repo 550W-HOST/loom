@@ -42,6 +42,7 @@ use loom_domain::{
     ItemStatus, PlanStep, PlanStepStatus, ProviderErrorCategory, ProviderErrorInfo, ProviderEvent,
     SearchMode, ThreadEventItem, TurnError, TurnStatus, UserContent,
 };
+use loom_provider_protocol::ProviderCommand;
 use serde_json::Value;
 
 use crate::failure_text::summarize_agent_failure;
@@ -103,11 +104,26 @@ pub struct AcpTranslator {
     /// Agent-owned terminals have their own lifecycle and output stream in v2.
     v2_terminals: HashMap<String, V2TerminalState>,
     v2_finished_terminals: HashSet<String>,
+    /// The commands the agent advertised for this session, kept out of the
+    /// event stream.
+    ///
+    /// ACP's `AvailableCommandsUpdate` is a UI affordance, not a timeline
+    /// fact, so it translates to no events; the session reports it on its own
+    /// channel instead. `None` means the agent has not advertised a list in
+    /// this run.
+    advertised_commands: Option<Vec<ProviderCommand>>,
 }
 
 /// A tool call's accumulated state.
 struct ToolItem {
     item: ThreadEventItem,
+    /// The last progress line reported for this call.
+    ///
+    /// A frame is not news by itself: an agent restates the call's name so a
+    /// client that reads only patches keeps it, and pi-acp does exactly that.
+    /// Reporting only a *changed* line is what keeps a tool that streams for
+    /// half an hour from becoming tens of thousands of identical rows.
+    last_progress: Option<String>,
 }
 
 struct V2MessageState {
@@ -124,6 +140,8 @@ struct V2ToolState {
     locations: Vec<v2::ToolCallLocation>,
     raw_input: Option<Value>,
     raw_output: Option<Value>,
+    /// The last progress line reported for this call. See [`ToolItem`].
+    last_progress: Option<String>,
     /// What pi-acp streamed through `_meta.terminal_output`, in arrival order.
     terminal_output: String,
     /// What pi-acp reported through `_meta.terminal_exit`.
@@ -169,6 +187,7 @@ impl AcpTranslator {
             v2_finished_tools: HashSet::new(),
             v2_terminals: HashMap::new(),
             v2_finished_terminals: HashSet::new(),
+            advertised_commands: None,
         }
     }
 
@@ -200,6 +219,16 @@ impl AcpTranslator {
     /// named the session.
     pub fn provider_session_id(&self) -> Option<&str> {
         self.provider_session_id.as_deref()
+    }
+
+    /// Takes the command list the agent advertised, once.
+    ///
+    /// The update itself translates to no event — see
+    /// [`Self::advertised_commands`] — so the session takes it here and
+    /// reports it on the command channel. Taking rather than cloning keeps one
+    /// advertisement from becoming repeated reports.
+    pub fn take_advertised_commands(&mut self) -> Option<Vec<ProviderCommand>> {
+        self.advertised_commands.take()
     }
 
     /// Whether `thread/identity` has been emitted, which is what makes it safe
@@ -238,9 +267,10 @@ impl AcpTranslator {
     ///
     /// A variant carrying no timeline fact loom can state yields nothing. That
     /// is deliberate rather than a missing mapping: a mode change is not work,
-    /// and config options and the command menu are UI affordances the client
-    /// already holds. Emitting anything for them would put a fact in the log
-    /// that the provider never stated.
+    /// and config options are a UI affordance. The command menu is also not a
+    /// timeline fact, but it is a fact the client does *not* hold on its own,
+    /// so [`Self::advertised_commands`] keeps it for out-of-band reporting
+    /// rather than emitting an event for it.
     pub fn on_session_update(&mut self, update: &SessionUpdate) -> Translated {
         match update {
             SessionUpdate::UserMessageChunk(chunk) => self.on_user_chunk(chunk),
@@ -251,9 +281,19 @@ impl AcpTranslator {
             SessionUpdate::Plan(plan) => self.on_plan(plan),
             SessionUpdate::UsageUpdate(usage) => self.on_usage(usage),
             SessionUpdate::SessionInfoUpdate(info) => self.on_session_info(info),
-            SessionUpdate::CurrentModeUpdate(_)
-            | SessionUpdate::ConfigOptionUpdate(_)
-            | SessionUpdate::AvailableCommandsUpdate(_) => Vec::new(),
+            SessionUpdate::AvailableCommandsUpdate(update) => {
+                self.advertised_commands = Some(
+                    update
+                        .available_commands
+                        .iter()
+                        .map(command_from_v1)
+                        .collect(),
+                );
+                Vec::new()
+            }
+            SessionUpdate::CurrentModeUpdate(_) | SessionUpdate::ConfigOptionUpdate(_) => {
+                Vec::new()
+            }
             // `SessionUpdate` is `#[non_exhaustive]`: a newer schema may add
             // variants. An update loom reaches no arm for produces no event and
             // no fabricated catch-all, the rule W-538 applied to
@@ -291,9 +331,17 @@ impl AcpTranslator {
             v2::SessionUpdate::PlanUpdate(plan) => self.on_v2_plan(plan),
             v2::SessionUpdate::SessionInfoUpdate(info) => self.on_v2_session_info(info),
             v2::SessionUpdate::UsageUpdate(usage) => self.on_v2_usage(usage),
-            v2::SessionUpdate::AvailableCommandsUpdate(_)
-            | v2::SessionUpdate::ConfigOptionUpdate(_)
-            | v2::SessionUpdate::Other(_) => Vec::new(),
+            v2::SessionUpdate::AvailableCommandsUpdate(update) => {
+                self.advertised_commands = Some(
+                    update
+                        .available_commands
+                        .iter()
+                        .map(command_from_v2)
+                        .collect(),
+                );
+                Vec::new()
+            }
+            v2::SessionUpdate::ConfigOptionUpdate(_) | v2::SessionUpdate::Other(_) => Vec::new(),
             // `PlanRemoved` is behind an optional schema feature and is not
             // enabled by loom. Keep the wildcard for future v2 additions.
             _ => Vec::new(),
@@ -749,7 +797,10 @@ impl AcpTranslator {
         let item = item_from_tool_call(call, self.ctx.cwd.as_deref());
         self.tools.insert(
             call.tool_call_id.0.to_string(),
-            ToolItem { item: item.clone() },
+            ToolItem {
+                item: item.clone(),
+                last_progress: None,
+            },
         );
         events.push(ProviderEvent::ItemStarted {
             item,
@@ -786,9 +837,16 @@ impl AcpTranslator {
         set_item_status(&mut tool.item, status);
 
         if matches!(status, ItemStatus::Pending) {
+            // A frame that only restates the call's name is not progress:
+            // report the first one and every change, not every frame.
+            let message = patch.fields.title.clone();
+            if tool.last_progress == message {
+                return Vec::new();
+            }
+            tool.last_progress = message.clone();
             return vec![ProviderEvent::ItemToolCallProgress {
                 item_id: key,
-                message: patch.fields.title.clone(),
+                message,
                 provider_thread_id: self.ptid(),
                 parent_tool_call_id: None,
             }];
@@ -838,7 +896,7 @@ impl AcpTranslator {
         let mut events = self.flush_v2_assistant();
         let session_cwd = self.ctx.cwd.clone();
         let provider_thread_id = self.ptid();
-        let (started, status, title) = {
+        let (status, progress) = {
             let state = self
                 .v2_tools
                 .entry(key.clone())
@@ -876,7 +934,13 @@ impl AcpTranslator {
             let started = !state.started;
             state.started = true;
             let status = item_status_v2(&state.status);
-            let title = state.title.clone();
+            // What the frame is *about*. pi-acp streams a running call's own
+            // output into `content` and restates the call's name in `title`, so
+            // the content is the progress and the name is only the fallback for
+            // an agent that sends none. Reading the name instead showed a
+            // thirty-minute forked child agent as 39858 rows all reading
+            // "fork".
+            let progress = v2_tool_content_text(state).or_else(|| state.title.clone());
             if started {
                 let item = v2_item_from_tool_state(state, &key, session_cwd.as_deref());
                 events.push(ProviderEvent::ItemStarted {
@@ -884,7 +948,7 @@ impl AcpTranslator {
                     provider_thread_id: provider_thread_id.clone(),
                 });
             }
-            (started, status, title)
+            (status, progress)
         };
 
         if !matches!(status, ItemStatus::Pending) {
@@ -897,13 +961,30 @@ impl AcpTranslator {
                 item: v2_item_from_tool_state(&state, &key, session_cwd.as_deref()),
                 provider_thread_id: provider_thread_id.clone(),
             });
-        } else if !started || title.is_some() {
-            events.push(ProviderEvent::ItemToolCallProgress {
-                item_id: key,
-                message: title,
-                provider_thread_id,
-                parent_tool_call_id: None,
-            });
+        } else if let Some(message) = progress {
+            // One row per *change*: a frame that repeats the last progress line
+            // is the same news twice, and a long-running tool sends thousands
+            // of them.
+            let changed = {
+                let state = self
+                    .v2_tools
+                    .get_mut(&key)
+                    .expect("v2 tool state was inserted above");
+                if state.last_progress.as_deref() == Some(message.as_str()) {
+                    false
+                } else {
+                    state.last_progress = Some(message.clone());
+                    true
+                }
+            };
+            if changed {
+                events.push(ProviderEvent::ItemToolCallProgress {
+                    item_id: key,
+                    message: Some(message),
+                    provider_thread_id,
+                    parent_tool_call_id: None,
+                });
+            }
         }
         events
     }
@@ -1134,6 +1215,41 @@ impl AcpTranslator {
     }
 }
 
+/// One advertised command from the v1 schema.
+///
+/// The v1 input shape is an unstructured hint; the actual text typed after the
+/// command is passed to the agent as-is, so the hint is all loom can carry.
+fn command_from_v1(
+    command: &agent_client_protocol_schema::v1::AvailableCommand,
+) -> ProviderCommand {
+    let hint = match &command.input {
+        Some(agent_client_protocol_schema::v1::AvailableCommandInput::Unstructured(input)) => {
+            Some(input.hint.clone())
+        }
+        _ => None,
+    };
+    command_row(&command.name, &command.description, hint)
+}
+
+/// The v2 spelling of [`command_from_v1`]: v2 renamed the input variant.
+fn command_from_v2(command: &v2::AvailableCommand) -> ProviderCommand {
+    let hint = match &command.input {
+        Some(v2::AvailableCommandInput::Text(input)) => Some(input.hint.clone()),
+        _ => None,
+    };
+    command_row(&command.name, &command.description, hint)
+}
+
+fn command_row(name: &str, description: &str, hint: Option<String>) -> ProviderCommand {
+    ProviderCommand {
+        name: name.to_owned(),
+        description: description.to_owned(),
+        // An empty hint is the absence of one, not an empty hint the client
+        // should render as an empty label.
+        argument_hint: hint.filter(|hint| !hint.trim().is_empty()),
+    }
+}
+
 // --- tool mapping ---------------------------------------------------------
 
 fn v2_tool_state() -> V2ToolState {
@@ -1146,6 +1262,7 @@ fn v2_tool_state() -> V2ToolState {
         locations: Vec::new(),
         raw_input: None,
         raw_output: None,
+        last_progress: None,
         terminal_output: String::new(),
         terminal_exit_code: None,
     }
