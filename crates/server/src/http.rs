@@ -873,7 +873,13 @@ fn provider_info(spec: &ProviderSpec) -> Value {
             "permissionModes": ["accept-edits", "auto", "full"],
             "modelCatalogScope": "workspace"
         },
-        "composerActions": [],
+        // This capability enables the composer's generic slash-command menu;
+        // the actual names come from `projects.commands` for the selected
+        // workspace and provider.
+        "composerActions": [{
+            "kind": "skills",
+            "trigger": "/"
+        }],
         "available": true
     });
     // Omitted rather than null when an agent has no branding: the contract
@@ -8640,6 +8646,16 @@ mod tests {
             args: Vec::new(),
             cwd: None,
         }
+    }
+
+    #[test]
+    fn providers_advertise_the_slash_command_trigger() {
+        let info = provider_info(&provider_spec("pi", ProviderLaunch::AcpEmbeddedPi, "pi"));
+
+        assert_eq!(
+            info["composerActions"],
+            json!([{ "kind": "skills", "trigger": "/" }])
+        );
     }
 
     /// A branded provider carries the vendor's light/dark ink, and an unbranded
