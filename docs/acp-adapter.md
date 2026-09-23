@@ -127,7 +127,9 @@ workspace scan: the scan supplies the `origin` and `argumentHint` that ACP's
 `AvailableCommand` does not carry, and a name only the advertisement knows is
 attributed by its name (`skill:<name>` is `source: skill`, anything else is the
 agent's own, `origin: builtin`). A row the scan already answered keeps the
-scan's row, so the merge is additive rather than a replacement.
+scan's row, so the merge is additive rather than a replacement. Command-menu
+updates emitted during `session/load` or `session/resume` are retained too; the
+replay guard continues to suppress conversation history.
 
 ### Turn lifecycle
 

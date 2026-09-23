@@ -991,11 +991,12 @@ impl UpdateSink {
                         SessionUpdate::UsageUpdate(_) => {
                             state.pending_load_usage = Some(notification.update);
                         }
-                        // Session metadata is not conversation history. OMP sends
-                        // its bootstrap title around the load response, so retain
-                        // it for release after the identity event instead of
-                        // dropping it with replayed messages.
-                        SessionUpdate::SessionInfoUpdate(_) => {
+                        // Session metadata and the command menu are session state,
+                        // not conversation history. OMP sends both around the load
+                        // response, so retain them for release after identity instead
+                        // of dropping them with replayed messages.
+                        SessionUpdate::SessionInfoUpdate(_)
+                        | SessionUpdate::AvailableCommandsUpdate(_) => {
                             state.pending.push(PendingUpdate {
                                 session_id,
                                 update: PendingUpdateKind::V1(notification.update),
@@ -1012,7 +1013,11 @@ impl UpdateSink {
                         state.pending_load_usage = Some(notification.update);
                         return;
                     }
-                    if !matches!(notification.update, SessionUpdate::SessionInfoUpdate(_)) {
+                    if !matches!(
+                        notification.update,
+                        SessionUpdate::SessionInfoUpdate(_)
+                            | SessionUpdate::AvailableCommandsUpdate(_)
+                    ) {
                         return;
                     }
                     if !state.translator.has_identity() {
@@ -1063,7 +1068,8 @@ impl UpdateSink {
                         v2::SessionUpdate::UsageUpdate(_) => {
                             state.pending_load_usage_v2 = Some(notification.update);
                         }
-                        v2::SessionUpdate::SessionInfoUpdate(_) => {
+                        v2::SessionUpdate::SessionInfoUpdate(_)
+                        | v2::SessionUpdate::AvailableCommandsUpdate(_) => {
                             state.pending.push(PendingUpdate {
                                 session_id,
                                 update: PendingUpdateKind::V2(notification.update),
@@ -1080,7 +1086,11 @@ impl UpdateSink {
                         state.pending_load_usage_v2 = Some(notification.update);
                         return;
                     }
-                    if !matches!(notification.update, v2::SessionUpdate::SessionInfoUpdate(_)) {
+                    if !matches!(
+                        notification.update,
+                        v2::SessionUpdate::SessionInfoUpdate(_)
+                            | v2::SessionUpdate::AvailableCommandsUpdate(_)
+                    ) {
                         return;
                     }
                     if !state.translator.has_identity() {
@@ -2414,6 +2424,128 @@ mod tests {
             )),
             "the load-time title reaches the reports: {reports:#?}"
         );
+    }
+
+    #[tokio::test]
+    async fn load_time_v1_commands_survive_the_resume_replay_guard() {
+        let dir = tempfile::tempdir().expect("a temporary workspace");
+        let cwd = dir.path().to_string_lossy().into_owned();
+        let mut spec = loom_provider_protocol::ProviderSpec::acp("unused", Vec::new());
+        spec.cwd = Some(cwd.clone());
+        let run = ProviderRun {
+            spec,
+            prompt: "prompt".to_owned(),
+            host_id: loom_domain::HostId::mint(),
+            thread_id: loom_domain::ThreadId::mint(),
+            project_id: loom_domain::ProjectId::mint(),
+            run_id: loom_domain::RunId::mint(),
+            timeout: Duration::from_secs(10),
+            ceiling: crate::DEFAULT_RUN_CEILING,
+            permission_timeout: Duration::from_secs(5),
+            settle_timeout: crate::DEFAULT_SETTLE_TIMEOUT,
+            permission_ceiling: loom_domain::HostPermissionMode::Full,
+            permission_mode: loom_domain::automation::PermissionMode::Full,
+            provider_session_id: Some("session".to_owned()),
+            model: None,
+            reasoning_level: None,
+        };
+        let steers = crate::steer::SteerRegistry::new();
+        let (reports_tx, _reports_rx) = mpsc::channel(16);
+        let (catalogs_tx, _catalog_reports) = mpsc::channel(4);
+        let (commands_tx, mut commands_rx) = mpsc::channel(4);
+        let sink = sink_for(&run, &cwd, &steers, reports_tx, catalogs_tx, commands_tx).await;
+
+        sink.begin_load("session".to_owned()).await;
+        sink.on_notification(SessionNotification::new(
+            "session",
+            SessionUpdate::AvailableCommandsUpdate(v1::AvailableCommandsUpdate::new(vec![
+                v1::AvailableCommand::new("loading", "During load"),
+            ])),
+        ))
+        .await;
+        sink.finish_load("session").await;
+        sink.on_notification(SessionNotification::new(
+            "session",
+            SessionUpdate::AvailableCommandsUpdate(v1::AvailableCommandsUpdate::new(vec![
+                v1::AvailableCommand::new("loaded", "After load"),
+            ])),
+        ))
+        .await;
+        sink.on_session_known("session").await;
+
+        let reports: Vec<_> = std::iter::from_fn(|| commands_rx.try_recv().ok()).collect();
+        let names: Vec<Vec<String>> = reports
+            .iter()
+            .map(|report| {
+                report
+                    .commands
+                    .iter()
+                    .map(|command| command.name.clone())
+                    .collect()
+            })
+            .collect();
+        assert_eq!(names, vec![vec!["loading"], vec!["loaded"]]);
+    }
+
+    #[tokio::test]
+    async fn load_time_v2_commands_survive_the_resume_replay_guard() {
+        let dir = tempfile::tempdir().expect("a temporary workspace");
+        let cwd = dir.path().to_string_lossy().into_owned();
+        let mut spec = loom_provider_protocol::ProviderSpec::acp("unused", Vec::new());
+        spec.cwd = Some(cwd.clone());
+        let run = ProviderRun {
+            spec,
+            prompt: "prompt".to_owned(),
+            host_id: loom_domain::HostId::mint(),
+            thread_id: loom_domain::ThreadId::mint(),
+            project_id: loom_domain::ProjectId::mint(),
+            run_id: loom_domain::RunId::mint(),
+            timeout: Duration::from_secs(10),
+            ceiling: crate::DEFAULT_RUN_CEILING,
+            permission_timeout: Duration::from_secs(5),
+            settle_timeout: crate::DEFAULT_SETTLE_TIMEOUT,
+            permission_ceiling: loom_domain::HostPermissionMode::Full,
+            permission_mode: loom_domain::automation::PermissionMode::Full,
+            provider_session_id: Some("session".to_owned()),
+            model: None,
+            reasoning_level: None,
+        };
+        let steers = crate::steer::SteerRegistry::new();
+        let (reports_tx, _reports_rx) = mpsc::channel(16);
+        let (catalogs_tx, _catalog_reports) = mpsc::channel(4);
+        let (commands_tx, mut commands_rx) = mpsc::channel(4);
+        let sink = sink_for(&run, &cwd, &steers, reports_tx, catalogs_tx, commands_tx).await;
+
+        sink.begin_load("session".to_owned()).await;
+        sink.on_v2_notification(v2::UpdateSessionNotification::new(
+            "session",
+            v2::SessionUpdate::AvailableCommandsUpdate(v2::AvailableCommandsUpdate::new(vec![
+                v2::AvailableCommand::new("loading", "During load"),
+            ])),
+        ))
+        .await;
+        sink.finish_load("session").await;
+        sink.on_v2_notification(v2::UpdateSessionNotification::new(
+            "session",
+            v2::SessionUpdate::AvailableCommandsUpdate(v2::AvailableCommandsUpdate::new(vec![
+                v2::AvailableCommand::new("loaded", "After load"),
+            ])),
+        ))
+        .await;
+        sink.on_session_known("session").await;
+
+        let reports: Vec<_> = std::iter::from_fn(|| commands_rx.try_recv().ok()).collect();
+        let names: Vec<Vec<String>> = reports
+            .iter()
+            .map(|report| {
+                report
+                    .commands
+                    .iter()
+                    .map(|command| command.name.clone())
+                    .collect()
+            })
+            .collect();
+        assert_eq!(names, vec![vec!["loading"], vec!["loaded"]]);
     }
 
     /// A steer cancels the prompt in flight and re-prompts the **same session**,
