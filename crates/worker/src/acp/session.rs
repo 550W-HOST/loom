@@ -761,7 +761,7 @@ async fn set_config_option(
 /// v1's value-id form intentionally serializes without the v2 `type: "id"`
 /// discriminator. The option id is supplied by the agent's own response, so
 /// this also supports agents such as omp whose thought-level id is `thinking`.
-async fn set_config_option_v1(
+pub(super) async fn set_config_option_v1(
     connection: &ConnectionTo<Agent>,
     session_id: &str,
     config_id: &str,

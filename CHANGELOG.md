@@ -59,6 +59,7 @@ This release adds Account Pooler for Claude and Codex, push notifications across
 - Full browser storage no longer crashes the app.
 - Plugin settings preserve newer edits during saves, reloads report the correct version, and tool schemas support newer Zod 4 minors.
 - Fixes for intermittent Linux AppImage startup failures and host daemon startup and shutdown.
+- ACP agents such as OMP expose each model's thinking-level choices before the first run.
 
 ### Plugin API changes
 

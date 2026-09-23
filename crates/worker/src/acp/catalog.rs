@@ -21,7 +21,8 @@ use agent_client_protocol::{on_receive_request, Agent, Client, ConnectTo, Connec
 use loom_domain::catalog::{CatalogModel, CatalogThinkingLevel, ProviderCatalog};
 
 use super::session::{
-    agent_argv, embedded_agent_factory, Transport, MODEL_CONFIG_ID, THOUGHT_LEVEL_CONFIG_ID,
+    agent_argv, embedded_agent_factory, set_config_option_v1, Transport, MODEL_CONFIG_ID,
+    THOUGHT_LEVEL_CONFIG_ID,
 };
 
 /// The `_meta` keys a model's ladder travels under.
@@ -128,13 +129,13 @@ pub fn catalog_from_v1_options(options: &[v1::SessionConfigOption]) -> ProviderC
     }
 }
 
-/// The v1 select option with the preferred id, or the matching semantic
-/// category when the agent chose a different id.
-fn select_option_v1<'a>(
+/// The v1 selector with the preferred id, or the matching semantic category,
+/// together with the id the agent actually chose.
+fn select_option_v1_with_id<'a>(
     options: &'a [v1::SessionConfigOption],
     preferred_id: &str,
     category: v1::SessionConfigOptionCategory,
-) -> Option<&'a v1::SessionConfigSelect> {
+) -> Option<(String, &'a v1::SessionConfigSelect)> {
     let option = options
         .iter()
         .find(|option| {
@@ -147,10 +148,79 @@ fn select_option_v1<'a>(
                     && matches!(&option.kind, v1::SessionConfigKind::Select(_))
             })
         })?;
-    match &option.kind {
-        v1::SessionConfigKind::Select(select) => Some(select),
-        _ => None,
+    let v1::SessionConfigKind::Select(select) = &option.kind else {
+        return None;
+    };
+    Some((option.id.0.to_string(), select))
+}
+
+/// The v1 selector with the preferred id, or the matching semantic category
+/// when the agent chose a provider-specific id.
+fn select_option_v1<'a>(
+    options: &'a [v1::SessionConfigOption],
+    preferred_id: &str,
+    category: v1::SessionConfigOptionCategory,
+) -> Option<&'a v1::SessionConfigSelect> {
+    select_option_v1_with_id(options, preferred_id, category).map(|(_, select)| select)
+}
+
+/// Probe each v1 model once so agents whose per-model ladder is exposed only
+/// after switching models (such as omp) publish a complete catalogue.
+async fn catalog_from_v1_session(
+    connection: &ConnectionTo<Agent>,
+    session_id: &str,
+    options: Vec<v1::SessionConfigOption>,
+) -> ProviderCatalog {
+    let mut catalog = catalog_from_v1_options(&options);
+    let Some((model_config_id, model_select)) = select_option_v1_with_id(
+        &options,
+        MODEL_CONFIG_ID,
+        v1::SessionConfigOptionCategory::Model,
+    ) else {
+        return catalog;
+    };
+    let current_model = model_select.current_value.0.to_string();
+    let model_ids = values_v1(model_select)
+        .into_iter()
+        .map(|value| value.value.0.to_string())
+        .collect::<Vec<_>>();
+    let mut selected_model = current_model.clone();
+
+    for model_id in &model_ids {
+        if model_id == &current_model {
+            continue;
+        }
+        let Ok(updated) =
+            set_config_option_v1(connection, session_id, &model_config_id, model_id).await
+        else {
+            continue;
+        };
+        selected_model = model_id.clone();
+        let updated_catalog = catalog_from_v1_options(&updated);
+        let Some(updated_model) = updated_catalog
+            .models
+            .into_iter()
+            .find(|model| model.id == *model_id)
+        else {
+            continue;
+        };
+        if let Some(model) = catalog
+            .models
+            .iter_mut()
+            .find(|model| model.id == *model_id)
+        {
+            model.thinking_levels = updated_model.thinking_levels;
+            model.default_thinking_level = updated_model.default_thinking_level;
+        }
     }
+
+    // Leave the throwaway session in the state it started in. This matters to
+    // agents that perform cleanup or emit state while the connection closes.
+    if selected_model != current_model {
+        let _ =
+            set_config_option_v1(connection, session_id, &model_config_id, &current_model).await;
+    }
+    catalog
 }
 
 /// A v1 selector's values, whether the agent grouped them or not.
@@ -386,8 +456,9 @@ impl CatalogProbeState {
 /// The v1 half of the probe.
 ///
 /// v1 agents may publish config options just like v2 agents. When they do, the
-/// probe reads the model selector into the catalogue; when they do not, opening
-/// a session still proves the agent is usable and the catalogue stays empty.
+/// probe reads the model selector and asks for each model's current ladder; when
+/// they do not, opening a session still proves the agent is usable and the
+/// catalogue stays empty.
 /// Registering this client is what lets an agent that only speaks v1 — Pi
 /// itself, under a v1 negotiation — be admitted rather than rejected for
 /// answering the version it actually supports.
@@ -429,11 +500,12 @@ impl ConnectTo<Agent> for V1CatalogClient {
                     .send_request(v1::NewSessionRequest::new(cwd))
                     .block_task()
                     .await?;
+                let options = created.config_options.unwrap_or_default();
                 let catalog =
-                    catalog_from_v1_options(created.config_options.as_deref().unwrap_or_default());
+                    catalog_from_v1_session(&connection, &created.session_id.0, options).await;
                 // The probe's session is throwaway; dropping the connection at
-                // the end of this block is what ends it. The session id is not
-                // kept because nothing here resumes it.
+                // the end of this block is what ends it. The helper restores
+                // the initial model before that drop.
                 state.set(catalog);
                 Ok(())
             })
@@ -720,6 +792,51 @@ done
         path
     }
 
+    /// Writes an executable ACP agent stub that negotiates v1 and changes its
+    /// thought-level selector when the model selector is changed.
+    fn write_v1_model_probe_agent(
+        dir: &std::path::Path,
+        options_a: &str,
+        options_b: &str,
+    ) -> PathBuf {
+        let path = dir.join("catalog-v1-probe.sh");
+        let script = r#"#!/bin/sh
+options_a='__OPTIONS_A__'
+options_b='__OPTIONS_B__'
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([^,]*\),"method":.*/\1/p')
+  method=$(printf '%s' "$line" | sed -n 's/.*"method":"\([^"]*\)".*/\1/p')
+  case "$method" in
+    initialize)
+      printf '%s\n' '{"jsonrpc":"2.0","id":'"$id"',"result":{"protocolVersion":1,"info":{"name":"fake-v1","version":"1"},"capabilities":{},"agentInfo":{"name":"fake-v1","version":"1"},"agentCapabilities":{}}}'
+      ;;
+    session/new)
+      printf '%s\n' '{"jsonrpc":"2.0","id":'"$id"',"result":{"sessionId":"probe-v1","configOptions":'"$options_a"'}}'
+      ;;
+    session/set_config_option)
+      case "$line" in
+        *'"value":"mock/b"'*) options="$options_b" ;;
+        *) options="$options_a" ;;
+      esac
+      printf '%s\n' '{"jsonrpc":"2.0","id":'"$id"',"result":{"configOptions":'"$options"'}}'
+      ;;
+    session/close)
+      printf '%s\n' '{"jsonrpc":"2.0","id":'"$id"',"result":{}}'
+      ;;
+  esac
+done
+"#
+        .replace("__OPTIONS_A__", options_a)
+        .replace("__OPTIONS_B__", options_b);
+        std::fs::write(&path, script).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        path
+    }
+
     fn stdio(agent: &std::path::Path) -> Transport {
         Transport::Stdio {
             command: agent.to_string_lossy().into_owned(),
@@ -779,6 +896,89 @@ done
             }
             other => panic!("expected Read, got {other:?}"),
         }
+    }
+
+    /// v1 agents such as omp expose the current model's ladder in `session/new`
+    /// and publish the next model's ladder only after `session/set_config_option`.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_v1_probe_discovers_ladders_after_model_switches() {
+        let dir = tempfile::tempdir().unwrap();
+        let options_a = json!([
+            {
+                "id": "model",
+                "name": "Model",
+                "category": "model",
+                "type": "select",
+                "currentValue": "mock/a",
+                "options": [
+                    {"value": "mock/a", "name": "A"},
+                    {"value": "mock/b", "name": "B"}
+                ]
+            },
+            {
+                "id": "thinking",
+                "name": "Thinking",
+                "category": "thought_level",
+                "type": "select",
+                "currentValue": "off",
+                "options": [
+                    {"value": "off", "name": "Off"},
+                    {"value": "high", "name": "High"}
+                ]
+            }
+        ])
+        .to_string();
+        let options_b = json!([
+            {
+                "id": "model",
+                "name": "Model",
+                "category": "model",
+                "type": "select",
+                "currentValue": "mock/b",
+                "options": [
+                    {"value": "mock/a", "name": "A"},
+                    {"value": "mock/b", "name": "B"}
+                ]
+            },
+            {
+                "id": "thinking",
+                "name": "Thinking",
+                "category": "thought_level",
+                "type": "select",
+                "currentValue": "off",
+                "options": [
+                    {"value": "off", "name": "Off"},
+                    {"value": "low", "name": "Low"},
+                    {"value": "max", "name": "Max"}
+                ]
+            }
+        ])
+        .to_string();
+        let agent = write_v1_model_probe_agent(dir.path(), &options_a, &options_b);
+        let outcome = read_catalog(
+            stdio(&agent),
+            dir.path().to_string_lossy().into_owned(),
+            Duration::from_secs(10),
+        )
+        .await;
+
+        let CatalogProbeOutcome::Read(catalog) = outcome else {
+            panic!("expected a readable v1 catalogue, got {outcome:?}");
+        };
+        let ladder = |id: &str| -> Vec<String> {
+            catalog
+                .models
+                .iter()
+                .find(|model| model.id == id)
+                .expect("advertised")
+                .thinking_levels
+                .iter()
+                .map(|level| level.id.clone())
+                .collect()
+        };
+        assert_eq!(catalog.current_model.as_deref(), Some("mock/a"));
+        assert_eq!(ladder("mock/a"), vec!["off", "high"]);
+        assert_eq!(ladder("mock/b"), vec!["off", "low", "max"]);
     }
 
     /// A probe that cannot answer is a reported failure with the deadline in
