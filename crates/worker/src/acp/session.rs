@@ -533,10 +533,11 @@ async fn serve_embedded(
 enum UpdatePhase {
     /// `session/new` is in flight and notifications wait for its returned id.
     Constructing,
-    /// `session/load` is in flight; replay is not part of the current run.
+    /// `session/load` is in flight; replayed timeline items are not part of the
+    /// current run. Session metadata is retained for release after identity.
     Loading { session_id: String },
-    /// The load response arrived, but its post-response history replay must
-    /// still be suppressed until the new prompt begins.
+    /// The load response arrived, but replayed timeline items must still be
+    /// suppressed until the new prompt begins. Session metadata is retained.
     Loaded { session_id: String },
     /// The session is named and notifications belong to the active run.
     Ready,
@@ -557,8 +558,8 @@ struct UpdateState {
     phase: UpdatePhase,
     pending: Vec<PendingUpdate>,
     /// v1 `session/load` may publish a context usage snapshot while loading.
-    /// Keep the latest one; history and metadata updates are intentionally not
-    /// replayed into the new run.
+    /// Keep the latest one. Timeline history is intentionally not replayed into
+    /// the new run, while session metadata is retained in `pending`.
     pending_load_usage: Option<SessionUpdate>,
     /// The v2 equivalent of the load-time usage snapshot.
     pending_load_usage_v2: Option<v2::SessionUpdate>,
@@ -965,17 +966,44 @@ impl UpdateSink {
                 }
                 UpdatePhase::Loading {
                     session_id: expected,
-                }
-                | UpdatePhase::Loaded {
-                    session_id: expected,
-                } => {
-                    if expected == &session_id
-                        && matches!(notification.update, SessionUpdate::UsageUpdate(_))
-                    {
-                        state.pending_load_usage = Some(notification.update);
+                } if expected == &session_id => {
+                    match &notification.update {
+                        SessionUpdate::UsageUpdate(_) => {
+                            state.pending_load_usage = Some(notification.update);
+                        }
+                        // Session metadata is not conversation history. OMP sends
+                        // its bootstrap title around the load response, so retain
+                        // it for release after the identity event instead of
+                        // dropping it with replayed messages.
+                        SessionUpdate::SessionInfoUpdate(_) => {
+                            state.pending.push(PendingUpdate {
+                                session_id,
+                                update: PendingUpdateKind::V1(notification.update),
+                            });
+                        }
+                        _ => {}
                     }
                     return;
                 }
+                UpdatePhase::Loaded {
+                    session_id: expected,
+                } if expected == &session_id => {
+                    if matches!(notification.update, SessionUpdate::UsageUpdate(_)) {
+                        state.pending_load_usage = Some(notification.update);
+                        return;
+                    }
+                    if !matches!(notification.update, SessionUpdate::SessionInfoUpdate(_)) {
+                        return;
+                    }
+                    if !state.translator.has_identity() {
+                        state.pending.push(PendingUpdate {
+                            session_id,
+                            update: PendingUpdateKind::V1(notification.update),
+                        });
+                        return;
+                    }
+                }
+                UpdatePhase::Loading { .. } | UpdatePhase::Loaded { .. } => return,
                 UpdatePhase::Ready => {}
             }
             if state.translator.provider_session_id() != Some(session_id.as_str()) {
@@ -1010,17 +1038,40 @@ impl UpdateSink {
                 }
                 UpdatePhase::Loading {
                     session_id: expected,
-                }
-                | UpdatePhase::Loaded {
-                    session_id: expected,
-                } => {
-                    if expected == &session_id
-                        && matches!(notification.update, v2::SessionUpdate::UsageUpdate(_))
-                    {
-                        state.pending_load_usage_v2 = Some(notification.update);
+                } if expected == &session_id => {
+                    match &notification.update {
+                        v2::SessionUpdate::UsageUpdate(_) => {
+                            state.pending_load_usage_v2 = Some(notification.update);
+                        }
+                        v2::SessionUpdate::SessionInfoUpdate(_) => {
+                            state.pending.push(PendingUpdate {
+                                session_id,
+                                update: PendingUpdateKind::V2(notification.update),
+                            });
+                        }
+                        _ => {}
                     }
                     return;
                 }
+                UpdatePhase::Loaded {
+                    session_id: expected,
+                } if expected == &session_id => {
+                    if matches!(notification.update, v2::SessionUpdate::UsageUpdate(_)) {
+                        state.pending_load_usage_v2 = Some(notification.update);
+                        return;
+                    }
+                    if !matches!(notification.update, v2::SessionUpdate::SessionInfoUpdate(_)) {
+                        return;
+                    }
+                    if !state.translator.has_identity() {
+                        state.pending.push(PendingUpdate {
+                            session_id,
+                            update: PendingUpdateKind::V2(notification.update),
+                        });
+                        return;
+                    }
+                }
+                UpdatePhase::Loading { .. } | UpdatePhase::Loaded { .. } => return,
                 UpdatePhase::Ready => {}
             }
             if state.translator.provider_session_id() != Some(session_id.as_str()) {
@@ -1057,11 +1108,10 @@ impl UpdateSink {
     }
 
     /// Finishes a load response. The phase remains `Loaded` until the new
-    /// prompt is sent, because a post-response replay is suppressed rather than
-    /// mixed into the new run. `pi-acp` publishes its history *before* the
-    /// load/resume response (see `history.rs`), so for it nothing arrives in
-    /// this window at all; an agent that replays afterwards still cannot leak
-    /// into the run that is about to start.
+    /// prompt is sent, because post-response timeline replay is suppressed
+    /// rather than mixed into the new run. Session metadata is still accepted
+    /// during this phase, since agents such as OMP send the bootstrap title
+    /// after the load response.
     async fn finish_load(&self, session_id: &str) {
         let mut state = self.state.lock().await;
         let loaded = matches!(
@@ -2292,6 +2342,57 @@ mod tests {
             steers: Arc::new(tokio::sync::Mutex::new(Some(steer_rx))),
             steer_in_flight: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
+    }
+
+    /// OMP sends the session title as a bootstrap `session_info_update` after
+    /// `session/load` has answered. It must survive the load replay guard once
+    /// the session identity has been emitted.
+    #[tokio::test]
+    async fn a_loaded_session_title_is_reported_after_load() {
+        let dir = tempfile::tempdir().expect("a temporary workspace");
+        let cwd = dir.path().to_string_lossy().into_owned();
+        let mut spec = loom_provider_protocol::ProviderSpec::acp("unused", Vec::new());
+        spec.cwd = Some(cwd.clone());
+        let run = ProviderRun {
+            spec,
+            prompt: "prompt".to_owned(),
+            host_id: loom_domain::HostId::mint(),
+            thread_id: loom_domain::ThreadId::mint(),
+            project_id: loom_domain::ProjectId::mint(),
+            run_id: loom_domain::RunId::mint(),
+            timeout: Duration::from_secs(10),
+            ceiling: crate::DEFAULT_RUN_CEILING,
+            permission_timeout: Duration::from_secs(5),
+            settle_timeout: crate::DEFAULT_SETTLE_TIMEOUT,
+            permission_ceiling: loom_domain::HostPermissionMode::Full,
+            provider_session_id: Some("session".to_owned()),
+            model: None,
+            reasoning_level: None,
+        };
+        let steers = crate::steer::SteerRegistry::new();
+        let (reports_tx, mut reports_rx) = mpsc::channel(16);
+        let (catalogs_tx, _catalog_reports) = mpsc::channel(4);
+        let (commands_tx, _command_reports) = mpsc::channel(4);
+        let sink = sink_for(&run, &cwd, &steers, reports_tx, catalogs_tx, commands_tx).await;
+
+        sink.begin_load("session".to_owned()).await;
+        sink.finish_load("session").await;
+        sink.on_session_known("session").await;
+        sink.on_notification(SessionNotification::new(
+            "session",
+            SessionUpdate::SessionInfoUpdate(v1::SessionInfoUpdate::new().title("Loaded title")),
+        ))
+        .await;
+
+        let reports: Vec<_> = std::iter::from_fn(|| reports_rx.try_recv().ok()).collect();
+        assert!(
+            reports.iter().any(|report| matches!(
+                &report.event.event.body,
+                ProviderEvent::ThreadNameUpdated { thread_name, .. }
+                    if thread_name == "Loaded title"
+            )),
+            "the load-time title reaches the reports: {reports:#?}"
+        );
     }
 
     /// A steer cancels the prompt in flight and re-prompts the **same session**,
