@@ -636,6 +636,9 @@ function convertMessage(
           callId: message.callId,
           queries: message.queries,
           completedAt: message.completedAt,
+          ...(message.resultText !== null
+            ? { resultText: message.resultText }
+            : {}),
           ...rowPresentation(message),
         },
       ];
@@ -651,6 +654,9 @@ function convertMessage(
           prompt: message.prompt,
           pattern: message.pattern,
           completedAt: message.completedAt,
+          ...(message.resultText !== null
+            ? { resultText: message.resultText }
+            : {}),
           ...rowPresentation(message),
         },
       ];
@@ -710,6 +716,9 @@ function convertMessage(
           path: message.path,
           cmd: message.cmd,
           completedAt: message.completedAt,
+          ...(message.resultText !== null
+            ? { resultText: message.resultText }
+            : {}),
           ...rowPresentation(message),
         },
       ];

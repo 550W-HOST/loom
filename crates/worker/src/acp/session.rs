@@ -949,11 +949,30 @@ impl UpdateSink {
     /// between "not identified" and "identity released".
     async fn on_notification(&self, notification: SessionNotification) {
         let session_id = notification.session_id.0.to_string();
-        acp_trace!(
-            "v1 update {:?} for session {}",
-            std::mem::discriminant(&notification.update),
-            session_id
-        );
+        match &notification.update {
+            SessionUpdate::ToolCallUpdate(update) => acp_trace!(
+                "v1 tool update session={} id={} status={:?} content_blocks={} raw_output={}",
+                session_id,
+                update.tool_call_id,
+                update.fields.status,
+                update.fields.content.as_ref().map_or(0, Vec::len),
+                update.fields.raw_output.is_some()
+            ),
+            SessionUpdate::ToolCall(call) => acp_trace!(
+                "v1 tool start session={} id={} kind={:?} content_blocks={} raw_output={}",
+                session_id,
+                call.tool_call_id,
+                call.kind,
+                call.content.len(),
+                call.raw_output.is_some()
+            ),
+            _ => acp_trace!(
+                "v1 update {:?} for session {}",
+                std::mem::discriminant(&notification.update),
+                session_id
+            ),
+        }
+
         let events = {
             let mut state = self.state.lock().await;
             match &state.phase {

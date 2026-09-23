@@ -825,6 +825,14 @@ impl AcpTranslator {
             tool.item = rebuild_tool_item(tool, patch);
         }
 
+        // v1's update is the first frame that usually carries a tool result.
+        // OMP sends both `content` and `rawOutput` here; keep them on the
+        // accumulated item before the status is projected so the completion
+        // cannot lose the result that arrived after the start frame.
+        if patch.fields.content.is_some() || patch.fields.raw_output.is_some() {
+            apply_v1_tool_result(&mut tool.item, patch);
+        }
+
         let status = patch
             .fields
             .status
@@ -1392,6 +1400,7 @@ fn v2_item_from_tool_state(
                     path: None,
                     cmd: None,
                     status,
+                    result_text: v2_tool_result_text(state),
                     presentation: None,
                     parent_tool_call_id: None,
                 };
@@ -1407,7 +1416,7 @@ fn v2_item_from_tool_state(
                     url: url.to_owned(),
                     prompt: None,
                     pattern: None,
-                    result_text: None,
+                    result_text: v2_tool_result_text(state),
                     presentation: None,
                     parent_tool_call_id: None,
                 };
@@ -1479,42 +1488,92 @@ fn v2_tool_result(state: &V2ToolState) -> Option<Value> {
     if let Some(text) = v2_tool_content_text(state) {
         return Some(Value::String(text));
     }
+    if let Some(text) = state.raw_output.as_ref().and_then(acp_result_text) {
+        return Some(Value::String(text));
+    }
     state.raw_output.clone().map(unwrap_tool_content_envelope)
+}
+
+/// The readable result text carried by a v2 tool update.
+fn v2_tool_result_text(state: &V2ToolState) -> Option<String> {
+    v2_tool_content_text(state)
+        .or_else(|| state.raw_output.as_ref().and_then(acp_result_display_text))
 }
 
 /// The text of a call's `content` blocks, when it carries any.
 fn v2_tool_content_text(state: &V2ToolState) -> Option<String> {
-    let text: String = state
+    let texts: Vec<String> = state
         .content
         .iter()
         .filter_map(|entry| match entry {
-            v2::ToolCallContent::Content(content) => Some(v2_content_text(&content.content)),
+            v2::ToolCallContent::Content(content) => {
+                let text = v2_content_text(&content.content);
+                (!text.is_empty()).then_some(text)
+            }
             _ => None,
         })
         .collect();
-    (!text.trim().is_empty()).then_some(text)
+    (!texts.is_empty()).then(|| texts.join("\n"))
 }
 
-/// A tool result that is an MCP-style content envelope, unwrapped to its text.
+/// Extracts readable text from the result shapes used by ACP agents.
 ///
-/// `{"content":[{"type":"text","text":"…"}]}` is the shape MCP tool results and
-/// pi extensions share; the envelope is transport and the text is the result.
-/// Anything else is returned untouched, so a value loom cannot read is still
-/// shown rather than silently dropped.
-fn unwrap_tool_content_envelope(raw: Value) -> Value {
-    let Some(Value::Array(blocks)) = raw.get("content") else {
-        return raw;
-    };
-    let text: String = blocks
-        .iter()
-        .filter(|block| block.get("type").and_then(Value::as_str) == Some("text"))
-        .filter_map(|block| block.get("text").and_then(Value::as_str))
-        .collect();
-    if text.trim().is_empty() {
-        raw
-    } else {
-        Value::String(text)
+/// `content[].text` is the common MCP/OMP shape, but native agents also use
+/// direct `text`/`message` fields and tool-specific `details` fields. This is
+/// deliberately a value normalizer rather than a tool-name switch: ACP's kind
+/// is a category, not a stable tool name, and extensions are free to choose
+/// their own envelope.
+fn acp_result_text(value: &Value) -> Option<String> {
+    match value {
+        Value::String(text) => (!text.is_empty()).then(|| text.clone()),
+        Value::Array(values) => {
+            let texts: Vec<String> = values.iter().filter_map(acp_result_text).collect();
+            (!texts.is_empty()).then(|| texts.join("\n"))
+        }
+        Value::Object(object) => {
+            for key in ["text", "message", "errorMessage"] {
+                if let Some(text) = object.get(key).and_then(Value::as_str) {
+                    if !text.is_empty() {
+                        return Some(text.to_owned());
+                    }
+                }
+            }
+            if let Some(text) = object.get("content").and_then(acp_result_text) {
+                return Some(text);
+            }
+            if let Some(details) = object.get("details") {
+                for key in ["diff", "stdout", "output", "stderr", "error"] {
+                    if let Some(text) = details.get(key).and_then(Value::as_str) {
+                        if !text.is_empty() {
+                            return Some(text.to_owned());
+                        }
+                    }
+                }
+            }
+            None
+        }
+        Value::Null | Value::Bool(_) | Value::Number(_) => None,
     }
+}
+
+/// A display-safe fallback for a structured result with no text field.
+///
+/// Specialized contract items only have a string result slot. Keeping a
+/// readable JSON representation here is preferable to dropping an agent's
+/// structured answer just because it used a new extension shape.
+fn acp_result_display_text(value: &Value) -> Option<String> {
+    acp_result_text(value).or_else(|| match value {
+        Value::Null => None,
+        _ => serde_json::to_string_pretty(value).ok(),
+    })
+}
+
+/// A result value that is an MCP-style content envelope, unwrapped to text.
+///
+/// Anything without readable text remains as the original value. The generic
+/// timeline can still render that structured value as indented JSON.
+fn unwrap_tool_content_envelope(raw: Value) -> Value {
+    acp_result_text(&raw).map(Value::String).unwrap_or(raw)
 }
 
 fn v2_tool_kind_name(kind: &v2::ToolKind) -> String {
@@ -1751,6 +1810,7 @@ fn item_from_tool_call(call: &ToolCall, session_cwd: Option<&str>) -> ThreadEven
                     path: None,
                     cmd: None,
                     status: ItemStatus::Pending,
+                    result_text: tool_call_result_text(call),
                     presentation: None,
                     parent_tool_call_id: None,
                 };
@@ -1763,7 +1823,7 @@ fn item_from_tool_call(call: &ToolCall, session_cwd: Option<&str>) -> ThreadEven
                     url: url.to_owned(),
                     prompt: None,
                     pattern: None,
-                    result_text: None,
+                    result_text: tool_call_result_text(call),
                     presentation: None,
                     parent_tool_call_id: None,
                 };
@@ -1803,6 +1863,73 @@ fn command_execution(id: String, command: &str, cwd: String) -> ThreadEventItem 
     }
 }
 
+/// Text blocks from an ACP v1 tool result.
+fn tool_call_content_text(content: &[ToolCallContent]) -> Option<String> {
+    let texts: Vec<String> = content
+        .iter()
+        .filter_map(|entry| match entry {
+            ToolCallContent::Content(content) => {
+                let text = content_text(&content.content);
+                (!text.is_empty()).then_some(text)
+            }
+            _ => None,
+        })
+        .collect();
+    (!texts.is_empty()).then(|| texts.join("\n"))
+}
+
+/// The readable result carried by a v1 tool call or patch.
+fn tool_call_result_text(call: &ToolCall) -> Option<String> {
+    tool_call_content_text(&call.content)
+        .or_else(|| call.raw_output.as_ref().and_then(acp_result_display_text))
+}
+
+/// A v1 tool result in the generic item's value form.
+fn tool_call_result(call: &ToolCall) -> Option<Value> {
+    tool_call_content_text(&call.content)
+        .or_else(|| call.raw_output.as_ref().and_then(acp_result_text))
+        .map(Value::String)
+        .or_else(|| call.raw_output.clone().map(unwrap_tool_content_envelope))
+}
+
+/// Applies the result-bearing fields of a v1 patch to the accumulated item.
+///
+/// v1 uses a start frame followed by patches. In particular, OMP puts the
+/// result only on the terminal patch, so updating status without this merge
+/// leaves a perfectly valid completed tool with an empty result.
+fn apply_v1_tool_result(item: &mut ThreadEventItem, patch: &ToolCallUpdate) {
+    let content_text = patch
+        .fields
+        .content
+        .as_deref()
+        .and_then(tool_call_content_text);
+    let raw_text = patch.fields.raw_output.as_ref().and_then(acp_result_text);
+    let display_text = content_text.clone().or_else(|| {
+        patch
+            .fields
+            .raw_output
+            .as_ref()
+            .and_then(acp_result_display_text)
+    });
+
+    match item {
+        ThreadEventItem::Search { result_text, .. }
+        | ThreadEventItem::WebFetch { result_text, .. } => {
+            if let Some(text) = display_text {
+                *result_text = Some(text);
+            }
+        }
+        ThreadEventItem::ToolCall { result, .. } => {
+            *result = content_text
+                .or(raw_text)
+                .map(Value::String)
+                .or_else(|| patch.fields.raw_output.clone())
+                .or_else(|| result.clone());
+        }
+        _ => {}
+    }
+}
+
 /// The generic tool item, which needs only what ACP always supplies.
 fn generic_tool_call(call: &ToolCall, id: String) -> ThreadEventItem {
     ThreadEventItem::ToolCall {
@@ -1820,7 +1947,7 @@ fn generic_tool_call(call: &ToolCall, id: String) -> ThreadEventItem {
                     .collect::<BTreeMap<_, _>>()
             }),
         status: ItemStatus::Pending,
-        result: call.raw_output.clone(),
+        result: tool_call_result(call),
         error: None,
         duration_ms: None,
         presentation: None,

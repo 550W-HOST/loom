@@ -358,6 +358,7 @@ export const timelineWebSearchWorkRowSchema = timelineWorkRowBaseSchema.extend({
   workKind: z.literal("web-search"),
   callId: z.string(),
   queries: z.array(z.string()),
+  resultText: z.string().nullable().optional(),
   completedAt: z.number().nullable(),
   ...timelineRowPresentationField,
 });
@@ -371,6 +372,7 @@ export const timelineWebFetchWorkRowSchema = timelineWorkRowBaseSchema.extend({
   url: z.string(),
   prompt: z.string().nullable(),
   pattern: z.string().nullable(),
+  resultText: z.string().nullable().optional(),
   completedAt: z.number().nullable(),
   ...timelineRowPresentationField,
 });
@@ -423,6 +425,7 @@ export const timelineSearchWorkRowSchema = timelineWorkRowBaseSchema.extend({
   query: z.string(),
   path: z.string().nullable(),
   cmd: z.string().nullable(),
+  resultText: z.string().nullable().optional(),
   completedAt: z.number().nullable(),
   ...timelineRowPresentationField,
 });

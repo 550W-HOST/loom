@@ -68,6 +68,7 @@ impl ToolActivity {
                 | ThreadEventItem::CommandExecution { .. }
                 | ThreadEventItem::FileChange { .. }
                 | ThreadEventItem::FileRead { .. }
+                | ThreadEventItem::WebSearch { .. }
                 | ThreadEventItem::Search { .. }
                 | ThreadEventItem::WebFetch { .. }
         )
@@ -217,6 +218,7 @@ impl ToolActivity {
                 query,
                 path,
                 cmd,
+                result_text,
                 ..
             } => {
                 fields.remove("approvalStatus");
@@ -225,11 +227,27 @@ impl ToolActivity {
                 fields.insert("query".into(), json!(query));
                 fields.insert("path".into(), json!(path));
                 fields.insert("cmd".into(), json!(cmd));
+                if let Some(result_text) = result_text {
+                    fields.insert("resultText".into(), json!(result_text));
+                }
+            }
+            ThreadEventItem::WebSearch {
+                queries,
+                result_text,
+                ..
+            } => {
+                fields.remove("approvalStatus");
+                fields.insert("workKind".into(), json!("web-search"));
+                fields.insert("queries".into(), json!(queries));
+                if let Some(result_text) = result_text {
+                    fields.insert("resultText".into(), json!(result_text));
+                }
             }
             ThreadEventItem::WebFetch {
                 url,
                 prompt,
                 pattern,
+                result_text,
                 ..
             } => {
                 fields.remove("approvalStatus");
@@ -237,6 +255,9 @@ impl ToolActivity {
                 fields.insert("url".into(), json!(url));
                 fields.insert("prompt".into(), json!(prompt));
                 fields.insert("pattern".into(), json!(pattern));
+                if let Some(result_text) = result_text {
+                    fields.insert("resultText".into(), json!(result_text));
+                }
             }
             item => {
                 fields.insert("workKind".into(), json!("tool"));
@@ -283,6 +304,7 @@ fn tool_name(item: &ThreadEventItem) -> String {
         ThreadEventItem::ToolCall { tool, .. } => tool.clone(),
         ThreadEventItem::FileChange { .. } => "edit".to_owned(),
         ThreadEventItem::FileRead { .. } => "read".to_owned(),
+        ThreadEventItem::WebSearch { .. } => "web_search".to_owned(),
         ThreadEventItem::Search { .. } => "search".to_owned(),
         ThreadEventItem::WebFetch { .. } => "fetch".to_owned(),
         _ => "tool".to_owned(),
@@ -296,9 +318,9 @@ fn item_status(item: &ThreadEventItem) -> ItemStatus {
         | ThreadEventItem::FileChange { status, .. }
         | ThreadEventItem::FileRead { status, .. }
         | ThreadEventItem::Search { status, .. } => *status,
-        // A web fetch reports its result rather than a lifecycle status, so it
-        // counts as finished the moment it exists.
-        ThreadEventItem::WebFetch { .. } => ItemStatus::Completed,
+        ThreadEventItem::WebSearch { .. } | ThreadEventItem::WebFetch { .. } => {
+            ItemStatus::Completed
+        }
         _ => ItemStatus::Pending,
     }
 }
@@ -434,6 +456,7 @@ fn item_id_of(item: &ThreadEventItem) -> &str {
         | ThreadEventItem::CommandExecution { id, .. }
         | ThreadEventItem::FileChange { id, .. }
         | ThreadEventItem::FileRead { id, .. }
+        | ThreadEventItem::WebSearch { id, .. }
         | ThreadEventItem::Search { id, .. }
         | ThreadEventItem::WebFetch { id, .. } => id,
         _ => "",
@@ -745,6 +768,7 @@ mod tests {
                 path: Some("/srv/project".to_owned()),
                 cmd: None,
                 status: ItemStatus::Completed,
+                result_text: None,
                 presentation: None,
                 parent_tool_call_id: None,
             },
@@ -846,6 +870,55 @@ mod tests {
                 "pattern",
                 "completedAt",
             ],
+        );
+    }
+
+    #[test]
+    fn specialized_tool_results_reach_their_rows() {
+        let mut timeline = ToolTimeline::new();
+        for (sequence, item) in [
+            ThreadEventItem::Search {
+                id: "call-search-result".to_owned(),
+                mode: loom_domain::SearchMode::Content,
+                query: "needle".to_owned(),
+                path: None,
+                cmd: None,
+                status: ItemStatus::Completed,
+                result_text: Some("one match".to_owned()),
+                presentation: None,
+                parent_tool_call_id: None,
+            },
+            ThreadEventItem::WebFetch {
+                id: "call-fetch-result".to_owned(),
+                url: "https://example.com".to_owned(),
+                prompt: None,
+                pattern: None,
+                result_text: Some("page text".to_owned()),
+                presentation: None,
+                parent_tool_call_id: None,
+            },
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            timeline.absorb(
+                "run-1",
+                &ProviderEvent::ItemCompleted {
+                    item,
+                    provider_thread_id: "provider-thread".to_owned(),
+                },
+                20 + sequence as u64,
+                Some(2_000),
+            );
+        }
+
+        assert_eq!(
+            row_for(&timeline, "call-search-result")["resultText"],
+            "one match"
+        );
+        assert_eq!(
+            row_for(&timeline, "call-fetch-result")["resultText"],
+            "page text"
         );
     }
 

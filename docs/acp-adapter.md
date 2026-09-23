@@ -235,6 +235,29 @@ A terminal-backed tool call (`ToolCallContent::Terminal`) maps to
 no terminal item. If it also carries a `command` in `raw_input`, so much the
 better; if not, it is a `ToolCall`.
 
+### Tool result normalization
+
+ACP does not give tool output one universal JSON shape. The adapter reads result text
+from the typed `content` text blocks first, then from common `rawOutput` envelopes
+(`content[].text`, `text`, `message`, `details.diff`, `stdout`, `output` and
+`stderr`). A value with no known text shape is kept as structured JSON for the
+generic `ToolCall` row, and is pretty-printed for a specialized item whose
+contract only has a text result. This is keyed by the fields present, not by an
+agent or tool name: ACP `ToolKind` is a category and extensions may use their
+own names.
+
+The v1 adapter applies the same normalization to `ToolCallUpdate`, because the
+result commonly arrives only on the terminal patch. v2 applies it to both
+`ToolCallUpdate` and `ToolCallContentChunk`. `Search`, `WebSearch` and
+`WebFetch` preserve a readable `resultText`; generic calls preserve `result`.
+
+For protocol debugging, `LOOM_ACP_TRACE=1` logs one-line v1 tool start/update
+summaries (session, call id, status, content-block count and whether raw output
+exists) and keeps the existing v2 typed-update trace for deeper inspection. The
+new v1 path reports metadata rather than result bodies, so an operator can
+separate "agent sent no result" from "translation or projection dropped it"
+without copying OMP tool output into logs.
+
 ### Status mapping
 
 | ACP `ToolCallStatus` | `ItemStatus` |

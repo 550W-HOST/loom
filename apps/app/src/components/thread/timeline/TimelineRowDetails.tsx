@@ -54,6 +54,15 @@ interface ToolWorkRowBodyProps {
   row: Extract<TimelineViewWorkRow, { workKind: "tool" }>;
 }
 
+type ResultWorkRow = Extract<
+  TimelineViewWorkRow,
+  { workKind: "web-search" | "web-fetch" | "search" }
+>;
+
+interface ResultWorkRowBodyProps {
+  row: ResultWorkRow;
+}
+
 interface OutputPreviewNoteProps {
   fullOutput: TimelineWorkRowFullOutput;
   row: TimelinePreviewableWorkRow;
@@ -234,6 +243,23 @@ function ToolWorkRowBody({ row }: ToolWorkRowBodyProps) {
   );
 }
 
+function ResultWorkRowBody({ row }: ResultWorkRowBodyProps) {
+  if (!row.resultText?.trim()) {
+    return null;
+  }
+  return (
+    <TimelineDetailScroll
+      size="base"
+      contentKey={row.resultText}
+      className="max-h-80 rounded-md"
+    >
+      <EventCodeBlock className="rounded-none border-0 px-2 py-1.5">
+        {row.resultText}
+      </EventCodeBlock>
+    </TimelineDetailScroll>
+  );
+}
+
 export function WorkRowBody({
   resolveImageViewSrc,
   row,
@@ -285,11 +311,12 @@ export function WorkRowBody({
       return (
         <ImageWorkRowBody row={row} resolveImageViewSrc={resolveImageViewSrc} />
       );
-    case "approval":
     case "web-search":
     case "web-fetch":
-    case "file-read":
     case "search":
+      return <ResultWorkRowBody row={row} />;
+    case "approval":
+    case "file-read":
       return null;
     default:
       return assertNever(row);

@@ -180,6 +180,7 @@ export interface EventProjectionWebSearchMessage
   kind: "web-search";
   callId: string;
   queries: string[];
+  resultText: string | null;
   completedAt: number | null;
   status: Extract<
     EventProjectionMessageStatus,
@@ -194,6 +195,7 @@ export interface EventProjectionWebFetchMessage
   url: string;
   prompt: string | null;
   pattern: string | null;
+  resultText: string | null;
   completedAt: number | null;
   status: Extract<
     EventProjectionMessageStatus,
@@ -251,6 +253,7 @@ export interface EventProjectionSearchMessage
   query: string;
   path: string | null;
   cmd: string | null;
+  resultText: string | null;
   completedAt: number | null;
   status: EventProjectionItemActivityStatus;
 }

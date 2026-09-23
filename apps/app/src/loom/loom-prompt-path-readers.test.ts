@@ -1,7 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { sdk } from "@/lib/sdk";
 import { loomEnvironmentPaths } from "@/lib/loom-environment-readers";
-import { loomProjectPaths } from "@/lib/loom-project-readers";
+import {
+  loomProjectCommands,
+  loomProjectPaths,
+} from "@/lib/loom-project-readers";
 import { LoomApiPathParamError, LoomHttpError } from "@/lib/loom-http";
 
 function jsonResponse(body: unknown, status = 200): Response {
@@ -18,12 +21,44 @@ const listing = {
   truncated: false,
 };
 
+const commandListing = {
+  commands: [
+    {
+      name: "review",
+      source: "command" as const,
+      origin: "project" as const,
+      description: "Review the diff",
+      argumentHint: null,
+    },
+  ],
+};
+
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
 });
 
 describe("loom prompt path suggestion reads", () => {
+  it("lists project commands with the provider and workspace selector", async () => {
+    const fetchMock = vi.fn(async () => jsonResponse(commandListing));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      loomProjectCommands({
+        projectId: "proj_1",
+        provider: "pi",
+        environmentId: "env_1",
+      }),
+    ).resolves.toEqual(commandListing);
+
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [URL, RequestInit];
+    expect(init.method).toBe("GET");
+    expect(url.pathname).toBe("/api/v1/projects/proj_1/commands");
+    expect(url.searchParams.get("provider")).toBe("pi");
+    expect(url.searchParams.get("environmentId")).toBe("env_1");
+    expect(url.searchParams.has("hostId")).toBe(false);
+  });
+
   it("lists project paths with the contract query and path", async () => {
     const fetchMock = vi.fn(async () => jsonResponse(listing));
     vi.stubGlobal("fetch", fetchMock);
@@ -144,7 +179,8 @@ describe("loom prompt path suggestion reads", () => {
     ).rejects.toBeInstanceOf(LoomHttpError);
   });
 
-  it("wires the path reads into the browser SDK surface", () => {
+  it("wires the path and command reads into the browser SDK surface", () => {
+    expect(sdk.projects.commands).toBe(loomProjectCommands);
     expect(sdk.projects.paths).toBe(loomProjectPaths);
     expect(sdk.environments.paths).toBe(loomEnvironmentPaths);
   });

@@ -43,6 +43,7 @@ export const LOOM_API_ROUTES = [
   { id: "hosts.updatePermissionCeiling", method: "PATCH", path: "/hosts/:id/permission-ceiling" },
   { id: "projects.attachmentContent", method: "GET", path: "/projects/:id/attachments/content" },
   { id: "projects.branchOptions", method: "GET", path: "/projects/:id/branch-options" },
+  { id: "projects.commands", method: "GET", path: "/projects/:id/commands" },
   { id: "projects.create", method: "POST", path: "/projects" },
   { id: "projects.createSource", method: "POST", path: "/projects/:id/sources" },
   { id: "projects.defaultExecutionOptions", method: "GET", path: "/projects/:id/default-execution-options" },

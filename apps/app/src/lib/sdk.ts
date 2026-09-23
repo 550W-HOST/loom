@@ -44,7 +44,10 @@ import {
 import { loomDeleteHost } from "./loom-host-mutations";
 import { loomHostDirectory } from "./loom-host-readers";
 import { loomEnvironmentPaths } from "./loom-environment-readers";
-import { loomProjectPaths } from "./loom-project-readers";
+import {
+  loomProjectCommands,
+  loomProjectPaths,
+} from "./loom-project-readers";
 import {
   loomAddProjectSource,
   loomCreateProject,
@@ -105,6 +108,7 @@ export const sdk = {
   projects: {
     ...compileOnlySdk.projects,
     create: loomCreateProject,
+    commands: loomProjectCommands,
     defaultExecutionOptions: loomProjectDefaultExecutionOptions,
     delete: loomDeleteProject,
     paths: loomProjectPaths,

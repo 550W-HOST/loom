@@ -1,5 +1,6 @@
 import type {
   CloseTerminalRequest,
+  CommandListResponse,
   CreateHostJoinCodeResponse,
   CreateProjectRequest,
   CreateProjectSourceRequest,
@@ -15,6 +16,7 @@ import type {
   HostDirectoryQuery,
   ProjectAttachmentContentQuery,
   ProjectBranchesQuery,
+  ProjectCommandsQuery,
   ProjectDefaultExecutionOptionsQuery,
   ProjectFileContentQuery,
   ProjectPathsQuery,
@@ -151,6 +153,10 @@ export const LOOM_API_REQUEST_SPECS = {
   "projects.branchOptions": {
     source: "query",
     query: {} as ProjectBranchesQuery,
+  },
+  "projects.commands": {
+    source: "query",
+    query: {} as ProjectCommandsQuery,
   },
   "projects.create": { source: "json", json: {} as CreateProjectRequest },
   "projects.createSource": {
@@ -324,6 +330,7 @@ export interface LoomApiResponseSpecs {
   "hosts.updatePermissionCeiling": unknown;
   "projects.attachmentContent": unknown;
   "projects.branchOptions": unknown;
+  "projects.commands": CommandListResponse;
   "projects.create": ProjectResponse;
   "projects.createSource": ProjectSource;
   "projects.defaultExecutionOptions": ProjectExecutionDefaults | null;

@@ -557,6 +557,105 @@ fn a_tool_call_opens_once_and_completes_once_with_the_merged_shape() {
 }
 
 #[test]
+fn a_v1_tool_result_patch_reaches_the_generic_item() {
+    let mut t = translator();
+    let call = tool_call(
+        ToolKind::Search,
+        Some(serde_json::json!({"pattern": "needle"})),
+    );
+    t.on_session_update(&SessionUpdate::ToolCall(call));
+
+    let content = vec![ToolCallContent::Content(
+        agent_client_protocol_schema::v1::Content::new(ContentBlock::Text(TextContent::new(
+            "match: crates/worker/src/acp/mod.rs:1",
+        ))),
+    )];
+    let fields = ToolCallUpdateFields::new()
+        .content(content)
+        .raw_output(serde_json::json!({
+            "content": [{"type": "text", "text": "match: crates/worker/src/acp/mod.rs:1"}],
+            "details": {"count": 1}
+        }))
+        .status(Some(ToolCallStatus::Completed));
+    let events = t.on_session_update(&SessionUpdate::ToolCallUpdate(ToolCallUpdate::new(
+        "call-1", fields,
+    )));
+
+    let Some(ProviderEvent::ItemCompleted {
+        item: ThreadEventItem::ToolCall { result, .. },
+        ..
+    }) = events
+        .iter()
+        .find(|event| matches!(event, ProviderEvent::ItemCompleted { .. }))
+    else {
+        panic!("expected a completed generic tool call, got {events:?}");
+    };
+    assert_eq!(
+        result,
+        &Some(serde_json::json!("match: crates/worker/src/acp/mod.rs:1"))
+    );
+}
+
+#[test]
+fn a_v1_raw_output_envelope_is_visible_without_content_blocks() {
+    let mut t = translator();
+    t.on_session_update(&SessionUpdate::ToolCall(tool_call(
+        ToolKind::Fetch,
+        Some(serde_json::json!({"query": "loom"})),
+    )));
+    let fields = ToolCallUpdateFields::new()
+        .raw_output(serde_json::json!({
+            "content": [{"type": "text", "text": "result from fetch"}]
+        }))
+        .status(Some(ToolCallStatus::Completed));
+    let events = t.on_session_update(&SessionUpdate::ToolCallUpdate(ToolCallUpdate::new(
+        "call-1", fields,
+    )));
+
+    let Some(ProviderEvent::ItemCompleted {
+        item: ThreadEventItem::ToolCall { result, .. },
+        ..
+    }) = events
+        .iter()
+        .find(|event| matches!(event, ProviderEvent::ItemCompleted { .. }))
+    else {
+        panic!("expected a completed generic tool call, got {events:?}");
+    };
+    assert_eq!(result, &Some(serde_json::json!("result from fetch")));
+}
+
+#[test]
+fn a_v1_search_item_keeps_a_result_when_its_query_is_understood() {
+    let mut t = translator();
+    t.on_session_update(&SessionUpdate::ToolCall(tool_call(
+        ToolKind::Search,
+        Some(serde_json::json!({"query": "needle"})),
+    )));
+    let content = vec![ToolCallContent::Content(
+        agent_client_protocol_schema::v1::Content::new(ContentBlock::Text(TextContent::new(
+            "one match",
+        ))),
+    )];
+    let fields = ToolCallUpdateFields::new()
+        .content(content)
+        .status(Some(ToolCallStatus::Completed));
+    let events = t.on_session_update(&SessionUpdate::ToolCallUpdate(ToolCallUpdate::new(
+        "call-1", fields,
+    )));
+
+    assert!(events.iter().any(|event| matches!(
+        event,
+        ProviderEvent::ItemCompleted {
+            item: ThreadEventItem::Search {
+                result_text: Some(text),
+                ..
+            },
+            ..
+        } if text == "one match"
+    )));
+}
+
+#[test]
 fn a_completed_tool_call_cannot_be_reopened() {
     let mut t = translator();
     let call = tool_call(
@@ -1111,6 +1210,60 @@ fn a_repeated_v2_tool_frame_reports_progress_once() {
         progress_messages(&moved),
         vec!["read: crates/worker/src/acp/mod.rs".to_string()]
     );
+}
+
+#[test]
+fn v2_search_and_fetch_items_keep_their_result_text() {
+    let mut t = translator();
+    t.on_v2_session_update(&v2::SessionUpdate::ToolCallUpdate(
+        v2::ToolCallUpdate::new("search-1")
+            .kind(v2::ToolKind::Search)
+            .status(v2::ToolCallStatus::Pending)
+            .raw_input(serde_json::json!({"query": "needle"})),
+    ));
+    let search_done = v2::ToolCallUpdate::new("search-1")
+        .kind(v2::ToolKind::Search)
+        .status(v2::ToolCallStatus::Completed)
+        .content(vec![v2::ToolCallContent::Content(Box::new(
+            v2::Content::new(v2::ContentBlock::Text(v2::TextContent::new(
+                "one search match",
+            ))),
+        ))]);
+    let search_events = t.on_v2_session_update(&v2::SessionUpdate::ToolCallUpdate(search_done));
+    assert!(search_events.iter().any(|event| matches!(
+        event,
+        ProviderEvent::ItemCompleted {
+            item: ThreadEventItem::Search {
+                result_text: Some(text),
+                ..
+            },
+            ..
+        } if text == "one search match"
+    )));
+
+    t.on_v2_session_update(&v2::SessionUpdate::ToolCallUpdate(
+        v2::ToolCallUpdate::new("fetch-1")
+            .kind(v2::ToolKind::Fetch)
+            .status(v2::ToolCallStatus::Pending)
+            .raw_input(serde_json::json!({"url": "https://example.com"})),
+    ));
+    let fetch_done = v2::ToolCallUpdate::new("fetch-1")
+        .kind(v2::ToolKind::Fetch)
+        .status(v2::ToolCallStatus::Completed)
+        .raw_output(serde_json::json!({
+            "content": [{"type": "text", "text": "page text"}]
+        }));
+    let fetch_events = t.on_v2_session_update(&v2::SessionUpdate::ToolCallUpdate(fetch_done));
+    assert!(fetch_events.iter().any(|event| matches!(
+        event,
+        ProviderEvent::ItemCompleted {
+            item: ThreadEventItem::WebFetch {
+                result_text: Some(text),
+                ..
+            },
+            ..
+        } if text == "page text"
+    )));
 }
 
 /// The generic tool call a v2 update opened: its name and its result.

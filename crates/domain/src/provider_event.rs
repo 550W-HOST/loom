@@ -666,6 +666,9 @@ pub enum ThreadEventItem {
         cmd: Option<String>,
         /// Its status.
         status: ItemStatus,
+        /// Its result text, when the agent returned one.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        result_text: Option<String>,
         /// A presentation override.
         #[serde(skip_serializing_if = "Option::is_none")]
         presentation: Option<ItemPresentation>,

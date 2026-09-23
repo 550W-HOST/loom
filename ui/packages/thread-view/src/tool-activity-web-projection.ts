@@ -70,6 +70,7 @@ function createWebActivityMessage(
         ...base,
         kind: "web-search",
         queries: payload.queries,
+        resultText: payload.resultText,
         status: status === "error" ? "completed" : status,
       };
     case "image-view":
@@ -96,6 +97,7 @@ function createWebActivityMessage(
         url: payload.url,
         prompt: payload.prompt,
         pattern: payload.pattern,
+        resultText: payload.resultText,
         status: status === "error" ? "completed" : status,
       };
     case "file-read":
@@ -114,6 +116,7 @@ function createWebActivityMessage(
         query: payload.query,
         path: payload.path,
         cmd: payload.cmd,
+        resultText: payload.resultText,
         status,
       };
     case "plan-steps":
@@ -152,6 +155,7 @@ function mergeWebActivityMessage(
 
   if (target.kind === "web-search" && payload.itemKind === "web-search") {
     target.queries = payload.queries;
+    target.resultText = payload.resultText;
     return;
   }
 
@@ -159,6 +163,7 @@ function mergeWebActivityMessage(
     target.url = payload.url;
     target.prompt = payload.prompt;
     target.pattern = payload.pattern;
+    target.resultText = payload.resultText;
     return;
   }
 
@@ -189,6 +194,7 @@ function mergeWebActivityMessage(
     target.query = payload.query;
     target.path = payload.path;
     target.cmd = payload.cmd;
+    target.resultText = payload.resultText;
     return;
   }
 

@@ -3822,6 +3822,7 @@ fn tool_item_id(item: &loom_domain::ThreadEventItem) -> &str {
         | loom_domain::ThreadEventItem::CommandExecution { id, .. }
         | loom_domain::ThreadEventItem::FileChange { id, .. }
         | loom_domain::ThreadEventItem::FileRead { id, .. }
+        | loom_domain::ThreadEventItem::WebSearch { id, .. }
         | loom_domain::ThreadEventItem::Search { id, .. }
         | loom_domain::ThreadEventItem::WebFetch { id, .. } => id,
         _ => "",

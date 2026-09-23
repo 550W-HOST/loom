@@ -202,6 +202,7 @@ export const threadEventSearchItemSchema = z.object({
   path: z.string().optional(),
   cmd: z.string().optional(),
   status: threadEventItemStatusSchema,
+  resultText: z.string().nullable().optional(),
   ...itemPresentationField,
   parentToolCallId: z.string().optional(),
 });

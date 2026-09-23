@@ -219,15 +219,16 @@ function formatWorkBody(
       }
       return lines;
     case "web-search":
-      return lines;
     case "web-fetch":
+    case "search":
+      if (context.verbose && row.resultText?.trim()) {
+        lines.push(formatWorkOutput(row.resultText, context.color));
+      }
       return lines;
     case "image-generation":
-      return lines;
     case "image-view":
       return lines;
     case "file-read":
-    case "search":
       return lines;
     case "plan-steps":
       if (context.verbose) {

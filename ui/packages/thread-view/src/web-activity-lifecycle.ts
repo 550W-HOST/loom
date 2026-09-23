@@ -18,6 +18,7 @@ interface ItemActivityLifecycleBase {
 export interface WebSearchLifecycleEvent extends ItemActivityLifecycleBase {
   itemKind: "web-search";
   queries: string[];
+  resultText: string | null;
 }
 
 export interface WebFetchLifecycleEvent extends ItemActivityLifecycleBase {
@@ -25,6 +26,7 @@ export interface WebFetchLifecycleEvent extends ItemActivityLifecycleBase {
   url: string;
   prompt: string | null;
   pattern: string | null;
+  resultText: string | null;
 }
 
 interface ImageViewLifecycleEvent extends ItemActivityLifecycleBase {
@@ -56,6 +58,7 @@ export interface SearchLifecycleEvent extends StatusedItemActivityLifecycleBase 
   query: string;
   path: string | null;
   cmd: string | null;
+  resultText: string | null;
 }
 
 export interface PlanStepsLifecycleEvent extends StatusedItemActivityLifecycleBase {
@@ -102,6 +105,7 @@ export function parseWebActivityLifecycleEvent(
         ...base,
         itemKind: "web-search",
         queries: item.queries,
+        resultText: item.resultText,
         ...(item.presentation ? { presentation: item.presentation } : {}),
       };
     case "webFetch":
@@ -111,6 +115,7 @@ export function parseWebActivityLifecycleEvent(
         url: item.url,
         prompt: item.prompt,
         pattern: item.pattern,
+        resultText: item.resultText,
         ...(item.presentation ? { presentation: item.presentation } : {}),
       };
     case "imageView":
@@ -149,6 +154,7 @@ export function parseWebActivityLifecycleEvent(
         path: item.path ?? null,
         cmd: item.cmd ?? null,
         status: item.status,
+        resultText: item.resultText ?? null,
         ...(item.presentation ? { presentation: item.presentation } : {}),
       };
     case "planSteps":

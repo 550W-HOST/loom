@@ -1,8 +1,27 @@
 import type {
+  CommandListResponse,
+  ProjectCommandsQuery,
   ProjectPathsQuery,
   WorkspacePathListResponse,
 } from "@bb/server-contract";
 import { loomApiJson } from "@/lib/loom-http";
+
+export interface LoomProjectCommandsArgs extends ProjectCommandsQuery {
+  projectId: string;
+  signal?: AbortSignal;
+}
+
+/** Lists the slash commands available in a project workspace. */
+export function loomProjectCommands(
+  request: LoomProjectCommandsArgs,
+): Promise<CommandListResponse> {
+  const { projectId, signal, ...query } = request;
+  return loomApiJson("projects.commands", {
+    param: { id: projectId },
+    query,
+    signal,
+  });
+}
 
 /**
  * The project workspace read the prompt's `@` file menu issues over loom.
