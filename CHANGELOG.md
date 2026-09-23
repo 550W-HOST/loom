@@ -8,6 +8,7 @@
 - ACP slash commands advertised during session resume remain available.
 - A discovered agent's slash commands are served: `projects.commands` no longer rejects every provider but the server's default.
 - Replayed ACP tool calls no longer duplicate recorded work rows.
+- ACP plan updates reach the thread To-do card: `threads.timeline` projects the newest plan snapshot (and an empty plan clears it) instead of reporting no pending todos for every provider.
 
 ## 0.42.0
 

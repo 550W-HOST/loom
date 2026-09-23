@@ -342,6 +342,20 @@ else. Publishing a "cancelled" plan would change what a client displays while
 the provider kept executing it — a silently-wrong answer — so the route answers
 `501 not_configured` and names `threads.stop` as the operation that does work.
 
+### The To-do card is a projection of the conversation
+
+`threads.timeline`'s `pendingTodos` is not stored either. It is the newest plan
+snapshot the conversation holds — ACP's `plan` update (`turn/plan/updated`), or
+the contract's `item/completed` `planSteps` item — projected on every read, and
+an empty snapshot still wins so a provider that clears its list clears the card.
+Two rules come from the reference projection the app renders with
+(`extractThreadTimelinePendingTodos` in
+`ui/packages/thread-view/src/todo-snapshot-extraction.ts`): the snapshot exists
+only while the thread is active, and only on the latest page of a paginated
+read. The rows are the same conversation the timeline serves, not the relay's
+retained log, so a plan survives a long stream that pushes the log's window past
+it.
+
 ### `threads.eventWait` is a bounded poll with a null timeout
 
 The cursor is the same one `threads.events` uses: the row's `seq`, derived from

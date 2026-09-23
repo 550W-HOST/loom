@@ -5200,9 +5200,10 @@ async fn thread_timeline(
         Ok(thread_id) => thread_id,
         Err(response) => return response,
     };
-    if let Err(response) = public_thread_or_response(&state, &thread_id) {
-        return response;
-    }
+    let thread = match public_thread_or_response(&state, &thread_id) {
+        Ok(thread) => thread,
+        Err(response) => return response,
+    };
     let after = match parse_query_sequence(query.after_sequence.as_ref(), "afterSequence") {
         Ok(value) => value,
         Err(response) => return response,
@@ -5244,8 +5245,13 @@ async fn thread_timeline(
         history_status,
         history_complete,
         history_reason,
+        pending_todos_source,
     ) = match state.read_thread_history(&thread_id) {
         crate::history::ThreadHistoryRead::Serve(view) => {
+            // The To-do card is a read of the conversation, so it comes from
+            // the same rows the timeline does — and only the latest page shows
+            // it, because an older page is history.
+            let pending_todos = pending_todos_value(thread.status, &view.rows);
             let built = cached_timeline_rows(&thread_id, &view);
             (
                 built.rows,
@@ -5255,6 +5261,7 @@ async fn thread_timeline(
                 view.status,
                 view.complete,
                 view.reason.clone(),
+                pending_todos,
             )
         }
         // Nothing is cached, so this response is not a position in any
@@ -5267,6 +5274,7 @@ async fn thread_timeline(
             crate::history_cache::HistoryStatus::Loading,
             false,
             reason,
+            Value::Null,
         ),
         crate::history::ThreadHistoryRead::Unavailable(reason) => (
             Vec::new(),
@@ -5276,6 +5284,7 @@ async fn thread_timeline(
             crate::history_cache::HistoryStatus::Unavailable,
             false,
             Some(reason),
+            Value::Null,
         ),
     };
     // A cursor is a position in one numbering, and the numbering is the
@@ -5329,6 +5338,13 @@ async fn thread_timeline(
             "anchorId": first["id"]
         })
     });
+    // The To-do card belongs to the latest page only: an older page is
+    // history, and the reference projection answers no snapshot for it.
+    let pending_todos = if before.is_none() {
+        pending_todos_source
+    } else {
+        Value::Null
+    };
     let mut body = json!({
         "rows": candidates,
         "contextBoundarySeq": null,
@@ -5336,7 +5352,7 @@ async fn thread_timeline(
         "activeThinking": null,
         "activeWorkflows": [],
         "activeBackgroundCommands": [],
-        "pendingTodos": null,
+        "pendingTodos": pending_todos,
         "goal": goal_value(&state, &thread_id, &entries),
         "modelFallback": model_fallback,
         "timelinePage": {
@@ -6974,6 +6990,92 @@ fn goal_value(
     goal.unwrap_or(Value::Null)
 }
 
+/// The thread's pending to-do snapshot, projected from its conversation.
+///
+/// A plan is the provider's own working state, and loom keeps no plan entity:
+/// ACP's `plan` update maps to `turn/plan/updated` (and, on the contract's
+/// item path, an `item/completed` `planSteps` item), and the newest sequenced
+/// snapshot is what the composer's To-do card renders. This mirrors the
+/// reference projection in
+/// `ui/packages/thread-view/src/todo-snapshot-extraction.ts`:
+///
+/// - the newest snapshot wins, no matter the order the rows hold it in;
+/// - an empty snapshot still wins, so a provider that clears its list clears
+///   the card rather than leaving a stale one on screen;
+/// - a step's text is trimmed and bounded, and a blank step is not a step;
+/// - the card exists only while the thread is active — a settled turn's plan
+///   is not pending work, which is also why the reference projection gates on
+///   the thread's status.
+///
+/// It reads the conversation's own rows rather than the relay's retained log,
+/// which is what keeps a plan on screen while a run streams past the log's
+/// window: the row's sequence and time are the numbering the timeline itself
+/// serves, so a client can order the snapshot against the rest of the
+/// conversation.
+fn pending_todos_value(status: ThreadStatus, rows: &[crate::history_cache::CachedRow]) -> Value {
+    use crate::history_cache::RowSource;
+
+    if !matches!(status, ThreadStatus::Working | ThreadStatus::Waiting) {
+        return Value::Null;
+    }
+    const TODO_TEXT_MAX_LENGTH: usize = 240;
+    let mut best: Option<(u64, u64, Vec<Value>)> = None;
+    for row in rows {
+        let steps = match &row.event {
+            ProviderEvent::TurnPlanUpdated { plan, .. } => plan.as_slice(),
+            ProviderEvent::ItemCompleted {
+                item: loom_domain::ThreadEventItem::PlanSteps { steps, .. },
+                ..
+            } => steps.as_slice(),
+            _ => continue,
+        };
+        // A replayed frame carries no time of its own, and the contract asks
+        // for one; zero is the honest "unknown" the reference projection's
+        // rows carry too.
+        let updated_at = match &row.source {
+            RowSource::Run { at_ms, .. } | RowSource::Message { at_ms } => *at_ms,
+            RowSource::Replayed => 0,
+        };
+        let mut items = Vec::new();
+        for (index, step) in steps.iter().enumerate() {
+            let text = step.step.trim();
+            if text.is_empty() {
+                continue;
+            }
+            let text: String = text.chars().take(TODO_TEXT_MAX_LENGTH).collect();
+            let todo_status = match step.status.unwrap_or(loom_domain::PlanStepStatus::Pending) {
+                loom_domain::PlanStepStatus::Pending => "pending",
+                loom_domain::PlanStepStatus::Active => "in_progress",
+                // A failed step is not work still pending, and the card has no
+                // failed state: it reads as settled, exactly as the contract
+                // item status does.
+                loom_domain::PlanStepStatus::Completed | loom_domain::PlanStepStatus::Failed => {
+                    "completed"
+                }
+            };
+            items.push(json!({
+                "id": format!("seq:{}:{index}", row.seq),
+                "text": text,
+                "status": todo_status,
+            }));
+        }
+        if best
+            .as_ref()
+            .is_none_or(|(best_seq, _, _)| row.seq > *best_seq)
+        {
+            best = Some((row.seq, updated_at, items));
+        }
+    }
+    match best {
+        Some((source_seq, updated_at, items)) => json!({
+            "sourceSeq": source_seq,
+            "updatedAt": updated_at,
+            "items": items,
+        }),
+        None => Value::Null,
+    }
+}
+
 /// Whether a thread's log currently shows a goal.
 ///
 /// The thread list needs this as a *count* (`activeGoalCount`), and the only
@@ -8494,6 +8596,116 @@ mod tests {
         );
     }
 
+    fn plan_step(step: &str, status: Option<loom_domain::PlanStepStatus>) -> loom_domain::PlanStep {
+        loom_domain::PlanStep {
+            step: step.to_string(),
+            status,
+        }
+    }
+
+    /// One plan row in the shape the timeline handler reads back off the
+    /// conversation.
+    fn plan_row(
+        seq: u64,
+        at_ms: u64,
+        plan: Vec<loom_domain::PlanStep>,
+    ) -> crate::history_cache::CachedRow {
+        crate::history_cache::CachedRow {
+            seq,
+            source: crate::history_cache::RowSource::Run {
+                run_id: loom_domain::RunId::mint(),
+                at_ms,
+            },
+            event: ProviderEvent::TurnPlanUpdated {
+                provider_thread_id: "ptid".into(),
+                plan,
+                explanation: None,
+            },
+        }
+    }
+
+    fn publish_plan(state: &AppState, thread_id: &ThreadId, plan: Vec<loom_domain::PlanStep>) {
+        let run = loom_domain::RunEvent::new(
+            thread_id.clone(),
+            state.registry.personal_project_id(),
+            loom_domain::RunId::mint(),
+            loom_relay::now_ms(),
+            ProviderEvent::TurnPlanUpdated {
+                provider_thread_id: "ptid".into(),
+                plan,
+                explanation: None,
+            },
+        );
+        state
+            .publish_domain_event(&DomainEvent::ThreadRunEvent { run: Box::new(run) })
+            .unwrap();
+    }
+
+    /// A plan reaches the To-do card through `threads.timeline`'s
+    /// `pendingTodos`. Without this projection the field was hardcoded null, so
+    /// an ACP agent's plan (OMP's `todo` list, for one) never rendered at all.
+    ///
+    /// The newest snapshot wins, a failed step reads as settled, a blank step
+    /// is not a step, and the card only exists while the thread is active: a
+    /// settled turn's plan is not pending work.
+    #[test]
+    fn the_newest_plan_snapshot_is_the_pending_todo_list() {
+        use loom_domain::PlanStepStatus::{Active, Completed, Failed, Pending};
+
+        let rows = vec![
+            plan_row(1, 10, vec![plan_step("older", Some(Active))]),
+            plan_row(
+                2,
+                20,
+                vec![
+                    plan_step("read the file", Some(Completed)),
+                    plan_step("edit it", Some(Active)),
+                    plan_step("run tests", Some(Pending)),
+                    plan_step("flaky step", Some(Failed)),
+                    plan_step("   ", Some(Pending)),
+                    plan_step("no status", None),
+                ],
+            ),
+        ];
+        assert_eq!(
+            pending_todos_value(ThreadStatus::Working, &rows),
+            json!({
+                "sourceSeq": 2,
+                "updatedAt": 20,
+                "items": [
+                    { "id": "seq:2:0", "text": "read the file", "status": "completed" },
+                    { "id": "seq:2:1", "text": "edit it", "status": "in_progress" },
+                    { "id": "seq:2:2", "text": "run tests", "status": "pending" },
+                    { "id": "seq:2:3", "text": "flaky step", "status": "completed" },
+                    { "id": "seq:2:5", "text": "no status", "status": "pending" },
+                ],
+            })
+        );
+    }
+
+    /// An empty snapshot still wins, so a provider that clears its list clears
+    /// the card instead of leaving a stale one on screen. An idle thread has no
+    /// pending work whatever its log last said.
+    #[test]
+    fn an_empty_plan_clears_the_snapshot_and_an_idle_thread_has_none() {
+        use loom_domain::PlanStepStatus::Active;
+
+        let rows = vec![
+            plan_row(1, 10, vec![plan_step("old", Some(Active))]),
+            plan_row(2, 20, Vec::new()),
+        ];
+        assert_eq!(
+            pending_todos_value(ThreadStatus::Working, &rows),
+            json!({ "sourceSeq": 2, "updatedAt": 20, "items": [] })
+        );
+        assert_eq!(pending_todos_value(ThreadStatus::Idle, &rows), Value::Null);
+        assert_eq!(pending_todos_value(ThreadStatus::Error, &rows), Value::Null);
+        assert!(
+            pending_todos_value(ThreadStatus::Waiting, &rows).is_object(),
+            "awaiting input is still an active thread"
+        );
+    }
+
     /// The occupancy a provider reported reaches `threads.timeline`, which is
     /// where the composer's indicator reads it. Without this the field was
     /// absent from the response, so a thread could stream for an hour and no
@@ -8559,6 +8771,113 @@ mod tests {
             quiet_body.get("contextWindowUsage").is_none(),
             "a thread that never reported occupancy omits the field: {quiet_body}"
         );
+        state.shutdown().unwrap();
+    }
+
+    /// A plan an agent reported reaches the client through `threads.timeline`,
+    /// which is where the composer's To-do card reads it. The field was
+    /// hardcoded null, so an ACP agent's plan (OMP's `todo` list, for one)
+    /// never rendered at all.
+    ///
+    /// The card is for pending work: it appears while the thread is active and
+    /// is gone once the turn settles, and an older page carries no snapshot
+    /// because it is history.
+    #[tokio::test]
+    async fn the_timeline_carries_the_pending_todo_snapshot() {
+        use loom_domain::PlanStepStatus::{Active, Completed, Pending};
+
+        let state = test_state();
+        let app = router(state.clone());
+        let contract = loom_contract::Contract::load();
+        let (thread, created) = state
+            .registry
+            .create_thread(
+                Some(state.registry.personal_project_id()),
+                Some("todos".into()),
+                None,
+                loom_relay::now_ms(),
+            )
+            .unwrap();
+        state.publish_domain_event(&created).unwrap();
+
+        // An idle thread has no pending work, whatever its log last said.
+        let idle_body =
+            body_json(get(&app, &format!("/api/v1/threads/{}/timeline", thread.id)).await).await;
+        assert_b1_response(&contract, "threads.timeline", "GET", &idle_body);
+        assert_eq!(idle_body["pendingTodos"], Value::Null);
+
+        // A run in flight is where a plan is pending work.
+        let started = state
+            .registry
+            .transition_thread(&thread.id, ThreadTrigger::RunStarted, loom_relay::now_ms())
+            .unwrap()
+            .expect("idle -> working");
+        state.publish_domain_event(&started).unwrap();
+        publish_plan(
+            &state,
+            &thread.id,
+            vec![
+                plan_step("read the file", Some(Completed)),
+                plan_step("edit it", Some(Active)),
+                plan_step("run tests", Some(Pending)),
+            ],
+        );
+
+        let body =
+            body_json(get(&app, &format!("/api/v1/threads/{}/timeline", thread.id)).await).await;
+        assert_b1_response(&contract, "threads.timeline", "GET", &body);
+        let source_seq = body["pendingTodos"]["sourceSeq"]
+            .as_u64()
+            .expect("an active thread's plan has a source sequence");
+        assert_eq!(
+            body["pendingTodos"]["items"],
+            json!([
+                { "id": format!("seq:{source_seq}:0"), "text": "read the file", "status": "completed" },
+                { "id": format!("seq:{source_seq}:1"), "text": "edit it", "status": "in_progress" },
+                { "id": format!("seq:{source_seq}:2"), "text": "run tests", "status": "pending" },
+            ])
+        );
+
+        // An older page is history, and the reference projection answers no
+        // snapshot for it. A cursor is only a position in the numbering it came
+        // from, so the request carries the revision the read reported.
+        let older = body_json(
+            get(
+                &app,
+                &format!(
+                    "/api/v1/threads/{}/timeline?beforeAnchorSeq=999&historyRevision={}",
+                    thread.id, body["historyRevision"]
+                ),
+            )
+            .await,
+        )
+        .await;
+        assert_b1_response(&contract, "threads.timeline", "GET", &older);
+        assert_eq!(older["timelinePage"]["kind"], "older");
+        assert_eq!(older["pendingTodos"], Value::Null);
+
+        // An empty plan clears the snapshot, and a settled turn takes the card
+        // away entirely.
+        publish_plan(&state, &thread.id, Vec::new());
+        let cleared =
+            body_json(get(&app, &format!("/api/v1/threads/{}/timeline", thread.id)).await).await;
+        assert_b1_response(&contract, "threads.timeline", "GET", &cleared);
+        assert_eq!(cleared["pendingTodos"]["items"], json!([]));
+
+        let completed = state
+            .registry
+            .transition_thread(
+                &thread.id,
+                ThreadTrigger::RunCompleted,
+                loom_relay::now_ms(),
+            )
+            .unwrap()
+            .expect("working -> idle");
+        state.publish_domain_event(&completed).unwrap();
+        let settled =
+            body_json(get(&app, &format!("/api/v1/threads/{}/timeline", thread.id)).await).await;
+        assert_b1_response(&contract, "threads.timeline", "GET", &settled);
+        assert_eq!(settled["pendingTodos"], Value::Null);
         state.shutdown().unwrap();
     }
 
