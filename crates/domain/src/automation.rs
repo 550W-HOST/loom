@@ -83,14 +83,13 @@ pub fn automation_retry_delay_ms(failures: u32) -> u64 {
     AUTOMATION_RETRY_BASE_MS.saturating_mul(1u64 << exponent)
 }
 
-/// The permission policy an automation's agent run requests.
+/// The permission policy an agent run requests.
 ///
 /// The same three tokens as bb's `permissionModeSchema`. It is deliberately
-/// its own type rather than a reuse of
-/// [`HostPermissionMode`](crate::HostPermissionMode): a host ceiling and an
-/// automation's request are different decisions that happen to share a
-/// vocabulary.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+/// distinct from [`HostPermissionMode`](crate::HostPermissionMode): a run's
+/// requested behavior and a host's maximum allowed behavior are separate
+/// decisions that happen to share a vocabulary.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum PermissionMode {
     /// The provider may edit files, but not use unrestricted access.
@@ -98,6 +97,7 @@ pub enum PermissionMode {
     /// The provider may use the normal automatic policy.
     Auto,
     /// The provider may use all ACP capabilities.
+    #[default]
     Full,
 }
 
@@ -108,6 +108,16 @@ impl PermissionMode {
             Self::AcceptEdits => "accept-edits",
             Self::Auto => "auto",
             Self::Full => "full",
+        }
+    }
+
+    /// Parses the contract spelling, returning `None` for an unknown value.
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "accept-edits" => Some(Self::AcceptEdits),
+            "auto" => Some(Self::Auto),
+            "full" => Some(Self::Full),
+            _ => None,
         }
     }
 }

@@ -116,6 +116,7 @@ async fn a_real_turn_reports_its_thinking() {
         permission_timeout: Duration::from_secs(15),
         settle_timeout: loom_worker::DEFAULT_SETTLE_TIMEOUT,
         permission_ceiling: loom_domain::HostPermissionMode::Full,
+        permission_mode: loom_domain::automation::PermissionMode::Full,
         provider_session_id: None,
         reasoning_level: Some(ReasoningLevel::from(
             std::env::var("PROBE_REASONING").unwrap_or_else(|_| "high".to_owned()),
@@ -225,6 +226,7 @@ async fn each_discovered_agent_reports_what_it_thinks() {
             permission_timeout: Duration::from_secs(15),
             settle_timeout: loom_worker::DEFAULT_SETTLE_TIMEOUT,
             permission_ceiling: loom_domain::HostPermissionMode::Full,
+            permission_mode: loom_domain::automation::PermissionMode::Full,
             provider_session_id: None,
             model: None,
             reasoning_level: Some(ReasoningLevel::from("high")),

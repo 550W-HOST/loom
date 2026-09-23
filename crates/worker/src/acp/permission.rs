@@ -1,10 +1,11 @@
 //! Bridging ACP `session/request_permission` to the control plane's
 //! interaction entity, and the answer back.
 //!
-//! The ACP client must answer a permission request, and the answer is the
-//! *user's*, not the worker's. So the worker holds the request open and asks the
-//! control plane, which is where a UI can see and answer it. Two frames carry
-//! the exchange, in opposite directions and over different transports:
+//! The worker holds ACP permission requests open only when the selected run
+//! policy requires a user decision. Under `Full`, an ACP allow option is
+//! selected directly; lower policies send an interaction to the control plane.
+//!
+//! For modes that require a decision, the exchange is:
 //!
 //! ```text
 //!   agent ──session/request_permission──▶ adapter
@@ -25,15 +26,10 @@
 //! makes a resolution published while the worker was reconnecting replayable to
 //! it. It is the same shape dispatch already uses.
 //!
-//! # What this module refuses to do
-//!
-//! There is no default answer. The previous implementation picked the first
-//! allowing option and answered with it; that is a policy no user consented to,
-//! and it silently approved operations. Here a request that nobody answers is
-//! **cancelled** after a bounded wait, which the agent reads as "no"; and a
-//! request the control plane refuses to record is cancelled immediately rather
-//! than held open where nothing can reach it. Cancellation is the only failure
-//! mode, because a permission the client never granted must never look granted.
+//! There is no default answer when the selected policy requires approval. A
+//! request that nobody answers is **cancelled** after a bounded wait, which the
+//! agent reads as "no"; and a request the control plane refuses to record is
+//! cancelled immediately rather than held open where nothing can reach it.
 
 use std::collections::HashMap;
 use std::sync::{
@@ -43,7 +39,9 @@ use std::sync::{
 use std::time::Duration;
 
 use agent_client_protocol::schema::{v1, v2};
-use loom_domain::{HostPermissionMode, InteractionKind, InteractionPayload};
+use loom_domain::{
+    automation::PermissionMode, HostPermissionMode, InteractionKind, InteractionPayload,
+};
 use loom_provider_protocol::{InteractionAnswer, InteractionRequest, PermissionDecision};
 use serde_json::{json, Value};
 use tokio::sync::{mpsc, oneshot, Mutex};
@@ -415,8 +413,9 @@ impl PermissionBroker {
         request: v1::RequestPermissionRequest,
     ) -> v1::RequestPermissionResponse {
         let prompt = PermissionPrompt::from_v1(request);
+        let full_access = self.full_access();
         let answer = self.ask_prompt(prompt.clone()).await;
-        permission_response_v1(answer, &prompt, self.run.permission_ceiling)
+        permission_response_v1(answer, &prompt, self.run.permission_ceiling, full_access)
     }
 
     /// Handles a native ACP v2 permission request.
@@ -426,8 +425,9 @@ impl PermissionBroker {
     ) -> v2::RequestPermissionResponse {
         let request_id = self.request_id_v2(&request);
         let prompt = PermissionPrompt::from_v2(request, request_id);
+        let full_access = self.full_access();
         let answer = self.ask_prompt(prompt.clone()).await;
-        permission_response_v2(answer, &prompt, self.run.permission_ceiling)
+        permission_response_v2(answer, &prompt, self.run.permission_ceiling, full_access)
     }
 
     /// Test compatibility for the existing v1-only broker tests. Production
@@ -437,8 +437,28 @@ impl PermissionBroker {
         self.ask_v1(request).await
     }
 
-    /// Holds one version-neutral prompt open until the control plane answers it.
+    fn full_access(&self) -> bool {
+        self.run.permission_mode == PermissionMode::Full
+            && self.run.permission_ceiling == HostPermissionMode::Full
+    }
+
+    /// Applies the selected policy to one version-neutral prompt: either
+    /// answers a Full Access request immediately or holds it open for the
+    /// control-plane answer when user approval is required.
     async fn ask_prompt(&self, prompt: PermissionPrompt) -> InteractionAnswer {
+        if self.full_access()
+            && prompt.options.iter().any(|option| {
+                matches!(
+                    option.kind,
+                    PermissionChoiceKind::AllowOnce | PermissionChoiceKind::AllowAlways
+                )
+            })
+        {
+            return InteractionAnswer::Decision {
+                decision: PermissionDecision::AllowOnce,
+            };
+        }
+
         let (tx, rx) = oneshot::channel();
         if !self
             .pending
@@ -659,6 +679,7 @@ fn selected_option_id(
     answer: InteractionAnswer,
     prompt: &PermissionPrompt,
     ceiling: HostPermissionMode,
+    full_access: bool,
 ) -> Option<String> {
     let InteractionAnswer::Decision { decision } = answer else {
         return None;
@@ -670,6 +691,10 @@ fn selected_option_id(
             decision
         };
     let wanted: &[PermissionChoiceKind] = match decision {
+        PermissionDecision::AllowOnce if full_access => &[
+            PermissionChoiceKind::AllowOnce,
+            PermissionChoiceKind::AllowAlways,
+        ],
         PermissionDecision::AllowOnce => &[PermissionChoiceKind::AllowOnce],
         PermissionDecision::AllowForSession => &[
             PermissionChoiceKind::AllowAlways,
@@ -693,8 +718,9 @@ fn permission_response_v1(
     answer: InteractionAnswer,
     prompt: &PermissionPrompt,
     ceiling: HostPermissionMode,
+    full_access: bool,
 ) -> v1::RequestPermissionResponse {
-    match selected_option_id(answer, prompt, ceiling) {
+    match selected_option_id(answer, prompt, ceiling, full_access) {
         Some(option_id) => v1::RequestPermissionResponse::new(
             v1::RequestPermissionOutcome::Selected(v1::SelectedPermissionOutcome::new(option_id)),
         ),
@@ -706,8 +732,9 @@ fn permission_response_v2(
     answer: InteractionAnswer,
     prompt: &PermissionPrompt,
     ceiling: HostPermissionMode,
+    full_access: bool,
 ) -> v2::RequestPermissionResponse {
-    match selected_option_id(answer, prompt, ceiling) {
+    match selected_option_id(answer, prompt, ceiling, full_access) {
         Some(option_id) => v2::RequestPermissionResponse::new(
             v2::RequestPermissionOutcome::Selected(v2::SelectedPermissionOutcome::new(option_id)),
         ),
@@ -738,6 +765,7 @@ mod tests {
             permission_timeout: Duration::from_secs(30),
             settle_timeout: crate::DEFAULT_SETTLE_TIMEOUT,
             permission_ceiling: HostPermissionMode::Full,
+            permission_mode: PermissionMode::Auto,
             provider_session_id: None,
             model: None,
             reasoning_level: None,
@@ -766,6 +794,85 @@ mod tests {
         let (tx, rx) = mpsc::channel(8);
         let broker = PermissionBroker::new(run(), tx, PermissionRegistry::new(), timeout);
         (broker, rx)
+    }
+
+    #[tokio::test]
+    async fn full_access_selects_an_allow_option_without_creating_an_interaction() {
+        let (mut broker, mut outbound) = broker(Duration::from_secs(5));
+        broker.run.permission_mode = PermissionMode::Full;
+        let options = vec![
+            PermissionOption::new(
+                "allow-session",
+                "Always allow",
+                PermissionOptionKind::AllowAlways,
+            ),
+            PermissionOption::new("allow-once", "Allow once", PermissionOptionKind::AllowOnce),
+            PermissionOption::new("deny", "Deny", PermissionOptionKind::RejectOnce),
+        ];
+
+        let response = broker.ask(request(options)).await;
+
+        assert_eq!(
+            response.outcome,
+            RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new("allow-once"))
+        );
+        assert!(matches!(
+            outbound.try_recv(),
+            Err(mpsc::error::TryRecvError::Empty)
+        ));
+    }
+
+    #[tokio::test]
+    async fn full_access_uses_session_allow_only_when_no_once_option_exists() {
+        let (mut broker, mut outbound) = broker(Duration::from_secs(5));
+        broker.run.permission_mode = PermissionMode::Full;
+        let options = vec![
+            PermissionOption::new(
+                "allow-session",
+                "Always allow",
+                PermissionOptionKind::AllowAlways,
+            ),
+            PermissionOption::new("deny", "Deny", PermissionOptionKind::RejectOnce),
+        ];
+
+        let response = broker.ask(request(options)).await;
+
+        assert_eq!(
+            response.outcome,
+            RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new("allow-session"))
+        );
+        assert!(matches!(
+            outbound.try_recv(),
+            Err(mpsc::error::TryRecvError::Empty)
+        ));
+    }
+
+    #[tokio::test]
+    async fn the_host_ceiling_keeps_full_access_requests_on_the_approval_path() {
+        let (mut broker, mut outbound) = broker(Duration::from_secs(5));
+        broker.run.permission_ceiling = HostPermissionMode::Auto;
+        broker.run.permission_mode = broker.run.permission_ceiling.clamp(PermissionMode::Full);
+        let pending = broker.pending.clone();
+        let handle = tokio::spawn(async move { broker.ask(request(allow_options())).await });
+
+        let frame = outbound
+            .recv()
+            .await
+            .expect("the ceiling requires approval");
+        assert!(
+            pending
+                .resolve(
+                    &frame.request_id,
+                    InteractionAnswer::Decision {
+                        decision: PermissionDecision::AllowOnce,
+                    },
+                )
+                .await
+        );
+        assert_eq!(
+            handle.await.unwrap().outcome,
+            RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new("allow-once"))
+        );
     }
 
     #[tokio::test]

@@ -168,7 +168,12 @@ impl AppState {
         let _ = self.publish_domain_event(&event);
         if started {
             if let Some(thread) = self.registry.thread(&thread.id) {
-                self.dispatch_thread(&thread, &sent.text);
+                let permission_mode = message
+                    .permission_mode
+                    .as_deref()
+                    .and_then(loom_domain::automation::PermissionMode::parse)
+                    .unwrap_or(loom_domain::automation::PermissionMode::Full);
+                self.dispatch_thread_with_permission_mode(&thread, &sent.text, permission_mode);
             }
         }
         DeliveryOutcome::Sent(Box::new(sent))

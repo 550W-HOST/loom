@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Notable fixes
+
+- Show the first user prompt for untitled threads until their provider title arrives.
+
 ## 0.42.0
 
 This release adds Account Pooler for Claude and Codex, push notifications across devices, and a new plugin catalog.
@@ -29,6 +35,7 @@ This release adds Account Pooler for Claude and Codex, push notifications across
 - Enable **Claude in Chrome** for browser tools.
 - Opt into releasing idle Claude queries after 30 seconds. The next turn resumes the conversation; background work stays active.
 - Cursor shows the correct reasoning choices. OMP supports manual compaction.
+- ACP plan updates populate the thread To-do card; an empty plan clears the snapshot.
 - Fixes for Pi file attachments, Claude usage checks on macOS, and Codex rate-limit reporting.
 
 ### CLI

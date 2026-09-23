@@ -111,11 +111,26 @@ async fn enroll_worker(
 }
 
 /// Creates a thread bound to an unmanaged environment at `workspace`, appends a
-/// user message, and dispatches the resulting run.
+/// user message, and dispatches the resulting run with `Auto` approval behavior.
 ///
-/// The workspace must exist: the worker refuses a dispatch whose directory is
-/// missing, which is exactly the validation these tests exercise.
+/// Tests that specifically exercise Full Access can opt into it through
+/// [`start_turn_with_permission_mode`]. The workspace must exist: the worker
+/// refuses a dispatch whose directory is missing.
 fn start_turn(state: &AppState, workspace: &Path, content: &str) -> ThreadId {
+    start_turn_with_permission_mode(
+        state,
+        workspace,
+        content,
+        loom_domain::automation::PermissionMode::Auto,
+    )
+}
+
+fn start_turn_with_permission_mode(
+    state: &AppState,
+    workspace: &Path,
+    content: &str,
+    permission_mode: loom_domain::automation::PermissionMode,
+) -> ThreadId {
     let host_id = state
         .registry
         .hosts()
@@ -157,7 +172,7 @@ fn start_turn(state: &AppState, workspace: &Path, content: &str) -> ThreadId {
     }
     let thread = state.registry.thread(&thread.id).unwrap();
     assert_eq!(thread.status, ThreadStatus::Working);
-    state.dispatch_thread(&thread, content);
+    state.dispatch_thread_with_permission_mode(&thread, content, permission_mode);
     thread.id
 }
 
@@ -1055,6 +1070,61 @@ while IFS= read -r line; do
 done
 printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"stub-session","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"decision received"}}}}'
 "#;
+
+/// Full Access is an explicit consent policy: it selects the agent's allow
+/// option directly instead of creating a pending UI interaction.
+#[tokio::test]
+async fn full_access_auto_answers_an_acp_permission_request() {
+    let dir = tempfile::tempdir().unwrap();
+    let provider = write_stub(dir.path(), "full.sh", PERMISSION_STUB);
+    let (url, state) = spawn_server(AppConfig {
+        providers: vec![provider.clone()],
+        run_timeout: Duration::from_secs(30),
+        ..AppConfig::default()
+    })
+    .await;
+    let (host_id, worker) =
+        enroll_worker(&url, None, None, Some(provider), Duration::from_secs(30)).await;
+    assert!(
+        eventually(|| state
+            .registry
+            .host(&host_id)
+            .map(|host| host.status == HostStatus::Connected)
+            .unwrap_or(false))
+        .await
+    );
+
+    let thread_id = start_turn_with_permission_mode(
+        &state,
+        dir.path(),
+        "do the thing",
+        loom_domain::automation::PermissionMode::Full,
+    );
+    assert_eq!(
+        wait_for_terminal(&state, &thread_id).await,
+        ThreadStatus::Idle
+    );
+
+    let addr = url.trim_start_matches("http://").to_string();
+    let (status, interactions) = http(
+        &addr,
+        "GET",
+        &format!("/api/v1/threads/{thread_id}/interactions"),
+        None,
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(interactions.as_array().unwrap().len(), 0);
+    let decision = std::fs::read_to_string(dir.path().join("full.sh.decision"))
+        .expect("the agent received its ACP response");
+    assert!(
+        decision.contains("allow-once"),
+        "Full Access must select an allow option: {decision}"
+    );
+
+    worker.abort();
+    state.shutdown().unwrap();
+}
 
 /// The permission request reaches the interaction routes, and the recorded
 /// resolution reaches the blocked agent.

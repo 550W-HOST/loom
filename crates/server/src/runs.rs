@@ -29,6 +29,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
+use loom_domain::automation::PermissionMode;
 use loom_domain::AutomationRunOutcome;
 use loom_domain::{
     DomainEvent, Environment, EnvironmentStatus, HostId, HostStatus, ProjectId, ProviderEvent,
@@ -686,6 +687,17 @@ impl AppState {
     /// on the spot rather than silently run somewhere else. See
     /// [`AppState::dispatch_thread`] and `docs/provider-protocol.md`.
     pub fn dispatch_thread(&self, thread: &Thread, prompt: &str) -> DispatchOutcome {
+        self.dispatch_thread_with_permission_mode(thread, prompt, PermissionMode::Full)
+    }
+
+    /// Dispatches one run with the permission policy selected for its prompt.
+    /// The worker independently clamps it against the host ceiling.
+    pub fn dispatch_thread_with_permission_mode(
+        &self,
+        thread: &Thread,
+        prompt: &str,
+        permission_mode: PermissionMode,
+    ) -> DispatchOutcome {
         let _lifecycle = self.runs.lifecycle_lock();
         let now = now_ms();
         let run_id = RunId::mint();
@@ -812,6 +824,7 @@ impl AppState {
             prompt: prompt.to_owned(),
             provider,
             permission_ceiling: host.max_permission_mode,
+            permission_mode,
             deadline_ms: record.deadline_ms,
             created_at_ms: now,
         };
@@ -2577,17 +2590,19 @@ mod tests {
         state.shutdown().unwrap();
     }
 
-    /// The provider spec of the single frame dispatched to `host_id`.
-    fn dispatched_provider(state: &AppState, host_id: &HostId) -> serde_json::Value {
+    fn dispatched_dispatch(state: &AppState, host_id: &HostId) -> serde_json::Value {
         let frames = state
             .relay
             .replay_scope(&Scope::Host(host_id.to_string()), 10)
             .unwrap();
         assert_eq!(frames.len(), 1, "exactly one dispatch frame");
         let frame: serde_json::Value = serde_json::from_slice(&frames[0].payload).unwrap();
-        let dispatch: serde_json::Value =
-            serde_json::from_str(frame["payload"].as_str().unwrap()).unwrap();
-        dispatch["provider"].clone()
+        serde_json::from_str(frame["payload"].as_str().unwrap()).unwrap()
+    }
+
+    /// The provider spec of the single frame dispatched to `host_id`.
+    fn dispatched_provider(state: &AppState, host_id: &HostId) -> serde_json::Value {
+        dispatched_dispatch(state, host_id)["provider"].clone()
     }
 
     fn provider_spec(name: &str, command: &str) -> loom_provider_protocol::ProviderSpec {
@@ -2625,6 +2640,23 @@ mod tests {
                 2,
             )
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_dispatch_carries_the_requested_permission_mode() {
+        let state = state_with_two_providers();
+        let (host_id, thread, _) = thread_with_workspace(&state, "/srv/project-a");
+        let thread = state.registry.thread(&thread.id).unwrap();
+
+        assert!(matches!(
+            state.dispatch_thread_with_permission_mode(&thread, "hi", PermissionMode::Auto,),
+            DispatchOutcome::Dispatched(_)
+        ));
+
+        let dispatch = dispatched_dispatch(&state, &host_id);
+        assert_eq!(dispatch["permission_mode"], "auto");
+        assert_eq!(dispatch["permission_ceiling"], "full");
+        state.shutdown().unwrap();
     }
 
     /// A run goes to the agent the thread's client chose, not to whichever the

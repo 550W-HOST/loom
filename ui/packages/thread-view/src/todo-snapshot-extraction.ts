@@ -44,15 +44,12 @@ const PLAN_STEP_TODO_STATUSES: Readonly<
   failed: "completed",
 };
 
-function extractPlanStepsCandidate(
-  event: ThreadEvent,
+function planSnapshotCandidate(
+  steps: readonly ThreadEventPlanStep[],
   meta: SnapshotCandidateMeta,
-): SnapshotCandidate | null {
-  if (event.type !== "item/completed" || event.item.type !== "planSteps") {
-    return null;
-  }
+): SnapshotCandidate {
   const items: ThreadTimelinePendingTodoItem[] = [];
-  for (const [index, step] of event.item.steps.entries()) {
+  for (const [index, step] of steps.entries()) {
     const text = trimAndTruncate(step.step);
     if (text.length === 0) continue;
     items.push({
@@ -64,6 +61,19 @@ function extractPlanStepsCandidate(
   return { seq: meta.seq, createdAt: meta.createdAt, items };
 }
 
+function extractPlanCandidate(
+  event: ThreadEvent,
+  meta: SnapshotCandidateMeta,
+): SnapshotCandidate | null {
+  const steps =
+    event.type === "turn/plan/updated"
+      ? event.plan
+      : event.type === "item/completed" && event.item.type === "planSteps"
+        ? event.item.steps
+        : null;
+  return steps === null ? null : planSnapshotCandidate(steps, meta);
+}
+
 export function extractThreadTimelinePendingTodos(
   threadStatus: Thread["status"],
   events: readonly ThreadEventWithMeta[],
@@ -72,7 +82,7 @@ export function extractThreadTimelinePendingTodos(
 
   let best: SnapshotCandidate | null = null;
   for (const { event, meta } of getOrderedThreadEvents(events)) {
-    const candidate = extractPlanStepsCandidate(event, meta);
+    const candidate = extractPlanCandidate(event, meta);
     if (!candidate) continue;
     if (best === null || candidate.seq > best.seq) {
       best = candidate;

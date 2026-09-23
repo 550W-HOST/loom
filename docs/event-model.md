@@ -83,7 +83,7 @@ provider bridge.
 | 24 | `item/delegation/completed` | not produced | as above. |
 | 25 | `thread/tokenUsage/updated` | not produced | The current ACP v1 mapping receives context occupancy, not a token breakdown. |
 | 26 | `thread/contextWindowUsage/updated` | produced | worker; ACP `usage_update`, including the usage snapshot retained during `session/load`. |
-| 27 | `turn/plan/updated` | produced | worker; ACP `plan` update. |
+| 27 | `turn/plan/updated` | produced | worker; ACP `plan` update. The latest sequenced plan snapshot also feeds the thread `pendingTodos` card, and an empty plan clears it. |
 | 28 | `turn/diff/updated` | not produced | The current ACP adapter does not derive a working-tree diff. |
 | 29 | `provider/error` | produced | worker; rejected prompt or ACP transport failure. |
 | 30 | `provider/rateLimits/updated` | not produced | The current ACP mapping does not expose rate-limit state. |

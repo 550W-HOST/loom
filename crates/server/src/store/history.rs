@@ -27,7 +27,7 @@ use rusqlite::{params, Connection};
 use super::{
     column_integer, column_optional_integer, column_optional_text, column_text, Store, StoreError,
 };
-use crate::history_cache::{CacheBinding, RowSource};
+use crate::history_cache::{first_user_prompt_title, CacheBinding, RowSource};
 
 /// One stored row, as the projection wants it.
 #[derive(Clone, Debug, PartialEq)]
@@ -174,6 +174,30 @@ impl Store {
             });
         }
         Ok(stored)
+    }
+
+    /// Finds the first Loom-authored user prompt without loading the rest of a
+    /// thread's history. Used for title fallback on existing threads.
+    pub(crate) fn first_user_prompt_title(
+        &self,
+        thread_id: &ThreadId,
+    ) -> Result<Option<String>, StoreError> {
+        let mut statement = self.connection().prepare(
+            "SELECT event_json FROM thread_history_row
+             WHERE thread_id = ?1 AND source_kind = 'message'
+             ORDER BY seq",
+        )?;
+        let mut rows = statement.query((thread_id.to_string(),))?;
+        while let Some(row) = rows.next()? {
+            let json = column_text(row, 0)?;
+            let event: ProviderEvent = serde_json::from_str(&json).map_err(|error| {
+                StoreError::new(format!("a stored row is not a provider event: {error}"))
+            })?;
+            if let Some(title) = first_user_prompt_title(&event) {
+                return Ok(Some(title));
+            }
+        }
+        Ok(None)
     }
 
     /// How many rows a thread has stored.
@@ -467,6 +491,42 @@ mod tests {
         ProviderEvent::ThreadIdentity {
             provider_thread_id: "acp-session-1".to_owned(),
         }
+    }
+
+    #[test]
+    fn title_fallback_uses_the_first_recorded_user_prompt() {
+        let store = Store::open_in_memory().unwrap();
+        let thread_id = thread();
+        store
+            .append_row(&thread_id, 1, &RowSource::Replayed, &message("replayed"))
+            .unwrap();
+        store
+            .append_row(&thread_id, 2, &RowSource::Message { at_ms: 2 }, &identity())
+            .unwrap();
+        store
+            .append_row(
+                &thread_id,
+                3,
+                &RowSource::Message { at_ms: 3 },
+                &message("  Explain the session title\nadditional context"),
+            )
+            .unwrap();
+        store
+            .append_row(
+                &thread_id,
+                4,
+                &RowSource::Message { at_ms: 4 },
+                &message("later prompt"),
+            )
+            .unwrap();
+
+        assert_eq!(
+            store
+                .first_user_prompt_title(&thread_id)
+                .unwrap()
+                .as_deref(),
+            Some("Explain the session title")
+        );
     }
 
     #[test]

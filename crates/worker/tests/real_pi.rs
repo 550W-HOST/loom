@@ -59,6 +59,7 @@ fn run(cwd: &str, prompt: &str, provider_session_id: Option<&str>) -> ProviderRu
         permission_timeout: Duration::from_secs(15),
         settle_timeout: loom_worker::DEFAULT_SETTLE_TIMEOUT,
         permission_ceiling: loom_domain::HostPermissionMode::Full,
+        permission_mode: loom_domain::automation::PermissionMode::Full,
         provider_session_id: provider_session_id.map(str::to_owned),
         model: None,
         reasoning_level: None,
@@ -76,10 +77,9 @@ async fn drive_one(run: ProviderRun) -> Vec<loom_domain::RunEvent> {
         command: run.spec.command.clone(),
         args: Vec::new(),
     };
-    // Drain permission requests so the broker is never back-pressured; not
-    // answering is what the broker's own timeout is for, and this test wants to
-    // observe that an unanswered request ends as a cancellation rather than a
-    // grant.
+    // Drain any permission requests so the test harness cannot be
+    // back-pressured. Full Access auto-answers ACP allow options before they
+    // need an interaction frame.
     let collector = tokio::spawn(async move {
         let mut seen: Vec<String> = Vec::new();
         while let Some(request) = requests.recv().await {

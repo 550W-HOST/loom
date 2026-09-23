@@ -34,9 +34,9 @@
 //! [`RunEvent`]: loom_domain::RunEvent
 
 use loom_domain::{
-    catalog::ProviderCatalog, AutomationId, AutomationRunId, EnvironmentId, HostId,
-    HostPermissionMode, ProjectId, ProviderEvent, ReasoningLevel, RunEvent, RunId,
-    ScriptInterpreter, ThreadId,
+    automation::PermissionMode, catalog::ProviderCatalog, AutomationId, AutomationRunId,
+    EnvironmentId, HostId, HostPermissionMode, ProjectId, ProviderEvent, ReasoningLevel, RunEvent,
+    RunId, ScriptInterpreter, ThreadId,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -185,6 +185,11 @@ pub struct RunDispatch {
     /// The host policy ceiling applied to provider permission answers.
     #[serde(default)]
     pub permission_ceiling: HostPermissionMode,
+    /// The permission policy requested for this turn. The worker clamps it
+    /// against `permission_ceiling` before applying it. An older dispatch that
+    /// omits this field uses the server's current `Full` default.
+    #[serde(default)]
+    pub permission_mode: PermissionMode,
     /// The wall-clock milliseconds by which the run must have a terminal event.
     pub deadline_ms: u64,
     /// When the control plane minted the dispatch.
@@ -1690,6 +1695,7 @@ mod tests {
             prompt: "hello".into(),
             provider: ProviderSpec::pi(),
             permission_ceiling: HostPermissionMode::Full,
+            permission_mode: PermissionMode::Full,
             deadline_ms: 12,
             created_at_ms: 1,
             provider_session_id: None,
@@ -1709,15 +1715,18 @@ mod tests {
     }
 
     /// The choices are additive: a control plane that predates them sends no
-    /// such keys, and the worker reads that as the agent's own default.
+    /// such keys; optional model and reasoning choices stay unset, and the
+    /// permission mode defaults to the product's current `Full` policy.
     #[test]
     fn a_dispatch_from_an_older_control_plane_carries_no_choices() {
-        let older = serde_json::to_value(sample_dispatch()).unwrap();
-        assert!(older.as_object().unwrap().get("model").is_none());
-        assert!(older.as_object().unwrap().get("reasoning_level").is_none());
+        let mut older = serde_json::to_value(sample_dispatch()).unwrap();
+        older.as_object_mut().unwrap().remove("permission_mode");
+        older.as_object_mut().unwrap().remove("model");
+        older.as_object_mut().unwrap().remove("reasoning_level");
         let decoded: RunDispatch = serde_json::from_value(older).unwrap();
         assert_eq!(decoded.model, None);
         assert_eq!(decoded.reasoning_level, None);
+        assert_eq!(decoded.permission_mode, PermissionMode::Full);
     }
 
     #[test]
@@ -1727,11 +1736,13 @@ mod tests {
             // A level bb's own schema does not name: the vocabulary is the
             // agent's, so the choice travels as the agent spelled it.
             reasoning_level: Some(ReasoningLevel::from("off")),
+            permission_mode: PermissionMode::Auto,
             ..sample_dispatch()
         };
         let encoded = serde_json::to_value(&dispatch).unwrap();
         assert_eq!(encoded["model"], "anthropic/claude-sonnet-4");
         assert_eq!(encoded["reasoning_level"], "off");
+        assert_eq!(encoded["permission_mode"], "auto");
         assert_eq!(
             serde_json::from_value::<RunDispatch>(encoded).unwrap(),
             dispatch

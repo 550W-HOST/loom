@@ -71,6 +71,7 @@ fn run(cwd: &str, prompt: &str, provider_session_id: Option<&str>) -> ProviderRu
         permission_timeout: Duration::from_secs(15),
         settle_timeout: loom_worker::DEFAULT_SETTLE_TIMEOUT,
         permission_ceiling: loom_domain::HostPermissionMode::Full,
+        permission_mode: loom_domain::automation::PermissionMode::Full,
         provider_session_id: provider_session_id.map(str::to_owned),
         model: None,
         reasoning_level: None,

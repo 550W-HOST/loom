@@ -51,6 +51,20 @@ impl HostPermissionMode {
         self.rank() >= requested.rank()
     }
 
+    /// Restricts a run's requested permission mode to this host's ceiling.
+    pub const fn clamp(
+        self,
+        requested: crate::automation::PermissionMode,
+    ) -> crate::automation::PermissionMode {
+        use crate::automation::PermissionMode;
+
+        match (self, requested) {
+            (Self::AcceptEdits, _) => PermissionMode::AcceptEdits,
+            (Self::Auto, PermissionMode::Full) => PermissionMode::Auto,
+            (_, requested) => requested,
+        }
+    }
+
     const fn rank(self) -> u8 {
         match self {
             Self::AcceptEdits => 0,
@@ -338,6 +352,28 @@ mod tests {
         let hosts = [older, newer.clone()];
         let selected = select_primary_host(&hosts, None).unwrap();
         assert_eq!(selected.id, newer.id);
+    }
+
+    #[test]
+    fn requested_permission_modes_are_clamped_to_the_host_ceiling() {
+        use crate::automation::PermissionMode;
+
+        assert_eq!(
+            HostPermissionMode::Full.clamp(PermissionMode::Full),
+            PermissionMode::Full
+        );
+        assert_eq!(
+            HostPermissionMode::Auto.clamp(PermissionMode::Full),
+            PermissionMode::Auto
+        );
+        assert_eq!(
+            HostPermissionMode::AcceptEdits.clamp(PermissionMode::Auto),
+            PermissionMode::AcceptEdits
+        );
+        assert_eq!(
+            HostPermissionMode::Auto.clamp(PermissionMode::AcceptEdits),
+            PermissionMode::AcceptEdits
+        );
     }
 
     #[test]

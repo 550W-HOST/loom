@@ -397,6 +397,20 @@ impl HistoryCache {
         inner.entries.get(thread_id).map(|entry| entry.rows.clone())
     }
 
+    /// The first Loom-authored user prompt title in the unwritten tail.
+    ///
+    /// A prompt can reach the thread list before its asynchronous store write,
+    /// so the display fallback must inspect this overlay as well as the store.
+    pub(crate) fn first_user_prompt_title(&self, thread_id: &ThreadId) -> Option<String> {
+        let mut inner = self.lock();
+        inner.touch(thread_id);
+        inner.entries.get(thread_id)?.rows.iter().find_map(|row| {
+            matches!(&row.source, RowSource::Message { .. })
+                .then(|| first_user_prompt_title(&row.event))
+                .flatten()
+        })
+    }
+
     /// What a thread's unwritten rows are bound to, if anything is known.
     pub fn binding(&self, thread_id: &ThreadId) -> Option<CacheBinding> {
         self.lock()
@@ -483,6 +497,52 @@ fn row_bytes(event: &ProviderEvent) -> u64 {
         .unwrap_or(0)
 }
 
+const TITLE_FALLBACK_MAX_CHARS: usize = 120;
+
+/// Converts the first line of a Loom-authored user message into a compact
+/// sidebar label. Replayed provider history is excluded by callers.
+pub(crate) fn first_user_prompt_title(event: &ProviderEvent) -> Option<String> {
+    let ProviderEvent::ItemStarted {
+        item: loom_domain::ThreadEventItem::UserMessage { content, .. },
+        ..
+    } = event
+    else {
+        return None;
+    };
+
+    let mut title = String::new();
+    let mut char_count = 0;
+    let mut truncated = false;
+    'content: for part in content {
+        let loom_domain::UserContent::Text { text } = part else {
+            continue;
+        };
+        for character in text.chars() {
+            if matches!(character, '\r' | '\n') {
+                break 'content;
+            }
+            if character.is_control() || (title.is_empty() && character.is_whitespace()) {
+                continue;
+            }
+            if char_count == TITLE_FALLBACK_MAX_CHARS {
+                truncated = true;
+                break 'content;
+            }
+            title.push(character);
+            char_count += 1;
+        }
+    }
+
+    let title = title.trim_end();
+    if title.is_empty() {
+        return None;
+    }
+    if truncated {
+        Some(format!("{title}…"))
+    } else {
+        Some(title.to_owned())
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -509,9 +569,57 @@ mod tests {
             provider_thread_id: "acp-session-1".into(),
         }
     }
+    fn user_message(text: &str) -> ProviderEvent {
+        ProviderEvent::ItemStarted {
+            item: loom_domain::ThreadEventItem::UserMessage {
+                id: "user-1".into(),
+                content: vec![loom_domain::UserContent::Text {
+                    text: text.to_owned(),
+                }],
+                client_request_id: None,
+                parent_tool_call_id: None,
+            },
+            provider_thread_id: "acp-session-1".into(),
+        }
+    }
 
     fn cache() -> HistoryCache {
         HistoryCache::new(8, 1024 * 1024, 4)
+    }
+
+    #[test]
+    fn the_first_unwritten_user_prompt_provides_the_title_fallback() {
+        let cache = cache();
+        let thread = ThreadId::mint();
+        cache.append_live(&thread, None, 1, live(), identity());
+        cache.append_live(
+            &thread,
+            None,
+            2,
+            RowSource::Message { at_ms: 2 },
+            user_message("  Name this thread\nmore details"),
+        );
+        cache.append_live(
+            &thread,
+            None,
+            3,
+            RowSource::Message { at_ms: 3 },
+            user_message("later prompt"),
+        );
+
+        assert_eq!(
+            cache.first_user_prompt_title(&thread).as_deref(),
+            Some("Name this thread")
+        );
+    }
+
+    #[test]
+    fn the_title_fallback_is_bounded_and_uses_one_line() {
+        let text = format!("{}x\nignored", "a".repeat(TITLE_FALLBACK_MAX_CHARS));
+        assert_eq!(
+            first_user_prompt_title(&user_message(&text)),
+            Some(format!("{}…", "a".repeat(TITLE_FALLBACK_MAX_CHARS)))
+        );
     }
 
     #[test]

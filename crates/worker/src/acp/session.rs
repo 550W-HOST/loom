@@ -708,8 +708,9 @@ struct UpdateSink {
     completion_notify: Arc<tokio::sync::Notify>,
     /// Where a permission request goes and how its answer gets back.
     ///
-    /// A broker rather than the former in-place auto-allow: the ACP client must
-    /// not decide a permission the user has not granted. See
+    /// The broker applies the run's selected permission policy: it auto-selects
+    /// an allowing ACP option for Full Access and routes other requests through
+    /// the control plane when they require user approval. See
     /// [`crate::acp::permission`].
     broker: PermissionBroker,
     /// The steers the control plane sent for this run, in arrival order.
@@ -2384,6 +2385,7 @@ mod tests {
             permission_timeout: Duration::from_secs(5),
             settle_timeout: crate::DEFAULT_SETTLE_TIMEOUT,
             permission_ceiling: loom_domain::HostPermissionMode::Full,
+            permission_mode: loom_domain::automation::PermissionMode::Full,
             provider_session_id: Some("session".to_owned()),
             model: None,
             reasoning_level: None,
@@ -2436,6 +2438,7 @@ mod tests {
             permission_timeout: Duration::from_secs(5),
             settle_timeout: crate::DEFAULT_SETTLE_TIMEOUT,
             permission_ceiling: loom_domain::HostPermissionMode::Full,
+            permission_mode: loom_domain::automation::PermissionMode::Full,
             provider_session_id: None,
             model: None,
             reasoning_level: None,

@@ -14,6 +14,7 @@ use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use http_body_util::BodyExt;
 use loom_domain::{
+    automation::PermissionMode,
     catalog::{CatalogModel, ProviderCatalog},
     DomainError, DomainEvent, DomainScope, Environment, EnvironmentId, EnvironmentKind,
     EnvironmentStatus, Host, HostId, HostStatus, Interaction, InteractionId, InteractionOrigin,
@@ -1426,12 +1427,33 @@ fn runtime_display_status(
     }
 }
 
+/// Uses the first recorded user prompt until the provider supplies a title.
+/// The durable store serves older threads; the overlay covers prompts whose
+/// asynchronous store write has not landed yet. A display fallback is best
+/// effort and must not make the thread metadata route depend on message storage.
+fn thread_title_fallback(state: &AppState, thread: &Thread) -> Option<String> {
+    if let Some(title) = thread
+        .title
+        .as_ref()
+        .filter(|title| !title.trim().is_empty())
+    {
+        return Some(title.clone());
+    }
+    state
+        .store()
+        .first_user_prompt_title(&thread.id)
+        .ok()
+        .flatten()
+        .or_else(|| state.history.first_user_prompt_title(&thread.id))
+}
+
 fn thread_summary_value(state: &AppState, thread: &Thread) -> Value {
     let environment = thread
         .environment_id
         .as_ref()
         .and_then(|id| state.registry.environment(id));
     let environment_id = thread.environment_id.as_ref().map(ToString::to_string);
+    let title_fallback = thread_title_fallback(state, thread);
     json!({
         "id": thread.id.to_string(),
         "projectId": thread.project_id.to_string(),
@@ -1443,7 +1465,7 @@ fn thread_summary_value(state: &AppState, thread: &Thread) -> Value {
             .clone()
             .unwrap_or_else(|| configured_provider_id(state)),
         "title": thread.title,
-        "titleFallback": thread.title,
+        "titleFallback": title_fallback,
         "sectionId": thread.section_id,
         "status": bb_thread_status(thread.status),
         "parentThreadId": thread.parent_thread_id.as_ref().map(ToString::to_string),
@@ -1679,6 +1701,9 @@ pub struct CreateThreadRequest {
     /// The reasoning level the client picked.
     #[serde(default)]
     pub reasoning_level: Option<ReasoningLevel>,
+    /// The permission policy the client's initial prompt should run under.
+    #[serde(default)]
+    pub permission_mode: Option<String>,
 }
 
 /// bb's `createThreadRequestSchema.origin`.
@@ -2741,7 +2766,17 @@ async fn send_thread(
         request.model.as_deref(),
         request.reasoning_level.as_ref(),
     );
-    match append_thread_message(&state, &thread_id, MessageRole::User, content) {
+    match append_thread_message_with_permission_mode(
+        &state,
+        &thread_id,
+        MessageRole::User,
+        content,
+        request
+            .permission_mode
+            .as_deref()
+            .and_then(PermissionMode::parse)
+            .unwrap_or(PermissionMode::Full),
+    ) {
         Ok(_) => Json(json!({ "ok": true, "delivery": "sent" })).into_response(),
         Err(response) => response,
     }
@@ -2765,8 +2800,7 @@ const PROMPT_HISTORY_DEFAULT_LIMIT: usize = 50;
 const PROMPT_HISTORY_MAX_LIMIT: u64 = 200;
 /// The reasoning level loom runs a provider at when a thread names no other.
 const DEFAULT_REASONING_LEVEL: &str = "medium";
-/// The permission mode loom runs a provider under, and the ceiling every host
-/// advertises.
+/// The permission mode used when the client does not choose one.
 const DEFAULT_PERMISSION_MODE: &str = "full";
 /// The service tier loom reports: its provider protocol has no fast tier.
 const DEFAULT_SERVICE_TIER: &str = "default";
@@ -2973,9 +3007,8 @@ async fn running_threads(State(state): State<AppState>) -> Json<Vec<Value>> {
 /// with `threads.update`, they are reported here as
 /// `client/thread/start` — which is what they are.
 ///
-/// `serviceTier` and `permissionMode` are loom's fixed values rather than
-/// stored ones: the provider protocol has no service tier, and every host
-/// advertises `full` as its permission ceiling.
+/// `serviceTier` is fixed because the provider protocol has no service tier;
+/// `permissionMode` defaults to `full` when the client does not choose one.
 async fn thread_default_execution_options(
     State(state): State<AppState>,
     Path(raw_thread_id): Path<String>,
@@ -3166,8 +3199,8 @@ struct SearchQuery {
 /// number of matching threads in the group *before* `limitPerGroup`, so a
 /// client can show "20 of 43".
 ///
-/// A `title_fallback` match is never produced: loom's `titleFallback` is the
-/// title itself, so the text a client displays is already covered by `title`.
+/// A fallback-title search match is not emitted separately: the fallback is
+/// the first recorded user message, which the message search already returns.
 async fn search_threads(
     State(state): State<AppState>,
     Query(query): Query<SearchQuery>,
@@ -6940,8 +6973,17 @@ async fn create_thread(
         request.reasoning_level.as_ref(),
     );
     if let Some(content) = initial_content {
-        if let Err(response) = append_thread_message(&state, &thread.id, MessageRole::User, content)
-        {
+        if let Err(response) = append_thread_message_with_permission_mode(
+            &state,
+            &thread.id,
+            MessageRole::User,
+            content,
+            request
+                .permission_mode
+                .as_deref()
+                .and_then(PermissionMode::parse)
+                .unwrap_or(PermissionMode::Full),
+        ) {
             return response;
         }
     }
@@ -7057,6 +7099,19 @@ fn append_thread_message(
         .map_err(TurnError::into_response)
 }
 
+#[allow(clippy::result_large_err)]
+fn append_thread_message_with_permission_mode(
+    state: &AppState,
+    thread_id: &ThreadId,
+    role: MessageRole,
+    content: String,
+    permission_mode: PermissionMode,
+) -> Result<Vec<PublishedEvent>, Response> {
+    append_thread_with_permission_mode(state, thread_id, role, content, permission_mode)
+        .map(|turn| turn.events)
+        .map_err(TurnError::into_response)
+}
+
 /// The same append, reporting the dispatch outcome and a plain-text reason.
 ///
 /// The HTTP handlers only need the events — a dispatch failure is already on
@@ -7071,12 +7126,34 @@ pub fn append_thread_message_or_reason(
     append_thread(state, thread_id, role, content).map_err(|error| error.reason())
 }
 
+pub fn append_thread_message_or_reason_with_permission_mode(
+    state: &AppState,
+    thread_id: &ThreadId,
+    role: MessageRole,
+    content: String,
+    permission_mode: PermissionMode,
+) -> Result<ThreadTurn, String> {
+    append_thread_with_permission_mode(state, thread_id, role, content, permission_mode)
+        .map_err(|error| error.reason())
+}
+
 #[allow(clippy::result_large_err)]
 fn append_thread(
     state: &AppState,
     thread_id: &ThreadId,
     role: MessageRole,
     content: String,
+) -> Result<ThreadTurn, TurnError> {
+    append_thread_with_permission_mode(state, thread_id, role, content, PermissionMode::Full)
+}
+
+#[allow(clippy::result_large_err)]
+fn append_thread_with_permission_mode(
+    state: &AppState,
+    thread_id: &ThreadId,
+    role: MessageRole,
+    content: String,
+    permission_mode: PermissionMode,
 ) -> Result<ThreadTurn, TurnError> {
     let events = state
         .registry
@@ -7093,10 +7170,9 @@ fn append_thread(
         .iter()
         .any(|event| event.event_type == "thread_status_changed");
     let outcome = if started {
-        state
-            .registry
-            .public_thread(thread_id)
-            .map(|thread| state.dispatch_thread(&thread, &content))
+        state.registry.public_thread(thread_id).map(|thread| {
+            state.dispatch_thread_with_permission_mode(&thread, &content, permission_mode)
+        })
     } else {
         None
     };
@@ -8067,6 +8143,105 @@ mod tests {
                 serde_json::from_str(frame["payload"].as_str().unwrap()).unwrap()
             })
             .collect()
+    }
+
+    #[tokio::test]
+    async fn create_thread_dispatches_the_initial_permission_mode() {
+        let state = test_state();
+        let app = router(state.clone());
+        let now = loom_relay::now_ms();
+        let (host, _) = state
+            .registry
+            .enroll_host(None, "laptop".into(), now)
+            .unwrap();
+        let project_id = state.registry.personal_project_id();
+        let (environment, _) = state
+            .registry
+            .create_environment(
+                Some(project_id.clone()),
+                host.id.clone(),
+                EnvironmentKind::Unmanaged,
+                Some("/srv/project-a".into()),
+                now,
+            )
+            .unwrap();
+
+        let response = post(
+            &app,
+            "/api/v1/threads",
+            json!({
+                "projectId": project_id,
+                "origin": "app",
+                "input": [{ "type": "text", "text": "hi" }],
+                "permissionMode": "accept-edits",
+                "environment": {
+                    "type": "reuse",
+                    "environmentId": environment.id
+                }
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::CREATED);
+
+        let frames = state
+            .relay
+            .replay_scope(&Scope::Host(host.id.to_string()), 10)
+            .unwrap();
+        assert_eq!(frames.len(), 1, "the initial prompt publishes one dispatch");
+        let frame: serde_json::Value = serde_json::from_slice(&frames[0].payload).unwrap();
+        let dispatch: serde_json::Value =
+            serde_json::from_str(frame["payload"].as_str().unwrap()).unwrap();
+        assert_eq!(dispatch["permission_mode"], "accept-edits");
+        state.shutdown().unwrap();
+    }
+
+    #[tokio::test]
+    async fn send_dispatches_the_permission_mode_selected_for_the_prompt() {
+        let state = test_state();
+        let app = router(state.clone());
+        let now = loom_relay::now_ms();
+        let (host, _) = state
+            .registry
+            .enroll_host(None, "laptop".into(), now)
+            .unwrap();
+        let project_id = state.registry.personal_project_id();
+        let (environment, _) = state
+            .registry
+            .create_environment(
+                Some(project_id.clone()),
+                host.id.clone(),
+                EnvironmentKind::Unmanaged,
+                Some("/srv/project-a".into()),
+                now,
+            )
+            .unwrap();
+        let (thread, _) = state
+            .registry
+            .create_thread(Some(project_id), None, Some(environment.id), now)
+            .unwrap();
+
+        let response = post(
+            &app,
+            &format!("/api/v1/threads/{}/send", thread.id),
+            json!({
+                "input": [{ "type": "text", "text": "hi" }],
+                "mode": "auto",
+                "permissionMode": "accept-edits"
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let frames = state
+            .relay
+            .replay_scope(&Scope::Host(host.id.to_string()), 10)
+            .unwrap();
+        assert_eq!(frames.len(), 1, "the send publishes one run dispatch");
+        let frame: serde_json::Value = serde_json::from_slice(&frames[0].payload).unwrap();
+        let dispatch: serde_json::Value =
+            serde_json::from_str(frame["payload"].as_str().unwrap()).unwrap();
+        assert_eq!(dispatch["permission_mode"], "accept-edits");
+        state.shutdown().unwrap();
     }
 
     #[tokio::test]
@@ -10184,10 +10359,12 @@ mod tests {
         let owned = serde_json::json!({
             "projectId": state.registry.personal_project_id().to_string(),
             "origin": "app",
-            "input": [],
+            "input": [{ "type": "text", "text": "Explain the OMP session title\nwith more detail" }],
             "environment": { "type": "project-default" }
         });
         let first = body_json(post(&app, "/api/v1/threads", owned.clone()).await).await;
+        assert_eq!(first["title"], serde_json::Value::Null);
+        assert_eq!(first["titleFallback"], "Explain the OMP session title");
         let second = body_json(
             post(
                 &app,
@@ -10214,6 +10391,17 @@ mod tests {
         assert_eq!(ids.len(), 2);
         assert!(ids.contains(&first["id"].as_str().unwrap()));
         assert!(ids.contains(&second["id"].as_str().unwrap()));
+        let first_listed = listed
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|thread| thread["id"] == first["id"])
+            .unwrap();
+        assert_eq!(first_listed["title"], serde_json::Value::Null);
+        assert_eq!(
+            first_listed["titleFallback"],
+            "Explain the OMP session title"
+        );
 
         state.shutdown().unwrap();
     }

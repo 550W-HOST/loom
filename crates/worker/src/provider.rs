@@ -9,7 +9,8 @@
 use std::time::Duration;
 
 use loom_domain::{
-    HostPermissionMode, ProviderEvent, ReasoningLevel, RunEvent, RunOutcome, TurnError,
+    automation::PermissionMode, HostPermissionMode, ProviderEvent, ReasoningLevel, RunEvent,
+    RunOutcome, TurnError,
 };
 use loom_provider_protocol::{ProviderSpec, RunDispatch};
 
@@ -64,6 +65,8 @@ pub struct ProviderRun {
     pub settle_timeout: Duration,
     /// The host's maximum permission policy for this run.
     pub permission_ceiling: HostPermissionMode,
+    /// The run's requested permission policy after applying the host ceiling.
+    pub permission_mode: PermissionMode,
     /// The agent's identifier for this thread's conversation, when a previous
     /// run already opened one.
     pub provider_session_id: Option<String>,
@@ -101,6 +104,7 @@ impl ProviderRun {
             permission_timeout,
             settle_timeout,
             permission_ceiling: dispatch.permission_ceiling,
+            permission_mode: dispatch.permission_ceiling.clamp(dispatch.permission_mode),
             provider_session_id: dispatch.provider_session_id.clone(),
             model: dispatch.model.clone(),
             reasoning_level: dispatch.reasoning_level.clone(),

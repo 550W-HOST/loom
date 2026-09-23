@@ -128,6 +128,7 @@ fn run_resuming(cwd: &str, pi: &Path, provider_session_id: Option<&str>) -> Prov
         permission_timeout: Duration::from_secs(5),
         settle_timeout: loom_worker::DEFAULT_SETTLE_TIMEOUT,
         permission_ceiling: loom_domain::HostPermissionMode::Full,
+        permission_mode: loom_domain::automation::PermissionMode::Full,
         provider_session_id: provider_session_id.map(str::to_owned),
         model: None,
         reasoning_level: None,
@@ -192,6 +193,15 @@ async fn an_embedded_pi_acp_agent_runs_a_turn() {
     std::fs::create_dir_all(&workspace).unwrap();
 
     let events = drive_embedded(run(&workspace.to_string_lossy(), &pi)).await;
+
+    assert!(
+        events.iter().any(|event| matches!(
+            &event.event.body,
+            loom_domain::ProviderEvent::ThreadNameUpdated { thread_name, .. }
+                if thread_name == "say hello"
+        )),
+        "pi-acp's first-prompt title reaches the run: {events:#?}"
+    );
 
     let terminals: Vec<_> = events.iter().filter(|e| e.is_terminal()).collect();
     assert_eq!(

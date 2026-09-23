@@ -237,11 +237,12 @@ impl AppState {
             .start_run(&run.id, now)
             .map_err(|error| error.to_string())?;
 
-        let published = crate::http::append_thread_message_or_reason(
+        let published = crate::http::append_thread_message_or_reason_with_permission_mode(
             self,
             &thread_id,
             MessageRole::User,
             execution.prompt.clone(),
+            execution.permission_mode,
         )?;
         let dispatched = match published.outcome {
             Some(DispatchOutcome::Dispatched(record)) => record,

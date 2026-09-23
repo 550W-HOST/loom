@@ -396,6 +396,7 @@ export const threadSchema = z.object({
   environmentId: z.string().nullable(),
   providerId: z.string(),
   title: z.string().nullable(),
+  // First line of the first user prompt, shown until a provider title exists.
   titleFallback: z.string().nullable(),
   sectionId: z.string().nullable(),
   status: threadStatusSchema,
