@@ -153,11 +153,15 @@ already in the requested order, is a `409 conflict` rather than a silent no-op.
 - `projects.promptHistory` aggregates the user prompts of the project's threads
   from the same `thread_message_added` events `threads.promptHistory` reads, so
   the two cannot disagree about what a prompt is.
-- `projects.commands` asks the project's source host (`host.list_commands`),
-  because a prompt-command list is a property of the workspace on disk. The rows
-  are discovered by `pi-acp` and projected into bb's contract shape. The
-  required `provider` parameter must be an agent that host offers — the server's
-  default or one it discovered — so a multi-agent deployment answers each.
+- `projects.commands` answers the composer's `/` menu for the selected agent.
+  For the embedded `pi-acp` adapter it asks the project's source host
+  (`host.list_commands`), because pi's prompt-command list — prompt files plus
+  built-ins — is a property of the workspace on disk, and projects those rows
+  into bb's contract shape. Every other discovered agent has no scan loom can
+  run, so its answer is the command list it advertised over ACP for that
+  workspace, never pi's built-ins. The required `provider` parameter must be an
+  agent that host offers — the server's default or one it discovered — so a
+  multi-agent deployment answers each.
 - `projects.files`, `projects.paths` and `projects.fileContent` read the
   project's workspace on its host. `projects.uploadAttachment` writes into
   `<host data_dir>/project-attachments/<project_id>`, and

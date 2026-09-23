@@ -629,35 +629,43 @@ bytes through the control plane. A source that is missing or oversized is
 reported per path, and a colliding destination name is suffixed (`a-2.png`)
 rather than overwriting: a copy must never lose a file the user still had.
 
-### `projects.commands` is a host RPC with a projected result
+### `projects.commands` projects a scan or an advertisement
 
 A prompt-command list is a property of the workspace on disk — project prompts
 live under `<cwd>/.pi/prompts`, user prompts under the agent's own directory —
-so this is a `HostRpcOperation::ListCommands` against the project's source. The
-discovery itself is `pi-acp`'s (`load_slash_commands` plus the built-in command
-list), so loom does not maintain a second, drifting notion of where a slash
-command lives. The worker answers raw rows and the control plane projects them
-into bb's `projectCommandSchema`: a file command's `origin` is read from the
-`(user)`/`(project)` label `pi-acp` puts on it, a built-in is `origin: builtin`
-with its declared description and argument hint, and `source` is `command`
-unless the name is a skill. The contract's `provider` parameter is required and
-names the agent the client will run, so it must resolve on the host that owns
-the workspace — the same resolution a dispatch uses. An id no host offers, or
-one only another machine reported, is a `400` rather than a silently different
-answer; a server with several discovered agents answers each of them.
+so for the embedded `pi-acp` adapter this is a `HostRpcOperation::ListCommands`
+against the project's source, and the discovery itself is `pi-acp`'s
+(`load_slash_commands` plus the built-in command list). loom does not maintain a
+second, drifting notion of where a pi slash command lives. The worker answers
+raw rows and the control plane projects them into bb's `projectCommandSchema`:
+a file command's `origin` is read from the `(user)`/`(project)` label `pi-acp`
+puts on it, a built-in is `origin: builtin` with its declared description and
+argument hint, and `source` is `command` unless the name is a skill.
 
-A live session's advertisement is merged over the scan. Every ACP session
+Every other ACP agent has no scan loom can run — its menu is not on disk in a
+format loom knows — so its answer is exactly the list it advertised over ACP for
+that workspace. The pi scan is never merged underneath it: an OMP built-in is
+not pi's, and offering pi's would name a command the agent does not accept. The
+contract's `provider` parameter is required and names the agent the client will
+run, so it must resolve on the host that owns the workspace — the same
+resolution a dispatch uses. An id no host offers, or one only another machine
+reported, is a `400` rather than a silently different answer; a server with
+several discovered agents answers each of them.
+
+A live session's advertisement is merged over the scan for the embedded pi
+adapter, and is the whole answer for every other agent. Every ACP session
 advertises its command list right after `session/new` or `session/load`;
 `AvailableCommandsUpdate` carries no timeline fact, so the worker reports it on
 its own frame (`ProviderCommandsReport`) keyed by `(host, provider, cwd)`, and
-the server keeps the latest list per workspace in memory. The merge is
+the server keeps the latest list per workspace in memory. For pi the merge is
 **additive**: the scan's row wins for a name it already answered (it is the one
 with an `origin` and an `argumentHint`), and a name only the advertisement knows
 is attributed by what its name says — `skill:<name>` becomes
-`source: skill, origin: user`, anything else the agent advertises beyond the
-scan becomes the agent's own (`origin: builtin`). A workspace no session has
-run in yet answers from the scan alone, and an advertisement is only as fresh
-as the last session in that workspace.
+`source: skill, origin: user`, anything else is the agent's own
+(`origin: builtin`). A pi workspace no session has run in yet answers from the
+scan alone; a discovered agent with no advertisement answers empty rather than
+with another agent's menu, and any advertisement is only as fresh as the last
+session in that workspace.
 
 ### `projects.reorder` needed a real project order
 

@@ -6,7 +6,7 @@
 
 - Show the first user prompt for untitled threads until their provider title arrives.
 - ACP slash commands advertised during session resume remain available.
-- A discovered agent's slash commands are served: `projects.commands` no longer rejects every provider but the server's default.
+- A discovered agent's `/` menu is its own ACP advertisement: `projects.commands` answers OMP from what `omp acp` advertised instead of rejecting the provider or serving pi's built-ins.
 - Replayed ACP tool calls no longer duplicate recorded work rows.
 - ACP plan updates reach the thread To-do card: `threads.timeline` projects the newest plan snapshot (and an empty plan clears it) instead of reporting no pending todos for every provider.
 

@@ -941,43 +941,127 @@ async fn project_commands_asks_the_host_and_projects_its_rows() {
     assert_status_and_error(&other, 400, "invalid_request");
 }
 
-/// A second agent a host reported is answerable, not just the server's default.
-///
-/// `provider` names the agent the client will run, so a host that discovered
-/// OMP must be able to ask for OMP's command list; the live advertisement is
-/// then looked up under the provider that produced it rather than under the
-/// default. An agent only another machine reported stays that machine's.
-#[tokio::test]
-async fn project_commands_answers_a_provider_the_host_reported() {
-    let mut fixture = fixture().await;
-    let discovered = |name: &str, command: &str| ProviderSpec {
+/// A discovered ACP agent over its own transport.
+fn discovered_provider(name: &str, command: &str) -> ProviderSpec {
+    ProviderSpec {
         name: name.into(),
         launch: ProviderLaunch::AcpStdio,
         command: command.into(),
         args: vec!["acp".into()],
         cwd: None,
-    };
+    }
+}
+
+/// A discovered agent answers with its own ACP advertisement, never pi's scan.
+///
+/// `provider` names the agent the client will run, so a host that discovered
+/// OMP must be able to ask for OMP's command list. Only the embedded pi-acp
+/// adapter has a scan loom can run on disk, so an OMP query must not ask the
+/// host at all — pi's built-ins are not commands OMP accepts. The rows are
+/// attributed by name, exactly as an advertisement merged over a scan is.
+#[tokio::test]
+async fn project_commands_answers_a_discovered_provider_from_its_advertisement() {
+    let mut fixture = fixture().await;
     fixture.state.record_host_providers(
         &fixture.host_id,
-        vec![ProviderSpec::pi(), discovered("omp", "/usr/bin/omp")],
+        vec![
+            ProviderSpec::pi(),
+            discovered_provider("omp", "/usr/bin/omp"),
+        ],
     );
+    // A stand-in for pi's scan: if the route asked the host, this is what an
+    // OMP answer would wrongly include.
     fixture.answer_rpc(HostRpcOutcome::Result {
         result: json!({
             "commands": [
-                { "name": "compact", "origin": "builtin", "description": "Compact", "argumentHint": null },
+                { "name": "autocompact", "origin": "builtin", "description": "pi's builtin", "argumentHint": null },
             ]
         }),
     });
-    // The advertisement belongs to OMP's session in this workspace.
+    // What `omp acp` advertised for a session in this workspace.
     fixture.state.commands.record(
         &fixture.host_id,
         "omp",
         WORKSPACE,
-        vec![ProviderCommand {
-            name: "skill:omp-only".into(),
-            description: "Only OMP advertises this".into(),
-            argument_hint: None,
-        }],
+        vec![
+            ProviderCommand {
+                name: "review".into(),
+                description: "Launch interactive code review".into(),
+                argument_hint: Some("arguments".into()),
+            },
+            ProviderCommand {
+                name: "skill:omp-only".into(),
+                description: "A skill OMP advertises".into(),
+                argument_hint: None,
+            },
+        ],
+    );
+
+    let (environment, _) = fixture
+        .state
+        .registry
+        .create_environment(
+            Some(fixture.project_id.parse().unwrap()),
+            fixture.host_id.clone(),
+            EnvironmentKind::Unmanaged,
+            Some(WORKSPACE.into()),
+            loom_relay::now_ms(),
+        )
+        .unwrap();
+    let response = fixture
+        .get(&format!(
+            "/api/v1/projects/{}/commands?provider=omp&environmentId={}",
+            fixture.project_id, environment.id
+        ))
+        .await;
+    assert_eq!(response.status, 200, "{:?}", response.body);
+    assert_response("projects.commands", response.status, &response.body);
+    let commands = response.body["commands"].as_array().unwrap();
+    let row = |name: &str| commands.iter().find(|row| row["name"] == name);
+    let review = row("review").unwrap_or_else(|| panic!("no review row: {commands:#?}"));
+    assert_eq!(review["source"], "command");
+    assert_eq!(review["origin"], "builtin");
+    assert_eq!(review["argumentHint"], "arguments");
+    let skill = row("skill:omp-only").unwrap_or_else(|| panic!("no skill row: {commands:#?}"));
+    assert_eq!(skill["source"], "skill");
+    assert_eq!(skill["origin"], "user");
+    assert!(
+        row("autocompact").is_none(),
+        "pi's scan must not stand in for OMP's menu: {commands:#?}"
+    );
+    assert!(
+        tokio::time::timeout(Duration::from_millis(300), fixture.requests.recv())
+            .await
+            .is_err(),
+        "an OMP listing must not ask the host for pi's scan"
+    );
+
+    // The offer is only as durable as the host reporting it: once that machine
+    // is gone, OMP is no longer an agent this workspace's host runs, so a
+    // command query for it is refused again.
+    fixture.state.forget_host_providers(&fixture.host_id);
+    let gone = fixture
+        .get(&format!(
+            "/api/v1/projects/{}/commands?provider=omp&environmentId={}",
+            fixture.project_id, environment.id
+        ))
+        .await;
+    assert_status_and_error(&gone, 400, "invalid_request");
+}
+
+/// A discovered agent that has not run in this workspace answers empty.
+///
+/// There is no scan to fall back to and another agent's menu would be a lie, so
+/// an empty list is the honest answer until a session advertises one.
+#[tokio::test]
+async fn project_commands_is_empty_for_a_discovered_provider_without_a_session() {
+    let mut fixture = fixture().await;
+    fixture.state.record_host_providers(
+        &fixture.host_id,
+        vec![
+            ProviderSpec::pi(),
+            discovered_provider("omp", "/usr/bin/omp"),
+        ],
     );
 
     let response = fixture
@@ -988,35 +1072,18 @@ async fn project_commands_answers_a_provider_the_host_reported() {
         .await;
     assert_eq!(response.status, 200, "{:?}", response.body);
     assert_response("projects.commands", response.status, &response.body);
-    let commands = response.body["commands"].as_array().unwrap();
-    let names: Vec<&str> = commands
-        .iter()
-        .filter_map(|row| row["name"].as_str())
-        .collect();
-    assert!(
-        names.contains(&"compact"),
-        "the scan is still the base: {commands:#?}"
+    assert_eq!(
+        response.body["commands"].as_array().map(Vec::len),
+        Some(0),
+        "no pi rows may leak into an unscanned agent's menu: {:?}",
+        response.body
     );
     assert!(
-        names.contains(&"skill:omp-only"),
-        "OMP's own advertisement is merged in: {commands:#?}"
+        tokio::time::timeout(Duration::from_millis(300), fixture.requests.recv())
+            .await
+            .is_err(),
+        "a discovered agent with no advertisement must not ask the host"
     );
-    match fixture.next_rpc_request().await {
-        HostRpcOperation::ListCommands { cwd } => assert_eq!(cwd, WORKSPACE),
-        other => panic!("expected a command listing, got {other:?}"),
-    }
-
-    // The offer is only as durable as the host reporting it: once that machine
-    // is gone, OMP is no longer an agent this workspace's host runs, so a
-    // command query for it is refused again.
-    fixture.state.forget_host_providers(&fixture.host_id);
-    let gone = fixture
-        .get(&format!(
-            "/api/v1/projects/{}/commands?provider=omp",
-            fixture.project_id
-        ))
-        .await;
-    assert_status_and_error(&gone, 400, "invalid_request");
 }
 
 /// A live session's advertisement is merged over the workspace scan: it can

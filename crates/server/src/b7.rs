@@ -78,6 +78,7 @@ use axum::Json;
 use loom_domain::{Environment, MessageRole, Project, ProjectId, ProjectSourceId, ThreadSectionId};
 use loom_provider_protocol::{
     project_attachments_root, HostFileContent, HostFileOperation, HostFileOutcome, ProviderCommand,
+    ProviderLaunch,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -854,20 +855,23 @@ pub async fn project_file_content(
 
 /// `projects.commands`: the prompt commands a project workspace exposes.
 ///
-/// A command list is a property of the workspace on disk, so it is a host RPC
-/// against the project's source. The `provider` parameter is required by the
-/// contract and names the agent the client will run, so it must be one the
-/// workspace's own machine offers — an id nothing dispatches, or one that only
-/// another machine reported, is a `400` rather than a silently different
-/// answer. A server with several agents therefore answers each of them, not
-/// just the default.
+/// The `provider` parameter is required by the contract and names the agent the
+/// client will run, so it must be one the workspace's own machine offers — an id
+/// nothing dispatches, or one that only another machine reported, is a `400`
+/// rather than a silently different answer. A server with several agents
+/// therefore answers each of them, not just the default.
 ///
-/// When a live session in this workspace has advertised its own list, that list
-/// is merged over the scan: it can name commands the scan cannot see (package
-/// prompt templates, agent skills), while the scan supplies the origin and hint
-/// ACP's advertisement does not carry. The merge is additive — a name the
-/// workspace scan already answered keeps its row — and the scan remains the
-/// base answer for a workspace no session has run in yet.
+/// Where the answer comes from depends on the agent. Only `pi-acp`, which loom
+/// embeds, has a native scan (its prompt files plus its built-in list), and only
+/// that scan is a host RPC — the workspace is on the machine that owns it. Every
+/// other ACP agent has no scan loom knows, so its menu is exactly the list the
+/// agent advertised over ACP for this workspace: never pi's, and empty rather
+/// than borrowed when the agent has not run here yet.
+///
+/// For pi the advertisement is merged over the scan: it can name commands the
+/// scan cannot see (package prompt templates, agent skills), while the scan
+/// supplies the origin and hint ACP's advertisement does not carry. The merge is
+/// additive — a name the scan already answered keeps its row.
 pub async fn project_commands(
     State(state): State<AppState>,
     AxumPath(raw_project_id): AxumPath<String>,
@@ -888,11 +892,8 @@ pub async fn project_commands(
     };
     // The provider has to be resolvable on the host that owns this workspace,
     // which is the same resolution a dispatch uses. An id the host cannot run
-    // has no advertisement to merge and no scan to stand in for it.
-    if state
-        .provider_spec_for_host(&workspace.host_id, &query.provider)
-        .is_none()
-    {
+    // has no advertisement and no scan that could stand in for one.
+    let Some(provider) = state.provider_spec_for_host(&workspace.host_id, &query.provider) else {
         let configured = state.provider_spec().name.clone();
         return api_error(
             StatusCode::BAD_REQUEST,
@@ -902,14 +903,19 @@ pub async fn project_commands(
                 query.provider
             ),
         );
-    }
+    };
     // The advertisement from this workspace's most recent session, when there
-    // is one. It is looked up before the host RPC because the RPC is the slow
-    // half and the live list is the half that can name commands the scan
-    // cannot.
+    // is one. It is the whole answer for an agent with no native scan and the
+    // overlay for one with a scan.
     let live_commands = state
         .commands
         .get(&workspace.host_id, &query.provider, &workspace.path);
+    // A discovered agent speaks for itself. Merging pi-acp's scan underneath it
+    // would offer an OMP workspace pi's built-ins, which OMP does not accept.
+    if provider.launch != ProviderLaunch::AcpEmbeddedPi {
+        let commands = project_advertised_commands(live_commands.as_deref().unwrap_or_default());
+        return Json(json!({ "commands": commands })).into_response();
+    }
     let outcome = match state
         .request_host_rpc(
             &workspace.host_id,
@@ -999,6 +1005,19 @@ fn project_commands_projection(
         append_live_commands(&mut projected, live);
     }
     Ok(json!({ "commands": projected }))
+}
+
+/// Projects the commands an ACP agent advertised, with no workspace scan behind
+/// them.
+///
+/// This is the whole menu for an agent loom cannot scan — a discovered agent's
+/// list is what it said over ACP and nothing else. There is no workspace row to
+/// defer to, so every advertised name is attributed by its own name, exactly as
+/// an advertisement merged over a scan is.
+fn project_advertised_commands(live: &[ProviderCommand]) -> Vec<Value> {
+    let mut projected = Vec::with_capacity(live.len());
+    append_live_commands(&mut projected, live);
+    projected
 }
 
 /// Adds the commands a live session advertised that the workspace scan did not

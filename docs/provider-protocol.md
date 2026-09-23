@@ -136,8 +136,9 @@ Two facts a session reports are not run events and wait for no run:
 
 Both travel from the worker's socket loop as their own frame, are validated
 against the host the connection enrolled as, and are kept in memory on the
-server (`catalogs.rs`, `commands.rs`). The command list is merged into
-`projects.commands` as an additive overlay over the workspace scan; see
+server (`catalogs.rs`, `commands.rs`). `projects.commands` serves the command
+list as an additive overlay over the embedded pi adapter's workspace scan, and
+as the whole menu for any other agent, which has no scan; see
 [`contract.md`](contract.md).
 
 ## Joining a turn: the steer frame

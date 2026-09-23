@@ -122,14 +122,18 @@ captures the list instead of dropping it
 (`ProviderCommandsReport` in `loom-provider-protocol`).
 
 The report is keyed by `(host, provider, cwd)` because prompt files are read
-from the session's working directory. `projects.commands` merges it over the
-workspace scan: the scan supplies the `origin` and `argumentHint` that ACP's
-`AvailableCommand` does not carry, and a name only the advertisement knows is
-attributed by its name (`skill:<name>` is `source: skill`, anything else is the
-agent's own, `origin: builtin`). A row the scan already answered keeps the
-scan's row, so the merge is additive rather than a replacement. Command-menu
-updates emitted during `session/load` or `session/resume` are retained too; the
-replay guard continues to suppress conversation history.
+from the session's working directory. `projects.commands` serves it two ways.
+For the embedded `pi-acp` adapter it is merged over the workspace scan: the scan
+supplies the `origin` and `argumentHint` that ACP's `AvailableCommand` does not
+carry, and a name only the advertisement knows is attributed by its name
+(`skill:<name>` is `source: skill`, anything else is the agent's own,
+`origin: builtin`). A row the scan already answered keeps the scan's row, so the
+merge is additive rather than a replacement. For every other agent there is no
+scan loom can run, so the report *is* the menu — the same name-based attribution
+and nothing else — and an agent that has not run in the workspace yet answers
+empty rather than with pi's built-ins. Command-menu updates emitted during
+`session/load` or `session/resume` are retained too; the replay guard continues
+to suppress conversation history.
 
 ### Turn lifecycle
 
