@@ -182,6 +182,44 @@ async fn a_v2_load_asks_for_the_replay_and_does_not_prompt() {
 }
 
 #[tokio::test]
+async fn a_v1_agent_without_load_reports_history_replay_as_unsupported() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cwd = tmp.path().join("project");
+    std::fs::create_dir_all(&cwd).unwrap();
+    let agent = write_script(
+        tmp.path(),
+        "v1-resume-only-agent.sh",
+        r#"#!/bin/sh
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([^,]*\),"method":.*/\1/p')
+  method=$(printf '%s' "$line" | sed -n 's/.*"method":"\([^\"]*\)".*/\1/p')
+  case "$method" in
+    initialize)
+      printf '%s\n' '{"jsonrpc":"2.0","id":'"$id"',"result":{"protocolVersion":1,"agentCapabilities":{"loadSession":false,"sessionCapabilities":{"resume":{}}}}}'
+      ;;
+  esac
+done
+"#,
+    );
+
+    let failure = load_history(
+        Transport::Stdio {
+            command: agent.to_string_lossy().into_owned(),
+            args: Vec::new(),
+        },
+        cwd.to_string_lossy().into_owned(),
+        ThreadId::mint(),
+        "resume-only-session".into(),
+        limits(),
+    )
+    .await
+    .expect_err("session/resume does not provide transcript replay");
+
+    assert_eq!(failure.code, "unsupported");
+    assert!(failure.message.contains("session/load"));
+}
+
+#[tokio::test]
 async fn an_over_budget_conversation_fails_rather_than_truncating() {
     let tmp = tempfile::tempdir().unwrap();
     let cwd = tmp.path().join("project");

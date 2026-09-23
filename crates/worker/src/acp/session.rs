@@ -527,16 +527,17 @@ async fn serve_embedded(
     serve(embedded_agent_factory(command, settle_timeout), sink, cwd).await
 }
 
-/// The construction/load phase controls which agent notifications can be
+/// The construction/restore phase controls which agent notifications can be
 /// translated. It is kept with the translator so checking the phase and
 /// enqueueing a notification is one atomic operation.
 enum UpdatePhase {
     /// `session/new` is in flight and notifications wait for its returned id.
     Constructing,
-    /// `session/load` is in flight; replayed timeline items are not part of the
-    /// current run. Session metadata is retained for release after identity.
+    /// A v1 `session/load` or `session/resume` restore is in flight; replayed
+    /// timeline items are not part of the current run. Session metadata is
+    /// retained for release after identity.
     Loading { session_id: String },
-    /// The load response arrived, but replayed timeline items must still be
+    /// The restore response arrived, but replayed timeline items must still be
     /// suppressed until the new prompt begins. Session metadata is retained.
     Loaded { session_id: String },
     /// The session is named and notifications belong to the active run.
@@ -557,11 +558,11 @@ struct UpdateState {
     translator: AcpTranslator,
     phase: UpdatePhase,
     pending: Vec<PendingUpdate>,
-    /// v1 `session/load` may publish a context usage snapshot while loading.
-    /// Keep the latest one. Timeline history is intentionally not replayed into
-    /// the new run, while session metadata is retained in `pending`.
+    /// v1 restore may publish a context usage snapshot while loading. Keep the
+    /// latest one. Timeline history is intentionally not replayed into the new
+    /// run, while session metadata is retained in `pending`.
     pending_load_usage: Option<SessionUpdate>,
-    /// The v2 equivalent of the load-time usage snapshot.
+    /// The v2 equivalent of the restore-time usage snapshot.
     pending_load_usage_v2: Option<v2::SessionUpdate>,
 }
 
@@ -944,8 +945,8 @@ impl UpdateSink {
 
     /// One ACP session update: translate, then report.
     ///
-    /// ACP notifications can arrive while `session/new` or `session/load` is
-    /// answering. The phase and session-id checks happen while holding the
+    /// ACP notifications can arrive while `session/new` or a v1 restore request
+    /// is answering. The phase and session-id checks happen while holding the
     /// same lock as the pending queue, so an update cannot fall into the gap
     /// between "not identified" and "identity released".
     async fn on_notification(&self, notification: SessionNotification) {
@@ -1129,7 +1130,7 @@ impl UpdateSink {
         self.report_all(events).await;
     }
 
-    /// Marks a v1 load request as in flight.
+    /// Marks a v1 restore request as in flight.
     async fn begin_load(&self, session_id: String) {
         let mut state = self.state.lock().await;
         state.phase = UpdatePhase::Loading { session_id };
@@ -1137,7 +1138,7 @@ impl UpdateSink {
         state.pending_load_usage_v2 = None;
     }
 
-    /// Finishes a load response. The phase remains `Loaded` until the new
+    /// Finishes a restore response. The phase remains `Loaded` until the new
     /// prompt is sent, because post-response timeline replay is suppressed
     /// rather than mixed into the new run. Session metadata is still accepted
     /// during this phase, since agents such as OMP send the bootstrap title
@@ -1244,22 +1245,38 @@ impl UpdateSink {
                 "the ACP agent negotiated an unsupported protocol version for the v1 client",
             ));
         }
-        if self.run.provider_session_id.is_some() && !initialized.agent_capabilities.load_session {
+        let can_resume = initialized
+            .agent_capabilities
+            .session_capabilities
+            .resume
+            .is_some();
+        let can_load = initialized.agent_capabilities.load_session;
+        if self.run.provider_session_id.is_some() && !can_resume && !can_load {
             return Err(Error::internal_error().data(
-                "the ACP agent does not advertise session/load support for this resumed run",
+                "the ACP agent advertises neither session/resume nor session/load for this run",
             ));
         }
 
         let session_id = match &self.run.provider_session_id {
             Some(existing) => {
                 self.begin_load(existing.clone()).await;
-                let loaded = connection
-                    .send_request(LoadSessionRequest::new(existing.clone(), cwd))
-                    .block_task()
-                    .await?;
+                let options = if can_resume {
+                    connection
+                        .send_request(v1::ResumeSessionRequest::new(existing.clone(), cwd))
+                        .block_task()
+                        .await?
+                        .config_options
+                        .unwrap_or_default()
+                } else {
+                    connection
+                        .send_request(LoadSessionRequest::new(existing.clone(), cwd))
+                        .block_task()
+                        .await?
+                        .config_options
+                        .unwrap_or_default()
+                };
                 self.finish_load(existing).await;
                 self.on_session_known(existing).await;
-                let options = loaded.config_options.unwrap_or_default();
                 let (options, choice_events) = self
                     .apply_config_choices_v1(connection, existing, options)
                     .await;

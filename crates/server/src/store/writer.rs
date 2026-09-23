@@ -31,7 +31,7 @@ use std::time::Duration;
 use loom_domain::{ProviderEvent, ThreadId};
 
 use super::Store;
-use crate::history_cache::RowSource;
+use crate::history_cache::{CacheBinding, RowSource};
 
 /// How long the writer waits for work before checking whether it should stop.
 ///
@@ -71,6 +71,15 @@ struct StoreWrite {
     event: ProviderEvent,
 }
 
+enum StoreCommand {
+    Row(StoreWrite),
+    MarkLocallyComplete {
+        thread_id: ThreadId,
+        binding: CacheBinding,
+        acknowledged: tokio::sync::oneshot::Sender<Result<(), String>>,
+    },
+}
+
 /// What the writer shares with the publish path.
 #[derive(Debug, Default)]
 struct Shared {
@@ -99,7 +108,7 @@ impl Shared {
 /// The conversation's writer: a thread, a queue, and what it could not store.
 #[derive(Debug)]
 pub struct StoreWriter {
-    sender: SyncSender<StoreWrite>,
+    sender: SyncSender<StoreCommand>,
     shared: Arc<Shared>,
     handle: Mutex<Option<JoinHandle<()>>>,
 }
@@ -144,7 +153,7 @@ impl StoreWriter {
             source,
             event,
         };
-        match self.sender.try_send(write) {
+        match self.sender.try_send(StoreCommand::Row(write)) {
             Ok(()) => true,
             Err(TrySendError::Full(_)) => {
                 self.shared.mark_unsaved(
@@ -161,6 +170,35 @@ impl StoreWriter {
         }
     }
 
+    /// Places a durable completeness marker behind all rows already accepted.
+    pub(crate) async fn mark_locally_complete(
+        &self,
+        thread_id: &ThreadId,
+        binding: &CacheBinding,
+    ) -> Result<(), String> {
+        if self.shared.stopping.load(Ordering::SeqCst) {
+            return Err("the server is stopping; local history was not marked complete".to_owned());
+        }
+        let (acknowledged, result) = tokio::sync::oneshot::channel();
+        let command = StoreCommand::MarkLocallyComplete {
+            thread_id: thread_id.clone(),
+            binding: binding.clone(),
+            acknowledged,
+        };
+        match self.sender.try_send(command) {
+            Ok(()) => {}
+            Err(TrySendError::Full(_)) => {
+                return Err("the store is behind; local history was not marked complete".to_owned());
+            }
+            Err(TrySendError::Disconnected(_)) => {
+                return Err("the store writer is not running".to_owned());
+            }
+        }
+        result.await.map_err(|_| {
+            "the store writer ended before marking local history complete".to_owned()
+        })?
+    }
+
     /// Why this thread's stored conversation is known to be incomplete.
     pub fn unsaved(&self, thread_id: &ThreadId) -> Option<String> {
         self.shared
@@ -169,6 +207,17 @@ impl StoreWriter {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .get(thread_id)
             .cloned()
+    }
+
+    /// Threads whose accepted or required history rows did not reach the store.
+    pub(crate) fn unsaved_threads(&self) -> Vec<(ThreadId, String)> {
+        self.shared
+            .unsaved
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .iter()
+            .map(|(thread_id, reason)| (thread_id.clone(), reason.clone()))
+            .collect()
     }
 
     /// How many threads are known to have an incomplete stored conversation.
@@ -239,7 +288,7 @@ impl StoreWriter {
 /// The writer thread: drain the queue, one transaction per row.
 fn run(
     store: Arc<Mutex<Store>>,
-    receiver: Receiver<StoreWrite>,
+    receiver: Receiver<StoreCommand>,
     shared: Arc<Shared>,
     ack: Arc<dyn WrittenRows>,
 ) {
@@ -256,7 +305,38 @@ fn run(
             }
             Err(RecvTimeoutError::Disconnected) => return,
         };
-        write_one(&store, &shared, &*ack, write);
+        match write {
+            StoreCommand::Row(write) => write_one(&store, &shared, &*ack, write),
+            StoreCommand::MarkLocallyComplete {
+                thread_id,
+                binding,
+                acknowledged,
+            } => {
+                let prior_failure = shared
+                    .unsaved
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .get(&thread_id)
+                    .cloned();
+                let result = if let Some(reason) = prior_failure {
+                    Err(format!("the stored conversation is incomplete: {reason}"))
+                } else {
+                    let result = store
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .mark_locally_complete(&thread_id, &binding)
+                        .map_err(|error| error.to_string());
+                    if let Err(error) = &result {
+                        shared.mark_unsaved(
+                            &thread_id,
+                            format!("local history completeness could not be stored: {error}"),
+                        );
+                    }
+                    result
+                };
+                let _ = acknowledged.send(result);
+            }
+        }
     }
 }
 

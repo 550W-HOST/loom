@@ -150,6 +150,36 @@ done
     path
 }
 
+/// A v1 ACP agent that only advertises `session/resume` and restores without replay.
+fn write_v1_resume_agent(dir: &std::path::Path) -> PathBuf {
+    let script = r#"#!/bin/sh
+session_id=v1-resumable-session
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([^,]*\),"method":.*/\1/p')
+  method=$(printf '%s' "$line" | sed -n 's/.*"method":"\([^\"]*\)".*/\1/p')
+  case "$method" in
+    initialize)
+      printf '%s\n' '{"jsonrpc":"2.0","id":'"$id"',"result":{"protocolVersion":1,"agentCapabilities":{"loadSession":false,"sessionCapabilities":{"resume":{}}}}}'
+      ;;
+    session/new)
+      printf '%s\n' '{"jsonrpc":"2.0","id":'"$id"',"result":{"sessionId":"'"$session_id"'"}}'
+      ;;
+    session/resume)
+      touch "$0.resumed"
+      printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"'"$session_id"'","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"old transcript"}}}}'
+      printf '%s\n' '{"jsonrpc":"2.0","id":'"$id"',"result":{}}'
+      ;;
+    session/prompt)
+      if [ -f "$0.resumed" ]; then text=resumed; else text=fresh; fi
+      printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"'"$session_id"'","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"'"$text"'"}}}}'
+      printf '%s\n' '{"jsonrpc":"2.0","id":'"$id"',"result":{"stopReason":"end_turn"}}'
+      ;;
+  esac
+done
+"#;
+    write_agent_script(dir, "v1-resume-agent.sh", script)
+}
+
 /// A minimal ACP v2 agent that streams a patch and reports completion through
 /// the idle state. Its resume notification deliberately looks like history,
 /// so the second run proves that loom does not replay it.
@@ -295,6 +325,59 @@ async fn a_resume_loads_the_same_acp_session() {
             .collect::<String>(),
         "resumed"
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_v1_resume_capability_continues_without_requiring_load_session() {
+    let tmp = tempfile::tempdir().unwrap();
+    let workspace = tmp.path().join("workspace");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let agent = write_v1_resume_agent(tmp.path());
+    let thread_id = loom_domain::ThreadId::mint();
+
+    let first = drive_with_agent(
+        run_with_agent(
+            &workspace.to_string_lossy(),
+            &agent,
+            thread_id.clone(),
+            None,
+        ),
+        agent.clone(),
+    )
+    .await;
+    let session_id = first
+        .iter()
+        .find(|event| event.kind() == "thread/identity")
+        .and_then(loom_domain::RunEvent::provider_thread_id)
+        .expect("the first run reports the ACP session id")
+        .to_owned();
+
+    let second = drive_with_agent(
+        run_with_agent(
+            &workspace.to_string_lossy(),
+            &agent,
+            thread_id,
+            Some(&session_id),
+        ),
+        agent.clone(),
+    )
+    .await;
+
+    assert!(PathBuf::from(format!("{}.resumed", agent.display())).exists());
+    assert_eq!(
+        second
+            .iter()
+            .filter_map(|event| match &event.event.body {
+                loom_domain::ProviderEvent::ItemAgentMessageDelta { delta, .. } => {
+                    Some(delta.as_str())
+                }
+                _ => None,
+            })
+            .collect::<String>(),
+        "resumed",
+        "the v1 resume response must not replay the old transcript into the new run"
+    );
+    assert_eq!(second.iter().filter(|event| event.is_terminal()).count(), 1);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -754,8 +837,8 @@ async fn a_resume_in_a_missing_workspace_fails_and_names_the_path() {
     );
 }
 
-/// An agent that cannot load a session fails an explicit resume rather than
-/// quietly starting a fresh conversation.
+/// An agent that advertises neither `session/load` nor `session/resume` fails
+/// an explicit resume rather than quietly starting a fresh conversation.
 ///
 /// Silently starting over is the other half of the cwd guard: a user who asked
 /// to continue a conversation must be told it cannot be continued, not handed a
@@ -808,7 +891,7 @@ async fn a_resume_against_an_agent_without_load_session_fails() {
     assert!(
         terminal
             .terminal_error()
-            .is_some_and(|message| message.contains("session/load")),
+            .is_some_and(|message| message.contains("neither session/resume nor session/load")),
         "the reason names the missing capability: {:?}",
         terminal.terminal_error()
     );
@@ -820,10 +903,9 @@ async fn a_resume_against_an_agent_without_load_session_fails() {
     );
 }
 
-/// An ACP agent that answers `initialize` without advertising `session/load`.
-///
-/// Its `session/new` would work; only resuming would not, which is what makes it
-/// the fixture for the "cannot honour this id" case.
+/// An ACP agent that answers `initialize` without advertising either restore
+/// capability. Its `session/new` would work; only resuming would not, which is
+/// what makes it the fixture for the "cannot honour this id" case.
 fn write_agent_without_load(dir: &std::path::Path) -> PathBuf {
     let path = dir.join("no-load.sh");
     // A single-quoted heredoc keeps the shell template literal, so the JSON

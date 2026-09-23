@@ -213,9 +213,18 @@ where
         .connect_to(agent_factory)
         .await;
 
-    result.map_err(|error| {
-        HistoryFailure::new("connection", format!("the ACP connection ended: {error}"))
-    })?;
+    if let Err(error) = result {
+        if state.load_unsupported() {
+            return Err(HistoryFailure::new(
+                "unsupported",
+                "the ACP v1 agent does not advertise session/load history replay",
+            ));
+        }
+        return Err(HistoryFailure::new(
+            "connection",
+            format!("the ACP connection ended: {error}"),
+        ));
+    }
     state.take()
 }
 
@@ -231,6 +240,7 @@ struct Inner {
     max_total_bytes: u64,
     overflowed: bool,
     answered: bool,
+    load_unsupported: bool,
 }
 
 impl HistoryState {
@@ -247,6 +257,7 @@ impl HistoryState {
                 max_total_bytes,
                 overflowed: false,
                 answered: false,
+                load_unsupported: false,
             }),
         }
     }
@@ -267,6 +278,14 @@ impl HistoryState {
         }
         let translated = inner.translator.on_v2_session_update(update);
         inner.push(translated);
+    }
+
+    fn mark_load_unsupported(&self) {
+        self.lock().load_unsupported = true;
+    }
+
+    fn load_unsupported(&self) -> bool {
+        self.lock().load_unsupported
     }
 
     /// Records that the restore request was answered, which is the replay's
@@ -333,8 +352,8 @@ struct V1HistoryClient {
 
 impl ConnectTo<Agent> for V1HistoryClient {
     async fn connect_to(self, agent: impl ConnectTo<Client>) -> Result<(), Error> {
-        let notifications = Arc::clone(&self.state);
-        let answered = self.state;
+        let state = self.state;
+        let notifications = Arc::clone(&state);
         let cwd = self.cwd;
         let session_id = self.session_id;
 
@@ -374,13 +393,18 @@ impl ConnectTo<Agent> for V1HistoryClient {
                          history load",
                     ));
                 }
+                if !initialized.agent_capabilities.load_session {
+                    state.mark_load_unsupported();
+                    return Err(Error::internal_error()
+                        .data("the ACP v1 agent does not advertise session/load"));
+                }
                 // The response is the completion boundary: the agent publishes
                 // the whole replay before answering.
                 connection
                     .send_request(v1::LoadSessionRequest::new(session_id, cwd))
                     .block_task()
                     .await?;
-                answered.answered();
+                state.answered();
                 Ok(())
             })
             .await

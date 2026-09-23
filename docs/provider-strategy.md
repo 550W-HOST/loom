@@ -289,7 +289,8 @@ loom resumes a session to CONTINUE it (a run is dispatched)
   → look up (agent, session_id, cwd) in domain state
   → start the agent and negotiate a protocol version
   → v2: session/resume { sessionId, cwd }        (no replay — a run needs no past)
-     v1: session/load   { sessionId, cwd }        (the only option; replays)
+     v1: session/resume { sessionId, cwd }     (when advertised; no replay)
+        otherwise session/load { sessionId, cwd } (load-only agents replay)
   → the agent restores its own storage, and run-time history is suppressed
 
 loom loads a session to SHOW it (a thread is opened)
@@ -299,17 +300,19 @@ loom loads a session to SHOW it (a thread is opened)
   → the replay is collected as the conversation; no prompt is ever sent
 ```
 
-To continue a session, loom asks for **no replay**: it holds the turn it is
-about to take, and under v2 a restored session plus patchable full objects
-converges without the agent repeating its past. Under v1 there is no such
-choice — `session/load` is the only restore method, and it replays, so the
-run-time path suppresses the history frames.
+To continue a session, loom asks for **no replay** when the agent advertises
+`session/resume`. That is the normal path for v1 and v2. A v1 agent that only
+advertises `loadSession` can still continue through `session/load`; that method
+replays history, so the run-time path suppresses those frames. An agent with
+neither capability is refused rather than silently starting a new session.
 
-To *display* a conversation, replay is the point: the server holds no durable
-copy of it (see [`architecture.md`](architecture.md) § The conversation is not
-in the log), so opening an old thread loads the agent's own history over a
-dedicated connection and caches it for display. The two paths never share a
-connection: a load that is only reading must not race a turn that is writing.
+To *display* a conversation, provider replay is used when it is supported and
+needed. For Loom-created sessions whose agent cannot replay, the server can use
+its durable rows of Loom-observed prompts and run events as the history source.
+A conversation that predates Loom's observations still needs provider replay;
+without it, the local view cannot claim to contain those missing turns. A replay
+uses its own ACP connection, separate from the run connection, so reading a
+history baseline never races a prompt that is writing the same session.
 
 Either way, **loom never reads an agent's session files.** It asks the agent.
 That is the property that makes the design clean: no format parsing, no layout

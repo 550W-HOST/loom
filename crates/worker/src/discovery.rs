@@ -7,10 +7,11 @@
 //! without never sees it. Installing the agent is the whole provisioning step.
 //!
 //! Presence is necessary but not sufficient — `crates/worker/src/acp/catalog.rs`
-//! then opens a real ACP session against each candidate, and only an agent that
-//! answers `initialize` and `session/new` is advertised. A binary that merely
-//! shares a name with a known agent is dropped rather than offered and failing
-//! at the first user turn.
+//! completes an ACP admission probe before a candidate is reported. Most agents
+//! are also opened once to read their session catalogue; agents that persist an
+//! empty probe session can opt into initialize-only verification. A binary that
+//! merely shares a name with a known agent is dropped rather than offered and
+//! failing at the first user turn.
 //!
 //! The table is deliberately small and explicit. Adding an agent is a one-line
 //! entry here, and an entry whose argv never completes a handshake costs one
@@ -29,6 +30,12 @@ pub struct KnownAgent {
     pub argv: &'static [&'static str],
     /// How the worker reaches this agent.
     pub launch: ProviderLaunch,
+    /// Whether startup catalogue probing must create a session.
+    ///
+    /// Some agents persist even an empty probe session and provide no delete
+    /// method, so initialize-only verification is preferable when catalogues
+    /// are available only after a real session is created.
+    pub catalog_probe_requires_session: bool,
 }
 
 /// The agents loom probes for, in preference order.
@@ -46,43 +53,68 @@ pub const KNOWN_AGENTS: &[KnownAgent] = &[
         name: "pi",
         argv: &["pi"],
         launch: ProviderLaunch::AcpEmbeddedPi,
+        catalog_probe_requires_session: true,
+    },
+    KnownAgent {
+        name: "deepseek-harness",
+        argv: &["dsh", "--profile", "acp"],
+        launch: ProviderLaunch::AcpStdio,
+        catalog_probe_requires_session: false,
     },
     KnownAgent {
         name: "omp",
         argv: &["omp", "acp"],
         launch: ProviderLaunch::AcpStdio,
+        catalog_probe_requires_session: true,
     },
     KnownAgent {
         name: "hermes",
         argv: &["hermes", "acp"],
         launch: ProviderLaunch::AcpStdio,
+        catalog_probe_requires_session: true,
     },
     KnownAgent {
         name: "opencode",
         argv: &["opencode", "acp"],
         launch: ProviderLaunch::AcpStdio,
+        catalog_probe_requires_session: true,
     },
     KnownAgent {
         name: "gemini",
         argv: &["gemini", "--experimental-acp"],
         launch: ProviderLaunch::AcpStdio,
+        catalog_probe_requires_session: true,
     },
     KnownAgent {
         name: "cursor",
         argv: &["cursor-agent", "acp"],
         launch: ProviderLaunch::AcpStdio,
+        catalog_probe_requires_session: true,
     },
     KnownAgent {
         name: "codex",
         argv: &["codex-acp"],
         launch: ProviderLaunch::AcpStdio,
+        catalog_probe_requires_session: true,
     },
     KnownAgent {
         name: "claude-code",
         argv: &["claude-code-acp"],
         launch: ProviderLaunch::AcpStdio,
+        catalog_probe_requires_session: true,
     },
 ];
+
+/// Whether catalogue verification for a known agent needs a real session.
+///
+/// Server-configured or otherwise unknown agents retain the regular probe,
+/// which reads their options from `session/new`.
+pub fn needs_catalog_session(provider_id: &str) -> bool {
+    KNOWN_AGENTS
+        .iter()
+        .find(|agent| agent.name == provider_id)
+        .map_or(true, |agent| agent.catalog_probe_requires_session)
+}
 
 /// The agents installed here, resolved against this process's `PATH`.
 pub fn candidates() -> Vec<ProviderSpec> {
@@ -210,6 +242,25 @@ mod tests {
         assert_eq!(found[0].launch, ProviderLaunch::AcpEmbeddedPi);
         assert!(found[0].args.is_empty());
         assert_eq!(found[3].args, vec!["--experimental-acp".to_owned()]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn deepseek_harness_catalogue_probe_does_not_create_a_session() {
+        assert!(!needs_catalog_session("deepseek-harness"));
+        assert!(needs_catalog_session("omp"));
+        assert!(needs_catalog_session("custom-agent"));
+    }
+
+    #[test]
+    fn discovers_deepseek_harness_through_its_acp_profile() {
+        let dir = temp_dir("deepseek-harness");
+        write_executable(&dir, "dsh");
+        let found = discover(dir.as_os_str());
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].name, "deepseek-harness");
+        assert_eq!(found[0].args, vec!["--profile", "acp"]);
+        assert_eq!(found[0].launch, ProviderLaunch::AcpStdio);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

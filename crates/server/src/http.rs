@@ -3832,17 +3832,27 @@ fn reasoning_row(
 /// the fold because the row is emitted by the *first* of them: a row per frame
 /// is what this projection exists to avoid.
 fn tool_frame_item_id(event: &loom_domain::ProviderEvent) -> Option<&str> {
+    tool_frame_identity(event).map(|(_, item_id)| item_id)
+}
+
+fn tool_frame_identity(event: &loom_domain::ProviderEvent) -> Option<(&str, &str)> {
     match event {
-        loom_domain::ProviderEvent::ItemStarted { item, .. }
-            if crate::tool_timeline::ToolActivity::is_tool(item) =>
-        {
-            Some(tool_item_id(item))
+        loom_domain::ProviderEvent::ItemStarted {
+            item,
+            provider_thread_id,
+        } if crate::tool_timeline::ToolActivity::is_tool(item) => {
+            Some((provider_thread_id, tool_item_id(item)))
         }
-        loom_domain::ProviderEvent::ItemToolCallProgress { item_id, .. } => Some(item_id),
-        loom_domain::ProviderEvent::ItemCompleted { item, .. }
-            if crate::tool_timeline::ToolActivity::is_tool(item) =>
-        {
-            Some(tool_item_id(item))
+        loom_domain::ProviderEvent::ItemToolCallProgress {
+            item_id,
+            provider_thread_id,
+            ..
+        } => Some((provider_thread_id, item_id)),
+        loom_domain::ProviderEvent::ItemCompleted {
+            item,
+            provider_thread_id,
+        } if crate::tool_timeline::ToolActivity::is_tool(item) => {
+            Some((provider_thread_id, tool_item_id(item)))
         }
         _ => None,
     }
@@ -4154,6 +4164,9 @@ fn cached_timeline_inputs(view: &crate::history_cache::CacheView) -> Vec<Timelin
 /// Nothing is dropped when the replay carries something loom does not have — a
 /// message the agent never received, a turn from before this server started —
 /// because there is no loom row left to pair it with.
+///
+/// Tool calls match by ACP session and item id; the recorded work row wins,
+/// while calls present only in replay stay visible.
 fn replayed_copies_loom_already_recorded(
     view: &crate::history_cache::CacheView,
 ) -> std::collections::HashSet<usize> {
@@ -4205,12 +4218,16 @@ fn replayed_copies_loom_already_recorded(
     // never recognized as a copy and opened a second row.
     let mut recorded_user: Vec<String> = Vec::new();
     let mut recorded_assistant: Vec<String> = Vec::new();
+    let mut recorded_tool_calls: HashSet<(&str, &str)> = HashSet::new();
     // Provider item ids are only unique within a run. Match the same identity
     // rule as the assistant timeline so two turns cannot be folded together.
     let mut recorded_slots: HashMap<(String, String), usize> = HashMap::new();
     for row in &view.rows {
         if matches!(row.source, RowSource::Replayed) {
             continue;
+        }
+        if let Some(identity) = tool_frame_identity(&row.event) {
+            recorded_tool_calls.insert(identity);
         }
         match &row.event {
             ProviderEvent::ItemStarted {
@@ -4266,9 +4283,16 @@ fn replayed_copies_loom_already_recorded(
     let mut replay_turn = 0usize;
     let mut slots: HashMap<(usize, String), usize> = HashMap::new();
     let mut carried: Vec<(String, Carried)> = Vec::new();
+    let mut superseded = HashSet::new();
     for (position, row) in view.rows.iter().enumerate() {
         if !matches!(row.source, RowSource::Replayed) {
             continue;
+        }
+        if let Some(identity) = tool_frame_identity(&row.event) {
+            if recorded_tool_calls.contains(&identity) {
+                superseded.insert(position);
+                continue;
+            }
         }
         if matches!(
             &row.event,
@@ -4340,7 +4364,6 @@ fn replayed_copies_loom_already_recorded(
 
     let mut recorded_user_cursor = 0;
     let mut recorded_assistant_cursor = 0;
-    let mut superseded = HashSet::new();
     for (_, message) in &carried {
         if message.text.is_empty() {
             continue;
@@ -4410,6 +4433,7 @@ mod restored_timeline_tests {
             generation: 1,
             status: HistoryStatus::Ready,
             complete: true,
+            local_complete: false,
             reason: None,
             rows: rows
                 .into_iter()
@@ -4459,6 +4483,10 @@ mod restored_timeline_tests {
     }
 
     fn tool_call(id: &str) -> ProviderEvent {
+        tool_call_in_session(id, "acp-session-1")
+    }
+
+    fn tool_call_in_session(id: &str, provider_thread_id: &str) -> ProviderEvent {
         ProviderEvent::ItemStarted {
             item: ThreadEventItem::ToolCall {
                 id: id.to_owned(),
@@ -4467,6 +4495,33 @@ mod restored_timeline_tests {
                 arguments: None,
                 status: ItemStatus::Pending,
                 result: None,
+                error: None,
+                duration_ms: None,
+                presentation: None,
+                parent_tool_call_id: None,
+            },
+            provider_thread_id: provider_thread_id.to_owned(),
+        }
+    }
+
+    fn tool_progress(id: &str) -> ProviderEvent {
+        ProviderEvent::ItemToolCallProgress {
+            item_id: id.to_owned(),
+            message: Some("searching".to_owned()),
+            provider_thread_id: "acp-session-1".to_owned(),
+            parent_tool_call_id: None,
+        }
+    }
+
+    fn completed_tool_call(id: &str, output: &str) -> ProviderEvent {
+        ProviderEvent::ItemCompleted {
+            item: ThreadEventItem::ToolCall {
+                id: id.to_owned(),
+                server: None,
+                tool: "execute".to_owned(),
+                arguments: None,
+                status: ItemStatus::Completed,
+                result: Some(serde_json::Value::String(output.to_owned())),
                 error: None,
                 duration_ms: None,
                 presentation: None,
@@ -4639,6 +4694,52 @@ mod restored_timeline_tests {
             .find(|row| row["role"] == "assistant")
             .expect("an answer row");
         assert_eq!(answer["turnId"], json!(run_id.to_string()), "{answer}");
+    }
+
+    /// A load replay repeats tool calls the run already recorded; show each
+    /// recorded call once, while retaining work that is new to the replay.
+    #[test]
+    fn a_replayed_copy_of_a_recorded_tool_call_does_not_open_a_second_row() {
+        let thread_id = ThreadId::mint();
+        let run_id = loom_domain::RunId::mint();
+        let run_row = |at_ms: u64| RowSource::Run {
+            run_id: run_id.clone(),
+            at_ms,
+        };
+        let rows = cached_timeline_rows(
+            &thread_id,
+            &view_of(vec![
+                (run_row(1), tool_call("call-1")),
+                (run_row(2), tool_progress("call-1")),
+                (run_row(3), completed_tool_call("call-1", "search results")),
+                (RowSource::Replayed, tool_call("call-1")),
+                (RowSource::Replayed, tool_progress("call-1")),
+                (
+                    RowSource::Replayed,
+                    completed_tool_call("call-1", "search results"),
+                ),
+                (RowSource::Replayed, tool_call("new-call")),
+                (
+                    RowSource::Replayed,
+                    tool_call_in_session("call-1", "acp-session-2"),
+                ),
+            ]),
+        )
+        .rows;
+
+        let work: Vec<_> = rows.iter().filter(|row| row["kind"] == "work").collect();
+        assert_eq!(
+            work.len(),
+            3,
+            "only unseen replay work stays visible: {work:?}"
+        );
+        assert_eq!(work[0]["callId"], "call-1");
+        assert_eq!(work[0]["turnId"], json!(run_id.to_string()));
+        assert_eq!(work[0]["output"], "search results");
+        assert_eq!(work[1]["callId"], "new-call");
+        assert_eq!(work[2]["callId"], "call-1");
+        assert_eq!(work[2]["turnId"], "local-1");
+        assert_eq!(work[2]["status"], "pending");
     }
 
     /// Provider item ids may be reused by a later run. They must not make two

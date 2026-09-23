@@ -699,21 +699,21 @@ impl Worker {
     /// Asks each candidate agent what it can run, and reports the ones that
     /// answered.
     ///
-    /// The probe is also the admission test. A candidate is only reported as
-    /// installed if it completes the ACP handshake — `initialize` and
-    /// `session/new` — so a binary that merely shares a name with a known agent
-    /// is dropped here rather than offered and failing at the first turn. The
-    /// catalogue and the verified list are both products of the same run: the
-    /// catalogue fills the picker, the list decides what the control plane may
-    /// dispatch.
+    /// The probe validates installed candidates: `initialize` is always
+    /// required, while agents that need a session to describe their catalogue
+    /// also complete `session/new`. The catalogue and verified list are products
+    /// of the same run: the catalogue fills the picker, and the list decides
+    /// what the control plane may dispatch.
     ///
     /// Every probe runs in its own task, and the verified list is reported as
     /// each one settles: one slow candidate must not hold back the agents that
     /// already answered, or a machine with one broken agent would look like a
     /// machine with none.
     fn probe_catalog(&self, host_id: &HostId) {
-        // The probe opens a session in the worker's own directory: it is not
-        // about a project, it only needs a workspace the agent accepts.
+        // Session-based probes use the worker's own directory: they are not
+        // about a project, they only need a workspace the agent accepts. An
+        // initialize-only probe still inherits this cwd without opening a
+        // persistent session.
         let cwd = std::env::current_dir()
             .map(|dir| dir.to_string_lossy().into_owned())
             .unwrap_or_else(|_| ".".to_owned());
@@ -735,17 +735,27 @@ impl Worker {
                     },
                 };
                 let provider_id = spec.name.clone();
+                let opens_session = crate::discovery::needs_catalog_session(&provider_id);
                 let host_id = host_id.clone();
                 let reports = reports.clone();
                 let cwd = cwd.clone();
                 let spec = spec.clone();
                 probes.spawn(async move {
-                    let outcome = crate::acp::catalog::read_catalog(
-                        transport,
-                        cwd,
-                        DEFAULT_CATALOG_PROBE_BUDGET,
-                    )
-                    .await;
+                    let outcome = if opens_session {
+                        crate::acp::catalog::read_catalog(
+                            transport,
+                            cwd,
+                            DEFAULT_CATALOG_PROBE_BUDGET,
+                        )
+                        .await
+                    } else {
+                        crate::acp::catalog::verify_agent(
+                            transport,
+                            cwd,
+                            DEFAULT_CATALOG_PROBE_BUDGET,
+                        )
+                        .await
+                    };
                     (index, spec, provider_id, host_id, reports, outcome)
                 });
             }

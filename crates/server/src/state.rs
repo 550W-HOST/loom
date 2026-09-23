@@ -1279,6 +1279,13 @@ impl AppState {
         self.store_writer
             .flush()
             .map_err(|message| ShutdownError { message })?;
+        for (thread_id, reason) in self.store_writer.unsaved_threads() {
+            self.store()
+                .mark_local_history_uncertain(&thread_id, &reason)
+                .map_err(|error| ShutdownError {
+                    message: format!("recording an incomplete stored conversation failed: {error}"),
+                })?;
+        }
         // Last, and only once everything else is on disk: the store says this
         // stop finished, so a start that finds it unfinished knows the store may
         // be missing a tail rather than guessing.
@@ -2208,6 +2215,48 @@ mod tests {
             expected,
             "every accepted row is on disk after shutdown"
         );
+    }
+
+    #[tokio::test]
+    async fn shutdown_persists_store_writer_gaps_for_local_history() {
+        let dir = TempDir::new().unwrap();
+        let state = AppState::build(durable_config(&dir)).unwrap();
+        let thread_id = ThreadId::mint();
+        let binding = crate::history_cache::CacheBinding {
+            host_id: HostId::mint(),
+            agent: "deepseek-harness".to_owned(),
+            provider_session_id: "dsh-session".to_owned(),
+            cwd: "/srv/project".to_owned(),
+        };
+        let source = crate::history_cache::RowSource::Message { at_ms: 1 };
+        let prompt = loom_domain::ProviderEvent::ItemStarted {
+            item: loom_domain::ThreadEventItem::UserMessage {
+                id: "message-1".to_owned(),
+                content: vec![loom_domain::UserContent::Text {
+                    text: "hello".to_owned(),
+                }],
+                client_request_id: None,
+                parent_tool_call_id: None,
+            },
+            provider_thread_id: "dsh-session".to_owned(),
+        };
+        state
+            .store()
+            .append_row(&thread_id, 1, &source, &prompt)
+            .unwrap();
+        assert!(state.store_writer().enqueue(&thread_id, 1, source, prompt));
+
+        state.shutdown().unwrap();
+
+        let store = crate::store::Store::open(dir.path().join("loom.db")).unwrap();
+        let history = store.history(&thread_id).unwrap().unwrap();
+        assert!(!history.local_complete);
+        assert!(history.local_uncertain);
+        assert!(history
+            .last_error
+            .as_deref()
+            .is_some_and(|reason| reason.contains("could not write a row")));
+        assert!(store.mark_locally_complete(&thread_id, &binding).is_err());
     }
 
     /// A store that cannot be opened fails startup rather than being skipped.

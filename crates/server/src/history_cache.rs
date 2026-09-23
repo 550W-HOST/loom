@@ -147,6 +147,8 @@ pub struct CacheView {
     /// is a real empty session; an incomplete one is not empty, it is partial,
     /// and saying so is the difference the caller must not lose.
     pub complete: bool,
+    /// Whether the server's locally observed rows are a complete history source.
+    pub local_complete: bool,
     /// Why the conversation is not fully available, when it is not.
     pub reason: Option<String>,
     /// The rows, oldest first.

@@ -47,8 +47,12 @@ pub struct StoredHistory {
     pub binding: Option<CacheBinding>,
     /// How many rebuilds this conversation has had. Only moves forward.
     pub revision: u64,
-    /// When the last successful sync finished.
+    /// When the last successful provider replay finished.
     pub synced_at_ms: Option<u64>,
+    /// The locally recorded rows are known to be complete for this session.
+    pub local_complete: bool,
+    /// The locally recorded rows may be missing a tail after an unclean stop.
+    pub local_uncertain: bool,
     /// Why the last attempt did not finish, when it did not.
     pub last_error: Option<String>,
 }
@@ -113,7 +117,7 @@ impl Store {
     pub fn history(&self, thread_id: &ThreadId) -> Result<Option<StoredHistory>, StoreError> {
         let mut statement = self.connection().prepare(
             "SELECT provider_session_id, binding_agent, binding_cwd, binding_host_id,
-                    revision, synced_at_ms, last_error
+                    revision, synced_at_ms, last_error, local_complete, local_uncertain
              FROM thread_history WHERE thread_id = ?1",
         )?;
         let mut rows = statement.query((thread_id.to_string(),))?;
@@ -127,6 +131,8 @@ impl Store {
         let revision = column_integer(row, 4)?;
         let synced_at_ms = column_optional_integer(row, 5)?;
         let last_error = column_optional_text(row, 6)?;
+        let local_complete = column_integer(row, 7)? != 0;
+        let local_uncertain = column_integer(row, 8)? != 0;
 
         // A binding is only a binding when every part of it is there: a session
         // id with no machine is not one this server can ask for, and reporting
@@ -146,6 +152,8 @@ impl Store {
             binding,
             revision: u64::try_from(revision).unwrap_or(0),
             synced_at_ms: synced_at_ms.map(|value| u64::try_from(value).unwrap_or(0)),
+            local_complete,
+            local_uncertain,
             last_error,
         }))
     }
@@ -331,7 +339,7 @@ impl Store {
             "UPDATE thread_history
                 SET provider_session_id = ?2, binding_agent = ?3, binding_cwd = ?4,
                     binding_host_id = ?5, revision = revision + 1,
-                    synced_at_ms = ?6, last_error = NULL
+                    synced_at_ms = ?6, local_complete = 0, local_uncertain = 0, last_error = NULL
               WHERE thread_id = ?1",
             params![
                 thread_id.to_string(),
@@ -353,6 +361,78 @@ impl Store {
         drop(statement);
         transaction.commit()?;
         Ok(u64::try_from(revision).unwrap_or(0))
+    }
+
+    /// Records that the locally observed rows are a complete conversation for
+    /// an agent that cannot replay session history.
+    ///
+    /// The caller orders this behind all accepted row writes. Requiring at
+    /// least one stored row prevents an empty or unobserved thread from being
+    /// declared complete by a capability fallback.
+    pub fn mark_locally_complete(
+        &self,
+        thread_id: &ThreadId,
+        binding: &CacheBinding,
+    ) -> Result<(), StoreError> {
+        let transaction = self.connection().unchecked_transaction()?;
+        self.ensure_header(&transaction, thread_id)?;
+        let uncertain: i64 = transaction.query_row(
+            "SELECT local_uncertain FROM thread_history WHERE thread_id = ?1",
+            params![thread_id.to_string()],
+            |row| row.get(0),
+        )?;
+        if uncertain != 0 {
+            return Err(StoreError::new(
+                "the local conversation may be missing rows after an unclean stop",
+            ));
+        }
+        let count: i64 = transaction.query_row(
+            "SELECT COUNT(*) FROM thread_history_row WHERE thread_id = ?1",
+            params![thread_id.to_string()],
+            |row| row.get(0),
+        )?;
+        if count == 0 {
+            return Err(StoreError::new(
+                "the server has no observed conversation rows to mark complete",
+            ));
+        }
+        transaction.execute(
+            "UPDATE thread_history
+                SET provider_session_id = ?2, binding_agent = ?3, binding_cwd = ?4,
+                    binding_host_id = ?5, local_complete = 1, local_uncertain = 0, last_error = NULL
+              WHERE thread_id = ?1",
+            params![
+                thread_id.to_string(),
+                binding.provider_session_id.clone(),
+                binding.agent.clone(),
+                binding.cwd.clone(),
+                binding.host_id.to_string(),
+            ],
+        )?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    /// Records that locally observed history may have a missing tail.
+    ///
+    /// Unlike a failed provider replay, this uncertainty must not be cleared by
+    /// an unsupported-replay fallback: the missing rows cannot be reconstructed
+    /// from the agent.
+    pub fn mark_local_history_uncertain(
+        &self,
+        thread_id: &ThreadId,
+        reason: &str,
+    ) -> Result<(), StoreError> {
+        let transaction = self.connection().unchecked_transaction()?;
+        self.ensure_header(&transaction, thread_id)?;
+        transaction.execute(
+            "UPDATE thread_history
+                SET local_uncertain = 1, last_error = ?2
+              WHERE thread_id = ?1",
+            params![thread_id.to_string(), reason],
+        )?;
+        transaction.commit()?;
+        Ok(())
     }
 
     /// Records that the last attempt to sync a thread failed.
@@ -696,6 +776,32 @@ mod tests {
             vec![1, 4],
             "numbers are never reused: {sequences:?}"
         );
+    }
+
+    /// A provider replay becomes the source again if a formerly resume-only
+    /// agent later supports transcript loading.
+    #[test]
+    fn a_provider_replay_clears_local_history_authority() {
+        let store = Store::open_in_memory().unwrap();
+        let thread_id = thread();
+        let binding = binding("dsh");
+        store
+            .append_row(
+                &thread_id,
+                1,
+                &RowSource::Message { at_ms: 10 },
+                &message("local prompt"),
+            )
+            .unwrap();
+        store
+            .mark_locally_complete(&thread_id, &binding)
+            .expect("the stored prompt anchors a local conversation");
+        assert!(store.history(&thread_id).unwrap().unwrap().local_complete);
+
+        store
+            .replace_replayed(&thread_id, &binding, 2, &[identity()], 20)
+            .unwrap();
+        assert!(!store.history(&thread_id).unwrap().unwrap().local_complete);
     }
 
     /// A live row appended to the current conversation keeps the revision: the

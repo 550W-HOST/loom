@@ -350,6 +350,27 @@ pub async fn read_catalog(
     cwd: String,
     budget: Duration,
 ) -> CatalogProbeOutcome {
+    probe_transport(transport, cwd, budget, true).await
+}
+
+/// Verifies an agent through `initialize` without opening a persistent session.
+///
+/// Use this for agents that persist an empty `session/new` and expose no delete
+/// method. Their model catalogue is reported on the first real run instead.
+pub async fn verify_agent(
+    transport: Transport,
+    cwd: String,
+    budget: Duration,
+) -> CatalogProbeOutcome {
+    probe_transport(transport, cwd, budget, false).await
+}
+
+async fn probe_transport(
+    transport: Transport,
+    cwd: String,
+    budget: Duration,
+    open_session: bool,
+) -> CatalogProbeOutcome {
     let operation = async {
         match transport {
             Transport::Stdio { command, args } => {
@@ -362,6 +383,7 @@ pub async fn read_catalog(
                             .expect("validated ACP agent arguments")
                     },
                     cwd,
+                    open_session,
                 )
                 .await
             }
@@ -379,6 +401,7 @@ pub async fn read_catalog(
                 probe(
                     embedded_agent_factory(command, std::time::Duration::ZERO),
                     cwd,
+                    open_session,
                 )
                 .await
             }
@@ -403,7 +426,11 @@ pub async fn read_catalog(
 /// are registered, and either may publish config options. An agent that does
 /// not publish a model selector still yields an empty catalogue while proving
 /// it answers — which is what admission is decided on.
-async fn probe<C, F>(agent_factory: F, cwd: String) -> Result<ProviderCatalog, String>
+async fn probe<C, F>(
+    agent_factory: F,
+    cwd: String,
+    open_session: bool,
+) -> Result<ProviderCatalog, String>
 where
     C: ConnectTo<Client>,
     F: FnMut() -> C + Send + 'static,
@@ -417,6 +444,7 @@ where
             move || V1CatalogClient {
                 state: Arc::clone(&state),
                 cwd: v1_cwd.clone(),
+                open_session,
             }
         })
         .with_v2({
@@ -424,6 +452,7 @@ where
             move || V2CatalogClient {
                 state: Arc::clone(&state),
                 cwd: cwd.clone(),
+                open_session,
             }
         })
         .connect_to(agent_factory)
@@ -465,12 +494,14 @@ impl CatalogProbeState {
 struct V1CatalogClient {
     state: Arc<CatalogProbeState>,
     cwd: String,
+    open_session: bool,
 }
 
 impl ConnectTo<Agent> for V1CatalogClient {
     async fn connect_to(self, agent: impl ConnectTo<Client>) -> Result<(), Error> {
         let state = self.state;
         let cwd = self.cwd;
+        let open_session = self.open_session;
         Client
             .builder()
             .on_receive_request(
@@ -496,6 +527,10 @@ impl ConnectTo<Agent> for V1CatalogClient {
                          catalogue probe",
                     ));
                 }
+                if !open_session {
+                    state.set(ProviderCatalog::default());
+                    return Ok(());
+                }
                 let created = connection
                     .send_request(v1::NewSessionRequest::new(cwd))
                     .block_task()
@@ -518,12 +553,14 @@ impl ConnectTo<Agent> for V1CatalogClient {
 struct V2CatalogClient {
     state: Arc<CatalogProbeState>,
     cwd: String,
+    open_session: bool,
 }
 
 impl ConnectTo<Agent> for V2CatalogClient {
     async fn connect_to(self, agent: impl ConnectTo<Client>) -> Result<(), Error> {
         let state = self.state;
         let cwd = self.cwd;
+        let open_session = self.open_session;
         Client
             .v2()
             .on_receive_request(
@@ -548,6 +585,10 @@ impl ConnectTo<Agent> for V2CatalogClient {
                         "the ACP agent negotiated an unsupported protocol version for the \
                          catalogue probe",
                     ));
+                }
+                if !open_session {
+                    state.set(ProviderCatalog::default());
+                    return Ok(());
                 }
                 let created = connection
                     .send_request(v2::NewSessionRequest::new(cwd))
@@ -896,6 +937,46 @@ done
             }
             other => panic!("expected Read, got {other:?}"),
         }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn initialize_only_verification_does_not_open_a_v1_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let agent = dir.path().join("resume-only-agent.sh");
+        let script = r#"#!/bin/sh
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([^,]*\),"method":.*/\1/p')
+  method=$(printf '%s' "$line" | sed -n 's/.*"method":"\([^\"]*\)".*/\1/p')
+  case "$method" in
+    initialize)
+      printf '%s\n' '{"jsonrpc":"2.0","id":'"$id"',"result":{"protocolVersion":1,"agentInfo":{"name":"resume-only","version":"1"},"agentCapabilities":{"loadSession":false,"sessionCapabilities":{"resume":{},"list":{},"close":{}}}}}'
+      ;;
+    session/new)
+      touch "$0.created"
+      printf '%s\n' '{"jsonrpc":"2.0","id":'"$id"',"result":{"sessionId":"probe-session"}}'
+      ;;
+  esac
+done
+"#;
+        std::fs::write(&agent, script).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&agent, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        let outcome = verify_agent(
+            stdio(&agent),
+            dir.path().to_string_lossy().into_owned(),
+            Duration::from_secs(10),
+        )
+        .await;
+
+        assert_eq!(
+            outcome,
+            CatalogProbeOutcome::Read(ProviderCatalog::default())
+        );
+        assert!(!PathBuf::from(format!("{}.created", agent.display())).exists());
     }
 
     /// v1 agents such as omp expose the current model's ladder in `session/new`

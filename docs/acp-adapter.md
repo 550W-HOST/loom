@@ -34,7 +34,7 @@ run record, relay, projection and UI — is unchanged.
 | --- | --- |
 | Transport | Spawn a native ACP agent (`Stdio`), or drive an embedded `pi-acp` (`Channel::duplex()`) |
 | Handshake | SDK protocol connector: v2 first, v1 fallback; capture identity and capability snapshot |
-| Session lifecycle | `session/new`, v2 `session/resume` or v1 `session/load`, `session/cancel`, `session/delete` |
+| Session lifecycle | `session/new`, v2 `session/resume` or v1 `session/resume` / `session/load`, `session/cancel`, `session/delete` |
 | Update translation | `SessionUpdate` → `ProviderEvent`, with the state that requires |
 | Client callbacks | Answer `session/request_permission`; declare `fs`/`terminal` capabilities it actually implements |
 | Unmapped updates | Log with the discriminator; never coerce |
@@ -362,15 +362,33 @@ features, never inferred and never worked around:
 
 | Capability | Effect |
 | --- | --- |
-| v1 `agentCapabilities.loadSession` | a resumed run needs it; without it an explicit resume **fails** rather than silently starting a fresh conversation |
-| v1 `agentCapabilities.sessionCapabilities.list` | gates session import; absent means `Unsupported`, and loom does **not** scan the agent's storage in its place |
+| v1 `agentCapabilities.loadSession` | gates v1 `session/load` replay; when a session can be continued without it, the adapter uses `session/resume` instead |
+| v1 `agentCapabilities.sessionCapabilities.resume` | permits v1 `session/resume`, which continues without replay; preferred for an existing run session |
+| v1 `agentCapabilities.sessionCapabilities.list` | gates session enumeration; absent means `Unsupported`, and loom does **not** scan the agent's storage in its place |
 | v2 `capabilities.session` | gates the baseline `session/new`, `session/resume` and `session/list` surface |
 | initialize identity and capabilities | captured as a stable agent identity, negotiated protocol version and opaque capability snapshot for the adapter's caller |
 
-The history-load path is gated by the same table and nothing else: v1 needs
-`loadSession`, v2 needs `capabilities.session`. An agent that has neither is
-reported as unable to load history rather than being read from its storage —
-loom still never parses an agent's session files.
+History replay still requires v1 `loadSession` or v2 `capabilities.session` with
+`replayFrom: start`. A v1 resume-only agent cannot supply old transcript rows;
+for Loom-created sessions the server can instead serve the durable rows it
+observed, and keeps that history local once the agent explicitly reports replay
+unsupported. No agent session files are read.
+
+## DeepSeek Harness launch
+
+The worker starts `dsh --profile acp`. The CLI package does not create this
+profile by itself; provision it once with the shipped ACP application bundle:
+
+```sh
+dsh plugin --profile acp add @deepseek-ai/dsh-acp-app
+```
+
+The worker account must use that profile's `DSH_HOME` and have its provider
+credentials/configuration available. Keep the CLI and `dsh-acp-app` bundle on a
+compatible release; an incompatible launcher fails `initialize` and is not
+advertised. Startup discovery sends only `initialize`
+for this provider, avoiding a persistent empty probe session. Its model catalogue
+is reported when the first real session is created.
 
 ### What a replay does and does not carry
 
@@ -384,7 +402,7 @@ property of the protocol rather than a bug to be worked around:
 | Reasoning / thinking | **not replayed** by pi-acp; a restored conversation has no thinking rows |
 | Timestamps | none. A replayed row reports no time instead of inventing one |
 | Run identity | none. Rows are grouped by a local key that is deliberately not a loom run id |
-| Item ids | synthesized per replay, so rows are reconciled by position and content, not by id |
+| Item ids | ACP tool calls retain their stable `toolCallId`; other ids are synthesized per replay, so message rows reconcile by position and content |
 
 Two consequences are worth stating for whoever reads a restored timeline: it is
 the *shape* of the conversation that is restored, not the recording of it, and a
@@ -397,8 +415,9 @@ The Rust adapter uses the SDK protocol connector with v2 first and v1 fallback.
 It does not infer protocol behavior from an agent name or a version string:
 the selected version is the one returned by `initialize`. v2 completion arrives
 as `StateUpdate::Idle` and resume uses `session/resume` without
-`replayFrom`; v1 completion arrives in `PromptResponse.stop_reason` and
-restore uses `session/load`.
+`replayFrom`; v1 completion arrives in `PromptResponse.stop_reason` and an
+existing run prefers `session/resume` when advertised, falling back to
+`session/load` for load-only agents.
 
 ACP v2 remains an unstable draft in the pinned SDK. The adapter keeps its v2
 schema types, message patch handling, terminal lifecycle and capability shape
@@ -430,12 +449,12 @@ host)` holds, and the worker refuses before opening a session when it does not:
 
 | Condition | Outcome |
 | --- | --- |
-| agent, workspace and host match | v2: `session/resume <id>`; v1: `session/load <id>` |
+| agent, workspace and host match | v2: `session/resume <id>`; v1: `session/resume <id>` when advertised, otherwise `session/load <id>` |
 | agent differs | fresh session — the id means nothing to this agent |
 | workspace differs | fresh session — the conversation is about another project |
 | host differs | fresh session — the session file is on the machine that opened it, and nothing here can read it |
 | no binding (an older snapshot) | fresh session; "cannot prove it is the same conversation" is not a reason to resume |
-| id present but the agent has no `loadSession` | **explicit failure**, never a silent fresh start |
+| id present but the agent advertises neither `session/resume` nor `loadSession` | **explicit failure**, never a silent fresh start |
 | workspace absent on this host | **explicit failure naming the path**, never a silent fresh start |
 
 The last two rows are the difference between "loom did what you asked" and
@@ -456,7 +475,8 @@ Showing a thread's conversation is a different operation from continuing it, and
 - it opens a connection of its own per load — never the run's connection, so a
   read can never race a turn that is writing to the same session;
 - it `initialize`s, checks the negotiated version, then v2 `session/resume
-  { replayFrom: start }` or v1 `session/load`;
+  { replayFrom: start }` or v1 `session/load` when `loadSession` is advertised;
+  a v1 resume-only agent reports history replay as unsupported;
 - it **never sends a prompt**. The connection exists to receive a replay and is
   closed when the replay ends;
 - it refuses a permission request rather than answering one: a load is not an

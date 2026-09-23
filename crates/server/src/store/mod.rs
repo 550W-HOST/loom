@@ -287,14 +287,21 @@ impl Store {
         Ok(())
     }
 
-    /// Marks every stored conversation that had a baseline as possibly behind.
+    /// Marks every stored conversation with a provider baseline or any stored
+    /// rows as possibly behind after an unclean stop.
     ///
-    /// Only threads that were once complete are marked: a thread that never
-    /// synced already reads as partial, and there is nothing to be behind.
-    /// Returns how many were marked.
+    /// A thread with no stored rows and no baseline already reads as partial;
+    /// there is nothing local to be behind. Returns how many were marked.
     pub fn mark_stored_history_behind(&self, reason: &str) -> Result<usize, StoreError> {
         let marked = self.connection.execute(
-            "UPDATE thread_history SET last_error = ?1 WHERE synced_at_ms IS NOT NULL",
+            "UPDATE thread_history
+                SET last_error = ?1, local_uncertain = 1
+              WHERE synced_at_ms IS NOT NULL
+                 OR local_complete = 1
+                 OR EXISTS (
+                     SELECT 1 FROM thread_history_row
+                      WHERE thread_history_row.thread_id = thread_history.thread_id
+                 )",
             (reason,),
         )?;
         Ok(marked)

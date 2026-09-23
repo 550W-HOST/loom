@@ -250,34 +250,42 @@ Three stores have three different jobs, and the split is the point:
 
 The relay log is **not** a transcript. It retains a bounded window per shard
 (`--retention`, `backend_max_len`), it is trimmed oldest-first, and no part of
-the product reads it as the history of a thread. What makes a client's view of a
-running conversation feel complete is not the log's depth but the cache below.
+the product reads it as the history of a thread. Durable `thread_history_row`
+records and the in-memory write overlay below, not relay retention, provide the
+thread's timeline.
 
-The server keeps a **timeline cache**: per thread, a baseline replayed from the
-owning host plus the live events since, numbered by a `generation` that is
-never reused. It is disposable by construction:
+The server stores timeline rows durably in `thread_history_row`; an in-memory,
+bounded overlay holds only rows the writer has not committed yet. Rows come from
+provider replay when available, plus the prompts and live run events Loom
+observed. If an agent cannot replay history, a Loom-created session can use its
+ordered local rows as the baseline instead. This local-complete marker is only
+set after the queued rows are durable.
 
-- it is memory only; a restart empties it, and the next read loads again;
-- a load needs the worker online, the agent available, the session still on
-  disk, and the `cwd` still present. Any of those missing is an explicit
-  unavailable status with a reason, never an empty conversation;
-- reading a thread does not wait for a load: the response says `loading` and
-  the client asks again, while every other reader joins the same load;
-- it is bounded (thread count and bytes, least-recently-used), and evicting a
-  thread drops the whole conversation rather than rows from its middle;
-- its sequences are only positions inside one numbering, so a page response
-  names the numbering it belongs to (`cacheInstance` + `generation`) and a
-  request that carries a cursor must name the same pair. A request that cannot
-  match is answered with the newest page — a reset the client can see — rather
-  than filtered by a position from a numbering that no longer exists.
+- **Unclean stops are conservative.** A locally complete history is marked
+  stale after an unclean stop because accepted tail rows may not have reached
+  disk. Resume-only agents cannot repair that gap by replaying; the stored rows
+  remain visible with an explicit stale status.
+- **Provider-only history still needs the agent.** A conversation Loom has not
+  observed cannot be reconstructed from its local rows. Without a provider
+  replay capability, the server reports history as unavailable or partial
+  rather than claiming those earlier turns are present.
+- **Known writer gaps stay incomplete.** A refused or failed local row write is
+  persisted as uncertain at shutdown, so a later unsupported-replay fallback
+  cannot clear the gap and call the remaining rows complete.
+- **The overlay is bounded.** It is limited by thread count and bytes, least
+  recently used; evicting it drops only the unwritten tail. Durable rows remain
+  in the store.
+- **Sequences survive rebuilds.** A page response names its numbering
+  (`cacheInstance` + `generation`), and a request that carries a cursor must
+  name the same pair. A request that cannot match gets the newest page rather
+  than filtering by a position from a numbering that no longer exists.
 
 What that costs, stated plainly:
 
-- **A conversation larger than one load is unreadable after a restart.** ACP
-  replays a session in full or not at all, and the cache does not persist, so a
-  session past the load's byte budget has no second source. The API answers
-  `unavailable` with the size it refused; raising the budget is configuration,
-  not a query.
+- **A provider-only conversation larger than one load is unreadable.** ACP
+  replays a session in full or not at all. When no complete local history
+  exists, a session past the load byte budget has no second source; the API
+  answers `unavailable` with the size it refused.
 - **Timestamps are the agent's, and it may not have any.** A replayed row
   carries no time rather than the moment the conversation was loaded, and the
   client renders no duration rather than a fabricated one. A local grouping key

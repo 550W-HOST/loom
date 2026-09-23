@@ -9,7 +9,7 @@ use rusqlite::Connection;
 use super::{column_integer, StoreError};
 
 /// The schema this build writes and understands.
-pub const SCHEMA_VERSION: i64 = 4;
+pub const SCHEMA_VERSION: i64 = 5;
 
 /// The version the file currently holds.
 pub fn version(connection: &Connection) -> Result<i64, StoreError> {
@@ -54,10 +54,24 @@ pub fn migrate(connection: &Connection) -> Result<(), StoreError> {
     if current < 4 {
         transaction.execute_batch(V4)?;
     }
+    if current < 5 {
+        transaction.execute_batch(V5)?;
+    }
     transaction.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     transaction.commit()?;
     Ok(())
 }
+
+/// Version 5: whether server rows are complete, or may be missing an unclean
+/// tail, when the agent does not support history replay.
+///
+/// These are distinct from `synced_at_ms`: a provider may not implement replay,
+/// while a Loom-created conversation can still use durable locally observed
+/// rows when no write gap is known.
+const V5: &str = "
+ALTER TABLE thread_history ADD COLUMN local_complete INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE thread_history ADD COLUMN local_uncertain INTEGER NOT NULL DEFAULT 0;
+";
 
 /// Version 4: the relay's frames, in a table.
 ///
@@ -169,3 +183,50 @@ CREATE TABLE IF NOT EXISTS thread_history_row (
 CREATE INDEX IF NOT EXISTS thread_history_row_run
     ON thread_history_row (source_run_id);
 ";
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn schema_four_migrates_local_history_completeness() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE thread_history (
+                    thread_id TEXT PRIMARY KEY,
+                    provider_session_id TEXT,
+                    binding_agent TEXT,
+                    binding_cwd TEXT,
+                    binding_host_id TEXT,
+                    revision INTEGER NOT NULL DEFAULT 0,
+                    next_seq INTEGER NOT NULL DEFAULT 1,
+                    synced_at_ms INTEGER,
+                    last_error TEXT
+                );
+                INSERT INTO thread_history(thread_id) VALUES ('existing');
+                PRAGMA user_version = 4;",
+            )
+            .unwrap();
+
+        migrate(&connection).unwrap();
+
+        assert_eq!(version(&connection).unwrap(), 5);
+        let local_complete: i64 = connection
+            .query_row(
+                "SELECT local_complete FROM thread_history WHERE thread_id = 'existing'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let local_uncertain: i64 = connection
+            .query_row(
+                "SELECT local_uncertain FROM thread_history WHERE thread_id = 'existing'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(local_complete, 0);
+        assert_eq!(local_uncertain, 0);
+    }
+}

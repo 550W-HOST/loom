@@ -68,9 +68,10 @@ pub struct AgentCapabilities {
     pub identity: AgentIdentity,
     /// The raw typed capability object, kept opaque to the domain/server.
     pub capability_snapshot: Value,
-    /// The agent supports `session/load`, so a thread's known session id can be
-    /// resumed. This is what makes a second turn continue the first.
+    /// The agent supports `session/load`, which restores a session and replays its history.
     pub load_session: bool,
+    /// The agent supports `session/resume`, which restores a session without replaying history.
+    pub resume_session: bool,
     /// The agent supports `session/list`. `false` means the import picker is
     /// empty **by capability**, and nothing is scanned to fill it.
     pub list_sessions: bool,
@@ -89,6 +90,11 @@ impl AgentCapabilities {
             capability_snapshot: serde_json::to_value(&response.agent_capabilities)
                 .unwrap_or(Value::Null),
             load_session: response.agent_capabilities.load_session,
+            resume_session: response
+                .agent_capabilities
+                .session_capabilities
+                .resume
+                .is_some(),
             list_sessions: response
                 .agent_capabilities
                 .session_capabilities
@@ -104,8 +110,9 @@ impl AgentCapabilities {
             identity: identity_from_v2(&response.info),
             capability_snapshot: serde_json::to_value(&response.capabilities)
                 .unwrap_or(Value::Null),
-            // v2 folds resume into the baseline session capability block.
+            // v2 has one baseline session capability, including resume.
             load_session: session,
+            resume_session: session,
             // v2 likewise defines session/list as a baseline session method;
             // there is no v1-style nested `list` flag in the draft schema.
             list_sessions: session,

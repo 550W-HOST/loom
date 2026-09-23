@@ -208,7 +208,8 @@ impl AppState {
             // A failure waits out its backoff first: a page that polls is not a
             // reason to ask an agent that just said no, over and over.
             HistoryStatus::Partial | HistoryStatus::Stale => {
-                if self.history.may_retry(thread_id, HISTORY_RETRY_BACKOFF) {
+                if !view.local_complete && self.history.may_retry(thread_id, HISTORY_RETRY_BACKOFF)
+                {
                     let _ = self.start_thread_history_load(thread_id);
                 }
                 ThreadHistoryRead::Serve(view)
@@ -218,7 +219,8 @@ impl AppState {
             // nothing to show. It is still retried, on the same terms: a thread
             // must not need a person to type something before it can recover.
             HistoryStatus::Unavailable => {
-                if self.history.may_retry(thread_id, HISTORY_RETRY_BACKOFF) {
+                if !view.local_complete && self.history.may_retry(thread_id, HISTORY_RETRY_BACKOFF)
+                {
                     let _ = self.start_thread_history_load(thread_id);
                 }
                 ThreadHistoryRead::Serve(view)
@@ -260,6 +262,8 @@ impl AppState {
         };
 
         let synced_at_ms = history.as_ref().and_then(|stored| stored.synced_at_ms);
+        let local_complete = history.as_ref().is_some_and(|stored| stored.local_complete);
+        let has_complete_baseline = local_complete || synced_at_ms.is_some();
         let last_error = history
             .as_ref()
             .and_then(|stored| stored.last_error.clone());
@@ -268,7 +272,7 @@ impl AppState {
         let empty = rows.is_empty();
         let not_loaded = "the conversation's history has not been loaded yet".to_owned();
 
-        let (status, complete, reason) = if loading && synced_at_ms.is_some() {
+        let (status, complete, reason) = if loading && has_complete_baseline {
             (
                 HistoryStatus::Stale,
                 false,
@@ -278,7 +282,7 @@ impl AppState {
             (HistoryStatus::Partial, false, Some(not_loaded))
         } else if loading {
             (HistoryStatus::Loading, false, None)
-        } else if synced_at_ms.is_some() {
+        } else if has_complete_baseline {
             match last_error {
                 Some(error) => (HistoryStatus::Stale, false, Some(error)),
                 None => (HistoryStatus::Ready, true, None),
@@ -316,6 +320,7 @@ impl AppState {
             generation: revision,
             status,
             complete,
+            local_complete,
             reason,
             rows,
         })
@@ -418,6 +423,7 @@ impl AppState {
                 let mark = self.seqs().position(thread_id);
                 let outcome = load().await;
                 self.settle_history_load(thread_id, binding, mark, outcome)
+                    .await
             }
             LoadTicket::Follower => self.await_leader(thread_id).await,
             LoadTicket::Refused => Err(HistoryUnavailable::Busy),
@@ -464,7 +470,9 @@ impl AppState {
                     let outcome = state
                         .load_thread_history(&binding.host_id, operation, HISTORY_LOAD_DEADLINE)
                         .await;
-                    let _ = state.settle_history_load(&thread_id, binding, mark, outcome);
+                    let _ = state
+                        .settle_history_load(&thread_id, binding, mark, outcome)
+                        .await;
                 });
                 Ok(())
             }
@@ -480,14 +488,13 @@ impl AppState {
     /// The single place a load's result reaches the cache, so a failure can
     /// never leave a partial conversation behind and a claim can never be held
     /// past the load that took it.
-    fn settle_history_load(
+    async fn settle_history_load(
         &self,
         thread_id: &ThreadId,
         binding: CacheBinding,
         mark: u64,
         outcome: Result<Vec<ProviderEvent>, HistoryTransportError>,
     ) -> Result<CacheView, HistoryUnavailable> {
-        self.history.finish_load(thread_id);
         match outcome {
             Ok(events) => {
                 // A replay is the whole conversation as of the moment it was
@@ -500,6 +507,7 @@ impl AppState {
                     if let Err(error) = self.store().record_sync_failure(thread_id, reason) {
                         eprintln!("loom-server: recording a refused rebuild failed: {error}");
                     }
+                    self.history.finish_load(thread_id);
                     self.history.mark_sync_failed(thread_id);
                     self.history_waits.wake(thread_id);
                     return Err(HistoryUnavailable::Incomplete(reason.to_owned()));
@@ -528,6 +536,58 @@ impl AppState {
                         if let Err(record) = self.store().record_sync_failure(thread_id, &reason) {
                             eprintln!("loom-server: recording a failed rebuild failed: {record}");
                         }
+                        self.history.finish_load(thread_id);
+                        self.history.mark_sync_failed(thread_id);
+                        self.history_waits.wake(thread_id);
+                        return Err(HistoryUnavailable::Incomplete(reason));
+                    }
+                }
+            }
+            Err(HistoryTransportError::Failed { code, message: _ }) if code == "unsupported" => {
+                if self.seqs().position(thread_id) != mark {
+                    let reason = "the thread changed while its history was loading";
+                    if let Err(error) = self.store().record_sync_failure(thread_id, reason) {
+                        eprintln!("loom-server: recording a refused local history fallback failed: {error}");
+                    }
+                    self.history.finish_load(thread_id);
+                    self.history.mark_sync_failed(thread_id);
+                    self.history_waits.wake(thread_id);
+                    return Err(HistoryUnavailable::Incomplete(reason.to_owned()));
+                }
+
+                let already_local = match self.store().history(thread_id) {
+                    Ok(history) => history.is_some_and(|stored| stored.local_complete),
+                    Err(error) => {
+                        self.history.finish_load(thread_id);
+                        self.history_waits.wake(thread_id);
+                        return Err(HistoryUnavailable::Incomplete(error.to_string()));
+                    }
+                };
+                if already_local {
+                    self.history.finish_load(thread_id);
+                    self.history_waits.wake(thread_id);
+                    return self.complete_view_result(thread_id);
+                }
+
+                match self
+                    .store_writer()
+                    .mark_locally_complete(thread_id, &binding)
+                    .await
+                {
+                    Ok(()) => {
+                        // The agent cannot replay, so the ordered durable rows
+                        // Loom observed are the history source for this thread.
+                        self.history.adopt_binding(thread_id, &binding);
+                        self.history.clear_sync_failure(thread_id);
+                    }
+                    Err(error) => {
+                        let reason = format!(
+                            "the agent cannot replay history and the local conversation could not be certified: {error}"
+                        );
+                        if let Err(record) = self.store().record_sync_failure(thread_id, &reason) {
+                            eprintln!("loom-server: recording a local history fallback failure failed: {record}");
+                        }
+                        self.history.finish_load(thread_id);
                         self.history.mark_sync_failed(thread_id);
                         self.history_waits.wake(thread_id);
                         return Err(HistoryUnavailable::Incomplete(reason));
@@ -539,11 +599,13 @@ impl AppState {
                 if let Err(record) = self.store().record_sync_failure(thread_id, &reason) {
                     eprintln!("loom-server: recording a failed load failed: {record}");
                 }
+                self.history.finish_load(thread_id);
                 self.history.mark_sync_failed(thread_id);
                 self.history_waits.wake(thread_id);
                 return Err(HistoryUnavailable::from(error));
             }
         }
+        self.history.finish_load(thread_id);
         self.history_waits.wake(thread_id);
         self.complete_view_result(thread_id)
     }
@@ -691,6 +753,147 @@ mod tests {
         assert_eq!(
             view.rows.iter().map(|row| row.seq).collect::<Vec<_>>(),
             vec![1, 2]
+        );
+        state.shutdown().unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_provider_without_history_replay_uses_ordered_local_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = AppConfig {
+            backend_path: Some(dir.path().to_path_buf()),
+            reconcile_interval: Duration::ZERO,
+            entity_write_interval: Duration::ZERO,
+            ..AppConfig::default()
+        };
+        let state = AppState::build(config.clone()).unwrap();
+        let thread = ThreadId::mint();
+        let binding = cache_binding();
+        let seq = state.seqs().reserve(&thread, 1);
+        let local_prompt = ProviderEvent::ItemStarted {
+            item: loom_domain::ThreadEventItem::UserMessage {
+                id: "message-1".to_owned(),
+                content: vec![loom_domain::UserContent::Text {
+                    text: "hello".to_owned(),
+                }],
+                client_request_id: None,
+                parent_tool_call_id: None,
+            },
+            provider_thread_id: String::new(),
+        };
+        assert!(state.store_writer().enqueue(
+            &thread,
+            seq,
+            crate::history_cache::RowSource::Message { at_ms: 1 },
+            local_prompt,
+        ));
+
+        let view = state
+            .ensure_history(&thread, binding.clone(), || async {
+                Err(HistoryTransportError::Failed {
+                    code: "unsupported".to_owned(),
+                    message: "session/load is not supported".to_owned(),
+                })
+            })
+            .await
+            .expect("the server's complete local history is usable");
+
+        assert_eq!(view.status, HistoryStatus::Ready);
+        assert!(view.complete);
+        assert!(view.local_complete);
+        assert_eq!(view.rows.len(), 1);
+        assert_eq!(
+            state.store().history(&thread).unwrap().unwrap().binding,
+            Some(binding)
+        );
+        assert_eq!(state.store().rows(&thread).unwrap().len(), 1);
+
+        let loads = AtomicUsize::new(0);
+        let loaded = state
+            .ensure_history(&thread, cache_binding(), || {
+                loads.fetch_add(1, Ordering::SeqCst);
+                async { Ok(vec![identity()]) }
+            })
+            .await
+            .expect("the local history is already complete");
+        assert_eq!(loaded.rows.len(), 1);
+        assert_eq!(loads.load(Ordering::SeqCst), 0);
+        state.shutdown().unwrap();
+        drop(state);
+
+        let reopened = AppState::build(config).unwrap();
+        let restored = reopened.stored_view(&thread).unwrap();
+        assert_eq!(restored.status, HistoryStatus::Ready);
+        assert!(restored.complete);
+        assert!(restored.local_complete);
+        assert_eq!(restored.rows.len(), 1);
+        reopened
+            .store()
+            .mark_stored_history_behind("the server stopped unexpectedly")
+            .unwrap();
+        match reopened.read_thread_history(&thread) {
+            ThreadHistoryRead::Serve(view) => {
+                assert_eq!(view.status, HistoryStatus::Stale);
+                assert!(view.local_complete);
+            }
+            other => panic!("expected the locally stored rows to remain visible: {other:?}"),
+        }
+        assert!(
+            !reopened.history.is_loading(&thread),
+            "a resume-only agent cannot refresh local history through ACP"
+        );
+        reopened.shutdown().unwrap();
+    }
+
+    #[tokio::test]
+    async fn an_unclean_local_tail_cannot_be_marked_complete_by_an_unsupported_agent() {
+        let state = test_state();
+        let thread = ThreadId::mint();
+        let binding = cache_binding();
+        let seq = state.seqs().reserve(&thread, 1);
+        let prompt = ProviderEvent::ItemStarted {
+            item: loom_domain::ThreadEventItem::UserMessage {
+                id: "message-unclean".to_owned(),
+                content: vec![loom_domain::UserContent::Text {
+                    text: "possibly incomplete".to_owned(),
+                }],
+                client_request_id: None,
+                parent_tool_call_id: None,
+            },
+            provider_thread_id: String::new(),
+        };
+        assert!(state.store_writer().enqueue(
+            &thread,
+            seq,
+            crate::history_cache::RowSource::Message { at_ms: 1 },
+            prompt,
+        ));
+        assert!(state
+            .store_writer()
+            .wait_for_writes(1, Duration::from_secs(2)));
+        state
+            .store()
+            .mark_stored_history_behind("the server stopped without finishing")
+            .unwrap();
+
+        let failure = state
+            .ensure_history(&thread, binding, || async {
+                Err(HistoryTransportError::Failed {
+                    code: "unsupported".to_owned(),
+                    message: "session/load is not supported".to_owned(),
+                })
+            })
+            .await
+            .expect_err("a partial local tail cannot be certified without replay");
+
+        assert!(matches!(failure, HistoryUnavailable::Incomplete(_)));
+        let history = state.store().history(&thread).unwrap().unwrap();
+        assert!(!history.local_complete);
+        assert!(history.local_uncertain);
+        assert!(history.last_error.is_some());
+        assert_eq!(
+            state.stored_view(&thread).unwrap().status,
+            HistoryStatus::Partial
         );
         state.shutdown().unwrap();
     }
