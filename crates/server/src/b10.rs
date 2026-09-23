@@ -281,9 +281,15 @@ pub(crate) fn provider_branding(provider_id: &str) -> Option<ProviderBranding> {
             light: Some("#111827"),
             dark: Some("#F5F5F5"),
         },
+        // Codex has no native ACP. The provider named `codex` launches
+        // `codex-acp`, a stdio ACP server that starts Codex's own app server and
+        // translates between the two protocols, so what a host must install for
+        // this tab to appear is the bridge — not the Codex CLI. The bridge
+        // reads Codex's own credentials (`codex login`, `OPENAI_API_KEY` or
+        // `CODEX_API_KEY`), which is why the hint is Codex's login command.
         "codex" => ProviderBranding {
-            sign_in_command: "codex",
-            install_url: "https://developers.openai.com/codex/cli",
+            sign_in_command: "codex login",
+            install_url: "https://github.com/agentclientprotocol/codex-acp",
             light: None,
             dark: None,
         },
@@ -779,6 +785,28 @@ mod tests {
         assert!(
             provider_branding("some-new-agent").is_none(),
             "an agent loom does not know has no branding either"
+        );
+    }
+
+    /// Codex's provider is the ACP bridge, not the Codex CLI.
+    ///
+    /// A host that followed the CLI's own install page would install a program
+    /// this provider never launches, and the tab would still be missing. The
+    /// check is loose on the URL's host on purpose: the bridge has already moved
+    /// upstream once (`@zed-industries/codex-acp` to
+    /// `@agentclientprotocol/codex-acp`), and the link must be able to follow.
+    #[test]
+    fn codex_offers_its_bridge_rather_than_the_cli() {
+        let branding = provider_branding("codex").expect("codex ships a mark and branding");
+        assert!(
+            branding.install_url.contains("codex-acp"),
+            "codex is reached through the codex-acp bridge; got {}",
+            branding.install_url
+        );
+        assert!(
+            !branding.install_url.contains("developers.openai.com"),
+            "the Codex CLI page is not what this provider needs installed: {}",
+            branding.install_url
         );
     }
 

@@ -46,8 +46,12 @@ pub struct KnownAgent {
 /// the agent itself takes the ACP flag, so nothing is bridged or translated.
 ///
 /// `codex-acp` and `claude-code-acp` are the ACP bridge packages for agents
-/// that do not speak ACP themselves; they are probed under the names their
-/// upstreams use and simply do not appear when the bridge is not installed.
+/// that do not speak ACP themselves; they are probed under the binary names
+/// their upstreams install. Codex's bridge is
+/// `@agentclientprotocol/codex-acp`, and what it bridges to is OpenAI's own
+/// `codex app-server` — so the provider named `codex` launches the bridge,
+/// never the `codex` CLI. A host without the bridge simply does not report the
+/// agent.
 pub const KNOWN_AGENTS: &[KnownAgent] = &[
     KnownAgent {
         name: "pi",

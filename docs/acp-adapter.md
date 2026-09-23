@@ -413,6 +413,46 @@ the *shape* of the conversation that is restored, not the recording of it, and a
 run action cannot be offered from a row that belongs to no run — which is why
 the local grouping key must never parse as one.
 
+## Codex launch
+
+Codex has no native ACP, so the provider named `codex` is the bridge. The worker
+starts `codex-acp`, a stdio ACP agent server that itself starts OpenAI's
+`codex app-server` and translates between the two protocols. Nothing about the
+app server's JSON-RPC reaches loom: it is the bridge's private dialect, and the
+same choice as the other bridges (`pi-acp`, `claude-code-acp`) — loom owns one
+ACP client, the adapter owns the dialect.
+
+```sh
+npm install -g @agentclientprotocol/codex-acp
+codex login          # or export OPENAI_API_KEY / CODEX_API_KEY
+```
+
+Three properties are worth knowing when a host is provisioned:
+
+- **The bridge, not the CLI, is what must be on `PATH`.** Discovery resolves
+  `codex-acp`; a host with only the `codex` CLI reports no Codex provider. The
+  npm package bundles a compatible `@openai/codex`, and `CODEX_PATH` points the
+  bridge at a different Codex when a host wants one.
+- **It authenticates as Codex does.** The adapter advertises ACP auth methods
+  (ChatGPT login, API key) and reads the same credentials Codex writes, so
+  `codex login` on the worker account is enough.
+- **Its catalogue needs a session.** `catalog_probe_requires_session` is true
+  for codex, so admission opens a throwaway session and reads the config options
+  it publishes. Codex ids its reasoning option `reasoning_effort` rather than
+  `thought_level`; the category fallback in `catalog_from_v1_options` resolves
+  it, and the per-model sweep fills each model's ladder.
+
+The bridge advertises `session/list`, `loadSession` and `session/fork`, so
+import and history replay work through the ordinary ACP paths — loom still reads
+no file under `CODEX_HOME`.
+
+The evidence for the whole path is `crates/worker/tests/real_codex.rs`, which is
+`#[ignore]`d and run against a real bridge:
+
+```sh
+cargo test -p loom-worker --test real_codex -- --ignored --nocapture
+```
+
 ## Version handling
 
 The Rust adapter uses the SDK protocol connector with v2 first and v1 fallback.

@@ -261,6 +261,20 @@ Then `docker build -t loom-worker-pi:0.1.0 .` and point the compose service (or
 there is one and then shipped; it does not make the worker need the network at
 start-up beyond reaching its server.
 
+An ACP bridge goes in the same way. Codex's provider is `codex-acp`, which
+starts Codex's own app server and brings a compatible Codex with it, so the
+image installs the bridge rather than the CLI:
+
+```dockerfile
+RUN apk add --no-cache nodejs npm \
+ && npm install -g @agentclientprotocol/codex-acp
+```
+
+Its credentials live in `$HOME/.codex`, and `HOME` here is the state volume, so
+`codex login` once inside the volume survives a rebuild — or mount the host's
+`~/.codex` read-only over `/var/lib/loom/.codex` to reuse one that exists. The
+same split applies to any bridge whose agent keeps its own config directory.
+
 **2. Mounting the host's provider in.** Works for a self-contained provider
 binary and for nothing else:
 
