@@ -155,7 +155,9 @@ already in the requested order, is a `409 conflict` rather than a silent no-op.
   the two cannot disagree about what a prompt is.
 - `projects.commands` asks the project's source host (`host.list_commands`),
   because a prompt-command list is a property of the workspace on disk. The rows
-  are discovered by `pi-acp` and projected into bb's contract shape.
+  are discovered by `pi-acp` and projected into bb's contract shape. The
+  required `provider` parameter must be an agent that host offers — the server's
+  default or one it discovered — so a multi-agent deployment answers each.
 - `projects.files`, `projects.paths` and `projects.fileContent` read the
   project's workspace on its host. `projects.uploadAttachment` writes into
   `<host data_dir>/project-attachments/<project_id>`, and

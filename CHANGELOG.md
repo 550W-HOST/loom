@@ -6,6 +6,7 @@
 
 - Show the first user prompt for untitled threads until their provider title arrives.
 - ACP slash commands advertised during session resume remain available.
+- A discovered agent's slash commands are served: `projects.commands` no longer rejects every provider but the server's default.
 - Replayed ACP tool calls no longer duplicate recorded work rows.
 
 ## 0.42.0

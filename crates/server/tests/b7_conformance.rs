@@ -28,7 +28,7 @@ use loom_domain::{EnvironmentKind, HostId, ProjectKind};
 use loom_provider_protocol::{
     project_attachments_root, HostFileContent, HostFileEncoding, HostFileEntry, HostFileFailure,
     HostFileOperation, HostFileOutcome, HostFileReport, HostPathKind, HostRpcOperation,
-    HostRpcOutcome, HostRpcReport, ProviderCommand,
+    HostRpcOutcome, HostRpcReport, ProviderCommand, ProviderLaunch, ProviderSpec,
 };
 use loom_server::http::router;
 use loom_server::state::{AppConfig, AppState};
@@ -926,8 +926,8 @@ async fn project_commands_asks_the_host_and_projects_its_rows() {
         other => panic!("expected a command listing, got {other:?}"),
     }
 
-    // `provider` is required, and a provider this server does not run is a
-    // `400` rather than a silently different answer.
+    // `provider` is required, and a provider nothing offers is a `400` rather
+    // than a silently different answer.
     let missing = fixture
         .get(&format!("/api/v1/projects/{}/commands", fixture.project_id))
         .await;
@@ -939,6 +939,84 @@ async fn project_commands_asks_the_host_and_projects_its_rows() {
         ))
         .await;
     assert_status_and_error(&other, 400, "invalid_request");
+}
+
+/// A second agent a host reported is answerable, not just the server's default.
+///
+/// `provider` names the agent the client will run, so a host that discovered
+/// OMP must be able to ask for OMP's command list; the live advertisement is
+/// then looked up under the provider that produced it rather than under the
+/// default. An agent only another machine reported stays that machine's.
+#[tokio::test]
+async fn project_commands_answers_a_provider_the_host_reported() {
+    let mut fixture = fixture().await;
+    let discovered = |name: &str, command: &str| ProviderSpec {
+        name: name.into(),
+        launch: ProviderLaunch::AcpStdio,
+        command: command.into(),
+        args: vec!["acp".into()],
+        cwd: None,
+    };
+    fixture.state.record_host_providers(
+        &fixture.host_id,
+        vec![ProviderSpec::pi(), discovered("omp", "/usr/bin/omp")],
+    );
+    fixture.answer_rpc(HostRpcOutcome::Result {
+        result: json!({
+            "commands": [
+                { "name": "compact", "origin": "builtin", "description": "Compact", "argumentHint": null },
+            ]
+        }),
+    });
+    // The advertisement belongs to OMP's session in this workspace.
+    fixture.state.commands.record(
+        &fixture.host_id,
+        "omp",
+        WORKSPACE,
+        vec![ProviderCommand {
+            name: "skill:omp-only".into(),
+            description: "Only OMP advertises this".into(),
+            argument_hint: None,
+        }],
+    );
+
+    let response = fixture
+        .get(&format!(
+            "/api/v1/projects/{}/commands?provider=omp",
+            fixture.project_id
+        ))
+        .await;
+    assert_eq!(response.status, 200, "{:?}", response.body);
+    assert_response("projects.commands", response.status, &response.body);
+    let commands = response.body["commands"].as_array().unwrap();
+    let names: Vec<&str> = commands
+        .iter()
+        .filter_map(|row| row["name"].as_str())
+        .collect();
+    assert!(
+        names.contains(&"compact"),
+        "the scan is still the base: {commands:#?}"
+    );
+    assert!(
+        names.contains(&"skill:omp-only"),
+        "OMP's own advertisement is merged in: {commands:#?}"
+    );
+    match fixture.next_rpc_request().await {
+        HostRpcOperation::ListCommands { cwd } => assert_eq!(cwd, WORKSPACE),
+        other => panic!("expected a command listing, got {other:?}"),
+    }
+
+    // The offer is only as durable as the host reporting it: once that machine
+    // is gone, OMP is no longer an agent this workspace's host runs, so a
+    // command query for it is refused again.
+    fixture.state.forget_host_providers(&fixture.host_id);
+    let gone = fixture
+        .get(&format!(
+            "/api/v1/projects/{}/commands?provider=omp",
+            fixture.project_id
+        ))
+        .await;
+    assert_status_and_error(&gone, 400, "invalid_request");
 }
 
 /// A live session's advertisement is merged over the workspace scan: it can

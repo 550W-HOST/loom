@@ -856,8 +856,11 @@ pub async fn project_file_content(
 ///
 /// A command list is a property of the workspace on disk, so it is a host RPC
 /// against the project's source. The `provider` parameter is required by the
-/// contract; loom runs one provider, so a value naming a different one is a
-/// `400` rather than a silently different answer.
+/// contract and names the agent the client will run, so it must be one the
+/// workspace's own machine offers — an id nothing dispatches, or one that only
+/// another machine reported, is a `400` rather than a silently different
+/// answer. A server with several agents therefore answers each of them, not
+/// just the default.
 ///
 /// When a live session in this workspace has advertised its own list, that list
 /// is merged over the scan: it can name commands the scan cannot see (package
@@ -874,17 +877,6 @@ pub async fn project_commands(
         Ok(project) => project,
         Err(response) => return response,
     };
-    let configured = state.provider_spec().name.clone();
-    if query.provider != configured {
-        return api_error(
-            StatusCode::BAD_REQUEST,
-            "invalid_request",
-            format!(
-                "provider {:?} is not configured; this server runs {configured:?}",
-                query.provider
-            ),
-        );
-    }
     let workspace = match project_workspace(
         &state,
         &project,
@@ -894,6 +886,23 @@ pub async fn project_commands(
         Ok(workspace) => workspace,
         Err(response) => return response,
     };
+    // The provider has to be resolvable on the host that owns this workspace,
+    // which is the same resolution a dispatch uses. An id the host cannot run
+    // has no advertisement to merge and no scan to stand in for it.
+    if state
+        .provider_spec_for_host(&workspace.host_id, &query.provider)
+        .is_none()
+    {
+        let configured = state.provider_spec().name.clone();
+        return api_error(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            format!(
+                "provider {:?} is not offered on this workspace's host; the default is {configured:?}",
+                query.provider
+            ),
+        );
+    }
     // The advertisement from this workspace's most recent session, when there
     // is one. It is looked up before the host RPC because the RPC is the slow
     // half and the live list is the half that can name commands the scan

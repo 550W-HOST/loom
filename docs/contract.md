@@ -626,9 +626,11 @@ command lives. The worker answers raw rows and the control plane projects them
 into bb's `projectCommandSchema`: a file command's `origin` is read from the
 `(user)`/`(project)` label `pi-acp` puts on it, a built-in is `origin: builtin`
 with its declared description and argument hint, and `source` is `command`
-unless the name is a skill. The contract's `provider` parameter is required,
-and a value naming a provider this server does not run is a `400` rather than a
-silently different answer.
+unless the name is a skill. The contract's `provider` parameter is required and
+names the agent the client will run, so it must resolve on the host that owns
+the workspace — the same resolution a dispatch uses. An id no host offers, or
+one only another machine reported, is a `400` rather than a silently different
+answer; a server with several discovered agents answers each of them.
 
 A live session's advertisement is merged over the scan. Every ACP session
 advertises its command list right after `session/new` or `session/load`;
