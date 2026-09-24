@@ -230,22 +230,60 @@ comes back up the worker's socket like a report:
 // EnvironmentProvision — server -> relay host:{id} -> worker
 { "environment_id": "env_01M…", "project_id": "proj_01M…",
   "host_id": "host_01M…", "created_at_ms": 1789120430000 }
+// A git-worktree environment carries the selection instead:
+{ "environment_id": "env_01M…", "project_id": "proj_01M…",
+  "host_id": "host_01M…", "created_at_ms": 1789120430000,
+  "workspace": { "kind": "git_worktree", "source_path": "/work/project",
+                 "branch_name": "loom/env_01M…", "base_branch": "origin/main" } }
 
 // EnvironmentProvisionReport — worker -> server socket
 { "host_id": "host_01M…", "environment_id": "env_01M…",
-  "outcome": { "outcome": "provisioned", "path": "/root/env_01M…" } }
+  "outcome": { "outcome": "provisioned", "path": "/root/env_01M…",
+               "branch_name": "loom/env_01M…", "base_branch": "origin/main",
+               "default_branch": "main", "is_git_repo": true } }
 // or
 { "host_id": "host_01M…", "environment_id": "env_01M…",
   "outcome": { "outcome": "failed", "error": "could not create …: permission denied" } }
 ```
 
-The worker creates `<workspace_root>/<env_id>` (`--workspace-root`, default
-`$HOME/.loom/workspaces`); the control plane only learns the resulting path
-from the report, then records it and publishes `environment_status_changed` to
-`project:{id}`. A failed attempt moves the environment to `error` with the
-worker's reason attached, and `POST /api/v1/environments/{id}/provision` retries
-it. Creation is idempotent (`create_dir_all`), so a redelivered request is
-safe.
+With no `workspace` the worker creates `<workspace_root>/<env_id>`
+(`--workspace-root`, default `$HOME/.loom/workspaces`) as an empty directory
+— the personal-workspace provider. With a `git_worktree` selection it cuts a
+worktree there from the source checkout on the same branch, copies the files
+`.worktreeinclude` selects, and reports the branch and git facts. The control
+plane only learns the resulting path from the report, then records it,
+publishes `environment_status_changed` and a whole-record
+`environment_updated` (so the path and branch survive replay), and the
+environment reaches `ready`. A failed attempt moves the environment to `error`
+with the worker's reason attached, and `POST /api/v1/environments/{id}/provision`
+retries it. Directory creation is idempotent; a worktree request is re-adopted
+when the target already sits on the expected branch (see
+[`worktrees.md`](worktrees.md)).
+
+### Managed environments: teardown
+
+`DELETE /api/v1/environments/{id}` moves a managed environment to `destroyed`
+with a `running` teardown record and publishes an `EnvironmentDeprovision` to
+the host, which removes the worktree or managed directory:
+
+```jsonc
+// EnvironmentDeprovision — server -> relay host:{id} -> worker
+{ "environment_id": "env_01M…", "project_id": "proj_01M…",
+  "host_id": "host_01M…", "path": "/root/env_01M…", "created_at_ms": 1789120430000 }
+
+// EnvironmentDeprovisionReport — worker -> server socket
+{ "host_id": "host_01M…", "environment_id": "env_01M…",
+  "outcome": { "outcome": "removed" } }
+// or
+{ "host_id": "host_01M…", "environment_id": "env_01M…",
+  "outcome": { "outcome": "failed", "error": "…" } }
+```
+
+The report settles `environment.teardown` to `removed` or `failed`; a failure
+keeps the reason on the record and `DELETE` again retries. An unmanaged
+environment is only moved to `destroyed`: loom never removes a directory the
+operator owns. `path` is required so a provisioning request cannot decode as a
+teardown.
 
 ## The invariant: a run always ends
 

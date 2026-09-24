@@ -24,6 +24,7 @@ on it and it can be validated on its own.
 - [x] `loom` — one binary carrying both roles; `loom-server` (control plane: HTTP + WebSocket surface, publish reaches subscribers through the log) and `loom-worker` (execution plane) are roles of it, still two processes
 - [x] `loom-domain` — projects, threads, hosts and environments as pure types and invariants
 - [x] Managed projects: create / list / rename / archive / sources over HTTP, with threads and environments naming their project (`docs/projects.md`)
+- [x] Managed Git worktrees: a `git-worktree` environment provider provisioned by the worker, with `.worktreeinclude`, branch/base reporting and host-side teardown (`docs/worktrees.md`)
 - [x] Server-only startup and an independently stoppable local worker: `loom server` and `loom worker`, the two subcommands of the one binary
 - [x] `loom-provider-protocol` — the server↔worker ACP execution contract, replayable run events, and a terminal-state guarantee
 - [x] The event model aligned with bb's `ThreadEvent` contract (35 provider event types) — see [`docs/event-model.md`](docs/event-model.md)
@@ -82,6 +83,7 @@ docs/
   mobile.md
   upgrades.md
   deployment-verification.md
+  worktrees.md
 ```
 
 `apps/app` is the product app: bb's application source with loom's transport,

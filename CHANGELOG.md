@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### New features
+
+- Managed Git worktrees: a thread can run in an isolated `git worktree` cut from a project source on its machine. Pick **Worktree** in the new-thread environment picker (or use the `git-worktree` provider), optionally from a named base branch. The worker creates the worktree, copies the files `.worktreeinclude` selects, and removes it again when the environment is destroyed (`docs/worktrees.md`).
+
 ### Notable fixes
 
 - Show the first user prompt for untitled threads until their provider title arrives.
