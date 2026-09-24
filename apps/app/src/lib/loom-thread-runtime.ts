@@ -33,6 +33,7 @@ import {
 
 export const PERSONAL_WORKSPACE_PROVIDER_ID = "personal-workspace";
 export const PROJECT_CHECKOUT_PROVIDER_ID = "project-checkout";
+export const GIT_WORKTREE_PROVIDER_ID = "git-worktree";
 
 const ENVIRONMENT_READY_POLL_INTERVAL_MS = 250;
 const ENVIRONMENT_READY_MAX_ATTEMPTS = 120;
@@ -51,6 +52,9 @@ interface CreateLoomEnvironmentRequest {
   project_id: string;
   host_id: string;
   path?: string;
+  provider_id?: string;
+  base_branch?: string;
+  branch_name?: string;
 }
 
 interface CreateLoomEnvironmentResponse {
@@ -205,18 +209,66 @@ async function createReadyEnvironment(
   return ready;
 }
 
+/**
+ * The base branch a worktree provider input asks for, if any.
+ *
+ * The composer's seed sends `{ branch: { kind: "default" } }` or
+ * `{ branch: { kind: "named", name } }`; anything else, including `null`,
+ * means the worker resolves the source's default branch.
+ */
+function baseBranchFromProviderInputs(inputs: unknown): string | undefined {
+  if (inputs === null || typeof inputs !== "object") {
+    return undefined;
+  }
+  const branch = (inputs as { branch?: unknown }).branch;
+  if (branch === null || typeof branch !== "object") {
+    return undefined;
+  }
+  const named = branch as { kind?: unknown; name?: unknown };
+  if (
+    named.kind === "named" &&
+    typeof named.name === "string" &&
+    named.name.trim() !== ""
+  ) {
+    return named.name;
+  }
+  return undefined;
+}
+
+/** The base branch a host workspace form names, if it names one. */
+function baseBranchFromSelection(
+  selection: { kind: "default" } | { kind: "named"; name: string },
+): string | undefined {
+  return selection.kind === "named" ? selection.name : undefined;
+}
+
 async function resolveProviderEnvironment(
   environment: Extract<CreateThreadRequest["environment"], { type: "provider" }>,
   resolvedProject: ResolvedProject,
   options?: EnvironmentWaitOptions,
 ): Promise<string> {
+  const hostId = environment.machine.hostId;
+  await requireConnectedHost(hostId);
+
+  if (environment.environmentProviderId === GIT_WORKTREE_PROVIDER_ID) {
+    const ready = await createReadyEnvironment(
+      {
+        kind: "managed",
+        project_id: resolvedProject.serverProjectId,
+        host_id: hostId,
+        provider_id: GIT_WORKTREE_PROVIDER_ID,
+        base_branch: baseBranchFromProviderInputs(environment.inputs),
+      },
+      options,
+    );
+    return ready.id;
+  }
+
   if (environment.inputs !== null) {
     throw new LoomThreadRuntimeError(
       `Environment provider ${environment.environmentProviderId} does not accept inputs in loom`,
     );
   }
-  const hostId = environment.machine.hostId;
-  await requireConnectedHost(hostId);
 
   if (environment.environmentProviderId === PERSONAL_WORKSPACE_PROVIDER_ID) {
     if (resolvedProject.clientProjectId !== PERSONAL_PROJECT_ID) {
@@ -279,9 +331,17 @@ async function resolveHostEnvironment(
   }
   await requireConnectedHost(environment.hostId);
   if (environment.workspace.type === "managed-worktree") {
-    throw new LoomThreadRuntimeError(
-      "Managed Git worktrees are not implemented by loom yet",
+    const ready = await createReadyEnvironment(
+      {
+        kind: "managed",
+        project_id: resolvedProject.serverProjectId,
+        host_id: environment.hostId,
+        provider_id: GIT_WORKTREE_PROVIDER_ID,
+        base_branch: baseBranchFromSelection(environment.workspace.baseBranch),
+      },
+      options,
     );
+    return ready.id;
   }
   let request: CreateLoomEnvironmentRequest;
   if (environment.workspace.type === "personal") {

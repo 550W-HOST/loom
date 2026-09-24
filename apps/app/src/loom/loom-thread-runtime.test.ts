@@ -8,6 +8,7 @@ import type {
 import { sdk } from "@/lib/sdk";
 import {
   LoomThreadRuntimeError,
+  GIT_WORKTREE_PROVIDER_ID,
   PERSONAL_WORKSPACE_PROVIDER_ID,
   PROJECT_CHECKOUT_PROVIDER_ID,
   loomListEnvironmentProviders,
@@ -303,6 +304,130 @@ describe("loom New Thread runtime", () => {
       project_id: "proj_work",
       host_id: "host_work",
       path: "/work/project",
+    });
+  });
+
+  it("provisions a git worktree with the provider's named base branch", async () => {
+    let createBody: unknown;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: URL | RequestInfo, init?: RequestInit) => {
+        const url = new URL(String(input));
+        if (url.pathname === "/api/v1/sidebar-bootstrap") {
+          return jsonResponse(
+            sidebar({
+              project: {
+                id: "proj_work",
+                hostId: "host_work",
+                path: "/work/project",
+              },
+            }),
+          );
+        }
+        if (url.pathname === "/api/v1/hosts") {
+          return jsonResponse([host("host_work")]);
+        }
+        if (url.pathname === "/api/v1/environments") {
+          createBody = JSON.parse(String(init?.body));
+          return jsonResponse({
+            environment: { id: "env_worktree", path: null, status: "creating" },
+            event_id: "evt_3",
+          });
+        }
+        if (url.pathname === "/api/v1/environments/env_worktree") {
+          return jsonResponse(
+            environment({
+              id: "env_worktree",
+              projectId: "proj_work",
+              hostId: "host_work",
+              path: "/workspaces/env_worktree",
+              status: "ready",
+            }),
+          );
+        }
+        throw new Error(`unexpected ${url.pathname}`);
+      }),
+    );
+
+    const result = await resolveLoomThreadEnvironment(
+      "proj_work",
+      {
+        type: "provider",
+        environmentProviderId: GIT_WORKTREE_PROVIDER_ID,
+        machine: { type: "existing", hostId: "host_work" },
+        inputs: { branch: { kind: "named", name: "release" } },
+      },
+      { pollIntervalMs: 0, sleep: async () => {} },
+    );
+
+    expect(result.environmentId).toBe("env_worktree");
+    expect(createBody).toEqual({
+      kind: "managed",
+      project_id: "proj_work",
+      host_id: "host_work",
+      provider_id: GIT_WORKTREE_PROVIDER_ID,
+      base_branch: "release",
+    });
+  });
+
+  it("provisions a worktree for the host workspace form with the default branch", async () => {
+    let createBody: unknown;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: URL | RequestInfo, init?: RequestInit) => {
+        const url = new URL(String(input));
+        if (url.pathname === "/api/v1/sidebar-bootstrap") {
+          return jsonResponse(
+            sidebar({
+              project: {
+                id: "proj_work",
+                hostId: "host_work",
+                path: "/work/project",
+              },
+            }),
+          );
+        }
+        if (url.pathname === "/api/v1/hosts") {
+          return jsonResponse([host("host_work")]);
+        }
+        if (url.pathname === "/api/v1/environments") {
+          createBody = JSON.parse(String(init?.body));
+          return jsonResponse({
+            environment: { id: "env_hosttree", path: null, status: "creating" },
+            event_id: "evt_4",
+          });
+        }
+        if (url.pathname === "/api/v1/environments/env_hosttree") {
+          return jsonResponse(
+            environment({
+              id: "env_hosttree",
+              projectId: "proj_work",
+              hostId: "host_work",
+              path: "/workspaces/env_hosttree",
+              status: "ready",
+            }),
+          );
+        }
+        throw new Error(`unexpected ${url.pathname}`);
+      }),
+    );
+
+    const result = await resolveLoomThreadEnvironment(
+      "proj_work",
+      {
+        type: "host",
+        hostId: "host_work",
+        workspace: { type: "managed-worktree", baseBranch: { kind: "default" } },
+      },
+      { pollIntervalMs: 0, sleep: async () => {} },
+    );
+
+    expect(result.environmentId).toBe("env_hosttree");
+    expect(createBody).toEqual({
+      kind: "managed",
+      project_id: "proj_work",
+      host_id: "host_work",
+      provider_id: GIT_WORKTREE_PROVIDER_ID,
     });
   });
 
