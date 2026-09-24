@@ -78,6 +78,12 @@ pub const KNOWN_AGENTS: &[KnownAgent] = &[
         catalog_probe_requires_session: true,
     },
     KnownAgent {
+        name: "mcode",
+        argv: &["mcode", "acp"],
+        launch: ProviderLaunch::AcpStdio,
+        catalog_probe_requires_session: true,
+    },
+    KnownAgent {
         name: "opencode",
         argv: &["opencode", "acp"],
         launch: ProviderLaunch::AcpStdio,

@@ -182,8 +182,9 @@ pub async fn update_keyboard(
 /// The mark each provider is drawn with.
 ///
 /// These are loom's port of bb's provider icons — one file per agent, taken from
-/// the plugin that declares it upstream (`plugins/provider-*/icons/`) — plus a
-/// glyph for Gemini, which loom probes and bb has no entry for.
+/// the plugin that declares it upstream (`plugins/provider-*/icons/`) — plus
+/// glyphs for Gemini and MiniMax Code, which loom probes through ACP. The
+/// MiniMax Code mark follows the one published in the ACP registry.
 ///
 /// Every mark is a single path (or a few) painted with `currentColor`, and tone
 /// where a mark has any comes from `fill-opacity` rather than a second colour.
@@ -198,6 +199,7 @@ const PROVIDER_MARKS: &[(&str, &[u8])] = &[
     ("pi", include_bytes!("../assets/pi.svg")),
     ("omp", include_bytes!("../assets/omp.svg")),
     ("hermes", include_bytes!("../assets/hermes.svg")),
+    ("mcode", include_bytes!("../assets/mcode.svg")),
     ("opencode", include_bytes!("../assets/opencode.svg")),
     ("cursor", include_bytes!("../assets/cursor.svg")),
     ("codex", include_bytes!("../assets/codex.svg")),
@@ -302,6 +304,12 @@ pub(crate) fn provider_branding(provider_id: &str) -> Option<ProviderBranding> {
         "hermes" => ProviderBranding {
             sign_in_command: "hermes login",
             install_url: "https://hermes-agent.nousresearch.com",
+            light: None,
+            dark: None,
+        },
+        "mcode" => ProviderBranding {
+            sign_in_command: "mcode login",
+            install_url: "https://www.npmjs.com/package/@minimax-ai/code",
             light: None,
             dark: None,
         },

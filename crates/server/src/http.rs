@@ -828,6 +828,7 @@ pub(crate) fn provider_display_name(provider_id: &str) -> String {
         "pi" => "Pi".to_owned(),
         "omp" => "OMP".to_owned(),
         "hermes" => "Hermes".to_owned(),
+        "mcode" => "MiniMax Code".to_owned(),
         "opencode" => "OpenCode".to_owned(),
         "gemini" => "Gemini".to_owned(),
         "cursor" => "Cursor".to_owned(),
