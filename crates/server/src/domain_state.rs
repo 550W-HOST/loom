@@ -16,11 +16,12 @@ use std::fmt;
 use std::sync::{Mutex, MutexGuard};
 
 use loom_domain::{
-    DomainError, DomainEvent, Environment, EnvironmentId, EnvironmentKind, EnvironmentStatus, Host,
-    HostId, Interaction, InteractionId, MessageRole, NewInteraction, NewQueuedMessage, NewThread,
-    Project, ProjectId, ProjectKind, ProjectSourceId, ProviderSessionBinding, QueuedMessage,
-    QueuedMessageId, QueuedMessageStatus, Resolution, RunId, Thread, ThreadId, ThreadOriginKind,
-    ThreadSection, ThreadSectionId, ThreadStatus, ThreadTrigger, ThreadUpdate,
+    DomainError, DomainEvent, Environment, EnvironmentId, EnvironmentKind, EnvironmentSelection,
+    EnvironmentStatus, EnvironmentTeardownOutcome, Host, HostId, Interaction, InteractionId,
+    MessageRole, NewInteraction, NewQueuedMessage, NewThread, Project, ProjectId, ProjectKind,
+    ProjectSourceId, ProviderSessionBinding, ProvisionedWorkspace, QueuedMessage, QueuedMessageId,
+    QueuedMessageStatus, Resolution, RunId, Thread, ThreadId, ThreadOriginKind, ThreadSection,
+    ThreadSectionId, ThreadStatus, ThreadTrigger, ThreadUpdate, GIT_WORKTREE_PROVIDER_ID,
 };
 use serde::{Deserialize, Serialize};
 
@@ -954,6 +955,32 @@ impl DomainRegistry {
         path: Option<String>,
         now_ms: u64,
     ) -> Result<(Environment, Vec<DomainEvent>), CommandError> {
+        self.create_environment_with(
+            project_id,
+            host_id,
+            kind,
+            path,
+            EnvironmentSelection::default(),
+            now_ms,
+        )
+    }
+
+    /// Creates an environment with an explicit provider selection.
+    ///
+    /// On top of the kind's invariants, a `git-worktree` environment requires
+    /// the project to have a checked-out source on the environment's host:
+    /// the worker has nothing to cut a worktree from otherwise, and failing at
+    /// creation is clearer than dispatching a provisioning request that can
+    /// only fail.
+    pub fn create_environment_with(
+        &self,
+        project_id: Option<ProjectId>,
+        host_id: HostId,
+        kind: EnvironmentKind,
+        path: Option<String>,
+        selection: EnvironmentSelection,
+        now_ms: u64,
+    ) -> Result<(Environment, Vec<DomainEvent>), CommandError> {
         let mut inner = self.lock();
         let Some(project_id) = project_id else {
             return Err(CommandError::Domain(DomainError::InvalidField {
@@ -976,7 +1003,24 @@ impl DomainRegistry {
                 "host {host_id} is not known"
             )));
         }
-        let (environment, event) = Environment::create(project_id, host_id, kind, path, now_ms)?;
+        let provider_id = selection
+            .provider_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|provider| !provider.is_empty())
+            .unwrap_or_else(|| kind.default_provider_id());
+        if provider_id == GIT_WORKTREE_PROVIDER_ID
+            && !project
+                .sources
+                .iter()
+                .any(|source| source.host_id == host_id && !source.path.trim().is_empty())
+        {
+            return Err(CommandError::Conflict(format!(
+                "project {project_id} has no checked-out source on host {host_id} to cut a worktree from"
+            )));
+        }
+        let (environment, event) =
+            Environment::create_with(project_id, host_id, kind, path, selection, now_ms)?;
         inner
             .environments
             .insert(environment.id.clone(), environment.clone());
@@ -1057,20 +1101,60 @@ impl DomainRegistry {
         Ok(environment.clone())
     }
 
-    /// Records a worker-provided workspace path and reaches `ready` while the
+    /// Records what a worker provisioned and reaches `ready` while the
     /// registry lock is held. This prevents deletion or a second report from
     /// landing between the path write and the lifecycle transition.
+    ///
+    /// The events include the whole-environment update that carries the path
+    /// and branch, so replay after a restart restores the ownership record and
+    /// not only the status.
     pub fn complete_environment_provisioning(
         &self,
         environment_id: &EnvironmentId,
-        path: String,
+        workspace: ProvisionedWorkspace,
+        now_ms: u64,
+    ) -> Result<(Environment, Vec<DomainEvent>), CommandError> {
+        let mut inner = self.lock();
+        let environment = inner.environments.get_mut(environment_id).ok_or_else(|| {
+            CommandError::NotFound(format!("environment {environment_id} is not known"))
+        })?;
+        let events = environment.complete_provisioning(workspace, now_ms)?;
+        Ok((environment.clone(), events))
+    }
+
+    /// Begins a managed environment's teardown: `destroyed` plus a `running`
+    /// teardown record, as one state-machine operation.
+    ///
+    /// A retry on an already destroyed environment is allowed and increments
+    /// the attempt; the returned events make the whole record durable.
+    pub fn begin_environment_teardown(
+        &self,
+        environment_id: &EnvironmentId,
+        now_ms: u64,
+    ) -> Result<(Environment, Vec<DomainEvent>), CommandError> {
+        let mut inner = self.lock();
+        let environment = inner.environments.get_mut(environment_id).ok_or_else(|| {
+            CommandError::NotFound(format!("environment {environment_id} is not known"))
+        })?;
+        let events = environment.begin_teardown(now_ms)?;
+        Ok((environment.clone(), events))
+    }
+
+    /// Records the outcome of an in-flight teardown.
+    ///
+    /// A report for a teardown that never started, or already settled, is a
+    /// `CommandError::Domain`; the caller maps that to a stale report.
+    pub fn complete_environment_teardown(
+        &self,
+        environment_id: &EnvironmentId,
+        outcome: EnvironmentTeardownOutcome,
         now_ms: u64,
     ) -> Result<(Environment, DomainEvent), CommandError> {
         let mut inner = self.lock();
         let environment = inner.environments.get_mut(environment_id).ok_or_else(|| {
             CommandError::NotFound(format!("environment {environment_id} is not known"))
         })?;
-        let event = environment.complete_provisioning(path, now_ms)?;
+        let event = environment.complete_teardown(outcome, now_ms)?;
         Ok((environment.clone(), event))
     }
 

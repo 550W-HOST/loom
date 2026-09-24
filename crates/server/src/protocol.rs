@@ -8,8 +8,8 @@
 use bytes::Bytes;
 use loom_domain::{DomainEvent, EnvironmentId, Host, RunId};
 use loom_provider_protocol::{
-    EnvironmentProvisionReport, HostRpcReport, ProviderCatalogReport, ProviderCommandsReport,
-    ProviderReport,
+    EnvironmentDeprovisionReport, EnvironmentProvisionReport, HostRpcReport, ProviderCatalogReport,
+    ProviderCommandsReport, ProviderReport,
 };
 use loom_relay::envelope::Envelope;
 use loom_relay::event_id::EventId;
@@ -474,6 +474,10 @@ pub enum WorkerClientMessage {
     },
     EnvironmentReport {
         report: EnvironmentProvisionReport,
+    },
+    /// The outcome of a managed environment's teardown.
+    EnvironmentDeprovisionReport {
+        report: EnvironmentDeprovisionReport,
     },
     HostFileReport {
         report: loom_provider_protocol::HostFileReport,

@@ -104,7 +104,13 @@ pub use transport::ChannelTransport;
 /// server cannot parse it and the version is what makes an older worker upgrade
 /// before it sends one. Server and worker must upgrade together (or use the
 /// existing worker self-update path).
-pub const PROTOCOL_VERSION: u32 = 4;
+///
+/// Version 5 adds managed git worktrees: `EnvironmentProvision` carries an
+/// optional workspace selection and a success report carries its branch and
+/// git facts. An older worker would ignore the selection and create an empty
+/// directory, silently producing a "ready" environment that is not the
+/// worktree the caller asked for, so the version is what forces the upgrade.
+pub const PROTOCOL_VERSION: u32 = 5;
 
 /// Explicit transport negotiation token for the public bb realtime protocol.
 ///

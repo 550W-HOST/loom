@@ -47,7 +47,7 @@ use loom_relay::now_ms;
 use loom_relay::scope::Scope;
 use tokio::sync::broadcast;
 
-use crate::environments::EnvironmentReportOutcome;
+use crate::environments::{EnvironmentReportOutcome, EnvironmentTeardownReportOutcome};
 use crate::interactions::RecordOutcome;
 use crate::protocol::{
     public_messages_from_frame, ClientMessage, PublicEntity, ServerMessage as PublicServerMessage,
@@ -609,6 +609,36 @@ async fn handle_command(
                     (false, Some("environment is not known".into()))
                 }
                 EnvironmentReportOutcome::Mismatch(message) => (false, Some(message)),
+            };
+            Some(ServerMessage::EnvironmentReportAck {
+                environment_id,
+                accepted,
+                detail,
+            })
+        }
+        ClientCommand::EnvironmentDeprovisionReport { report } => {
+            let Some(host_id) = enrolled_host.clone() else {
+                return Some(ServerMessage::Error {
+                    message: "environment reports require an enrolled host".into(),
+                });
+            };
+            if host_id != report.host_id {
+                return Some(ServerMessage::Error {
+                    message: "report names a different host than this connection enrolled as"
+                        .into(),
+                });
+            }
+            let environment_id = report.environment_id.clone();
+            let outcome = state.apply_environment_deprovision_report(&host_id, report);
+            let (accepted, detail) = match outcome {
+                EnvironmentTeardownReportOutcome::Applied => (true, None),
+                EnvironmentTeardownReportOutcome::Stale => {
+                    (false, Some("no teardown is in flight".into()))
+                }
+                EnvironmentTeardownReportOutcome::Unknown => {
+                    (false, Some("environment is not known".into()))
+                }
+                EnvironmentTeardownReportOutcome::Mismatch(message) => (false, Some(message)),
             };
             Some(ServerMessage::EnvironmentReportAck {
                 environment_id,

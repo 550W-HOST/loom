@@ -10,10 +10,12 @@
 
 use std::path::Path;
 use std::path::PathBuf;
+use std::process::Command;
 use std::time::Duration;
 
 use loom_domain::{
-    EnvironmentKind, EnvironmentStatus, HostId, HostStatus, MessageRole, ThreadId, ThreadStatus,
+    EnvironmentKind, EnvironmentSelection, EnvironmentStatus, EnvironmentTeardownStatus, HostId,
+    HostStatus, MessageRole, ProjectKind, ThreadId, ThreadStatus, GIT_WORKTREE_PROVIDER_ID,
 };
 use loom_provider_protocol::ProviderSpec;
 use loom_server::http::router;
@@ -743,7 +745,7 @@ async fn a_run_on_a_silent_worker_is_reaped_by_the_stale_heartbeat_sweep() {
 #[test]
 fn the_protocol_version_is_pinned() {
     // A wire-format change has to be deliberate; this fails loudly otherwise.
-    assert_eq!(PROTOCOL_VERSION, 4);
+    assert_eq!(PROTOCOL_VERSION, 5);
 }
 
 #[tokio::test]
@@ -797,6 +799,141 @@ async fn a_managed_environment_is_provisioned_by_the_worker() {
             .to_string_lossy()
     );
     assert!(Path::new(path).is_dir());
+
+    handle.abort();
+    state.shutdown().unwrap();
+}
+
+fn git(path: &Path, args: &[&str]) {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(path)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .output()
+        .unwrap_or_else(|error| panic!("failed to start git {args:?}: {error}"));
+    assert!(
+        output.status.success(),
+        "git {args:?} failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[tokio::test]
+async fn a_managed_worktree_is_provisioned_by_the_worker() {
+    // A real checkout to cut from, on the worker's machine (this test's box).
+    let checkout = tempfile::tempdir().unwrap();
+    git(checkout.path(), &["init", "-q"]);
+    git(checkout.path(), &["config", "user.name", "Worktree E2E"]);
+    git(
+        checkout.path(),
+        &["config", "user.email", "worktree@example.invalid"],
+    );
+    git(checkout.path(), &["checkout", "-q", "-b", "main"]);
+    std::fs::write(checkout.path().join("README.md"), "worktree\n").unwrap();
+    git(checkout.path(), &["add", "--", "README.md"]);
+    git(checkout.path(), &["commit", "-qm", "initial"]);
+
+    let root = tempfile::tempdir().unwrap();
+    let (url, state) = spawn_server(AppConfig::default()).await;
+    let mut config = WorkerConfig::new(&url, "worktree-worker").without_discovery();
+    config.environment_root = root.path().to_path_buf();
+    config.heartbeat_interval = Duration::from_millis(50);
+    let mut worker = Worker::connect(config).await.unwrap();
+    let host_id = worker.enroll().await.unwrap();
+    let handle = tokio::spawn(async move {
+        let _ = worker.run().await;
+    });
+
+    let now = loom_relay::now_ms();
+    let (project, _) = state
+        .registry
+        .create_project("worktree".into(), ProjectKind::Standard, None, now)
+        .unwrap();
+    state
+        .registry
+        .add_project_source(
+            &project.id,
+            host_id.clone(),
+            checkout.path().to_string_lossy().into_owned(),
+            None,
+            now,
+        )
+        .unwrap();
+    let (environment, _) = state
+        .registry
+        .create_environment_with(
+            Some(project.id.clone()),
+            host_id,
+            EnvironmentKind::Managed,
+            None,
+            EnvironmentSelection {
+                provider_id: Some(GIT_WORKTREE_PROVIDER_ID.into()),
+                base_branch: None,
+                branch_name: None,
+            },
+            now,
+        )
+        .unwrap();
+    assert!(matches!(
+        state.provision_environment(&environment.id),
+        loom_server::environments::ProvisionOutcome::Dispatched(_)
+    ));
+
+    assert!(
+        eventually(|| state
+            .registry
+            .environment(&environment.id)
+            .map(|environment| environment.status == EnvironmentStatus::Ready)
+            .unwrap_or(false))
+        .await,
+        "the worker should provision the worktree"
+    );
+
+    let stored = state.registry.environment(&environment.id).unwrap();
+    let path = stored
+        .path
+        .as_deref()
+        .expect("a ready environment has a path");
+    assert_eq!(
+        path,
+        root.path()
+            .join(environment.id.to_string())
+            .to_string_lossy()
+    );
+    assert_eq!(
+        stored.branch_name.as_deref(),
+        Some(format!("loom/{}", environment.id).as_str())
+    );
+    assert_eq!(stored.base_branch.as_deref(), Some("main"));
+    assert_eq!(stored.default_branch.as_deref(), Some("main"));
+    assert_eq!(stored.is_git_repo, Some(true));
+    assert!(Path::new(path).join("README.md").is_file());
+    let head = Command::new("git")
+        .args(["rev-parse", "--abbrev-ref", "HEAD"])
+        .current_dir(path)
+        .output()
+        .unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&head.stdout).trim(),
+        stored.branch_name.as_deref().unwrap()
+    );
+
+    // Destroying the environment dispatches a removal to the same worker.
+    assert!(matches!(
+        state.deprovision_environment(&environment.id),
+        loom_server::environments::DeprovisionOutcome::Dispatched(_)
+    ));
+    assert!(
+        eventually(|| state
+            .registry
+            .environment(&environment.id)
+            .and_then(|environment| environment.teardown)
+            .map(|teardown| teardown.status == EnvironmentTeardownStatus::Removed)
+            .unwrap_or(false))
+        .await,
+        "the worker should remove the worktree"
+    );
+    assert!(!Path::new(path).exists());
 
     handle.abort();
     state.shutdown().unwrap();

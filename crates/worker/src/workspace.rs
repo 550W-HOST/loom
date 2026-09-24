@@ -34,12 +34,12 @@ const DEFAULT_UNTRACKED_LINE_BYTES: u64 = 512 * 1024;
 
 #[derive(Clone, Debug)]
 pub(crate) struct Failure {
-    code: &'static str,
+    pub(crate) code: &'static str,
     pub(crate) message: String,
 }
 
 impl Failure {
-    fn new(code: &'static str, message: impl Into<String>) -> Self {
+    pub(crate) fn new(code: &'static str, message: impl Into<String>) -> Self {
         Self {
             code,
             message: message.into(),
@@ -48,11 +48,11 @@ impl Failure {
 }
 
 #[derive(Debug)]
-struct CommandOutput {
-    stdout: Vec<u8>,
-    stderr: Vec<u8>,
-    stdout_truncated: bool,
-    stderr_truncated: bool,
+pub(crate) struct CommandOutput {
+    pub(crate) stdout: Vec<u8>,
+    pub(crate) stderr: Vec<u8>,
+    pub(crate) stdout_truncated: bool,
+    pub(crate) stderr_truncated: bool,
 }
 
 /// Answers one request. This function is async so command children can be
@@ -1634,7 +1634,7 @@ fn ensure_complete(output: &CommandOutput, operation: &str) -> Result<(), Failur
     Ok(())
 }
 
-async fn run_git(
+pub(crate) async fn run_git(
     workspace: &Path,
     args: Vec<String>,
     max_output_bytes: usize,

@@ -17,11 +17,12 @@ use loom_domain::{
     automation::PermissionMode,
     catalog::{CatalogModel, ProviderCatalog},
     DomainError, DomainEvent, DomainScope, Environment, EnvironmentId, EnvironmentKind,
-    EnvironmentStatus, Host, HostId, HostStatus, Interaction, InteractionId, InteractionOrigin,
-    MessageRole, NewQueuedMessage, Project, ProjectId, ProjectKind, ProjectSourceId, ProviderEvent,
-    QueuedMessage, QueuedMessageId, QueuedMessageInitiator, QueuedMessagePayload,
-    QueuedMessageStatus, ReasoningLevel, Resolution, ServiceTier, Thread, ThreadId, ThreadStatus,
-    ThreadTrigger, ThreadUpdate,
+    EnvironmentSelection, EnvironmentStatus, Host, HostId, HostStatus, Interaction, InteractionId,
+    InteractionOrigin, MessageRole, NewQueuedMessage, Project, ProjectId, ProjectKind,
+    ProjectSourceId, ProviderEvent, QueuedMessage, QueuedMessageId, QueuedMessageInitiator,
+    QueuedMessagePayload, QueuedMessageStatus, ReasoningLevel, Resolution, ServiceTier, Thread,
+    ThreadId, ThreadStatus, ThreadTrigger, ThreadUpdate, GIT_WORKTREE_PROVIDER_ID,
+    PERSONAL_WORKSPACE_PROVIDER_ID, PROJECT_CHECKOUT_PROVIDER_ID,
 };
 use loom_provider_protocol::ProviderSpec;
 use loom_relay::scope::Scope;
@@ -751,9 +752,6 @@ struct ProviderQuery {
     provider_id: Option<String>,
 }
 
-const PERSONAL_WORKSPACE_PROVIDER_ID: &str = "personal-workspace";
-const PROJECT_CHECKOUT_PROVIDER_ID: &str = "project-checkout";
-
 fn environment_provider_machine_availability(host: &Host, source_available: bool) -> Value {
     if host.status != HostStatus::Connected {
         return json!({
@@ -1158,10 +1156,11 @@ async fn system_config(State(state): State<AppState>) -> Json<Value> {
 /// Loom-native workspace providers exposed to the product composer.
 ///
 /// These are capability descriptors, not plugin registrations. Personal
-/// workspaces use the worker's existing managed-environment provisioner;
-/// project checkout uses an explicit local-path source on the selected host.
-/// Per-machine availability is authoritative, so a remembered disconnected
-/// host cannot silently fall back to another machine at submission time.
+/// workspaces use the worker's managed-directory provisioner; a git worktree
+/// cuts from a project source on the selected host; project checkout attaches
+/// to an explicit local-path source. Per-machine availability is authoritative,
+/// so a remembered disconnected host cannot silently fall back to another
+/// machine at submission time.
 async fn environment_providers(
     State(state): State<AppState>,
     Query(query): Query<ProviderQuery>,
@@ -1174,6 +1173,7 @@ async fn environment_providers(
     let hosts = state.registry.hosts();
 
     let mut personal_machines = serde_json::Map::new();
+    let mut worktree_machines = serde_json::Map::new();
     let mut checkout_machines = serde_json::Map::new();
     for host in &hosts {
         if query
@@ -1193,6 +1193,10 @@ async fn environment_providers(
                 .iter()
                 .any(|source| source.host_id == host.id && !source.path.is_empty())
         });
+        worktree_machines.insert(
+            host.id.to_string(),
+            environment_provider_machine_availability(host, has_source),
+        );
         checkout_machines.insert(
             host.id.to_string(),
             environment_provider_machine_availability(host, has_source),
@@ -1200,6 +1204,7 @@ async fn environment_providers(
     }
 
     let personal_availability = aggregate_provider_availability(&personal_machines);
+    let worktree_availability = aggregate_provider_availability(&worktree_machines);
     let checkout_availability = aggregate_provider_availability(&checkout_machines);
     Json(json!({
         "providers": [
@@ -1219,6 +1224,52 @@ async fn environment_providers(
                 "acceptsEmptyInputs": true,
                 "availability": personal_availability,
                 "machineAvailability": personal_machines
+            },
+            {
+                "id": GIT_WORKTREE_PROVIDER_ID,
+                "displayName": "Worktree",
+                "icon": "FolderGit",
+                "logoUrl": null,
+                "pluginId": "environment-git-worktree",
+                "requires": {
+                    "projectCheckout": true,
+                    "gitCheckout": true,
+                    "gitRemote": false,
+                    "projectless": false
+                },
+                // The declared input shape matches the composer's seed:
+                // `{ branch: { kind: "default" } | { kind: "named", name } }`.
+                // Empty inputs are accepted and mean the default branch, so a
+                // host without a branch picker can still create a worktree.
+                "inputs": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "branch": {
+                            "anyOf": [
+                                { "type": "null" },
+                                {
+                                    "type": "object",
+                                    "additionalProperties": false,
+                                    "properties": { "kind": { "const": "default" } },
+                                    "required": ["kind"]
+                                },
+                                {
+                                    "type": "object",
+                                    "additionalProperties": false,
+                                    "properties": {
+                                        "kind": { "const": "named" },
+                                        "name": { "type": "string", "minLength": 1 }
+                                    },
+                                    "required": ["kind", "name"]
+                                }
+                            ]
+                        }
+                    }
+                },
+                "acceptsEmptyInputs": true,
+                "availability": worktree_availability,
+                "machineAvailability": worktree_machines
             },
             {
                 "id": PROJECT_CHECKOUT_PROVIDER_ID,
@@ -1348,14 +1399,43 @@ fn project_detail_value(state: &AppState, project: &Project) -> Value {
 
 /// An environment in bb's `environmentSchema` shape (`$defs/d52`).
 ///
-/// Fields bb computes from git state that loom does not track yet are `null`
-/// rather than omitted: the contract requires them, and a client reads `null`
-/// as "unknown", which is the truth.
+/// The provider id is resolved even for records created before the field
+/// existed, where the kind is the only signal: a managed environment without a
+/// provider is a personal workspace, an unmanaged one is a checkout. Fields bb
+/// computes from git state that loom has not observed are `null` rather than
+/// omitted: the contract requires them, and a client reads `null` as "unknown",
+/// which is the truth.
 pub(crate) fn environment_value(environment: &Environment) -> Value {
-    let lifecycle_phase = if environment.status == EnvironmentStatus::Destroyed {
-        "destroyed"
-    } else {
-        "active"
+    let lifecycle_phase =
+        if environment.teardown.as_ref().is_some_and(|teardown| {
+            teardown.status == loom_domain::EnvironmentTeardownStatus::Running
+        }) {
+            "teardown"
+        } else if environment.status == EnvironmentStatus::Destroyed {
+            "destroyed"
+        } else {
+            "active"
+        };
+    let teardown = environment.teardown.as_ref().map(|teardown| {
+        // `message` is omitted rather than null: the contract allows null, but
+        // the ported client schema types it as an optional string.
+        let mut value = json!({
+            "status": teardown.status,
+            "attempt": teardown.attempt,
+        });
+        if let Some(message) = &teardown.message {
+            value["message"] = Value::String(message.clone());
+        }
+        value
+    });
+    let provider_id = environment
+        .provider_id
+        .clone()
+        .unwrap_or_else(|| environment.kind.default_provider_id().to_owned());
+    let workspace_provision_type = match provider_id.as_str() {
+        GIT_WORKTREE_PROVIDER_ID => "managed-worktree",
+        PERSONAL_WORKSPACE_PROVIDER_ID => "personal",
+        _ => "unmanaged",
     };
     json!({
         "id": environment.id.to_string(),
@@ -1363,22 +1443,22 @@ pub(crate) fn environment_value(environment: &Environment) -> Value {
         "projectId": environment.project_id.to_string(),
         "hostId": environment.host_id.to_string(),
         "path": environment.path,
-        "isGitRepo": false,
-        "isWorktree": environment.kind == EnvironmentKind::Managed,
-        "branchName": null,
-        "baseBranch": null,
-        "defaultBranch": null,
-        "mergeBaseBranch": environment.merge_base_branch,
+        "isGitRepo": environment.is_git_repo.unwrap_or(false),
+        "isWorktree": environment.is_worktree(),
+        "branchName": environment.branch_name,
+        "baseBranch": environment.base_branch,
+        "defaultBranch": environment.default_branch,
+        "mergeBaseBranch": environment
+            .merge_base_branch
+            .clone()
+            .or_else(|| environment.base_branch.clone()),
         "status": environment.status,
-        "environmentProviderId": null,
-        "lifecycle": { "phase": lifecycle_phase, "retireAt": null, "teardown": null },
+        "environmentProviderId": provider_id,
+        "lifecycle": { "phase": lifecycle_phase, "retireAt": null, "teardown": teardown },
         "environmentProviderSelection": null,
         "environmentProviderInstanceKey": null,
         "managed": environment.kind == EnvironmentKind::Managed,
-        "workspaceProvisionType": match environment.kind {
-            EnvironmentKind::Managed => "managed-worktree",
-            EnvironmentKind::Unmanaged => "unmanaged",
-        },
+        "workspaceProvisionType": workspace_provision_type,
         "createdAt": environment.created_at_ms,
         "updatedAt": environment.updated_at_ms,
     })
@@ -1505,22 +1585,33 @@ fn thread_list_entry_value(state: &AppState, thread: &Thread) -> Value {
     let (
         environment_host_id,
         environment_name,
+        environment_branch_name,
         environment_path,
+        environment_provider_id,
         environment_is_worktree,
         environment_workspace_display_kind,
     ) = match environment.as_ref() {
         Some(environment) => (
             Some(environment.host_id.to_string()),
             environment.name.clone(),
+            environment.branch_name.clone(),
             environment.path.clone(),
-            Some(environment.kind == EnvironmentKind::Managed),
-            if environment.kind == EnvironmentKind::Managed {
+            Some(
+                environment
+                    .provider_id
+                    .clone()
+                    .unwrap_or_else(|| environment.kind.default_provider_id().to_owned()),
+            ),
+            Some(environment.is_worktree()),
+            if environment.is_worktree() {
                 "managed-worktree"
-            } else {
+            } else if environment.kind == EnvironmentKind::Unmanaged {
                 "unmanaged-worktree"
+            } else {
+                "other"
             },
         ),
-        None => (None, None, None, None, "other"),
+        None => (None, None, None, None, None, None, "other"),
     };
     let mut value = summary;
     let object = value.as_object_mut().expect("thread summary is an object");
@@ -1561,12 +1652,18 @@ fn thread_list_entry_value(state: &AppState, thread: &Thread) -> Value {
         "environmentName".into(),
         environment_name.map_or(Value::Null, Value::String),
     );
-    object.insert("environmentBranchName".into(), Value::Null);
+    object.insert(
+        "environmentBranchName".into(),
+        environment_branch_name.map_or(Value::Null, Value::String),
+    );
     object.insert(
         "environmentPath".into(),
         environment_path.map_or(Value::Null, Value::String),
     );
-    object.insert("environmentProviderId".into(), Value::Null);
+    object.insert(
+        "environmentProviderId".into(),
+        environment_provider_id.map_or(Value::Null, Value::String),
+    );
     object.insert(
         "environmentIsWorktree".into(),
         environment_is_worktree.map_or(Value::Null, Value::Bool),
@@ -7812,6 +7909,20 @@ pub struct CreateEnvironmentRequest {
     /// one, whose path is decided by the worker that provisions it.
     #[serde(default)]
     pub path: Option<String>,
+    /// The provider that owns the workspace: `git-worktree`,
+    /// `personal-workspace` or `project-checkout`. Omitted means the kind's
+    /// default (`personal-workspace` for `managed`, `project-checkout` for
+    /// `unmanaged`), which is the behaviour every existing client already has.
+    #[serde(default)]
+    pub provider_id: Option<String>,
+    /// Base branch for a `git-worktree` environment. Omitted asks the worker
+    /// for the source's default branch, preferring `origin/HEAD`.
+    #[serde(default)]
+    pub base_branch: Option<String>,
+    /// Branch a `git-worktree` environment is checked out on. Omitted mints
+    /// `loom/<environment id>`. Refused for every other provider.
+    #[serde(default)]
+    pub branch_name: Option<String>,
 }
 
 /// A created environment and the event that announced it.
@@ -7888,11 +7999,16 @@ async fn create_environment(
         }
     }
 
-    let (environment, events) = match state.registry.create_environment(
+    let (environment, events) = match state.registry.create_environment_with(
         request.project_id,
         host_id,
         request.kind,
         request.path,
+        EnvironmentSelection {
+            provider_id: request.provider_id,
+            base_branch: request.base_branch,
+            branch_name: request.branch_name,
+        },
         loom_relay::now_ms(),
     ) {
         Ok(result) => result,
@@ -8012,12 +8128,14 @@ async fn provision_environment(
     }
 }
 
-/// Destroys an environment; the transition is terminal.
+/// Destroys an environment; the transition is terminal for the record.
 ///
-/// This moves the record to `destroyed`. Removing the directory of a *managed*
-/// environment is a separate concern (worktree teardown, tracked by its own
-/// issue); an unmanaged directory is never touched by loom.
-///
+/// An unmanaged environment only moves to `destroyed`: loom never removes a
+/// directory the operator owns. A managed one also gets a teardown dispatch to
+/// its host, which removes the worktree or managed directory and reports back;
+/// [`Environment::teardown`] records whether that removal is running, failed or
+/// done, so a workspace that could not be removed is visible rather than
+/// silently left behind. Calling this again retries a failed teardown.
 async fn destroy_environment(
     State(state): State<AppState>,
     Path(raw_environment_id): Path<String>,
@@ -8026,6 +8144,41 @@ async fn destroy_environment(
         Ok(environment_id) => environment_id,
         Err(error) => return error_response(StatusCode::BAD_REQUEST, error.to_string()),
     };
+    let Some(environment) = state.registry.environment(&environment_id) else {
+        return error_response(
+            StatusCode::NOT_FOUND,
+            format!("environment {environment_id} is not known"),
+        );
+    };
+
+    if environment.kind == EnvironmentKind::Managed {
+        return match state.deprovision_environment(&environment_id) {
+            crate::environments::DeprovisionOutcome::Dispatched(environment) => {
+                Json(environment).into_response()
+            }
+            crate::environments::DeprovisionOutcome::PublishFailed { environment, error } => {
+                error_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!(
+                        "could not dispatch teardown: {error}; environment is {}",
+                        environment.status
+                    ),
+                )
+            }
+            crate::environments::DeprovisionOutcome::NotDeprovisionable {
+                environment,
+                reason,
+            } => error_response(
+                StatusCode::CONFLICT,
+                format!("{reason} ({} )", environment.id),
+            ),
+            crate::environments::DeprovisionOutcome::Unknown => error_response(
+                StatusCode::NOT_FOUND,
+                format!("environment {environment_id} is not known"),
+            ),
+        };
+    }
+
     match state.registry.set_environment_status(
         &environment_id,
         EnvironmentStatus::Destroyed,

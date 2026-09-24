@@ -82,7 +82,11 @@ pub use automation::{
     UnmanagedBranchSpec, UnreadableAutomation, WorkspaceKind, AUTOMATION_MAX_CONSECUTIVE_FAILURES,
     AUTOMATION_RETRY_BASE_MS,
 };
-pub use environment::{Environment, EnvironmentKind, EnvironmentStatus};
+pub use environment::{
+    Environment, EnvironmentKind, EnvironmentSelection, EnvironmentStatus, EnvironmentTeardown,
+    EnvironmentTeardownOutcome, EnvironmentTeardownStatus, ProvisionedWorkspace,
+    GIT_WORKTREE_PROVIDER_ID, PERSONAL_WORKSPACE_PROVIDER_ID, PROJECT_CHECKOUT_PROVIDER_ID,
+};
 pub use error::DomainError;
 pub use event::DomainEvent;
 pub use host::{select_primary_host, Host, HostKind, HostPermissionMode, HostStatus};

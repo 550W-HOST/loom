@@ -418,9 +418,9 @@ impl AppState {
                 workspace: WorkspaceKind::ManagedWorktree { .. },
                 ..
             } => Err(
-                "a managed worktree has to be provisioned on its host, which an automation run \
-                 does not do yet (the environment entity carries no branch to provision from); \
-                 bind a ready environment with `reuse`, or name an explicit path"
+                "a managed worktree has to be provisioned on its host, and an automation run \
+                 does not wait for that provisioning yet; bind a ready environment with \
+                 `reuse`, or name an explicit path"
                     .to_owned(),
             ),
             AgentEnvironment::Host {

@@ -56,6 +56,7 @@ pub mod steer;
 pub mod terminal;
 pub mod update;
 pub mod workspace;
+pub mod worktree;
 
 use std::collections::{HashSet, VecDeque};
 use std::path::{Path, PathBuf};
@@ -64,10 +65,12 @@ use std::time::Duration;
 use futures_util::{SinkExt, StreamExt};
 use loom_domain::{HostId, RunId};
 use loom_provider_protocol::{
-    EnvironmentProvision, EnvironmentProvisionOutcome, EnvironmentProvisionReport, HistoryPart,
-    HistoryReport, HostFileRequest, HostRpcOperation, HostRpcReport, HostRpcRequest,
-    InteractionRequest, InteractionResolutionFrame, ProviderCatalogReport, ProviderCommandsReport,
-    ProviderLaunch, ProviderSpec, RunDispatch, RunSteer,
+    EnvironmentDeprovision, EnvironmentDeprovisionOutcome, EnvironmentDeprovisionReport,
+    EnvironmentProvision, EnvironmentProvisionOutcome, EnvironmentProvisionReport,
+    EnvironmentProvisionWorkspace, HistoryPart, HistoryReport, HostFileRequest, HostRpcOperation,
+    HostRpcReport, HostRpcRequest, InteractionRequest, InteractionResolutionFrame,
+    ProviderCatalogReport, ProviderCommandsReport, ProviderLaunch, ProviderSpec, RunDispatch,
+    RunSteer,
 };
 use loom_relay::dedup::SeenSet;
 use loom_relay::{EventId, Scope};
@@ -531,6 +534,9 @@ pub struct Worker {
     /// Environment-provisioning reports waiting to be forwarded to the server.
     env_reports: mpsc::Receiver<EnvironmentProvisionReport>,
     env_reports_tx: mpsc::Sender<EnvironmentProvisionReport>,
+    /// Environment-teardown reports waiting to be forwarded to the server.
+    env_deprovision_reports: mpsc::Receiver<EnvironmentDeprovisionReport>,
+    env_deprovision_reports_tx: mpsc::Sender<EnvironmentDeprovisionReport>,
     /// Host file answers waiting to be forwarded to the server.
     ///
     /// A read or listing runs off the socket loop (see
@@ -585,6 +591,8 @@ impl Worker {
                 let (provider_lists_tx, provider_lists) = mpsc::channel(1);
                 let (interactions_tx, interactions) = mpsc::channel(REPORT_CHANNEL_CAPACITY);
                 let (env_reports_tx, env_reports) = mpsc::channel(REPORT_CHANNEL_CAPACITY);
+                let (env_deprovision_reports_tx, env_deprovision_reports) =
+                    mpsc::channel(REPORT_CHANNEL_CAPACITY);
                 let (host_file_reports_tx, host_file_reports) =
                     mpsc::channel(REPORT_CHANNEL_CAPACITY);
                 let (host_rpc_reports_tx, host_rpc_reports) =
@@ -623,6 +631,8 @@ impl Worker {
                     steers: crate::steer::SteerRegistry::new(),
                     env_reports,
                     env_reports_tx,
+                    env_deprovision_reports,
+                    env_deprovision_reports_tx,
                     host_file_reports,
                     host_file_reports_tx,
                     host_rpc_reports,
@@ -916,6 +926,11 @@ impl Worker {
                     let Some(report) = report else { continue };
                     self.send(&ClientCommand::EnvironmentReport { report }).await?;
                 }
+                report = self.env_deprovision_reports.recv() => {
+                    let Some(report) = report else { continue };
+                    self.send(&ClientCommand::EnvironmentDeprovisionReport { report })
+                        .await?;
+                }
                 report = self.host_file_reports.recv() => {
                     let Some(report) = report else { continue };
                     self.send(&ClientCommand::HostFileReport { report }).await?;
@@ -1068,15 +1083,20 @@ impl Worker {
             return Ok(());
         }
 
-        // Only a dispatch, an interaction resolution, a provisioning request,
-        // a host file request, or a workspace request parses as one; host
-        // domain events in the same room are none of them.
+        // Only a dispatch, an interaction resolution, a teardown, a
+        // provisioning request, a host file request, or a workspace request
+        // parses as one; host domain events in the same room are none of them.
         if let Ok(dispatch) = serde_json::from_str::<RunDispatch>(payload) {
             self.start_dispatch(dispatch);
         } else if let Ok(steer) = serde_json::from_str::<RunSteer>(payload) {
             self.steer_run(steer);
         } else if let Ok(resolution) = serde_json::from_str::<InteractionResolutionFrame>(payload) {
             self.resolve_interaction(resolution);
+        } else if let Ok(deprovision) = serde_json::from_str::<EnvironmentDeprovision>(payload) {
+            // Before `EnvironmentProvision`, deliberately: a provisioning
+            // payload cannot decode as a deprovision (its `path` is required),
+            // but the reverse would succeed and a teardown would be ignored.
+            self.start_deprovision(deprovision);
         } else if let Ok(provision) = serde_json::from_str::<EnvironmentProvision>(payload) {
             self.start_provision(provision);
         } else if let Ok(request) = serde_json::from_str::<HostFileRequest>(payload) {
@@ -1360,10 +1380,12 @@ impl Worker {
     /// Creates a managed environment's workspace in the background and queues
     /// the report for the socket loop to forward.
     ///
-    /// Provisioning is idempotent (`create_dir_all` accepts an existing
-    /// directory), so a replay of the same request is safe even without a dedup
-    /// set; the relay's own per-connection dedup already suppresses a replayed
-    /// event id.
+    /// Provisioning is idempotent in both shapes. A directory creation accepts
+    /// an existing directory; a worktree is re-adopted when it already sits on
+    /// the expected branch, and its include copy is redone when the completion
+    /// marker is missing. The relay's per-connection dedup already suppresses a
+    /// replayed event id; the explicit re-adoption covers a retry the user
+    /// asks for after a failure.
     fn start_provision(&mut self, provision: EnvironmentProvision) {
         let root = self.config.environment_root.clone();
         let reports = self.env_reports_tx.clone();
@@ -1373,6 +1395,27 @@ impl Worker {
                 .send(EnvironmentProvisionReport {
                     host_id: provision.host_id.clone(),
                     environment_id: provision.environment_id.clone(),
+                    outcome,
+                })
+                .await;
+        });
+    }
+
+    /// Removes a managed environment's workspace in the background and queues
+    /// the report for the socket loop to forward.
+    ///
+    /// The path is one this worker reported earlier, so a removal is scoped to
+    /// the workspace root as a second line of defence; a path outside it is
+    /// refused rather than followed.
+    fn start_deprovision(&mut self, deprovision: EnvironmentDeprovision) {
+        let root = self.config.environment_root.clone();
+        let reports = self.env_deprovision_reports_tx.clone();
+        tokio::spawn(async move {
+            let outcome = deprovision_environment(&root, &deprovision).await;
+            let _ = reports
+                .send(EnvironmentDeprovisionReport {
+                    host_id: deprovision.host_id.clone(),
+                    environment_id: deprovision.environment_id.clone(),
                     outcome,
                 })
                 .await;
@@ -1482,21 +1525,73 @@ fn effective_specs(
 
 /// Creates one managed environment's workspace under `root`.
 ///
-/// The directory is `<root>/<environment_id>`. Creation is idempotent, so a
-/// redelivered provisioning request is harmless; a failure carries the path and
-/// the OS error so the reason survives to the UI.
+/// The directory is `<root>/<environment_id>`. With no workspace selection
+/// that is an empty directory, as it was before worktrees existed; a
+/// [`EnvironmentProvisionWorkspace::GitWorktree`] turns it into a checkout of
+/// the named branch cut from the project source. A failure carries the path and
+/// the reason so it survives to the UI.
 async fn provision_environment(
     root: &Path,
     provision: &EnvironmentProvision,
 ) -> EnvironmentProvisionOutcome {
+    if let Some(EnvironmentProvisionWorkspace::GitWorktree {
+        source_path,
+        branch_name,
+        base_branch,
+    }) = provision.workspace.as_ref()
+    {
+        return worktree::provision(
+            root,
+            &provision.environment_id,
+            source_path,
+            branch_name,
+            base_branch.as_deref(),
+        )
+        .await;
+    }
     let path = root.join(provision.environment_id.to_string());
     match tokio::fs::create_dir_all(&path).await {
         Ok(()) => EnvironmentProvisionOutcome::Provisioned {
             path: path.to_string_lossy().into_owned(),
+            branch_name: None,
+            base_branch: None,
+            default_branch: None,
+            is_git_repo: None,
         },
         Err(error) => EnvironmentProvisionOutcome::Failed {
             error: format!("could not create {}: {error}", path.display()),
         },
+    }
+}
+
+/// Removes one managed environment's workspace under `root`.
+///
+/// The path recorded by the server is used when present; an environment that
+/// never reached `ready` has none, so the worker's own layout for the id is the
+/// fallback. A path outside `root` is refused: the worker only ever removes
+/// what it created.
+async fn deprovision_environment(
+    root: &Path,
+    deprovision: &EnvironmentDeprovision,
+) -> EnvironmentDeprovisionOutcome {
+    let recorded = deprovision.path.trim();
+    let path = if recorded.is_empty() {
+        root.join(deprovision.environment_id.to_string())
+    } else {
+        PathBuf::from(recorded)
+    };
+    if !path.starts_with(root) {
+        return EnvironmentDeprovisionOutcome::Failed {
+            error: format!(
+                "refusing to remove {}: it is outside the workspace root {}",
+                path.display(),
+                root.display()
+            ),
+        };
+    }
+    match worktree::remove(&path).await {
+        Ok(()) => EnvironmentDeprovisionOutcome::Removed,
+        Err(error) => EnvironmentDeprovisionOutcome::Failed { error },
     }
 }
 
@@ -1569,10 +1664,11 @@ mod tests {
             project_id: loom_domain::ProjectId::mint(),
             host_id: HostId::mint(),
             created_at_ms: 1,
+            workspace: None,
         };
 
         let outcome = provision_environment(root.path(), &provision).await;
-        let EnvironmentProvisionOutcome::Provisioned { path } = outcome else {
+        let EnvironmentProvisionOutcome::Provisioned { path, .. } = outcome else {
             panic!("expected a provisioned workspace, got {outcome:?}");
         };
         assert_eq!(
@@ -1602,6 +1698,7 @@ mod tests {
             project_id: loom_domain::ProjectId::mint(),
             host_id: HostId::mint(),
             created_at_ms: 1,
+            workspace: None,
         };
 
         let outcome = provision_environment(&file, &provision).await;

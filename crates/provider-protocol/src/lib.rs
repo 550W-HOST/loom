@@ -250,6 +250,30 @@ pub struct EnvironmentProvision {
     pub host_id: HostId,
     /// Wall-clock milliseconds when the control plane minted the request.
     pub created_at_ms: u64,
+    /// What the workspace should be. `None` is the historical managed
+    /// directory: the worker creates an empty directory under its root.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<EnvironmentProvisionWorkspace>,
+}
+
+/// The workspace a managed environment should be provisioned as.
+///
+/// Every variant is a managed workspace: the worker owns the path under its
+/// configured root and the control plane learns it from the report.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum EnvironmentProvisionWorkspace {
+    /// A git worktree cut from an existing checkout on the worker's machine.
+    GitWorktree {
+        /// Absolute path of the source checkout to cut from.
+        source_path: String,
+        /// Branch the worktree is created (or reset) on.
+        branch_name: String,
+        /// Base branch to cut from. `None` asks the worker for the source's
+        /// default branch, preferring `origin/HEAD` when it exists.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        base_branch: Option<String>,
+    },
 }
 
 /// A provider's request for permission, on its way to the control plane.
@@ -367,6 +391,19 @@ pub enum EnvironmentProvisionOutcome {
     Provisioned {
         /// Absolute path the worker created.
         path: String,
+        /// The branch the worktree is on, when the workspace is a git
+        /// worktree.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch_name: Option<String>,
+        /// The base branch the worktree was cut from, as actually used.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        base_branch: Option<String>,
+        /// The source repository's default branch, as the worker resolved it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        default_branch: Option<String>,
+        /// Whether the provisioned path is inside a git repository.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        is_git_repo: Option<bool>,
     },
     /// Provisioning failed; the environment moves to `error`.
     Failed {
@@ -388,6 +425,56 @@ pub struct EnvironmentProvisionReport {
     pub environment_id: EnvironmentId,
     /// What happened.
     pub outcome: EnvironmentProvisionOutcome,
+}
+
+/// A request to remove a managed environment's workspace from a host.
+///
+/// Like [`EnvironmentProvision`] this travels through the relay to the host's
+/// scope, so a teardown is not lost while the worker is reconnecting. It is a
+/// separate request rather than a field on destroy because removal is real
+/// work on the host and must be reported back.
+///
+/// `path` is required, deliberately: it is what keeps a provision request from
+/// decoding as a teardown. An empty string means the control plane has no
+/// recorded path (the environment never reached `ready`); the worker then falls
+/// back to its own layout for that environment id.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EnvironmentDeprovision {
+    /// The environment to remove.
+    pub environment_id: EnvironmentId,
+    /// Its project, carried so a report needs no lookup.
+    pub project_id: ProjectId,
+    /// The host expected to remove it.
+    pub host_id: HostId,
+    /// The absolute path loom recorded, or empty when none was recorded.
+    pub path: String,
+    /// Wall-clock milliseconds when the control plane minted the request.
+    pub created_at_ms: u64,
+}
+
+/// What a worker did with an [`EnvironmentDeprovision`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "outcome", rename_all = "snake_case")]
+pub enum EnvironmentDeprovisionOutcome {
+    /// The workspace is gone.
+    Removed,
+    /// Removal failed; the reason is recorded on the environment so a user can
+    /// see why the workspace may still exist.
+    Failed {
+        /// Why, verbatim.
+        error: String,
+    },
+}
+
+/// A worker's report about one teardown attempt.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EnvironmentDeprovisionReport {
+    /// The host making the report.
+    pub host_id: HostId,
+    /// The environment being removed.
+    pub environment_id: EnvironmentId,
+    /// What happened.
+    pub outcome: EnvironmentDeprovisionOutcome,
 }
 
 /// A worker's observation about an in-flight run.
@@ -1794,6 +1881,7 @@ mod tests {
             project_id: ProjectId::mint(),
             host_id: HostId::mint(),
             created_at_ms: 7,
+            workspace: None,
         };
         let encoded = serde_json::to_string(&provision).unwrap();
         assert_eq!(
@@ -1801,11 +1889,26 @@ mod tests {
             provision
         );
 
+        // A request from before worktrees existed carries no `workspace` and
+        // still decodes: that is the managed-empty-directory shape.
+        let legacy: EnvironmentProvision = serde_json::from_value(serde_json::json!({
+            "environment_id": provision.environment_id.to_string(),
+            "project_id": provision.project_id.to_string(),
+            "host_id": provision.host_id.to_string(),
+            "created_at_ms": 7,
+        }))
+        .unwrap();
+        assert_eq!(legacy.workspace, None);
+
         let ok = EnvironmentProvisionReport {
             host_id: HostId::mint(),
             environment_id: EnvironmentId::mint(),
             outcome: EnvironmentProvisionOutcome::Provisioned {
                 path: "/srv/loom".into(),
+                branch_name: Some("loom/env_1".into()),
+                base_branch: Some("origin/main".into()),
+                default_branch: Some("main".into()),
+                is_git_repo: Some(true),
             },
         };
         let value = serde_json::to_value(&ok).unwrap();

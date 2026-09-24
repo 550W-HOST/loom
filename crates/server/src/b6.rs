@@ -12,7 +12,9 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use http_body_util::BodyExt;
-use loom_domain::{Environment, EnvironmentId, EnvironmentStatus, HostId, ProjectId};
+use loom_domain::{
+    Environment, EnvironmentId, EnvironmentKind, EnvironmentStatus, HostId, ProjectId,
+};
 use loom_provider_protocol::{
     HostFileOperation, HostFileOutcome, HostPathKind, HostRpcOperation, HostRpcOutcome,
     WorkspaceContext, WorkspaceDiffFileSide, WorkspaceDiffTarget,
@@ -511,11 +513,33 @@ pub async fn delete_environment(
         .registry
         .delete_environment(&environment_id, loom_relay::now_ms())
     {
-        Ok((_environment, event)) => {
+        Ok((environment, event)) => {
             crate::b9::close_environment_terminals(&state, &environment_id);
             if let Some(event) = event {
                 if let Err(response) = publish_events(&state, &[event]) {
                     return response;
+                }
+            }
+            // A managed workspace is removed on its host; the registry just
+            // moved the record to `destroyed`, and this records the running
+            // teardown and asks the worker to remove the directory or worktree.
+            // An unmanaged directory is never touched. A second DELETE retries
+            // a failed teardown, which is why an already-destroyed environment
+            // is still dispatched.
+            if environment.kind == EnvironmentKind::Managed {
+                match state.deprovision_environment(&environment_id) {
+                    crate::environments::DeprovisionOutcome::Dispatched(_) => {}
+                    crate::environments::DeprovisionOutcome::PublishFailed { error, .. } => {
+                        return api_error(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "host_unavailable",
+                            format!("could not dispatch teardown: {error}"),
+                        )
+                    }
+                    // An unknown or unmanaged environment cannot happen here:
+                    // the registry lookup above just returned it as managed.
+                    crate::environments::DeprovisionOutcome::Unknown
+                    | crate::environments::DeprovisionOutcome::NotDeprovisionable { .. } => {}
                 }
             }
             Json(json!({ "ok": true })).into_response()
