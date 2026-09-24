@@ -143,6 +143,92 @@ impl HistoryWaits {
     }
 }
 
+/// What a conversation's cheap facts say about it.
+///
+/// A [`CacheView`] without its rows: everything a reader can know about a
+/// conversation without paying for the rows themselves. It exists because the
+/// row set is the expensive part of a read — a long conversation is tens of
+/// thousands of stored frames — and a reader that already has the rows
+/// projected only needs the metadata to decide whether they are still current.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct HistoryMeta {
+    /// The revision the rows' sequences belong to.
+    pub generation: u64,
+    /// How much of the conversation the store can currently offer.
+    pub status: HistoryStatus,
+    /// Whether that is the whole conversation.
+    pub complete: bool,
+    /// Whether the conversation is complete without a provider replay.
+    pub local_complete: bool,
+    /// Why it is not complete, when that is known.
+    pub reason: Option<String>,
+    /// The highest sequence the conversation holds, or zero when it is empty.
+    pub last_seq: u64,
+}
+
+/// The status a conversation is in, from what the store holds and the two
+/// facts that are not rows: whether a load is in flight, and whether a write
+/// was refused.
+///
+/// One function because two readers ask this question — one holding the rows,
+/// one holding only the aggregates — and a status that depended on which one
+/// asked would be a lie in one of the two answers.
+fn derive_history_status(
+    history: Option<&crate::store::StoredHistory>,
+    empty: bool,
+    loading: bool,
+    unsaved: Option<String>,
+) -> (HistoryStatus, bool, Option<String>) {
+    let synced_at_ms = history.and_then(|stored| stored.synced_at_ms);
+    let local_complete = history.is_some_and(|stored| stored.local_complete);
+    let has_complete_baseline = local_complete || synced_at_ms.is_some();
+    let last_error = history.and_then(|stored| stored.last_error.clone());
+    let not_loaded = "the conversation's history has not been loaded yet".to_owned();
+
+    let (status, complete, reason) = if loading && has_complete_baseline {
+        (
+            HistoryStatus::Stale,
+            false,
+            Some("a newer view is being loaded".to_owned()),
+        )
+    } else if loading && !empty {
+        (HistoryStatus::Partial, false, Some(not_loaded))
+    } else if loading {
+        (HistoryStatus::Loading, false, None)
+    } else if has_complete_baseline {
+        match last_error {
+            Some(error) => (HistoryStatus::Stale, false, Some(error)),
+            None => (HistoryStatus::Ready, true, None),
+        }
+    } else if !empty {
+        (
+            HistoryStatus::Partial,
+            false,
+            Some(last_error.unwrap_or(not_loaded)),
+        )
+    } else if let Some(error) = last_error {
+        (HistoryStatus::Unavailable, false, Some(error))
+    } else {
+        (HistoryStatus::Loading, false, None)
+    };
+
+    // A row the writer refused or could not store is a hole in the stored
+    // conversation, and the reader is told about it. A status that says
+    // "complete" over a known hole is the one lie this must not tell, so the
+    // mark makes the view stale and its reason replaces the softer ones.
+    match unsaved {
+        Some(unsaved) => (
+            match status {
+                HistoryStatus::Ready | HistoryStatus::Stale => HistoryStatus::Stale,
+                other => other,
+            },
+            false,
+            Some(unsaved),
+        ),
+        None => (status, complete, reason),
+    }
+}
+
 /// What a read of a thread's conversation should answer.
 ///
 /// A read is more than a lookup: it is the only thing that knows somebody
@@ -208,10 +294,7 @@ impl AppState {
             // A failure waits out its backoff first: a page that polls is not a
             // reason to ask an agent that just said no, over and over.
             HistoryStatus::Partial | HistoryStatus::Stale => {
-                if !view.local_complete && self.history.may_retry(thread_id, HISTORY_RETRY_BACKOFF)
-                {
-                    let _ = self.start_thread_history_load(thread_id);
-                }
+                self.retry_history_load_if_due(thread_id, view.local_complete);
                 ThreadHistoryRead::Serve(view)
             }
             // A conversation with nothing in it whose load failed is the one
@@ -219,13 +302,58 @@ impl AppState {
             // nothing to show. It is still retried, on the same terms: a thread
             // must not need a person to type something before it can recover.
             HistoryStatus::Unavailable => {
-                if !view.local_complete && self.history.may_retry(thread_id, HISTORY_RETRY_BACKOFF)
-                {
-                    let _ = self.start_thread_history_load(thread_id);
-                }
+                self.retry_history_load_if_due(thread_id, view.local_complete);
                 ThreadHistoryRead::Serve(view)
             }
             HistoryStatus::Ready => ThreadHistoryRead::Serve(view),
+        }
+    }
+
+    /// The conversation's expensive values, without the rows.
+    ///
+    /// Everything [`AppState::stored_view`] needs to derive a status, read as
+    /// an indexed last sequence plus an in-memory look at the overlay. A
+    /// reader holding a recent projection asks this to decide whether the
+    /// projection is still current, and never pays to read the conversation a
+    /// second time for an answer it already has.
+    pub(crate) fn history_meta(
+        &self,
+        thread_id: &ThreadId,
+    ) -> Result<HistoryMeta, crate::store::StoreError> {
+        // The header and the last sequence are read under one guard so a
+        // rebuild cannot land between them and leave the two describing
+        // different conversations.
+        let (history, stored_last_seq) = {
+            let store = self.store();
+            let history = store.history(thread_id)?;
+            let stored_last_seq = store.stored_last_seq(thread_id)?;
+            (history, stored_last_seq)
+        };
+        let last_seq = stored_last_seq.max(self.history.last_seq(thread_id));
+        let (status, complete, reason) = derive_history_status(
+            history.as_ref(),
+            last_seq == 0,
+            self.history.is_loading(thread_id),
+            self.store_writer().unsaved(thread_id),
+        );
+        Ok(HistoryMeta {
+            generation: history.as_ref().map(|stored| stored.revision).unwrap_or(0),
+            status,
+            complete,
+            local_complete: history.as_ref().is_some_and(|stored| stored.local_complete),
+            reason,
+            last_seq,
+        })
+    }
+
+    /// The retry a read owes a conversation that is not complete yet.
+    ///
+    /// The load decision belongs to the loader, not the reader — starting one
+    /// is the same decision as claiming it — so a reader with rows to serve
+    /// only asks whether the wait since the last failure is over.
+    pub(crate) fn retry_history_load_if_due(&self, thread_id: &ThreadId, local_complete: bool) {
+        if !local_complete && self.history.may_retry(thread_id, HISTORY_RETRY_BACKOFF) {
+            let _ = self.start_thread_history_load(thread_id);
         }
     }
 
@@ -261,59 +389,14 @@ impl AppState {
             (store.instance().to_owned(), history, merged)
         };
 
-        let synced_at_ms = history.as_ref().and_then(|stored| stored.synced_at_ms);
         let local_complete = history.as_ref().is_some_and(|stored| stored.local_complete);
-        let has_complete_baseline = local_complete || synced_at_ms.is_some();
-        let last_error = history
-            .as_ref()
-            .and_then(|stored| stored.last_error.clone());
         let revision = history.as_ref().map(|stored| stored.revision).unwrap_or(0);
-        let loading = self.history.is_loading(thread_id);
-        let empty = rows.is_empty();
-        let not_loaded = "the conversation's history has not been loaded yet".to_owned();
-
-        let (status, complete, reason) = if loading && has_complete_baseline {
-            (
-                HistoryStatus::Stale,
-                false,
-                Some("a newer view is being loaded".to_owned()),
-            )
-        } else if loading && !empty {
-            (HistoryStatus::Partial, false, Some(not_loaded))
-        } else if loading {
-            (HistoryStatus::Loading, false, None)
-        } else if has_complete_baseline {
-            match last_error {
-                Some(error) => (HistoryStatus::Stale, false, Some(error)),
-                None => (HistoryStatus::Ready, true, None),
-            }
-        } else if !empty {
-            (
-                HistoryStatus::Partial,
-                false,
-                Some(last_error.unwrap_or(not_loaded)),
-            )
-        } else if let Some(error) = last_error {
-            (HistoryStatus::Unavailable, false, Some(error))
-        } else {
-            (HistoryStatus::Loading, false, None)
-        };
-
-        // A row the writer refused or could not store is a hole in the stored
-        // conversation, and the reader is told about it. A status that says
-        // "complete" over a known hole is the one lie this must not tell, so the
-        // mark makes the view stale and its reason replaces the softer ones.
-        let (status, complete, reason) = match self.store_writer().unsaved(thread_id) {
-            Some(unsaved) => (
-                match status {
-                    HistoryStatus::Ready | HistoryStatus::Stale => HistoryStatus::Stale,
-                    other => other,
-                },
-                false,
-                Some(unsaved),
-            ),
-            None => (status, complete, reason),
-        };
+        let (status, complete, reason) = derive_history_status(
+            history.as_ref(),
+            rows.is_empty(),
+            self.history.is_loading(thread_id),
+            self.store_writer().unsaved(thread_id),
+        );
 
         Ok(CacheView {
             instance,
@@ -735,6 +818,60 @@ mod tests {
         ProviderEvent::ThreadIdentity {
             provider_thread_id: "acp-session-1".into(),
         }
+    }
+
+    /// Assert the cheap facts equal the full view they stand in for.
+    fn assert_meta_matches_view(meta: &HistoryMeta, view: &CacheView) {
+        assert_eq!(meta.generation, view.generation);
+        assert_eq!(meta.status, view.status);
+        assert_eq!(meta.complete, view.complete);
+        assert_eq!(meta.local_complete, view.local_complete);
+        assert_eq!(meta.reason, view.reason);
+        assert_eq!(
+            meta.last_seq,
+            view.rows.last().map(|row| row.seq).unwrap_or(0)
+        );
+    }
+
+    /// The metadata a cached projection is validated against must say exactly
+    /// what the full read says: a reader that trusted a different status would
+    /// tell a different story than the one serving the rows.
+    #[tokio::test]
+    async fn metadata_says_what_the_view_says() {
+        let state = test_state();
+        let thread = ThreadId::mint();
+        let binding = cache_binding();
+
+        // Nothing stored and nothing on screen: there is nothing to show yet.
+        let view = state.stored_view(&thread).unwrap();
+        let meta = state.history_meta(&thread).unwrap();
+        assert_meta_matches_view(&meta, &view);
+        assert_eq!(meta.status, HistoryStatus::Loading);
+        assert_eq!(meta.last_seq, 0);
+
+        // A stored baseline: ready and complete.
+        seed_baseline(&state, &thread, &binding, &[identity()]);
+        let view = state.stored_view(&thread).unwrap();
+        let meta = state.history_meta(&thread).unwrap();
+        assert_eq!(meta.status, HistoryStatus::Ready);
+        assert!(meta.complete);
+        assert_meta_matches_view(&meta, &view);
+
+        // An unwritten tail is part of the conversation and moves the sequence
+        // a projection is keyed by.
+        let seq = state.seqs().reserve(&thread, 1);
+        state.history.append_live(
+            &thread,
+            Some(&binding),
+            seq,
+            crate::history_cache::RowSource::Message { at_ms: 1 },
+            identity(),
+        );
+        let view = state.stored_view(&thread).unwrap();
+        let meta = state.history_meta(&thread).unwrap();
+        assert_meta_matches_view(&meta, &view);
+        assert_eq!(meta.last_seq, seq, "the overlay is part of the row set");
+        state.shutdown().unwrap();
     }
 
     #[tokio::test]

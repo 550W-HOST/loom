@@ -392,6 +392,21 @@ impl HistoryCache {
         inner.bytes = inner.bytes.saturating_sub(freed);
     }
 
+    /// The highest sequence among a thread's unwritten rows, or zero when it
+    /// has none.
+    ///
+    /// The cheap question a reader asks when it only needs to know whether the
+    /// overlay moved since it last looked; unlike [`HistoryCache::rows`] it
+    /// copies nothing.
+    pub fn last_seq(&self, thread_id: &ThreadId) -> u64 {
+        let mut inner = self.lock();
+        inner.touch(thread_id);
+        let Some(entry) = inner.entries.get(thread_id) else {
+            return 0;
+        };
+        entry.rows.last().map(|row| row.seq).unwrap_or(0)
+    }
+
     /// A thread's unwritten rows, oldest first.
     pub fn rows(&self, thread_id: &ThreadId) -> Option<Vec<CachedRow>> {
         let mut inner = self.lock();

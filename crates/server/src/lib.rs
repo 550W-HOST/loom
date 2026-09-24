@@ -60,6 +60,7 @@ pub mod settings;
 pub mod state;
 pub mod store;
 pub mod terminals;
+pub mod timeline_projection;
 pub mod tool_timeline;
 pub mod transport;
 pub mod ui;

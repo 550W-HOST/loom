@@ -221,6 +221,24 @@ impl Store {
         Ok(u64::try_from(count).unwrap_or(0))
     }
 
+    /// The highest sequence a thread's stored conversation holds, or zero when
+    /// it has none.
+    ///
+    /// A reader that only needs to know whether the stored conversation moved
+    /// asks this instead of [`Store::rows`]: it is one indexed lookup, and it
+    /// leaves the rows themselves — the expensive part of a read — on disk.
+    pub fn stored_last_seq(&self, thread_id: &ThreadId) -> Result<u64, StoreError> {
+        let mut statement = self
+            .connection()
+            .prepare("SELECT COALESCE(MAX(seq), 0) FROM thread_history_row WHERE thread_id = ?1")?;
+        let mut rows = statement.query((thread_id.to_string(),))?;
+        let last_seq = match rows.next()? {
+            Some(row) => column_integer(row, 0)?,
+            None => 0,
+        };
+        Ok(u64::try_from(last_seq).unwrap_or(0))
+    }
+
     /// Appends one live row at the sequence its publisher reserved.
     ///
     /// The sequence arrives from [`Store::next_seq`]'s numbering rather than

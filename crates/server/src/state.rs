@@ -41,6 +41,22 @@ const HISTORY_CACHE_THREADS: usize = 64;
 /// How many bytes of cached conversation rows the server may hold.
 const HISTORY_CACHE_BYTES: u64 = 64 * 1024 * 1024;
 
+/// How many threads' projected timelines the server may hold at once.
+///
+/// A projection is cheap next to the conversation it comes from — a few hundred
+/// rows against tens of thousands of frames — but it is still per-thread memory,
+/// so it is bounded like the overlay.
+const TIMELINE_PROJECTION_CACHE_THREADS: usize = 32;
+
+/// The largest projection one thread may contribute to the cache.
+///
+/// A conversation whose timeline is larger than this is read the old way: the
+/// work it would take to keep is exactly what the cache exists to avoid.
+const TIMELINE_PROJECTION_CACHE_ROWS: usize = 2_000;
+
+/// How many projected rows the server may hold across every thread.
+const TIMELINE_PROJECTION_CACHE_TOTAL_ROWS: usize = 20_000;
+
 /// Writes a run's state through to the store as the run changes.
 ///
 /// A run's flags are what a restart reads to settle it: whether its turn
@@ -326,6 +342,9 @@ pub struct AppState {
     /// store so a restart continues a conversation instead of numbering over it.
     seqs: Arc<crate::store::SeqAllocator>,
     pub history: Arc<crate::history_cache::HistoryCache>,
+    /// Projected timelines, kept valid by a conversation's revision and last
+    /// sequence. See [`crate::timeline_projection`].
+    pub(crate) timeline_projections: Arc<crate::timeline_projection::TimelineProjectionCache>,
     /// Who is waiting on which in-flight history load.
     pub history_waits: Arc<crate::history::HistoryWaits>,
     /// HTTP requests waiting on a host's answer to a terminal operation.
@@ -536,6 +555,13 @@ impl AppState {
             host_rpc: Arc::new(HostRpcBroker::new()),
             history_rpc: Arc::new(HistoryBroker::new()),
             history,
+            timeline_projections: Arc::new(
+                crate::timeline_projection::TimelineProjectionCache::new(
+                    TIMELINE_PROJECTION_CACHE_THREADS,
+                    TIMELINE_PROJECTION_CACHE_ROWS,
+                    TIMELINE_PROJECTION_CACHE_TOTAL_ROWS,
+                ),
+            ),
             store,
             store_writer,
             seqs,

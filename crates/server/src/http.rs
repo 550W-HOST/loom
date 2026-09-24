@@ -4,6 +4,7 @@
 //! exist so a server can be probed, identified and fed events.
 
 use std::collections::HashSet;
+use std::sync::Arc;
 
 use axum::body::Body;
 use axum::extract::{Path, Query, Request, State};
@@ -2386,6 +2387,7 @@ async fn delete_thread(
                 );
             }
             state.history.remove(&thread_id);
+            state.timeline_projections.remove(&thread_id);
             state.seqs().forget(&thread_id);
             crate::b9::close_thread_terminals(
                 &state,
@@ -4489,6 +4491,56 @@ fn cached_timeline_rows(
     build_timeline_rows(thread_id, &inputs)
 }
 
+/// A cached conversation projected for the routes that read it.
+fn projection_from_view(
+    thread_id: &ThreadId,
+    view: &crate::history_cache::CacheView,
+) -> crate::timeline_projection::TimelineProjection {
+    let built = cached_timeline_rows(thread_id, view);
+    crate::timeline_projection::TimelineProjection {
+        latest_plan_todos: latest_plan_todos_value(&view.rows),
+        rows: built.rows,
+        model_fallback: built.model_fallback,
+        max_seq: built.max_seq,
+    }
+}
+
+/// The conversation projected into timeline rows, from memory when it has not
+/// moved since it was last asked for.
+///
+/// The expensive part of reading a timeline is reading the conversation it is
+/// projected from: a long thread is tens of thousands of stored frames for a
+/// few hundred rows, and a page request only wants a slice of them. The
+/// projection is remembered under the conversation's revision and last
+/// sequence — what every append and every rebuild moves — so paging a thread
+/// that is not being written to costs no more than the slices themselves.
+fn cached_timeline_projection(
+    state: &AppState,
+    thread_id: &ThreadId,
+) -> Result<Arc<crate::timeline_projection::TimelineProjection>, crate::store::StoreError> {
+    let meta = state.history_meta(thread_id)?;
+    let key = crate::timeline_projection::ProjectionKey {
+        revision: meta.generation,
+        last_seq: meta.last_seq,
+    };
+    if let Some(projection) = state.timeline_projections.get(thread_id, key) {
+        return Ok(projection);
+    }
+    let view = state.stored_view(thread_id)?;
+    let projection = Arc::new(projection_from_view(thread_id, &view));
+    if !view.rows.is_empty() {
+        state.timeline_projections.put(
+            thread_id,
+            crate::timeline_projection::ProjectionKey {
+                revision: view.generation,
+                last_seq: view.rows.last().map(|row| row.seq).unwrap_or(0),
+            },
+            Arc::clone(&projection),
+        );
+    }
+    Ok(projection)
+}
+
 /// The rows a thread's timeline is made of, from the cache.
 ///
 /// Both `threads.timeline` and a turn's details are this same row set: the
@@ -4497,15 +4549,20 @@ fn cached_timeline_rows(
 /// timeline showed.
 fn cached_thread_timeline_rows(state: &AppState, thread_id: &ThreadId) -> TimelineRows {
     // The conversation comes from the store, with the unpublished tail merged
-    // in: one read, whichever route asked for it.
-    state
-        .stored_view(thread_id)
-        .map(|view| cached_timeline_rows(thread_id, &view))
-        .unwrap_or(TimelineRows {
+    // in, and is remembered while its revision and last sequence hold: a
+    // second reader of the same conversation does not read it again.
+    match cached_timeline_projection(state, thread_id) {
+        Ok(projection) => TimelineRows {
+            rows: projection.rows.clone(),
+            model_fallback: projection.model_fallback.clone(),
+            max_seq: projection.max_seq,
+        },
+        Err(_) => TimelineRows {
             rows: Vec::new(),
             model_fallback: None,
             max_seq: 0,
-        })
+        },
+    }
 }
 
 #[cfg(test)]
@@ -5325,65 +5382,103 @@ async fn thread_timeline(
         Ok(entries) => entries,
         Err(response) => return response,
     };
-    // The timeline is served from the cache. A conversation's authority is the
-    // agent that owns its session, and the cache holds a displayable form of
-    // it: a baseline from that agent plus everything that has happened since.
-    // The log is still read above, but for loom's own facts — a goal, a
-    // reported occupancy — which are not the conversation and must keep their
-    // own meaning.
-    // The read is also what asks for the conversation when the cache does not
-    // hold it: it must not wait for an agent to start — a load can take as long
-    // as a cold start — so it answers `loading` and the client asks again.
-    let (
-        all_rows,
-        model_fallback,
-        max_seq,
-        history_revision,
-        history_status,
-        history_complete,
-        history_reason,
-        pending_todos_source,
-    ) = match state.read_thread_history(&thread_id) {
-        crate::history::ThreadHistoryRead::Serve(view) => {
-            // The To-do card is a read of the conversation, so it comes from
-            // the same rows the timeline does — and only the latest page shows
-            // it, because an older page is history.
-            let pending_todos = pending_todos_value(thread.status, &view.rows);
-            let built = cached_timeline_rows(&thread_id, &view);
-            (
-                built.rows,
-                built.model_fallback,
-                built.max_seq,
-                Some(view.generation),
-                view.status,
-                view.complete,
-                view.reason.clone(),
-                pending_todos,
-            )
+    // The timeline is served from the projection the cache remembers, rather
+    // than from a fresh read of the conversation. A conversation's authority is
+    // the agent that owns its session, and a projection is a displayable form
+    // of what it replayed plus everything that has happened since; reading the
+    // frames behind it is the expensive part, and doing it again for every
+    // page is what made paging a long thread stutter. The log is still read
+    // above, but for loom's own facts — a goal, a reported occupancy — which
+    // are not the conversation and must keep their own meaning.
+    //
+    // A conversation with nothing in it has no projection to remember: the
+    // read is what asks for the load, and it must not wait for an agent to
+    // start — a load can take as long as a cold start — so it answers
+    // `loading` and the client asks again.
+    // A metadata read that fails is not answered here: the full read below
+    // reports the same failure the way this route always has — as an
+    // `unavailable` conversation with the reason — rather than as a status
+    // code a client would treat as transient.
+    let meta = state.history_meta(&thread_id).ok();
+    let cached = meta.as_ref().and_then(|meta| {
+        if meta.status == crate::history_cache::HistoryStatus::Loading {
+            return None;
         }
-        // Nothing is cached, so this response is not a position in any
-        // numbering: the caller has nothing to compare and nothing to keep.
-        crate::history::ThreadHistoryRead::Loading { reason } => (
-            Vec::new(),
-            None,
-            0,
-            None,
-            crate::history_cache::HistoryStatus::Loading,
-            false,
-            reason,
-            Value::Null,
-        ),
-        crate::history::ThreadHistoryRead::Unavailable(reason) => (
-            Vec::new(),
-            None,
-            0,
-            None,
-            crate::history_cache::HistoryStatus::Unavailable,
-            false,
-            Some(reason),
-            Value::Null,
-        ),
-    };
+        state
+            .timeline_projections
+            .get(
+                &thread_id,
+                crate::timeline_projection::ProjectionKey {
+                    revision: meta.generation,
+                    last_seq: meta.last_seq,
+                },
+            )
+            .map(|projection| (meta, projection))
+    });
+    let (projection, history_revision, history_status, history_complete, history_reason) =
+        match cached {
+            Some((meta, projection)) => {
+                // The retry a read owes a conversation that is not complete
+                // yet, without reading its rows to find that out.
+                state.retry_history_load_if_due(&thread_id, meta.local_complete);
+                (
+                    projection,
+                    Some(meta.generation),
+                    meta.status,
+                    meta.complete,
+                    meta.reason.clone(),
+                )
+            }
+            None => match state.read_thread_history(&thread_id) {
+                crate::history::ThreadHistoryRead::Serve(view) => {
+                    let projection = Arc::new(projection_from_view(&thread_id, &view));
+                    if !view.rows.is_empty() {
+                        state.timeline_projections.put(
+                            &thread_id,
+                            crate::timeline_projection::ProjectionKey {
+                                revision: view.generation,
+                                last_seq: view.rows.last().map(|row| row.seq).unwrap_or(0),
+                            },
+                            Arc::clone(&projection),
+                        );
+                    }
+                    (
+                        projection,
+                        Some(view.generation),
+                        view.status,
+                        view.complete,
+                        view.reason.clone(),
+                    )
+                }
+                // Nothing is cached, so this response is not a position in any
+                // numbering: the caller has nothing to compare and nothing to keep.
+                crate::history::ThreadHistoryRead::Loading { reason } => (
+                    Arc::new(crate::timeline_projection::TimelineProjection::empty()),
+                    None,
+                    crate::history_cache::HistoryStatus::Loading,
+                    false,
+                    reason,
+                ),
+                crate::history::ThreadHistoryRead::Unavailable(reason) => (
+                    Arc::new(crate::timeline_projection::TimelineProjection::empty()),
+                    None,
+                    crate::history_cache::HistoryStatus::Unavailable,
+                    false,
+                    Some(reason),
+                ),
+            },
+        };
+    // The To-do card is a read of the conversation, so it comes from the same
+    // rows the timeline does — and only the latest page shows it, because an
+    // older page is history.
+    let model_fallback = projection.model_fallback.clone();
+    let max_seq = projection.max_seq;
+    let pending_todos_source =
+        if matches!(thread.status, ThreadStatus::Working | ThreadStatus::Waiting) {
+            projection.latest_plan_todos.clone()
+        } else {
+            Value::Null
+        };
     // A cursor is a position in one numbering, and the numbering is the
     // thread's revision: its rows are never renumbered, so a restart keeps the
     // cursor meaningful, and a rebuild moves the revision. A request whose
@@ -5400,7 +5495,7 @@ async fn thread_timeline(
     };
     let before_id_sequence = if cursors_are_current {
         query.before_anchor_id.as_ref().and_then(|anchor_id| {
-            all_rows.iter().find_map(|row| {
+            projection.rows.iter().find_map(|row| {
                 (row.get("id").and_then(Value::as_str) == Some(anchor_id.as_str()))
                     .then(|| row.get("sourceSeqStart").and_then(Value::as_u64))
                     .flatten()
@@ -5410,8 +5505,9 @@ async fn thread_timeline(
         None
     };
     let before = before_sequence.or(before_id_sequence);
-    let mut candidates = all_rows
-        .into_iter()
+    let mut candidates = projection
+        .rows
+        .iter()
         .filter(|row| {
             let sequence = row
                 .get("sourceSeqEnd")
@@ -5420,6 +5516,7 @@ async fn thread_timeline(
             after.is_none_or(|value| sequence > value)
                 && before.is_none_or(|value| sequence < value)
         })
+        .cloned()
         .collect::<Vec<_>>();
     let has_older_rows = candidates.len() > segment_limit;
     if candidates.len() > segment_limit {
@@ -7109,12 +7206,29 @@ fn goal_value(
 /// window: the row's sequence and time are the numbering the timeline itself
 /// serves, so a client can order the snapshot against the rest of the
 /// conversation.
+/// The newest plan snapshot, gated on the thread being in flight.
+///
+/// The gate lives at the response rather than in the projection because the
+/// thread's status is not part of the conversation's rows; this is the same
+/// gate as a function, for tests.
+#[cfg(test)]
 fn pending_todos_value(status: ThreadStatus, rows: &[crate::history_cache::CachedRow]) -> Value {
-    use crate::history_cache::RowSource;
-
     if !matches!(status, ThreadStatus::Working | ThreadStatus::Waiting) {
         return Value::Null;
     }
+    latest_plan_todos_value(rows)
+}
+
+/// The newest plan snapshot in a conversation, whether or not its thread is
+/// in flight.
+///
+/// The status that decides whether it is shown as a to-do card is *not* part of
+/// the conversation's rows, so it is applied by the reader rather than baked
+/// into the projection: a plan and a thread that is working are two facts, and
+/// only the second changes without a row being written.
+fn latest_plan_todos_value(rows: &[crate::history_cache::CachedRow]) -> Value {
+    use crate::history_cache::RowSource;
+
     const TODO_TEXT_MAX_LENGTH: usize = 240;
     let mut best: Option<(u64, u64, Vec<Value>)> = None;
     for row in rows {
@@ -9031,6 +9145,153 @@ mod tests {
             body_json(get(&app, &format!("/api/v1/threads/{}/timeline", thread.id)).await).await;
         assert_b1_response(&contract, "threads.timeline", "GET", &settled);
         assert_eq!(settled["pendingTodos"], Value::Null);
+        state.shutdown().unwrap();
+    }
+
+    /// A conversation is projected once, and read from that projection until
+    /// it moves.
+    ///
+    /// The projection is proportional to the whole conversation, and paging
+    /// requests only want slices of it: remembering it is what keeps a page
+    /// from costing the whole thread, over and over. Appending a message moves
+    /// the last sequence the projection is keyed by, so the next read sees it.
+    #[tokio::test]
+    async fn a_timeline_read_reuses_the_projection_until_the_conversation_moves() {
+        let state = test_state();
+        let app = router(state.clone());
+        let (thread, created) = state
+            .registry
+            .create_thread(
+                Some(state.registry.personal_project_id()),
+                Some("projected".into()),
+                None,
+                loom_relay::now_ms(),
+            )
+            .unwrap();
+        state.publish_domain_event(&created).unwrap();
+        for index in 0..4 {
+            for event in state
+                .registry
+                .post_message(
+                    &thread.id,
+                    MessageRole::User,
+                    format!("message {index}"),
+                    loom_relay::now_ms(),
+                )
+                .unwrap()
+            {
+                state.publish_domain_event(&event).unwrap();
+            }
+        }
+
+        let base = format!("/api/v1/threads/{}/timeline", thread.id);
+        let first = body_json(get(&app, &base).await).await;
+        assert_eq!(
+            state.timeline_projections.len(),
+            1,
+            "the read remembered the projection"
+        );
+        assert_eq!(state.timeline_projections.hits(), 0);
+
+        let second = body_json(get(&app, &base).await).await;
+        assert_eq!(second, first, "a read of an unchanged thread is identical");
+        assert_eq!(
+            state.timeline_projections.hits(),
+            1,
+            "the second read came from the remembered projection"
+        );
+
+        for event in state
+            .registry
+            .post_message(
+                &thread.id,
+                MessageRole::User,
+                "the newest message".into(),
+                loom_relay::now_ms(),
+            )
+            .unwrap()
+        {
+            state.publish_domain_event(&event).unwrap();
+        }
+        let third = body_json(get(&app, &base).await).await;
+        assert!(third["maxSeq"].as_u64() > first["maxSeq"].as_u64());
+        assert!(
+            third["rows"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|row| row["text"] == "the newest message"),
+            "the append invalidated the projection: {third}"
+        );
+        state.shutdown().unwrap();
+    }
+
+    /// An older page is a slice of the same remembered projection.
+    ///
+    /// Paging must not read the conversation again: the cursor names a
+    /// position in the projection the first page was cut from, and that is
+    /// still what the next page is cut from .
+    #[tokio::test]
+    async fn an_older_page_is_a_slice_of_the_remembered_projection() {
+        let state = test_state();
+        let app = router(state.clone());
+        let (thread, created) = state
+            .registry
+            .create_thread(
+                Some(state.registry.personal_project_id()),
+                Some("paged".into()),
+                None,
+                loom_relay::now_ms(),
+            )
+            .unwrap();
+        state.publish_domain_event(&created).unwrap();
+        for index in 0..4 {
+            for event in state
+                .registry
+                .post_message(
+                    &thread.id,
+                    MessageRole::User,
+                    format!("message {index}"),
+                    loom_relay::now_ms(),
+                )
+                .unwrap()
+            {
+                state.publish_domain_event(&event).unwrap();
+            }
+        }
+
+        let latest = body_json(
+            get(
+                &app,
+                &format!("/api/v1/threads/{}/timeline?segmentLimit=1", thread.id),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(latest["rows"].as_array().unwrap().len(), 1);
+        let cursor = &latest["timelinePage"]["olderCursor"];
+        let revision = latest["historyRevision"].as_u64().unwrap();
+        let older = body_json(
+            get(
+                &app,
+                &format!(
+                    "/api/v1/threads/{}/timeline?segmentLimit=1&beforeAnchorId={}&beforeAnchorSeq={}&historyRevision={}",
+                    thread.id,
+                    cursor["anchorId"].as_str().unwrap(),
+                    cursor["anchorSeq"].as_u64().unwrap(),
+                    revision,
+                ),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(older["rows"].as_array().unwrap().len(), 1);
+        assert_ne!(older["rows"][0]["id"], latest["rows"][0]["id"]);
+        assert_eq!(
+            state.timeline_projections.hits(),
+            1,
+            "the older page is a slice of the projection the latest page built"
+        );
         state.shutdown().unwrap();
     }
 

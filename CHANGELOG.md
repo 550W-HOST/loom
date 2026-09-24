@@ -8,6 +8,7 @@
 
 ### Notable fixes
 
+- Paging back through a long thread no longer re-reads and re-projects the whole conversation for every page: the timeline is projected once and served from memory until the conversation changes.
 - Show the first user prompt for untitled threads until their provider title arrives.
 - ACP slash commands advertised during session resume remain available.
 - A discovered agent's `/` menu is its own ACP advertisement: `projects.commands` answers OMP from what `omp acp` advertised instead of rejecting the provider or serving pi's built-ins.
